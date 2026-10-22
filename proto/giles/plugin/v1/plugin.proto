@@ -1,0 +1,129 @@
+// The base service every gRPC plugin serves, next to grpc.health.v1.Health and exactly one kind
+// service (PLAN sections 8.1 to 8.3).
+syntax = "proto3";
+
+package giles.plugin.v1;
+
+import "giles/channel/v1/channel.proto";
+import "giles/provider/v1/provider.proto";
+import "giles/types/v1/types.proto";
+
+// The core is always the client. Plugin-to-core data travels only on streams the core opened.
+service PluginService {
+  // What the plugin is. The core calls it first, right after the handshake line.
+  rpc Describe(DescribeRequest) returns (DescribeResponse);
+  // Sends the instance config. The plugin validates it and fails with INVALID_ARGUMENT if it is
+  // wrong.
+  rpc Configure(ConfigureRequest) returns (ConfigureResponse);
+  // A drain hint before the core stops the plugin.
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+  // Core to plugin: uploads a blob and returns the plugin's handle for it.
+  rpc PutBlob(stream PutBlobRequest) returns (PutBlobResponse);
+  // Plugin to core: downloads a blob the plugin referred to.
+  rpc GetBlob(GetBlobRequest) returns (stream GetBlobResponse);
+  // The core has stored the blobs; the plugin may delete them.
+  rpc ReleaseBlob(ReleaseBlobRequest) returns (ReleaseBlobResponse);
+}
+
+// The kind service a plugin serves.
+enum PluginKind {
+  reserved 3; // toolsets are MCP servers (PLAN section 7.10)
+
+  PLUGIN_KIND_UNSPECIFIED = 0;
+  // Serves giles.provider.v1.ProviderService.
+  PLUGIN_KIND_PROVIDER = 1;
+  // Serves giles.channel.v1.ChannelService.
+  PLUGIN_KIND_CHANNEL = 2;
+}
+
+message DescribeRequest {
+  // The core's minor version of the protocol major it launched the plugin with (PLAN section
+  // 7.8).
+  uint32 core_protocol_minor = 1;
+  // Optional features the core understands, e.g. "channel.status" or "blob.release".
+  repeated string core_features = 2;
+}
+
+message DescribeResponse {
+  // 4: config schema, deferred (plugins validate in Configure).
+  // 12: toolset capabilities (toolsets are MCP servers).
+  reserved 4, 12;
+
+  // Must match the kind in the binary name, giles-KIND-NAME.
+  PluginKind kind = 1;
+  // The NAME part of the binary name.
+  string name = 2;
+  // The plugin's own version.
+  string version = 3;
+  // Sandbox grants the plugin would like. Advisory only: shown in giles status, never applied.
+  SandboxGrants requested_grants = 5;
+  // What the kind service can do. Set to the variant matching kind.
+  oneof capabilities {
+    giles.provider.v1.ProviderCapabilities provider = 10;
+    giles.channel.v1.ChannelCapabilities channel = 11;
+  }
+}
+
+// Sandbox grants, in the shape of an instance's sandbox table in giles.toml (PLAN section 12.4).
+message SandboxGrants {
+  // All IP traffic.
+  bool network_all = 1;
+  // Allowed ports, e.g. "tcp:443". Ignored when network_all is set.
+  repeated string network_ports = 2;
+  // Paths to read.
+  repeated string read = 3;
+  // Paths to write.
+  repeated string write = 4;
+}
+
+message ConfigureRequest {
+  // The instance name, for logs and messages.
+  string instance = 1;
+  // The instance's config table as a JSON object, secrets already resolved.
+  string config_json = 2;
+}
+
+message ConfigureResponse {
+  // Channels only: the identity namespace, e.g. "whatsapp" or "irc:libera.chat" (PLAN section
+  // 3.2). It must start with the channel's component name.
+  string identity_namespace = 1;
+}
+
+message ShutdownRequest {}
+
+message ShutdownResponse {}
+
+// One piece of a blob transfer: the header first, then the data in order.
+message BlobChunk {
+  oneof part {
+    // The first chunk only.
+    giles.types.v1.BlobRef header = 1;
+    // At most 1 MiB per chunk.
+    bytes data = 2;
+  }
+}
+
+message PutBlobRequest {
+  BlobChunk chunk = 1;
+}
+
+message PutBlobResponse {
+  // The plugin's handle. It stays valid until the RPC that uses it ends.
+  giles.types.v1.BlobRef blob = 1;
+}
+
+message GetBlobRequest {
+  // The plugin's handle, from a BlobRef the plugin sent.
+  string id = 1;
+}
+
+message GetBlobResponse {
+  BlobChunk chunk = 1;
+}
+
+message ReleaseBlobRequest {
+  // The handles to release.
+  repeated string ids = 1;
+}
+
+message ReleaseBlobResponse {}

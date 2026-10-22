@@ -1,0 +1,214 @@
+// The admin service (PLAN section 8.7).
+syntax = "proto3";
+
+package giles.admin.v1;
+
+import "giles/channel/v1/channel.proto";
+import "giles/plugin/v1/plugin.proto";
+import "giles/types/v1/types.proto";
+import "google/protobuf/timestamp.proto";
+
+// Served by the core on run/admin.sock. The giles CLI and the web admin pages are its clients.
+// Every call carries the token from run/admin.token as "authorization: Bearer TOKEN" metadata.
+//
+// The user and pairing RPCs of PLAN section 8.7 are multi-user features and are added here,
+// additively, when those are built.
+service AdminService {
+  // The daemon's state: version, last config error, and every plugin with its sandbox and channel
+  // status.
+  rpc Status(StatusRequest) returns (StatusResponse);
+  // Every configured plugin instance.
+  rpc ListPlugins(ListPluginsRequest) returns (ListPluginsResponse);
+  // Restarts a plugin instance now, clearing its restart backoff. NOT_FOUND if there is no such
+  // plugin instance.
+  rpc RestartPlugin(RestartPluginRequest) returns (RestartPluginResponse);
+  // Sessions, newest activity first.
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  // Ends a session, like /new: later messages in its conversation start a fresh one.
+  rpc ResetSession(ResetSessionRequest) returns (ResetSessionResponse);
+  // A one-time web login URL for a user (PLAN section 3.4).
+  rpc CreateLoginLink(CreateLoginLinkRequest) returns (CreateLoginLinkResponse);
+  // Token usage summed per agent, provider instance, and model (PLAN section 11.7).
+  rpc UsageReport(UsageReportRequest) returns (UsageReportResponse);
+  // Writes a consistent snapshot of the data root to a directory (PLAN section 11.4).
+  rpc Backup(BackupRequest) returns (BackupResponse);
+}
+
+message StatusRequest {}
+
+message StatusResponse {
+  // The core's version.
+  string version = 1;
+  // When the core started.
+  google.protobuf.Timestamp started_at = 2;
+  // The last configuration error, if any.
+  optional string config_error = 3;
+  // Every configured plugin instance, as in ListPlugins.
+  repeated PluginInstance plugins = 4;
+}
+
+message ListPluginsRequest {}
+
+message ListPluginsResponse {
+  repeated PluginInstance plugins = 1;
+}
+
+// A configured instance that runs as a plugin: a gRPC plugin or an MCP toolset, local or remote.
+// Built-in components are part of the core and aren't listed.
+message PluginInstance {
+  // The instance name, e.g. "libera".
+  string instance = 1;
+  // The kind of instance.
+  InstanceKind kind = 2;
+  // The component, e.g. "irc" for giles-channel-irc.
+  string component = 3;
+  // The executable's path, or the URL of a remote instance.
+  string location = 4;
+  // Where the instance is in its lifecycle (PLAN section 7.5).
+  PluginState state = 5;
+  // The version the plugin reports (Describe or the MCP server info), once known.
+  optional string version = 6;
+  // The process id of a running local plugin.
+  optional uint32 pid = 7;
+  // Restarts since the core started.
+  uint32 restarts = 8;
+  // The last launch, health check, or connection error.
+  optional string last_error = 9;
+  // When the current process started or the current connection was made.
+  google.protobuf.Timestamp started_at = 10;
+  // The sandbox the plugin runs in. Unset for remote instances.
+  SandboxStatus sandbox = 11;
+  // The grants the plugin asked for in Describe. Advisory only.
+  giles.plugin.v1.SandboxGrants requested_grants = 12;
+  // The last status a channel plugin reported.
+  giles.channel.v1.ChannelStatus channel_status = 13;
+}
+
+// The kind of a configured instance.
+enum InstanceKind {
+  INSTANCE_KIND_UNSPECIFIED = 0;
+  INSTANCE_KIND_PROVIDER = 1;
+  INSTANCE_KIND_CHANNEL = 2;
+  INSTANCE_KIND_TOOLSET = 3;
+}
+
+// Where a plugin instance is in its lifecycle.
+enum PluginState {
+  PLUGIN_STATE_UNSPECIFIED = 0;
+  // Launching or connecting.
+  PLUGIN_STATE_STARTING = 1;
+  // Up and healthy.
+  PLUGIN_STATE_RUNNING = 2;
+  // A toolset stopped for idleness; the next call relaunches it.
+  PLUGIN_STATE_IDLE = 3;
+  // Down, waiting to restart or reconnect.
+  PLUGIN_STATE_BACKOFF = 4;
+  // Down and not retried, e.g. after a protocol version mismatch, until the binary changes.
+  PLUGIN_STATE_FAILED = 5;
+}
+
+// The sandbox a local plugin runs in (PLAN section 12).
+message SandboxStatus {
+  // False if the instance runs with unsandboxed = true.
+  bool enabled = 1;
+  // Linux: the effective Landlock ABI.
+  optional uint32 landlock_abi = 2;
+  // Guarantees the effective sandbox lacks on this host, for the operator.
+  repeated string missing = 3;
+}
+
+message RestartPluginRequest {
+  // The instance name.
+  string instance = 1;
+}
+
+message RestartPluginResponse {}
+
+message ListSessionsRequest {
+  // Only this agent's sessions.
+  optional string agent = 1;
+  // Also list ended sessions.
+  bool include_ended = 2;
+}
+
+message ListSessionsResponse {
+  repeated Session sessions = 1;
+}
+
+// A session: one conversation's history with one agent (PLAN section 6.2).
+message Session {
+  // The session id, for ResetSession.
+  string id = 1;
+  // The agent.
+  string agent = 2;
+  // The channel instance. Unset for sessions without a conversation, e.g. isolated job runs.
+  optional string instance = 3;
+  // The conversation. Unset for sessions without a conversation.
+  giles.types.v1.ConversationRef conversation = 4;
+  // When the session started.
+  google.protobuf.Timestamp started_at = 5;
+  // When the session ended. Unset while it is active.
+  google.protobuf.Timestamp ended_at = 6;
+  // When its last message was stored.
+  google.protobuf.Timestamp last_message_at = 7;
+  // The number of messages in its transcript.
+  uint64 message_count = 8;
+}
+
+message ResetSessionRequest {
+  // The session id, from ListSessions.
+  string session_id = 1;
+}
+
+message ResetSessionResponse {}
+
+message CreateLoginLinkRequest {
+  // The user name.
+  string user = 1;
+}
+
+message CreateLoginLinkResponse {
+  // The one-time login URL.
+  string url = 1;
+  // When the link stops working.
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+message UsageReportRequest {
+  // Only requests at or after this time. Unset: from the first request.
+  google.protobuf.Timestamp since = 1;
+  // Only requests before this time. Unset: up to now.
+  google.protobuf.Timestamp until = 2;
+}
+
+message UsageReportResponse {
+  // One row per agent, provider instance, and model that made requests in the period.
+  repeated UsageRow rows = 1;
+}
+
+// Usage summed over the provider requests of one agent, provider instance, and model.
+message UsageRow {
+  // The agent.
+  string agent = 1;
+  // The provider instance.
+  string provider = 2;
+  // The model id.
+  string model = 3;
+  // The number of requests.
+  uint64 requests = 4;
+  // How many of them were fallbacks from another model (PLAN section 6.10).
+  uint64 fallback_requests = 5;
+  // The summed token counts. The prompt cache hit rate is cache_read_tokens divided by all input
+  // tokens (input, cache read, and cache write).
+  giles.types.v1.Usage usage = 6;
+}
+
+message BackupRequest {
+  // An absolute path to an existing directory to write the backup into.
+  string dir = 1;
+}
+
+message BackupResponse {
+  // The absolute paths of the files written.
+  repeated string paths = 1;
+}

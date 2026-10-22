@@ -17,6 +17,7 @@
 - [Data Root](technical/data-root.md)
 - [Plugin Transport](technical/plugin-transport.md)
 - [Rendering Model Output](technical/rendering.md)
+- [gRPC Protocols](technical/protocols.md)
 
 # Design Background
 

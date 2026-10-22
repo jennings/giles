@@ -1,0 +1,224 @@
+// Shared message types. They mirror the giles-types crate (PLAN section 5); see
+// Docs/technical/protocols.md for the mapping and the conventions used here.
+syntax = "proto3";
+
+package giles.types.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// A reference to a blob: an attachment, image, or tool output. Bytes never travel inside
+// messages; they move with the blob RPCs of giles.plugin.v1 (PLAN section 8.3).
+message BlobRef {
+  // A plugin-local handle, or the core's SHA-256 id (64 lowercase hex digits).
+  string id = 1;
+  // The media type, e.g. "image/png" or "audio/ogg; codecs=opus".
+  string media_type = 2;
+  // The size in bytes.
+  uint64 size = 3;
+  // The file name, if the source had one, e.g. "voice.ogg".
+  optional string name = 4;
+}
+
+// One message in a session transcript.
+message Message {
+  // Who wrote it.
+  Role role = 1;
+  // The content, in order.
+  repeated Block content = 2;
+  // When and from whom; which model produced it.
+  MessageMeta meta = 3;
+}
+
+// The author of a message. The system prompt is assembled per turn and never stored, so it has no
+// role.
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  // A person, a job prompt, or tool results returned to the model.
+  ROLE_USER = 1;
+  // The model.
+  ROLE_ASSISTANT = 2;
+}
+
+// Metadata of a message.
+message MessageMeta {
+  // The provider instance that produced an assistant message. Unset on user messages.
+  optional string provider = 1;
+  // The model id that produced an assistant message. Unset on user messages.
+  optional string model = 2;
+  // Token usage of the request that produced an assistant message.
+  Usage usage = 3;
+  // When the message was sent (user) or completed (assistant). Always set.
+  google.protobuf.Timestamp at = 4;
+  // The user who sent a user message.
+  optional string sender = 5;
+}
+
+// One content block of a message. Exactly one variant is set; a receiver that finds none set (a
+// variant added in a newer version) treats the block as unknown.
+message Block {
+  oneof block {
+    TextBlock text = 1;
+    ImageBlock image = 2;
+    AudioBlock audio = 3;
+    DocumentBlock document = 4;
+    ToolUseBlock tool_use = 5;
+    ToolResultBlock tool_result = 6;
+    ReasoningBlock reasoning = 7;
+    // A provider-private block (server-side tool blocks, citations) that must be sent back
+    // unchanged.
+    Opaque opaque = 8;
+  }
+}
+
+// Markdown text.
+message TextBlock {
+  // The text.
+  string text = 1;
+}
+
+// An image attachment.
+message ImageBlock {
+  // The image. Always set.
+  BlobRef media = 1;
+}
+
+// An audio attachment.
+message AudioBlock {
+  // The audio. Always set.
+  BlobRef media = 1;
+}
+
+// A document attachment, e.g. a PDF.
+message DocumentBlock {
+  // The document. Always set.
+  BlobRef media = 1;
+  // The title given to the model, if any.
+  optional string name = 2;
+}
+
+// The model asks to call a tool.
+message ToolUseBlock {
+  // The provider-assigned call id; the matching tool result refers to it.
+  string id = 1;
+  // The tool name, with its instance prefix (PLAN section 6.5).
+  string name = 2;
+  // The tool input: a JSON object, as JSON text.
+  string input_json = 3;
+}
+
+// The result of a tool use.
+message ToolResultBlock {
+  // The id of the tool use this answers.
+  string tool_use_id = 1;
+  // The result content: text, images, audio, documents.
+  repeated Block content = 2;
+  // Whether the call failed.
+  bool is_error = 3;
+}
+
+// The model's reasoning. Either part may be missing.
+message ReasoningBlock {
+  // Readable reasoning text or summary.
+  optional string text = 1;
+  // Provider data that must go back unchanged, e.g. an Anthropic thinking signature.
+  Opaque opaque = 2;
+}
+
+// Provider data that is stored but never interpreted.
+message Opaque {
+  // The API family that produced the data, e.g. "anthropic".
+  string api = 1;
+  // The data as JSON text, any JSON value. Text, not google.protobuf.Struct: Struct holds only
+  // objects and turns every number into a double, and this data must round-trip exactly.
+  string data_json = 2;
+}
+
+// The variant of a block, without its content.
+enum BlockKind {
+  BLOCK_KIND_UNSPECIFIED = 0;
+  BLOCK_KIND_TEXT = 1;
+  BLOCK_KIND_IMAGE = 2;
+  BLOCK_KIND_AUDIO = 3;
+  BLOCK_KIND_DOCUMENT = 4;
+  BLOCK_KIND_TOOL_USE = 5;
+  BLOCK_KIND_TOOL_RESULT = 6;
+  BLOCK_KIND_REASONING = 7;
+  BLOCK_KIND_OPAQUE = 8;
+}
+
+// Token counts for one provider request. Counts the provider doesn't report are zero.
+message Usage {
+  // Input tokens that were neither read from nor written to the prompt cache.
+  uint64 input_tokens = 1;
+  // Output tokens, including reasoning.
+  uint64 output_tokens = 2;
+  // Input tokens read from the prompt cache.
+  uint64 cache_read_tokens = 3;
+  // Input tokens written to the prompt cache.
+  uint64 cache_write_tokens = 4;
+}
+
+// Why the model stopped generating.
+enum StopReason {
+  STOP_REASON_UNSPECIFIED = 0;
+  // The model finished its turn.
+  STOP_REASON_END_TURN = 1;
+  // The model wants the results of the tool uses it produced.
+  STOP_REASON_TOOL_USE = 2;
+  // The output hit the token limit.
+  STOP_REASON_MAX_TOKENS = 3;
+  // The model declined to answer.
+  STOP_REASON_REFUSAL = 4;
+}
+
+// A tool offered to the model.
+message ToolSpec {
+  // The tool name.
+  string name = 1;
+  // What the tool does, for the model.
+  string description = 2;
+  // The JSON Schema of the tool input, an object schema, as JSON text.
+  string input_schema_json = 3;
+}
+
+// Generation settings for one request. An unset field leaves the setting to the provider or
+// model default.
+message GenerationParams {
+  // The maximum number of output tokens.
+  optional uint32 max_tokens = 1;
+  // Sampling temperature.
+  optional float temperature = 2;
+  // Token budget for reasoning. Unset turns reasoning off where the API allows.
+  optional uint32 reasoning_budget = 3;
+  // How long the provider should keep the prompt prefix cached (PLAN section 6.7).
+  CacheRetention cache_retention = 4;
+}
+
+// How long a prompt cache entry should live.
+enum CacheRetention {
+  // The default: same as CACHE_RETENTION_SHORT.
+  CACHE_RETENTION_UNSPECIFIED = 0;
+  // The provider's short default (5 minutes on Anthropic); for job runs.
+  CACHE_RETENTION_SHORT = 1;
+  // A longer lifetime (1 hour on Anthropic); for human-paced sessions.
+  CACHE_RETENTION_LONG = 2;
+}
+
+// A conversation on a channel.
+message ConversationRef {
+  // The channel's id for the conversation.
+  string id = 1;
+  // Direct or group.
+  ConversationKind kind = 2;
+  // A display title, e.g. a group name or an email subject.
+  optional string title = 3;
+}
+
+// Whether a conversation is one-to-one.
+enum ConversationKind {
+  CONVERSATION_KIND_UNSPECIFIED = 0;
+  // Between the agent and one person.
+  CONVERSATION_KIND_DIRECT = 1;
+  // Several people.
+  CONVERSATION_KIND_GROUP = 2;
+}

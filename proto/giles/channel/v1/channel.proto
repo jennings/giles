@@ -1,0 +1,144 @@
+// Channel plugins (PLAN section 8.5).
+syntax = "proto3";
+
+package giles.channel.v1;
+
+import "giles/types/v1/types.proto";
+import "google/protobuf/timestamp.proto";
+
+service ChannelService {
+  // Bidirectional and at least once: the plugin sends events, the core acks each one after
+  // storing it. The plugin keeps unacked events and sends them again when Events is reopened.
+  rpc Events(stream EventsRequest) returns (stream EventsResponse);
+  // Sends a message. Fails with UNAVAILABLE if the recipient can't be reached right now.
+  rpc Send(SendRequest) returns (SendResponse);
+}
+
+// What a channel plugin can do, reported in Describe.
+message ChannelCapabilities {
+  // 2, 3: message edits and webhooks, deferred.
+  reserved 2, 3;
+
+  // How the channel wants assistant output delivered.
+  OutputMode output = 1;
+  // Whether the channel can start a conversation with an identity (SendRequest.recipient).
+  bool can_initiate = 4;
+}
+
+// How a channel receives assistant output (PLAN section 6.9).
+enum OutputMode {
+  OUTPUT_MODE_UNSPECIFIED = 0;
+  // The channel streams live output.
+  OUTPUT_MODE_DELTAS = 1;
+  // The core sends whole chunks, flushed at paragraph boundaries.
+  OUTPUT_MODE_BLOCKS = 2;
+}
+
+// Core to plugin, on the Events stream.
+message EventsRequest {
+  oneof request {
+    EventAck ack = 1;
+  }
+}
+
+// The core has stored an event; the plugin may forget it.
+message EventAck {
+  // The acked event's id.
+  string event_id = 1;
+}
+
+// Plugin to core, on the Events stream.
+message EventsResponse {
+  ChannelEvent event = 1;
+}
+
+// An inbound event. The core acks an event whose variant it doesn't know (none set) and ignores
+// it, so the plugin doesn't send it again forever.
+message ChannelEvent {
+  // Unique within the instance, and stable across restarts of the source where possible, e.g.
+  // the WhatsApp message id or UIDVALIDITY:UID for email. The core deduplicates on it.
+  string event_id = 1;
+  oneof event {
+    InboundMessage message = 2;
+    ChannelStatus status = 3;
+  }
+}
+
+// A message the channel received.
+message InboundMessage {
+  // Where it was sent. Always set.
+  giles.types.v1.ConversationRef conversation = 1;
+  // Who sent it: the canonical native identifier (PLAN section 3.3).
+  string sender = 2;
+  // The sender's display name, if the channel has one.
+  optional string sender_display_name = 3;
+  // The text, as the sender wrote it.
+  string text = 4;
+  // Attachments, as the plugin's blob handles.
+  repeated giles.types.v1.BlobRef attachments = 5;
+  // The message this one replies to.
+  optional string reply_to = 6;
+  // When the sender sent it, if the channel knows.
+  google.protobuf.Timestamp sent_at = 7;
+  // Whether the channel verified that the sender sent it. If false, the core drops the message.
+  bool sender_authenticated = 8;
+  // Other ids for the same sender, e.g. a WhatsApp LID.
+  repeated string sender_aliases = 9;
+  // The message's own id, usable as a reply_to target. It may differ from the event id.
+  optional string message_id = 10;
+}
+
+// A channel's connection state. Shown in giles status, ListPlugins, and the admin pages.
+message ChannelStatus {
+  oneof state {
+    // Connected and working.
+    Connected connected = 1;
+    // The operator must link or log in the channel.
+    NeedsAuth needs_auth = 2;
+    // Not working: what's wrong, for the operator.
+    string error = 3;
+  }
+}
+
+// Connected and working.
+message Connected {}
+
+// The operator must link or log in the channel, e.g. by scanning a QR code.
+message NeedsAuth {
+  // What the operator must do.
+  oneof challenge {
+    // Scan a QR code with this payload.
+    string qr_code = 1;
+    // Enter this code on the device.
+    string pair_code = 2;
+    // Open this URL.
+    string url = 3;
+  }
+  // When the challenge stops working, if it expires.
+  google.protobuf.Timestamp expires_at = 4;
+}
+
+message SendRequest {
+  // 5: editing a sent message, deferred.
+  reserved 5;
+
+  // Where to send it.
+  oneof target {
+    // Reply into an existing conversation.
+    string conversation_id = 1;
+    // A native identifier, to start or continue a direct conversation. Needs
+    // ChannelCapabilities.can_initiate.
+    string recipient = 6;
+  }
+  // The text, as CommonMark; the channel renders it.
+  string markdown = 2;
+  // Attachments, as handles from PutBlob.
+  repeated giles.types.v1.BlobRef attachments = 3;
+  // The message this one replies to.
+  optional string reply_to = 4;
+}
+
+message SendResponse {
+  // The sent message's id on the channel.
+  string message_id = 1;
+}

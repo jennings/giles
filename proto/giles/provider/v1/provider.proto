@@ -1,0 +1,14 @@
+// Provider plugins (PLAN section 8.4). Only the capabilities that giles.plugin.v1.DescribeResponse
+// refers to are defined for now: provider plugins are deferred, and ProviderService is added here,
+// additively, when they are built.
+syntax = "proto3";
+
+package giles.provider.v1;
+
+// What a provider plugin can do, reported in Describe.
+message ProviderCapabilities {
+  // Media types its models accept as input blocks, e.g. "image/png" or "application/pdf".
+  repeated string media_types = 1;
+  // Whether its models can produce reasoning blocks.
+  bool reasoning = 2;
+}

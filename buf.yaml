@@ -1,0 +1,11 @@
+# Protobuf checks for the gRPC contracts (Docs/technical/protocols.md). Run from the repository
+# root: `buf lint`, `buf format --diff --exit-code`, and `buf breaking --against <base>`.
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - FILE
