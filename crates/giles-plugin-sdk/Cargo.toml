@@ -1,0 +1,18 @@
+[package]
+name = "giles-plugin-sdk"
+description = "Serve a Giles provider or channel implementation as an out-of-process gRPC plugin."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords = ["giles", "plugin", "grpc", "agent", "llm"]
+categories = ["api-bindings", "network-programming"]
+
+[dependencies]
+giles-proto.workspace = true
+giles-types.workspace = true
+
+[lints]
+workspace = true

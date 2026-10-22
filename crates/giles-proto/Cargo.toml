@@ -1,0 +1,12 @@
+[package]
+name = "giles-proto"
+description = "Generated gRPC code for the Giles plugin and admin protocols."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

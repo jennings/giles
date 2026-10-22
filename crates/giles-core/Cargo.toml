@@ -1,0 +1,18 @@
+[package]
+name = "giles-core"
+description = "Giles orchestration: agent loop, routing, sessions, scheduling, and plugin supervision."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+giles-proto.workspace = true
+giles-store.workspace = true
+giles-types.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "giles-types"
+description = "Domain types and component traits shared by Giles and its plugins."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

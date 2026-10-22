@@ -1,0 +1,16 @@
+[package]
+name = "giles-store"
+description = "SQLite and file storage for the Giles core."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+giles-types.workspace = true
+
+[lints]
+workspace = true

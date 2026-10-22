@@ -34,7 +34,7 @@ Answered by the owner before the build started:
 
 Sequential, except 0.2 and 0.3, which can run in parallel after 0.1.
 
-- [ ] **0.1 Cargo workspace** (§13.1, §14.1). Skeleton crates `giles` (bin), `giles-core`,
+- [x] **0.1 Cargo workspace** (§13.1, §14.1). Skeleton crates `giles` (bin), `giles-core`,
   `giles-types`, `giles-proto`, `giles-plugin-sdk`, `giles-store`. Edition 2024,
   `rust-toolchain.toml` pinned to a stable release, `Cargo.lock` committed, shared workspace
   dependencies and lints, `.gitignore`.

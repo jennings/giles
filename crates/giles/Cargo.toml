@@ -1,0 +1,16 @@
+[package]
+name = "giles"
+description = "The Giles daemon binary and its command-line interface."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+giles-core.workspace = true
+
+[lints]
+workspace = true
