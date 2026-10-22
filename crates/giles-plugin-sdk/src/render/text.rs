@@ -6,6 +6,7 @@ use std::mem;
 
 use pulldown_cmark::{Alignment, Event, HeadingLevel, LinkType, Tag, TagEnd};
 
+use super::irc::{IRC_BOLD, IRC_ITALIC};
 use super::strip_controls;
 
 /// Renders CommonMark as readable plain text, for the text part of email.
@@ -26,6 +27,8 @@ pub fn plain_text(markdown: &str) -> String {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Flavor {
     Plain,
+    /// IRC formatting codes; split into messages by `super::irc`.
+    Irc,
 }
 
 /// Renders `markdown` in `flavor`, with lines separated by `\n` and no trailing newline.
@@ -189,7 +192,10 @@ impl Writer {
             }
             Tag::Heading { .. } => {
                 self.block();
-                self.captures.push(String::new());
+                match self.flavor {
+                    Flavor::Plain => self.captures.push(String::new()),
+                    Flavor::Irc => self.style(Style::Strong, true),
+                }
             }
             Tag::BlockQuote(_) => {
                 self.block();
@@ -202,9 +208,13 @@ impl Writer {
             Tag::CodeBlock(_) => {
                 self.block();
                 self.in_code_block = true;
+                let indent = match self.flavor {
+                    Flavor::Plain => "    ",
+                    Flavor::Irc => "",
+                };
                 self.containers.push(Container {
                     first: None,
-                    rest: "    ".to_owned(),
+                    rest: indent.to_owned(),
                     item: false,
                 });
             }
@@ -280,10 +290,16 @@ impl Writer {
     fn end(&mut self, tag: TagEnd) {
         match tag {
             TagEnd::Paragraph | TagEnd::HtmlBlock => self.end_line(),
-            TagEnd::Heading(level) => {
-                let text = self.captures.pop().unwrap_or_default();
-                self.heading(level, &text);
-            }
+            TagEnd::Heading(level) => match self.flavor {
+                Flavor::Plain => {
+                    let text = self.captures.pop().unwrap_or_default();
+                    self.heading(level, &text);
+                }
+                Flavor::Irc => {
+                    self.style(Style::Strong, false);
+                    self.end_line();
+                }
+            },
             TagEnd::BlockQuote(_) => {
                 self.end_line();
                 self.containers.pop();
@@ -345,6 +361,14 @@ impl Writer {
     }
 
     fn write_table(&mut self, alignments: &[Alignment], rows: &[Vec<String>]) {
+        if self.flavor != Flavor::Plain {
+            // Chat clients use proportional fonts, so padding wouldn't align anything.
+            for row in rows {
+                self.inline(&row.join(" | "));
+                self.end_line();
+            }
+            return;
+        }
         let columns = rows.iter().map(Vec::len).max().unwrap_or_default();
         let mut widths = vec![1; columns];
         for row in rows {
@@ -382,7 +406,9 @@ impl Writer {
             let marker = match (self.flavor, style) {
                 (Flavor::Plain, Style::Strong) => "*",
                 (Flavor::Plain, Style::Emphasis) => "_",
-                (Flavor::Plain, Style::Strikethrough) => "~~",
+                (Flavor::Plain | Flavor::Irc, Style::Strikethrough) => "~~",
+                (Flavor::Irc, Style::Strong) => IRC_BOLD,
+                (Flavor::Irc, Style::Emphasis) => IRC_ITALIC,
             };
             self.inline(marker);
         }
@@ -417,7 +443,7 @@ impl Writer {
     /// Escapes prose for the flavor: drops control characters.
     fn escape<'a>(&self, text: &'a str) -> Cow<'a, str> {
         match self.flavor {
-            Flavor::Plain => strip_controls(text),
+            Flavor::Plain | Flavor::Irc => strip_controls(text),
         }
     }
 
@@ -477,9 +503,19 @@ impl Writer {
             .is_some_and(|c| c.item && c.first.is_some())
     }
 
+    /// The separation between blocks: a blank line, except on IRC, where it would only be
+    /// dropped (an IRC message can't be empty) or show as a bare quote prefix.
     fn blank(&self) -> Sep {
+        match self.flavor {
+            Flavor::Irc => Sep::Line,
+            Flavor::Plain => Sep::Blank(self.blank_prefix()),
+        }
+    }
+
+    /// What an empty line inside the current containers holds: the quote prefixes.
+    fn blank_prefix(&self) -> String {
         let prefix: String = self.containers.iter().map(|c| c.rest.as_str()).collect();
-        Sep::Blank(prefix.trim_end().to_owned())
+        prefix.trim_end().to_owned()
     }
 
     /// Raises the pending separation to at least `sep`.
@@ -532,9 +568,7 @@ impl Writer {
     /// Writes an empty line inside a block, carrying only the quote prefixes.
     fn empty_line(&mut self) {
         self.flush_pending();
-        let Sep::Blank(prefix) = self.blank() else {
-            return;
-        };
+        let prefix = self.blank_prefix();
         self.out.push_str(&prefix);
         self.started = true;
         self.pending = Sep::Line;

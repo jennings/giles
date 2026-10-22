@@ -5,9 +5,11 @@
 //! Control characters other than tab and newline never reach the output.
 
 mod html;
+mod irc;
 mod text;
 
 pub use html::{html, is_local_image};
+pub use irc::irc;
 pub use text::plain_text;
 
 use std::borrow::Cow;

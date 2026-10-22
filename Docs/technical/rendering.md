@@ -5,11 +5,12 @@ Each channel turns it into its own format. The renderers live in `giles_plugin_s
 built-in web channel and the Rust channel plugins share one implementation (§10). They are built on
 `pulldown-cmark`.
 
-| Function                      | Used by                | Output                                    |
-| ----------------------------- | ---------------------- | ----------------------------------------- |
-| `html(markdown, allow_image)` | Web, email (HTML part) | Sanitized HTML fragment                   |
-| `is_local_image(url)`         | Web (as `allow_image`) | Whether an image URL loads nothing remote |
-| `plain_text(markdown)`        | Email (text part)      | Readable plain text                       |
+| Function                        | Used by                | Output                                    |
+| ------------------------------- | ---------------------- | ----------------------------------------- |
+| `html(markdown, allow_image)`   | Web, email (HTML part) | Sanitized HTML fragment                   |
+| `is_local_image(url)`           | Web (as `allow_image`) | Whether an image URL loads nothing remote |
+| `plain_text(markdown)`          | Email (text part)      | Readable plain text                       |
+| `irc(markdown, max_line_bytes)` | IRC                    | Message lines with IRC formatting codes   |
 
 ## Shared Rules
 
@@ -76,9 +77,10 @@ remote, protocol-relative, reference-style, and linked images.
 
 ## Text Layout
 
-The plain-text, IRC, and WhatsApp renderers share one layout:
+The text renderers share one layout:
 
-- Blocks (paragraphs, headings, code blocks, lists, quotes, tables) are separated by a blank line.
+- Blocks (paragraphs, headings, code blocks, lists, quotes, tables) are separated by a blank line
+  (on IRC, just a line break).
   Soft line breaks stay line breaks: in chat and plain-text mail, a line break the model wrote is
   more often meant than not.
 - Lists use `-` and `1.` markers followed by a space (an ordered list keeps its start number); an
@@ -103,3 +105,44 @@ The plain-text, IRC, and WhatsApp renderers share one layout:
 - Code blocks keep their text verbatim, indented by four spaces.
 - Tables are aligned columns separated by ` | `, with a `-` rule under the header row. Widths count
   characters, so wide (CJK, emoji) and combining characters misalign columns slightly.
+
+## IRC
+
+`irc(markdown, max_line_bytes)` returns the lines to send, one `PRIVMSG` each:
+
+- Strong text and headings are bold (`\x02`), emphasis is italic (`\x1d`). Both are toggles, and a
+  style nested in itself (bold inside a heading) writes no second toggle, which would end it.
+  Strikethrough stays `~~text~~` and inline code `` `code` ``: the strikethrough (`\x1e`) and
+  monospace (`\x11`) codes are not widely supported.
+- Code blocks are plain lines, indentation kept, with no formatting inside.
+- There are no blank lines between blocks, and empty lines are dropped: IRC can't send an empty
+  message.
+- Every control character in the input is dropped, including the formatting codes (`\x02`, `\x03`
+  colors, `\x0f`, `\x16`, `\x1d`, ...) and CTCP's `\x01`, so the model can't color text or send a
+  CTCP request (`\x01ACTION`). The renderer's own codes are the only ones in the output.
+
+### Line splitting
+
+An IRC line is at most 512 bytes, including the source prefix the server adds when relaying, the
+command and target, and the CRLF. The caller knows its target and nick, so `max_line_bytes` is a
+parameter: the bytes left for the text of one message.
+
+```text
+max_line_bytes = 512 - 2 - len("PRIVMSG <target> :") - len(":<nick>!<user>@<host> ")
+```
+
+The relayed `<user>@<host>` is what other clients see, which may be a cloak and isn't always
+known to the plugin. When it isn't, assume a long host (63 bytes, the usual server `HOSTLEN`), so
+a message is split a little early rather than truncated by the server.
+
+- A line longer than the limit is split at the last space that fits, or at the last UTF-8
+  character boundary that fits when there is no space. The space at a split is dropped, along with
+  any formatting codes next to it (they only change what the next line reopens); a line's leading
+  indentation is kept. Splits are not grapheme-aware, so a combining sequence or an emoji with
+  modifiers can be cut between its code points.
+- IRC clients reset formatting at the end of each message, so a line that starts inside a bold or
+  italic span begins with the codes that reopen it. `\x0f` (reset) is never emitted: closing a
+  style toggles its own code, and the end of the message resets the rest.
+- Every line fits the limit, reopening codes included, unless the limit is below 4 bytes and a
+  single character can't fit; then that character is sent alone. When the reopening codes and the
+  next character don't fit together, the codes are left out.
