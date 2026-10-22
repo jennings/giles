@@ -1,3 +1,7 @@
 [MD013]
 line-length = 100
 reflow = true
+
+# mdBook part titles in SUMMARY.md are level-1 headings.
+[per-file-ignores]
+"Docs/SUMMARY.md" = ["MD025"]

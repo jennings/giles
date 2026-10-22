@@ -1,0 +1,15 @@
+[book]
+title = "Giles"
+authors = ["Stephen Jennings"]
+language = "en"
+# The book's source is the whole `Docs/` directory, so `IDEA.md` and `PLAN.md` are pages in place.
+src = "."
+
+[build]
+# Relative to this file, so the output lands in `Docs/book/` (git-ignored).
+build-dir = "book"
+# A SUMMARY.md entry without a file is a mistake, not a request for an empty page.
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/jennings/giles"

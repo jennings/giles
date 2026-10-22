@@ -40,7 +40,7 @@ Sequential, except 0.2 and 0.3, which can run in parallel after 0.1.
   dependencies and lints, `.gitignore`.
 - [ ] **0.2 CI.** `cargo fmt --check`, `cargo clippy` (warnings denied), `cargo test --workspace`,
   `rumdl` Markdown lint, `mdbook build`. (`buf` checks are added in 1.4.)
-- [ ] **0.3 mdBook skeleton.** `Docs/book.toml` and `SUMMARY.md` with a User Guide and a Technical
+- [x] **0.3 mdBook skeleton.** `Docs/book.toml` and `SUMMARY.md` with a User Guide and a Technical
   section; `IDEA.md` and `PLAN.md` linked as design background.
 - [ ] **0.4 `giles` binary skeleton** (§11.1). `clap` CLI with `serve`, `tracing` subscriber,
   `anyhow`, `GILES_HOME` resolution (default `~/.giles`), creation of the data root layout, the
