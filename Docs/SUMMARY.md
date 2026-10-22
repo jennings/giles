@@ -12,6 +12,7 @@
 - [Cargo Workspace](technical/workspace.md)
 - [Continuous Integration](technical/ci.md)
 - [Message Model and Traits](technical/message-model.md)
+- [Data Root](technical/data-root.md)
 
 # Design Background
 
