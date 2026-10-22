@@ -1,9 +1,9 @@
-//! End-to-end tests of `giles serve`: data root resolution and layout, and clean shutdown on
-//! signals. Every test points `HOME` and `TMPDIR` into a temporary directory.
+//! End-to-end tests of `giles serve`: data root resolution and layout, configuration loading, and
+//! clean shutdown on signals. Every test points `HOME` and `TMPDIR` into a temporary directory.
 
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -148,10 +148,24 @@ fn assert_layout(root: &Path) {
     assert_eq!(mode(&root.join("run")), 0o700);
 }
 
+/// The smallest valid `giles.toml`.
+const MINIMAL_CONFIG: &str = "[owner]\nidentities = [\"web:owner\"]\n";
+
+/// Creates the data root `root` (mode 0700, as `giles serve` would) holding `giles_toml`.
+fn write_config(root: &Path, giles_toml: &str) {
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(root)
+        .unwrap();
+    fs::write(root.join("giles.toml"), giles_toml).unwrap();
+}
+
 #[test]
 fn sigterm_stops_cleanly_and_home_flag_beats_giles_home() {
     let env = Env::new();
     let home = env.path("flag-home");
+    write_config(&home, MINIMAL_CONFIG);
     let mut cmd = env.command(&["serve", "--home", home.to_str().unwrap()]);
     cmd.env("GILES_HOME", env.path("env-home"));
 
@@ -175,6 +189,7 @@ fn sigterm_stops_cleanly_and_home_flag_beats_giles_home() {
 #[test]
 fn sigint_stops_cleanly_and_giles_home_beats_home() {
     let env = Env::new();
+    write_config(&env.path("env-home"), MINIMAL_CONFIG);
     let mut cmd = env.command(&["serve"]);
     cmd.env("GILES_HOME", env.path("env-home"));
 
@@ -188,6 +203,7 @@ fn sigint_stops_cleanly_and_giles_home_beats_home() {
 #[test]
 fn default_root_is_dot_giles_in_home() {
     let env = Env::new();
+    write_config(&env.home().join(".giles"), MINIMAL_CONFIG);
     let (status, log) = Daemon::start(env.command(&["serve"])).stop("TERM");
     assert!(status.success(), "{status}\n{log}");
     assert_layout(&env.home().join(".giles"));
@@ -197,6 +213,7 @@ fn default_root_is_dot_giles_in_home() {
 fn long_root_puts_sockets_in_tmpdir() {
     let env = Env::new();
     let home = env.path(&"h".repeat(120));
+    write_config(&home, MINIMAL_CONFIG);
     let cmd = env.command(&["serve", "--home", home.to_str().unwrap()]);
 
     let (status, log) = Daemon::start(cmd).stop("TERM");
@@ -227,4 +244,43 @@ fn missing_home_is_a_clear_error() {
         stderr.contains("neither GILES_HOME nor HOME is set"),
         "{stderr}"
     );
+}
+
+#[test]
+fn missing_config_creates_the_layout_then_fails() {
+    let env = Env::new();
+    let home = env.path("home");
+    let output = env
+        .command(&["serve", "--home", home.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let file = home.join("giles.toml");
+    assert!(
+        stderr.contains(&format!("{}: not found", file.display())),
+        "{stderr}"
+    );
+    assert_layout(&home);
+}
+
+#[test]
+fn invalid_config_fails_with_the_file_and_key() {
+    let env = Env::new();
+    let home = env.path("home");
+    write_config(
+        &home,
+        "[owner]\nidentities = [\"web:owner\"]\nnmae = \"me\"\n",
+    );
+    let output = env
+        .command(&["serve", "--home", home.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let expected = format!(
+        "{}:3:1: owner.nmae: unknown field `nmae`",
+        home.join("giles.toml").display()
+    );
+    assert!(stderr.contains(&expected), "{stderr}");
 }

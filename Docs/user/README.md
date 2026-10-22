@@ -11,6 +11,6 @@ email thread, an IRC query, a web chat) is its own session with its own history.
 All of Giles' state lives under one data directory, `GILES_HOME` (default `~/.giles`): the config
 files, agent directories, the SQLite database, and blobs.
 
-Giles can be installed and started ([Installing and Running](running.md)), but it does nothing else
-yet. Chapters on configuring and operating it are added here as those features are built; until
-then, [Idea](../IDEA.md) describes the intended behavior.
+Giles can be installed and started ([Installing and Running](running.md)) and reads its
+[Configuration](configuration.md), but it does nothing else yet. Chapters on operating it are added
+here as those features are built; until then, [Idea](../IDEA.md) describes the intended behavior.

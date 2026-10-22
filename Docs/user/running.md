@@ -22,9 +22,18 @@ giles serve
 ```
 
 `giles serve` runs in the foreground and logs to standard error. On first start it creates the data
-root (below). It runs until it receives SIGINT (Ctrl-C) or SIGTERM, then shuts down and exits with
-status 0. If shutdown takes too long, a second Ctrl-C or SIGTERM makes it exit at once with status
-130. Any other non-zero status means it failed to start; the error is printed on standard error.
+root (below). It then reads `giles.toml` and every `agents/<agent>/agent.toml`
+([Configuration](configuration.md)) and refuses to start if they're missing or invalid; the
+smallest valid `giles.toml` declares the owner:
+
+```toml
+[owner]
+identities = ["web:owner"]
+```
+
+It runs until it receives SIGINT (Ctrl-C) or SIGTERM, then shuts down and exits with status 0. If
+shutdown takes too long, a second Ctrl-C or SIGTERM makes it exit at once with status 130. Any other
+non-zero status means it failed to start; the error is printed on standard error.
 
 ## The Data Root
 

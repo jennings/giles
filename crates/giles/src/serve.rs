@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use anyhow::Context;
+use giles_core::config::Config;
 use giles_core::paths::DataRoot;
 use giles_core::sandbox;
 use tokio_util::sync::CancellationToken;
@@ -11,18 +12,20 @@ use tracing::{info, warn};
 use crate::cli::ServeArgs;
 use crate::shutdown;
 
-/// Resolves and creates the data root, then runs the daemon until SIGINT or SIGTERM.
+/// Resolves and creates the data root, loads the configuration, then runs the daemon until SIGINT
+/// or SIGTERM. An invalid configuration fails before anything starts.
 pub fn run(home: Option<&Path>, _args: &ServeArgs) -> anyhow::Result<()> {
     let root = DataRoot::from_env(home)?;
     root.create_layout()?;
+    let config = Config::load(&root)?;
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("cannot start the async runtime")?
-        .block_on(serve(root))
+        .block_on(serve(root, config))
 }
 
-async fn serve(root: DataRoot) -> anyhow::Result<()> {
+async fn serve(root: DataRoot, config: Config) -> anyhow::Result<()> {
     let shutdown = CancellationToken::new();
     shutdown::cancel_on_signal(shutdown.clone()).context("cannot install signal handlers")?;
 
@@ -38,6 +41,10 @@ async fn serve(root: DataRoot) -> anyhow::Result<()> {
         version = env!("CARGO_PKG_VERSION"),
         root = %root.root().display(),
         admin_socket = %root.admin_socket().display(),
+        agents = config.agents.len(),
+        providers = config.providers.len(),
+        channels = config.channels.len(),
+        toolsets = config.toolsets.len(),
         "giles started",
     );
 

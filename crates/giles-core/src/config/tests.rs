@@ -1,0 +1,1016 @@
+//! Loading whole configurations from temporary data roots.
+
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use giles_types::ConversationKind;
+use tempfile::TempDir;
+
+use super::*;
+
+fn agent_id(name: &str) -> AgentId {
+    AgentId::new(name).unwrap()
+}
+
+/// The smallest valid `giles.toml`.
+const MINIMAL: &str = "[owner]\nidentities = [\"web:owner\"]\n";
+
+/// A temporary data root.
+struct Home {
+    dir: TempDir,
+    root: DataRoot,
+}
+
+impl Home {
+    fn new(giles_toml: &str) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let root = DataRoot::new(dir.path(), Path::new("/tmp")).unwrap();
+        let home = Self { dir, root };
+        home.write("giles.toml", giles_toml);
+        home
+    }
+
+    fn path(&self, relative: &str) -> PathBuf {
+        self.dir.path().join(relative)
+    }
+
+    fn write(&self, relative: &str, contents: &str) -> &Self {
+        let path = self.path(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+        self
+    }
+
+    fn agent(&self, name: &str, agent_toml: &str) -> &Self {
+        self.write(&format!("agents/{name}/agent.toml"), agent_toml)
+    }
+
+    fn load(&self) -> Result<Config, ConfigError> {
+        Config::load(&self.root)
+    }
+
+    fn load_ok(&self) -> Config {
+        self.load().unwrap_or_else(|e| panic!("{e}"))
+    }
+}
+
+/// Asserts that loading fails in `file` (relative to the root) at `key` with a reason containing
+/// `reason`.
+#[track_caller]
+fn assert_error(home: &Home, file: &str, key: &str, reason: &str) {
+    let err = home
+        .load()
+        .expect_err("the configuration should be invalid");
+    let shown = err.to_string();
+    assert_eq!(err.file, home.path(file), "{shown}");
+    assert_eq!(err.key.to_string(), key, "{shown}");
+    assert!(
+        err.reason.contains(reason),
+        "{shown}\nexpected reason: {reason}"
+    );
+    // The display starts with the file, and names the key.
+    assert!(
+        shown.starts_with(&home.path(file).display().to_string()),
+        "{shown}"
+    );
+    assert!(
+        shown.contains(&format!(": {key}: ")) || key.is_empty(),
+        "{shown}"
+    );
+}
+
+#[test]
+fn minimal_config_gets_defaults() {
+    let config = Home::new(MINIMAL).load_ok();
+    assert_eq!(config.core.http_listen, DEFAULT_HTTP_LISTEN);
+    assert_eq!(config.core.http_listen.to_string(), "127.0.0.1:8080");
+    assert_eq!(
+        config.owner.identities,
+        [Identity::new("web:owner").unwrap()]
+    );
+    assert_eq!(config.owner.default.as_str(), "web:owner");
+    assert!(config.owner.timezone.is_none());
+    assert!(config.providers.is_empty());
+    assert!(config.channels.is_empty());
+    assert!(config.toolsets.is_empty());
+    assert!(config.routes.is_empty());
+    assert!(config.agents.is_empty());
+}
+
+#[test]
+fn missing_giles_toml_is_an_error() {
+    let home = Home::new(MINIMAL);
+    std::fs::remove_file(home.path("giles.toml")).unwrap();
+    assert_error(&home, "giles.toml", "", "not found");
+}
+
+#[test]
+fn invalid_utf8_is_an_error_with_a_position() {
+    let home = Home::new(MINIMAL);
+    std::fs::write(
+        home.path("giles.toml"),
+        b"[owner]\nidentities = [\"\xff\"]\n",
+    )
+    .unwrap();
+    let err = home.load().unwrap_err();
+    assert!(err.reason.contains("UTF-8"), "{err}");
+    assert_eq!(
+        err.position,
+        Some(Position {
+            line: 2,
+            column: 16
+        })
+    );
+}
+
+#[test]
+fn syntax_errors_have_a_position() {
+    let home = Home::new("[owner]\nidentities = [\"web:owner\"\n");
+    let err = home.load().unwrap_err();
+    assert!(err.reason.starts_with("invalid TOML"), "{err}");
+    assert_eq!(err.position.map(|p| p.line), Some(2), "{err}");
+}
+
+#[test]
+fn type_errors_have_a_key_path_and_position() {
+    let home = Home::new(&format!("{MINIMAL}[core]\nhttp_listen = 8080\n"));
+    assert_error(&home, "giles.toml", "core.http_listen", "invalid type");
+    let err = home.load().unwrap_err();
+    assert_eq!(
+        err.position,
+        Some(Position {
+            line: 4,
+            column: 15
+        }),
+        "{err}"
+    );
+}
+
+#[test]
+fn errors_found_after_parsing_have_positions() {
+    let pos = |line, column| Some(Position { line, column });
+    // A key that's present: its position.
+    let home = Home::new(
+        "[owner]\nidentities = [\"a:b\", \"c:d\"]\n  default = \"e:f\"\n\n\
+         [[routes]]\nagent = \"jeeves\"\n",
+    );
+    let err = home.load().unwrap_err();
+    assert_eq!(err.key.to_string(), "owner.default");
+    assert_eq!(err.position, pos(3, 3), "{err}");
+    // An array item.
+    home.write("giles.toml", "[owner]\nidentities = [\"a:b\", \"a:b\"]\n");
+    let err = home.load().unwrap_err();
+    assert_eq!(err.position, pos(2, 22), "{err}");
+    // A missing key: the deepest part of its path that's there.
+    home.write("giles.toml", "[owner]\nidentities = [\"a:b\", \"c:d\"]\n");
+    let err = home.load().unwrap_err();
+    assert_eq!(err.key.to_string(), "owner.default");
+    assert_eq!(err.position, pos(1, 2), "{err}");
+    // Through arrays of tables.
+    home.write(
+        "giles.toml",
+        &format!("{MINIMAL}[[routes]]\nagent = \"x\"\n\n[[routes]]\n\nagent = \"y\"\n"),
+    );
+    let err = home.load().unwrap_err();
+    assert_eq!(err.key.to_string(), "routes[0].agent");
+    assert_eq!(err.position, pos(4, 1), "{err}");
+    // In agent.toml too.
+    let home = with_provider();
+    home.agent(
+        "jeeves",
+        "models = [\"anthropic/m\"]\n[[jobs]]\nid = \"j\"\ncron = \"0 8 * *\"\nprompt = \"p\"\n",
+    );
+    let err = home.load().unwrap_err();
+    assert_eq!(err.key.to_string(), "jobs[0].cron");
+    assert_eq!(err.position, pos(4, 1), "{err}");
+}
+
+#[test]
+fn owner_rules() {
+    let cases = [
+        ("", "owner", "missing"),
+        (
+            "[owner]\nidentities = []",
+            "owner.identities",
+            "at least one",
+        ),
+        (
+            "[owner]\nidentities = [\"whatsapp\"]",
+            "owner.identities[0]",
+            "<namespace>:<native id>",
+        ),
+        (
+            "[owner]\nidentities = [\"a:b\", \"a:b\"]",
+            "owner.identities[1]",
+            "listed twice",
+        ),
+        (
+            "[owner]\nidentities = [\"a:b\", \"c:d\"]",
+            "owner.default",
+            "missing",
+        ),
+        (
+            "[owner]\nidentities = [\"a:b\", \"c:d\"]\ndefault = \"e:f\"",
+            "owner.default",
+            "not one of",
+        ),
+        (
+            "[owner]\nidentities = [\"a:b\"]\ntimezone = \"PST\"",
+            "owner.timezone",
+            "unknown time zone",
+        ),
+        (
+            "[owner]\nidentities = [\"a:b\"]\nname = \"me\"",
+            "owner.name",
+            "unknown field `name`",
+        ),
+        (
+            "[owner]\nidentity = [\"a:b\"]",
+            "owner.identity",
+            "unknown field `identity`",
+        ),
+    ];
+    for (toml, key, reason) in cases {
+        assert_error(&Home::new(toml), "giles.toml", key, reason);
+    }
+
+    let config = Home::new(
+        "[owner]\nidentities = [\"whatsapp:+1555\", \"irc:libera.chat:account:me\"]\n\
+         default = \"irc:libera.chat:account:me\"\ntimezone = \"America/Los_Angeles\"",
+    )
+    .load_ok();
+    assert_eq!(config.owner.identities.len(), 2);
+    assert_eq!(config.owner.default.as_str(), "irc:libera.chat:account:me");
+    let tz = config.owner.timezone.unwrap();
+    assert_eq!(tz.iana_name(), Some("America/Los_Angeles"));
+}
+
+#[test]
+fn unknown_keys_are_rejected_everywhere_but_config_tables() {
+    let cases = [
+        ("[cores]\nx = 1", "cores", "unknown field `cores`"),
+        (
+            "[core]\nhttp = \"127.0.0.1:1\"",
+            "core.http",
+            "unknown field `http`",
+        ),
+        (
+            "[provider.anthropic]\napi_key = \"x\"",
+            "provider.anthropic.api_key",
+            "unknown field `api_key`",
+        ),
+        (
+            "[channel.irc]\nfoo = 1",
+            "channel.irc.foo",
+            "unknown field `foo`",
+        ),
+        (
+            "[toolset.files]\nconfig = {}",
+            "toolset.files.config",
+            "unknown field `config`",
+        ),
+        (
+            "[[routes]]\nagent = \"a\"\nuser = \"me\"",
+            "routes[0].user",
+            "unknown field `user`",
+        ),
+    ];
+    for (toml, key, reason) in cases {
+        let home = Home::new(&format!("{MINIMAL}{toml}\n"));
+        assert_error(&home, "giles.toml", key, reason);
+    }
+    // Anything goes inside `config`.
+    let home = Home::new(&format!(
+        "{MINIMAL}[channel.irc]\nconfig = {{ anything = {{ at = [\"all\", 1] }} }}\n"
+    ));
+    let config = home.load_ok();
+    let irc = &config.channels["irc"];
+    assert_eq!(irc.config.to_json()["anything"]["at"][1], 1);
+}
+
+#[test]
+fn instance_names_and_components() {
+    let cases = [
+        (
+            "[channel.irc_libera]",
+            "channel.irc_libera",
+            "letters, digits, and `-`",
+        ),
+        (
+            "[channel.\"a b\"]",
+            "channel.\"a b\"",
+            "letters, digits, and `-`",
+        ),
+        (
+            "[channel.irc]\ncomponent = \"irc.v2\"",
+            "channel.irc.component",
+            "invalid component name",
+        ),
+        (
+            "[provider.x]\ncomponent = \"\"",
+            "provider.x.component",
+            "invalid component name",
+        ),
+        (
+            "[provider.ollama]",
+            "provider.ollama.component",
+            "provider plugins are not supported",
+        ),
+        (
+            "[provider.web]\ncomponent = \"openai\"\n[channel.web]",
+            "channel.web",
+            "`[provider.web]` also uses \"web\"",
+        ),
+        (
+            "[channel.github]\n[toolset.github]\nurl = \"https://x\"",
+            "toolset.github",
+            "unique across kinds",
+        ),
+        (
+            "[channel.Libera]\ncomponent = \"irc\"\n[toolset.libera]\nurl = \"https://x\"",
+            "toolset.libera",
+            "`[channel.Libera]` also uses \"libera\"",
+        ),
+        (
+            "[channel.IRC]\n[channel.irc]",
+            "channel.irc",
+            "ignoring case",
+        ),
+    ];
+    for (toml, key, reason) in cases {
+        let home = Home::new(&format!("{MINIMAL}{toml}\n"));
+        assert_error(&home, "giles.toml", key, reason);
+    }
+}
+
+#[test]
+fn providers_are_built_in() {
+    let config = Home::new(&format!(
+        "{MINIMAL}[provider.anthropic]\n\
+         [provider.openrouter]\ncomponent = \"openai\"\n\
+         config = {{ base_url = \"https://openrouter.ai/api/v1\" }}\n"
+    ))
+    .load_ok();
+    let anthropic = &config.providers["anthropic"];
+    assert_eq!(anthropic.component, "anthropic");
+    assert_eq!(anthropic.config.to_json(), serde_json::json!({}));
+    let openrouter = &config.providers["openrouter"];
+    assert_eq!(openrouter.component, "openai");
+    assert_eq!(
+        openrouter.config.to_json()["base_url"],
+        "https://openrouter.ai/api/v1"
+    );
+
+    // With other built-ins, the same name is a plugin, which providers can't be yet.
+    let home = Home::new(&format!("{MINIMAL}[provider.anthropic]\n"));
+    let builtins = Builtins {
+        providers: &["openai"],
+        channels: &[],
+    };
+    let err = Config::load_with(&home.root, &builtins).unwrap_err();
+    assert_eq!(err.key.to_string(), "provider.anthropic.component");
+    assert!(err.reason.contains("built-in: openai"), "{err}");
+}
+
+#[test]
+fn channels() {
+    let config = Home::new(&format!(
+        "{MINIMAL}[channel.web]\n\
+         [channel.libera]\ncomponent = \"irc\"\nmax_blob = \"10 MiB\"\nunsandboxed = true\n\
+         config = {{ server = \"irc.libera.chat:6697\" }}\n\
+         [channel.irc]\n\
+         [channel.mail]\ncomponent = \"email\"\naddress = \"https://mail.example.com:7443\"\n\
+         [channel.local]\ncomponent = \"irc\"\naddress = \"http://127.0.0.1:7000\"\n\
+         [channel.lan]\ncomponent = \"irc\"\naddress = \"http://10.0.0.2:7000\"\ninsecure = true\n"
+    ))
+    .load_ok();
+
+    let web = &config.channels["web"];
+    assert_eq!(web.component, "web");
+    assert!(matches!(web.runtime, ChannelRuntime::BuiltIn));
+
+    let libera = &config.channels["libera"];
+    assert_eq!(libera.component, "irc");
+    assert_eq!(libera.max_blob, 10 << 20);
+    let ChannelRuntime::Plugin(launch) = &libera.runtime else {
+        panic!("{:?}", libera.runtime)
+    };
+    assert_eq!(launch.binary, "giles-channel-irc");
+    assert!(launch.sandbox.unsandboxed);
+
+    let irc = &config.channels["irc"];
+    assert_eq!(irc.max_blob, DEFAULT_MAX_BLOB);
+    let ChannelRuntime::Plugin(launch) = &irc.runtime else {
+        panic!("{:?}", irc.runtime)
+    };
+    assert_eq!(launch.binary, "giles-channel-irc");
+    assert!(!launch.sandbox.unsandboxed);
+
+    let mail = &config.channels["mail"];
+    assert_eq!(mail.component, "email");
+    let ChannelRuntime::Remote(remote) = &mail.runtime else {
+        panic!("{:?}", mail.runtime)
+    };
+    assert_eq!(remote.url.as_str(), "https://mail.example.com:7443/");
+    assert!(!remote.insecure);
+    assert!(matches!(
+        &config.channels["local"].runtime,
+        ChannelRuntime::Remote(_)
+    ));
+    let ChannelRuntime::Remote(lan) = &config.channels["lan"].runtime else {
+        panic!()
+    };
+    assert!(lan.insecure);
+}
+
+#[test]
+fn channel_rules() {
+    let cases = [
+        (
+            "[channel.web]\naddress = \"https://x\"",
+            "channel.web.address",
+            "built-in",
+        ),
+        (
+            "[channel.web]\nmax_blob = 1",
+            "channel.web.max_blob",
+            "built-in",
+        ),
+        (
+            "[channel.web]\nunsandboxed = true",
+            "channel.web.unsandboxed",
+            "built-in",
+        ),
+        (
+            "[channel.web]\ninsecure = true",
+            "channel.web.insecure",
+            "built-in",
+        ),
+        (
+            "[channel.irc]\ninsecure = true",
+            "channel.irc.insecure",
+            "without `address`",
+        ),
+        (
+            "[channel.irc]\naddress = \"https://x\"\nunsandboxed = true",
+            "channel.irc.unsandboxed",
+            "remote channel",
+        ),
+        (
+            "[channel.irc]\naddress = \"http://irc.example.com\"",
+            "channel.irc.address",
+            "insecure = true",
+        ),
+        (
+            "[channel.irc]\naddress = \"irc.example.com:7000\"",
+            "channel.irc.address",
+            "http or https",
+        ),
+        (
+            "[channel.irc]\nmax_blob = 0",
+            "channel.irc.max_blob",
+            "more than 0",
+        ),
+        (
+            "[channel.irc]\nmax_blob = \"50MB\"",
+            "channel.irc.max_blob",
+            "invalid size",
+        ),
+        (
+            "[channel.irc]\nmax_blob = -5",
+            "channel.irc.max_blob",
+            "negative",
+        ),
+        (
+            "[channel.irc]\nconfig = { x = nan }",
+            "channel.irc.config.x",
+            "NaN",
+        ),
+        (
+            "[channel.irc]\nconfig = 5",
+            "channel.irc.config",
+            "invalid type",
+        ),
+    ];
+    for (toml, key, reason) in cases {
+        let home = Home::new(&format!("{MINIMAL}{toml}\n"));
+        assert_error(&home, "giles.toml", key, reason);
+    }
+}
+
+#[test]
+fn toolsets() {
+    let config = Home::new(&format!(
+        "{MINIMAL}[toolset.github]\nurl = \"https://api.githubcopilot.com/mcp/\"\n\
+         deadline = \"2m\"\nparallel = true\n\
+         [toolset.files]\ncommand = \"/opt/homebrew/bin/mcp-server-filesystem\"\n\
+         args = [\"/Users/me/Documents\"]\nidle_stop = \"30m\"\nskills = [\"/opt/skills\"]\n\
+         [toolset.fetch]\ncommand = \"uvx\"\n\
+         [toolset.shell]\n\
+         [toolset.sh2]\ncomponent = \"shell\"\n"
+    ))
+    .load_ok();
+
+    let github = &config.toolsets["github"];
+    assert_eq!(github.deadline, Duration::from_secs(120));
+    assert!(github.parallel);
+    let ToolsetTransport::Http(remote) = &github.transport else {
+        panic!("{:?}", github.transport)
+    };
+    assert_eq!(remote.url.as_str(), "https://api.githubcopilot.com/mcp/");
+
+    let files = &config.toolsets["files"];
+    assert_eq!(files.deadline, DEFAULT_TOOL_DEADLINE);
+    assert!(!files.parallel);
+    assert_eq!(files.skills, [PathBuf::from("/opt/skills")]);
+    let ToolsetTransport::Stdio(stdio) = &files.transport else {
+        panic!("{:?}", files.transport)
+    };
+    assert_eq!(
+        stdio.program,
+        Program::Command("/opt/homebrew/bin/mcp-server-filesystem".into())
+    );
+    assert_eq!(stdio.args, ["/Users/me/Documents"]);
+    assert_eq!(stdio.idle_stop, Some(Duration::from_secs(1800)));
+
+    let program = |name: &str| match &config.toolsets[name].transport {
+        ToolsetTransport::Stdio(stdio) => stdio.program.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(program("fetch"), Program::Command("uvx".into()));
+    let plugin = |component: &str| Program::Plugin {
+        component: component.into(),
+        binary: format!("giles-toolset-{component}"),
+    };
+    assert_eq!(program("shell"), plugin("shell"));
+    assert_eq!(program("sh2"), plugin("shell"));
+}
+
+#[test]
+fn toolset_rules() {
+    let cases = [
+        (
+            "url = \"https://x\"\ncommand = \"/bin/x\"",
+            "command",
+            "remote toolset",
+        ),
+        (
+            "url = \"https://x\"\ncomponent = \"x\"",
+            "component",
+            "remote toolset",
+        ),
+        ("url = \"https://x\"\nargs = []", "args", "remote toolset"),
+        (
+            "url = \"https://x\"\nidle_stop = \"1m\"",
+            "idle_stop",
+            "remote toolset",
+        ),
+        (
+            "url = \"https://x\"\nunsandboxed = true",
+            "unsandboxed",
+            "remote toolset",
+        ),
+        ("url = \"http://example.com/mcp\"", "url", "insecure = true"),
+        ("insecure = true", "insecure", "without `url`"),
+        (
+            "command = \"/bin/x\"\ncomponent = \"x\"",
+            "component",
+            "together with `command`",
+        ),
+        ("command = \"bin/x\"", "command", "absolute path"),
+        ("command = \"\"", "command", "not be empty"),
+        ("component = \"a_b\"", "component", "invalid component name"),
+        ("deadline = \"5\"", "deadline", "invalid duration"),
+        ("deadline = \"0s\"", "deadline", "longer than 0s"),
+        ("idle_stop = \"0ms\"", "idle_stop", "longer than 0s"),
+        (
+            "skills = [\"/ok\", \"relative\"]",
+            "skills[1]",
+            "absolute path",
+        ),
+        ("parallel = \"yes\"", "parallel", "invalid type"),
+        ("max_blob = 5", "max_blob", "unknown field `max_blob`"),
+    ];
+    for (toml, key, reason) in cases {
+        let home = Home::new(&format!("{MINIMAL}[toolset.t]\n{toml}\n"));
+        let key = if key.is_empty() {
+            "toolset.t".to_owned()
+        } else {
+            format!("toolset.t.{key}")
+        };
+        assert_error(&home, "giles.toml", &key, reason);
+    }
+}
+
+const PROVIDER: &str = "[provider.anthropic]\n[provider.ollama]\ncomponent = \"openai\"\n";
+
+fn with_provider() -> Home {
+    Home::new(&format!("{MINIMAL}{PROVIDER}"))
+}
+
+#[test]
+fn routes() {
+    let home = Home::new(&format!(
+        "{MINIMAL}{PROVIDER}[channel.web]\n[channel.libera]\ncomponent = \"irc\"\n\
+         [[routes]]\nchannel = \"libera\"\nconversation = \"#giles\"\nagent = \"jeeves\"\n\
+         [[routes]]\nkind = \"direct\"\nagent = \"jeeves\"\n\
+         [[routes]]\nagent = \"bunter\"\n"
+    ));
+    home.agent("jeeves", "models = [\"anthropic/claude-sonnet-4-5\"]")
+        .agent("bunter", "models = [\"ollama/qwen3:8b\"]");
+    let config = home.load_ok();
+    let routes = &config.routes;
+    assert_eq!(routes.len(), 3);
+    assert_eq!(routes[0].channel.as_ref().unwrap().as_str(), "libera");
+    assert_eq!(routes[0].conversation.as_deref(), Some("#giles"));
+    assert_eq!(routes[0].kind, None);
+    assert_eq!(routes[0].agent.as_str(), "jeeves");
+    assert_eq!(routes[1].channel, None);
+    assert_eq!(routes[1].kind, Some(ConversationKind::Direct));
+    assert_eq!(routes[2].agent.as_str(), "bunter");
+
+    let cases = [
+        (
+            "channel = \"irc\"\nagent = \"jeeves\"",
+            "routes[0].channel",
+            "no channel instance",
+        ),
+        (
+            "channel = \"a_b\"\nagent = \"jeeves\"",
+            "routes[0].channel",
+            "invalid instance name",
+        ),
+        (
+            "agent = \"wooster\"",
+            "routes[0].agent",
+            "no agent \"wooster\"",
+        ),
+        ("agent = \"a.b\"", "routes[0].agent", "invalid agent name"),
+        (
+            "kind = \"dm\"\nagent = \"jeeves\"",
+            "routes[0].kind",
+            "unknown variant `dm`",
+        ),
+        (
+            "conversation = \"\"\nagent = \"jeeves\"",
+            "routes[0].conversation",
+            "not be empty",
+        ),
+        ("channel = \"web\"", "routes[0]", "missing field `agent`"),
+    ];
+    for (toml, key, reason) in cases {
+        let home = Home::new(&format!(
+            "{MINIMAL}{PROVIDER}[channel.web]\n[[routes]]\n{toml}\n"
+        ));
+        home.agent("jeeves", "models = [\"anthropic/claude-sonnet-4-5\"]");
+        assert_error(&home, "giles.toml", key, reason);
+    }
+}
+
+#[test]
+fn agent_defaults() {
+    let home = with_provider();
+    home.agent("jeeves", "models = [\"anthropic/claude-sonnet-4-5\"]");
+    let config = home.load_ok();
+    let agent = &config.agents[&agent_id("jeeves")];
+    assert_eq!(agent.id.as_str(), "jeeves");
+    assert_eq!(agent.dir, home.path("agents/jeeves"));
+    assert_eq!(agent.name, None);
+    assert_eq!(agent.models[0].to_string(), "anthropic/claude-sonnet-4-5");
+    assert_eq!(agent.compaction_model, None);
+    assert!(agent.tools.is_empty());
+    assert!(agent.ask.is_empty());
+    assert_eq!(agent.max_iterations, None);
+    assert_eq!(agent.max_iterations_jobs, DEFAULT_MAX_ITERATIONS_JOBS);
+    assert_eq!(agent.max_iterations_jobs, 25);
+    assert_eq!(agent.busy_mode, BusyMode::Steer);
+    assert_eq!(agent.memory_cap, 2200);
+    assert_eq!(agent.approval_timeout, Duration::from_secs(600));
+    assert!(agent.timezone.is_none());
+    assert_eq!(agent.idle_reset, None);
+    assert!(agent.jobs.is_empty());
+}
+
+#[test]
+fn agent_settings() {
+    let home = with_provider();
+    home.write("agents/jeeves/morning.md", "Good morning.")
+        .agent(
+            "jeeves",
+            r#"
+            name = "Jeeves"
+            models = ["anthropic/claude-sonnet-4-5", "ollama/anthropic/claude"]
+            compaction_model = "ollama/qwen3:8b"
+            tools = ["memory", "github__*"]
+            ask = ["github__create_*"]
+            max_iterations = 50
+            max_iterations_jobs = 10
+            busy_mode = "queue"
+            memory_cap = 4000
+            approval_timeout = "5m"
+            timezone = "Europe/London"
+            idle_reset = "12h"
+
+            [[jobs]]
+            id = "morning"
+            cron = "0 8 * * 1-5"
+            prompt_file = "morning.md"
+
+            [[jobs]]
+            id = "check-in"
+            cron = "*/30 * * * *"
+            session = "dm"
+            idle_only = true
+            active_hours = "08:00-22:00"
+            model = "ollama/qwen3:8b"
+            prompt = "Anything to tell me?"
+            ask_to = "deliver_to"
+
+            [[jobs]]
+            id = "digest"
+            cron = "0 18 * * *"
+            prompt = "Summarize the day."
+            dm_excerpt = 20
+            "#,
+        );
+    let config = home.load_ok();
+    let agent = &config.agents[&agent_id("jeeves")];
+    assert_eq!(agent.name.as_deref(), Some("Jeeves"));
+    assert_eq!(agent.models[1].provider.as_str(), "ollama");
+    assert_eq!(agent.models[1].model, "anthropic/claude");
+    assert_eq!(agent.compaction_model.as_ref().unwrap().model, "qwen3:8b");
+    assert_eq!(agent.tools, ["memory", "github__*"]);
+    assert_eq!(agent.ask, ["github__create_*"]);
+    assert_eq!(agent.max_iterations, Some(50));
+    assert_eq!(agent.max_iterations_jobs, 10);
+    assert_eq!(agent.busy_mode, BusyMode::Queue);
+    assert_eq!(agent.memory_cap, 4000);
+    assert_eq!(agent.approval_timeout, Duration::from_secs(300));
+    assert_eq!(
+        agent.timezone.as_ref().unwrap().iana_name(),
+        Some("Europe/London")
+    );
+    assert_eq!(agent.idle_reset, Some(Duration::from_secs(12 * 3600)));
+
+    let [morning, check_in, digest] = &agent.jobs[..] else {
+        panic!("{:?}", agent.jobs)
+    };
+    assert_eq!(morning.id, "morning");
+    assert_eq!(morning.session, JobSession::Isolated);
+    assert!(!morning.idle_only);
+    assert_eq!(morning.active_hours, None);
+    assert_eq!(morning.model, None);
+    assert_eq!(
+        morning.prompt,
+        JobPrompt::File(home.path("agents/jeeves/morning.md"))
+    );
+    assert_eq!(morning.ask_to, None);
+    assert_eq!(morning.dm_excerpt, None);
+
+    assert_eq!(check_in.session, JobSession::Dm);
+    assert!(check_in.idle_only);
+    assert_eq!(
+        check_in.active_hours,
+        Some(ActiveHours::parse("08:00-22:00").unwrap())
+    );
+    assert_eq!(
+        check_in.model.as_ref().unwrap().to_string(),
+        "ollama/qwen3:8b"
+    );
+    assert_eq!(
+        check_in.prompt,
+        JobPrompt::Inline("Anything to tell me?".into())
+    );
+    assert_eq!(check_in.ask_to, Some(AskTo::DeliverTo));
+
+    assert_eq!(digest.dm_excerpt, Some(20));
+}
+
+#[test]
+fn agent_rules() {
+    let model = "models = [\"anthropic/m\"]";
+    let job = "[[jobs]]\nid = \"j\"\ncron = \"0 8 * * *\"\nprompt = \"p\"";
+    let cases: Vec<(String, &str, &str)> = vec![
+        ("name = \"x\"".into(), "", "missing field `models`"),
+        ("models = []".into(), "models", "at least one model"),
+        (
+            "models = [\"claude\"]".into(),
+            "models[0]",
+            "<provider instance>/<model id>",
+        ),
+        (
+            "models = [\"anthropic/m\", \"openai/m\"]".into(),
+            "models[1]",
+            "no provider instance \"openai\"",
+        ),
+        (
+            format!("{model}\ncompaction_model = \"x/y\""),
+            "compaction_model",
+            "no provider instance",
+        ),
+        (
+            format!("{model}\nmax_iterations = 0"),
+            "max_iterations",
+            "at least 1",
+        ),
+        (
+            format!("{model}\nmax_iterations_jobs = 0"),
+            "max_iterations_jobs",
+            "at least 1",
+        ),
+        (
+            format!("{model}\nmax_iterations = -1"),
+            "max_iterations",
+            "invalid value",
+        ),
+        (
+            format!("{model}\nmemory_cap = 0"),
+            "memory_cap",
+            "at least 1",
+        ),
+        (
+            format!("{model}\nbusy_mode = \"wait\""),
+            "busy_mode",
+            "unknown variant `wait`",
+        ),
+        (
+            format!("{model}\napproval_timeout = \"10\""),
+            "approval_timeout",
+            "invalid duration",
+        ),
+        (
+            format!("{model}\napproval_timeout = \"0s\""),
+            "approval_timeout",
+            "longer than 0s",
+        ),
+        (
+            format!("{model}\nidle_reset = \"0m\""),
+            "idle_reset",
+            "longer than 0s",
+        ),
+        (
+            format!("{model}\ntimezone = \"Nowhere\""),
+            "timezone",
+            "unknown time zone",
+        ),
+        (
+            format!("{model}\ntools = [\"memory\", \"\"]"),
+            "tools[1]",
+            "invalid tool glob",
+        ),
+        (
+            format!("{model}\nask = [\"a b\"]"),
+            "ask[0]",
+            "invalid tool glob",
+        ),
+        (
+            format!("{model}\nowner = \"stephen\""),
+            "owner",
+            "unknown field `owner`",
+        ),
+        (
+            format!("{model}\n[[jobs]]\ncron = \"0 8 * * *\"\nprompt = \"p\""),
+            "jobs[0]",
+            "missing field `id`",
+        ),
+        (
+            format!("{model}\n{job}\n{job}"),
+            "jobs[1].id",
+            "already has id \"j\"",
+        ),
+        (
+            format!("{model}\n[[jobs]]\nid = \"a_b\"\ncron = \"0 8 * * *\"\nprompt = \"p\""),
+            "jobs[0].id",
+            "invalid job name",
+        ),
+        (
+            format!("{model}\n[[jobs]]\nid = \"j\"\ncron = \"0 8 * *\"\nprompt = \"p\""),
+            "jobs[0].cron",
+            "invalid cron pattern",
+        ),
+        (
+            format!("{model}\n[[jobs]]\nid = \"j\"\ncron = \"0 8 * * *\""),
+            "jobs[0]",
+            "missing `prompt` or `prompt_file`",
+        ),
+        (
+            format!("{model}\n{job}\nprompt_file = \"p.md\""),
+            "jobs[0].prompt_file",
+            "not both",
+        ),
+        (
+            format!("{model}\n[[jobs]]\nid = \"j\"\ncron = \"0 8 * * *\"\nprompt = \" \""),
+            "jobs[0].prompt",
+            "not be empty",
+        ),
+        (
+            format!(
+                "{model}\n[[jobs]]\nid = \"j\"\ncron = \"0 8 * * *\"\nprompt_file = \"none.md\""
+            ),
+            "jobs[0].prompt_file",
+            "does not exist",
+        ),
+        (
+            format!(
+                "{model}\n[[jobs]]\nid = \"j\"\ncron = \"0 8 * * *\"\nprompt_file = \"../x.md\""
+            ),
+            "jobs[0].prompt_file",
+            "no `..`",
+        ),
+        (
+            format!("{model}\n{job}\nactive_hours = \"8-22\""),
+            "jobs[0].active_hours",
+            "HH:MM-HH:MM",
+        ),
+        (
+            format!("{model}\n{job}\nsession = \"dm\"\ndm_excerpt = 5"),
+            "jobs[0].dm_excerpt",
+            "only for",
+        ),
+        (
+            format!("{model}\n{job}\nsession = \"group\""),
+            "jobs[0].session",
+            "unknown variant `group`",
+        ),
+        (
+            format!("{model}\n{job}\nask_to = \"owner\""),
+            "jobs[0].ask_to",
+            "unknown variant `owner`",
+        ),
+        (
+            format!("{model}\n{job}\nmodel = \"nope/m\""),
+            "jobs[0].model",
+            "no provider instance",
+        ),
+        (
+            format!("{model}\n{job}\ndeliver_to = \"stephen\""),
+            "jobs[0].deliver_to",
+            "unknown field `deliver_to`",
+        ),
+    ];
+    for (toml, key, reason) in cases {
+        let home = with_provider();
+        home.agent("jeeves", &toml);
+        assert_error(&home, "agents/jeeves/agent.toml", key, reason);
+    }
+}
+
+#[test]
+fn agent_directories() {
+    let home = with_provider();
+    home.agent("jeeves", "models = [\"anthropic/m\"]")
+        .write("agents/README.md", "ignored")
+        .write(".hidden/agent.toml", "ignored")
+        .write("agents/.trash/agent.toml", "not even TOML");
+    let config = home.load_ok();
+    assert_eq!(
+        config
+            .agents
+            .keys()
+            .map(AgentId::as_str)
+            .collect::<Vec<_>>(),
+        ["jeeves"]
+    );
+
+    let home = with_provider();
+    home.agent("my_agent", "models = [\"anthropic/m\"]");
+    assert_error(&home, "agents/my_agent", "", "invalid agent name");
+
+    let home = with_provider();
+    std::fs::create_dir_all(home.path("agents/empty")).unwrap();
+    assert_error(&home, "agents/empty", "", "needs an agent.toml");
+}
+
+/// The `toml` code blocks of a Markdown document whose first line is `# ~/.giles/<path>`, as
+/// (path, contents).
+fn documented_files(markdown: &str) -> Vec<(&str, String)> {
+    let mut files = Vec::new();
+    let mut lines = markdown.lines();
+    while let Some(line) = lines.next() {
+        if line != "```toml" {
+            continue;
+        }
+        let block: Vec<&str> = lines.by_ref().take_while(|l| *l != "```").collect();
+        if let Some(path) = block.first().and_then(|l| l.strip_prefix("# ~/.giles/")) {
+            files.push((path, block.join("\n")));
+        }
+    }
+    files
+}
+
+#[test]
+fn the_documented_full_example_is_valid() {
+    let doc = include_str!("../../../../Docs/user/configuration.md");
+    let files = documented_files(doc);
+    let paths: Vec<&str> = files.iter().map(|(path, _)| *path).collect();
+    assert_eq!(paths, ["giles.toml", "agents/jeeves/agent.toml"]);
+    let home = Home::new("");
+    for (path, contents) in &files {
+        home.write(path, contents);
+    }
+    home.write("agents/jeeves/morning.md", "Plan my day.");
+    let config = home.load_ok();
+    assert_eq!(config.agents.len(), 1);
+    assert_eq!(config.routes.len(), 2);
+    assert_eq!(config.agents[&agent_id("jeeves")].jobs.len(), 2);
+}

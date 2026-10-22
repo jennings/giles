@@ -6,6 +6,7 @@
 
 - [Overview](user/README.md)
 - [Installing and Running](user/running.md)
+- [Configuration](user/configuration.md)
 
 # Technical
 
@@ -20,6 +21,7 @@
 - [Plugin Sandbox](technical/sandbox.md)
 - [Rendering Model Output](technical/rendering.md)
 - [gRPC Protocols](technical/protocols.md)
+- [Configuration](technical/config.md)
 
 # Design Background
 
