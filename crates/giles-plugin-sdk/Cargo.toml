@@ -13,6 +13,8 @@ categories = ["api-bindings", "network-programming"]
 [dependencies]
 giles-proto.workspace = true
 giles-types.workspace = true
+pulldown-cmark = { version = "0.13.5", default-features = false, features = ["html"] }
+pulldown-cmark-escape = "0.11.0"
 
 [lints]
 workspace = true
