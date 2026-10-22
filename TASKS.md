@@ -17,6 +17,19 @@ How to read it:
 Deferred work (multiple users, group chats, model fallback, config reload, provider plugins,
 webhooks, passkeys) is not listed; see `IDEA.md` "Out of Scope for v1" and §1.1.
 
+## Build Decisions
+
+Answered by the owner before the build started:
+
+- License: `MIT OR Apache-2.0` for every crate.
+- Repository: public at `github.com/jennings/giles`; `main` is pushed after each landed task and CI
+  runs there.
+- Linux verification on the macOS development machine: an Apple `container` Linux container (arm64
+  Debian bookworm, kernel 6.12). `buf` is installed locally.
+- 1.13 WhatsApp spike: an agent builds the spike and its test plan; the owner does the live device
+  linking. 1.13 stays open, and 3.6 waits for it, until then.
+- The draft decision records (`Docs/DECISIONS.md`, `Docs/decisions/`) stay off `main` for now.
+
 ## Phase 0: Project Setup
 
 Sequential, except 0.2 and 0.3, which can run in parallel after 0.1.
