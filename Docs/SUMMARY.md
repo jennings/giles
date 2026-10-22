@@ -15,6 +15,7 @@
 - [Message Model and Traits](technical/message-model.md)
 - [The `giles` Binary](technical/daemon.md)
 - [Data Root](technical/data-root.md)
+- [Plugin Transport](technical/plugin-transport.md)
 
 # Design Background
 

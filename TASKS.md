@@ -86,7 +86,7 @@ All parallel. Each task needs only Phase 0.
   `admin.v1`, and the `provider.v1` messages `DescribeResponse` references (`ProviderService` is
   deferred). `giles-proto` `build.rs` with `tonic-build`, using `PROTOC` or a vendored `protoc`.
   `buf.yaml`; `buf lint` and `buf breaking` added to CI.
-- [ ] **1.5 Spike: gRPC over a socket pair** (§7.4). Confirm the `[INFERENCE]`: `tonic` serving on
+- [x] **1.5 Spike: gRPC over a socket pair** (§7.4). Confirm the `[INFERENCE]`: `tonic` serving on
   one pre-connected stream (`serve_with_incoming` with a one-item stream) and a client over a
   one-shot connector, with 16 MiB message limits and bearer-token metadata. Record the result in
   the technical docs; revise §7.4 if it fails.

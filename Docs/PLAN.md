@@ -726,8 +726,10 @@ pair, so no other process can reach it.
 5. All RPCs share the one HTTP/2 connection. If it breaks, the core restarts the plugin; there is no
    reconnect.
 
-`[INFERENCE]` `tonic` can serve on one pre-connected stream (`serve_with_incoming` with a one-item
-stream) and connect over one with a one-shot connector. An early spike must confirm this.
+`tonic` serves on the one pre-connected stream (`serve_with_incoming_shutdown` with a one-item
+stream that then stays pending) and the core connects over it with a one-shot connector; the
+transport spike confirmed this, with 16 MiB limits and the bearer token. See
+[Plugin Transport](technical/plugin-transport.md) for the exact setup and its caveats.
 
 Because plugins never need to create Unix sockets, seccomp denies `socket(AF_UNIX, ...)` to every
 plugin without an explicit grant (section 12). On every supported kernel that closes the paths a
