@@ -245,7 +245,7 @@ pub enum CompletionEvent {
 
 #[async_trait]
 pub trait Channel: Send + Sync {
-    fn info(&self) -> &ChannelInfo; // output mode (deltas/blocks), can_initiate
+    fn info(&self) -> &ChannelInfo; // identity namespace, output mode (deltas/blocks), can_initiate
     /// Inbound events: messages and status changes (section 8.5). Every event must be acked once
     /// the core has stored it.
     async fn events(&self) -> Result<BoxStream<'static, Result<ChannelEvent>>>;
@@ -260,7 +260,7 @@ pub trait Toolset: Send + Sync {
     fn tool_changes(&self) -> Option<BoxStream<'static, Vec<ToolSpec>>> { None }
     async fn list_skills(&self) -> Result<Vec<SkillSummary>>;
     async fn get_skill(&self, name: &str) -> Result<Skill>;
-    /// `call.inputs` carries media the model referenced (section 5).
+    /// `call.media` carries media the model referenced (section 5).
     async fn call(&self, call: ToolCall, ctx: CallContext) -> Result<ToolCallHandle>;
 }
 
@@ -330,8 +330,8 @@ pub enum Block {
 pub struct Opaque { pub api: String, pub data: serde_json::Value }
 
 pub struct MessageMeta {
-    pub provider: String,
-    pub model: String,
+    pub provider: Option<String>, // assistant messages only
+    pub model: Option<String>,    // assistant messages only
     pub usage: Option<Usage>,
     pub at: Timestamp,
     pub sender: Option<UserId>,
@@ -358,11 +358,13 @@ Rules:
   ```rust
   pub struct InboundMessage {
       pub conversation: ConversationRef, pub sender: NativeId, pub sender_authenticated: bool,
-      pub text: String, pub attachments: Vec<MediaRef>, pub reply_to: Option<MessageRef>,
+      pub text: String, pub attachments: Vec<MediaRef>, pub message_id: Option<MessageId>,
+      pub reply_to: Option<MessageId>,
   }
   pub struct OutboundMessage {
-      pub conversation: ConversationRef, pub markdown: String, // CommonMark
-      pub attachments: Vec<MediaRef>, pub reply_to: Option<MessageRef>,
+      pub target: SendTarget, // Conversation(ConversationId) or Recipient(NativeId), section 8.5
+      pub markdown: String,   // CommonMark
+      pub attachments: Vec<MediaRef>, pub reply_to: Option<MessageId>,
   }
   ```
 
@@ -1055,6 +1057,7 @@ message InboundMessage {
   google.protobuf.Timestamp sent_at = 7;
   bool sender_authenticated = 8;  // false: the core drops the message
   repeated string sender_aliases = 9; // other ids for the same sender, e.g. a WhatsApp LID
+  string message_id = 10;         // the message's own id, for reply_to; may differ from event_id
 }
 
 // Shown in `giles status`, ListPlugins, and an admin page that renders QR codes.
