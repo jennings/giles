@@ -42,7 +42,7 @@ Sequential, except 0.2 and 0.3, which can run in parallel after 0.1.
   `rumdl` Markdown lint, `mdbook build`. (`buf` checks are added in 1.4.)
 - [x] **0.3 mdBook skeleton.** `Docs/book.toml` and `SUMMARY.md` with a User Guide and a Technical
   section; `IDEA.md` and `PLAN.md` linked as design background.
-- [ ] **0.4 `giles` binary skeleton** (§11.1). `clap` CLI with `serve`, `tracing` subscriber,
+- [x] **0.4 `giles` binary skeleton** (§11.1). `clap` CLI with `serve`, `tracing` subscriber,
   `anyhow`, `GILES_HOME` resolution (default `~/.giles`), creation of the data root layout, the
   `$TMPDIR` fallback for over-long socket paths, clean shutdown on SIGINT/SIGTERM.
 - [x] **0.5 `giles-types`** (§4.3, §4.4, §5). The shared contract everything else builds on:

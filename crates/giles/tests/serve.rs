@@ -1,0 +1,225 @@
+//! End-to-end tests of `giles serve`: data root resolution and layout, and clean shutdown on
+//! signals. Every test points `HOME` and `TMPDIR` into a temporary directory.
+
+use std::fs;
+use std::io::{BufRead, BufReader};
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::thread;
+use std::time::{Duration, Instant};
+
+const TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A sandbox for one `giles` run: a fake `HOME` and `TMPDIR` under a temporary directory.
+struct Env {
+    dir: tempfile::TempDir,
+}
+
+impl Env {
+    fn new() -> Self {
+        let env = Self {
+            dir: tempfile::tempdir().unwrap(),
+        };
+        fs::create_dir(env.home()).unwrap();
+        fs::create_dir(env.tmp()).unwrap();
+        env
+    }
+
+    fn path(&self, name: &str) -> PathBuf {
+        self.dir.path().join(name)
+    }
+
+    fn home(&self) -> PathBuf {
+        self.path("user")
+    }
+
+    fn tmp(&self) -> PathBuf {
+        self.path("tmp")
+    }
+
+    /// `giles <args>` with `HOME` and `TMPDIR` in the sandbox and no inherited `GILES_HOME`.
+    fn command(&self, args: &[&str]) -> Command {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_giles"));
+        cmd.args(args)
+            .env("HOME", self.home())
+            .env("TMPDIR", self.tmp())
+            .env("GILES_LOG", "info")
+            .env_remove("GILES_HOME")
+            .env_remove("RUST_LOG")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        cmd
+    }
+}
+
+/// A running `giles serve` whose stderr is collected line by line.
+struct Daemon {
+    child: Child,
+    lines: Receiver<String>,
+    log: Vec<String>,
+}
+
+impl Daemon {
+    fn start(mut cmd: Command) -> Self {
+        let mut child = cmd.spawn().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let (tx, lines) = mpsc::channel();
+        thread::spawn(move || {
+            for line in BufReader::new(stderr).lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut daemon = Self {
+            child,
+            lines,
+            log: Vec::new(),
+        };
+        daemon.wait_for_log("giles started");
+        daemon
+    }
+
+    fn wait_for_log(&mut self, needle: &str) {
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            if self.log.iter().any(|l| l.contains(needle)) {
+                return;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.lines.recv_timeout(left) {
+                Ok(line) => self.log.push(line),
+                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
+                    let _ = self.child.kill();
+                    panic!("no {needle:?} in the log:\n{}", self.log.join("\n"));
+                }
+            }
+        }
+    }
+
+    /// Sends `signal` (e.g. "TERM") and waits for the process to exit.
+    fn stop(mut self, signal: &str) -> (ExitStatus, String) {
+        let killed = Command::new("kill")
+            .args(["-s", signal, &self.child.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(killed.success());
+        let deadline = Instant::now() + TIMEOUT;
+        let status = loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() > deadline {
+                let _ = self.child.kill();
+                panic!("giles did not exit after SIG{signal}");
+            }
+            thread::sleep(Duration::from_millis(20));
+        };
+        self.log.extend(self.lines.iter());
+        (status, self.log.join("\n"))
+    }
+}
+
+fn mode(path: &Path) -> u32 {
+    fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+fn assert_layout(root: &Path) {
+    for dir in [
+        "agents",
+        "users",
+        "skills",
+        "plugins",
+        "data",
+        "data/blobs",
+        "data/plugins",
+        "backups",
+        "run",
+        "run/pids",
+        "cache",
+    ] {
+        assert!(root.join(dir).is_dir(), "missing {dir}");
+    }
+    assert_eq!(mode(root), 0o700);
+    assert_eq!(mode(&root.join("run")), 0o700);
+}
+
+#[test]
+fn sigterm_stops_cleanly_and_home_flag_beats_giles_home() {
+    let env = Env::new();
+    let home = env.path("flag-home");
+    let mut cmd = env.command(&["serve", "--home", home.to_str().unwrap()]);
+    cmd.env("GILES_HOME", env.path("env-home"));
+
+    let (status, log) = Daemon::start(cmd).stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+    assert!(
+        log.contains("signal=\"SIGTERM\"") || log.contains("signal=SIGTERM"),
+        "{log}"
+    );
+    assert!(log.contains("giles stopped"), "{log}");
+    assert_layout(&home);
+    assert!(!env.path("env-home").exists());
+    assert!(!env.home().join(".giles").exists());
+}
+
+#[test]
+fn sigint_stops_cleanly_and_giles_home_beats_home() {
+    let env = Env::new();
+    let mut cmd = env.command(&["serve"]);
+    cmd.env("GILES_HOME", env.path("env-home"));
+
+    let (status, log) = Daemon::start(cmd).stop("INT");
+    assert!(status.success(), "{status}\n{log}");
+    assert!(log.contains("giles stopped"), "{log}");
+    assert_layout(&env.path("env-home"));
+    assert!(!env.home().join(".giles").exists());
+}
+
+#[test]
+fn default_root_is_dot_giles_in_home() {
+    let env = Env::new();
+    let (status, log) = Daemon::start(env.command(&["serve"])).stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+    assert_layout(&env.home().join(".giles"));
+}
+
+#[test]
+fn long_root_puts_sockets_in_tmpdir() {
+    let env = Env::new();
+    let home = env.path(&"h".repeat(120));
+    let cmd = env.command(&["serve", "--home", home.to_str().unwrap()]);
+
+    let (status, log) = Daemon::start(cmd).stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+    assert_layout(&home);
+    let socket_dirs: Vec<_> = fs::read_dir(env.tmp())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(socket_dirs.len(), 1, "{socket_dirs:?}");
+    let socket_dir = &socket_dirs[0];
+    let name = socket_dir.file_name().unwrap().to_str().unwrap();
+    assert!(name.starts_with("giles-"), "{name}");
+    assert_eq!(mode(socket_dir), 0o700);
+    assert!(
+        log.contains(name),
+        "the log names the socket directory:\n{log}"
+    );
+}
+
+#[test]
+fn missing_home_is_a_clear_error() {
+    let env = Env::new();
+    let output = env.command(&["serve"]).env_remove("HOME").output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("neither GILES_HOME nor HOME is set"),
+        "{stderr}"
+    );
+}

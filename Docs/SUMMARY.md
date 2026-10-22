@@ -5,6 +5,7 @@
 # User Guide
 
 - [Overview](user/README.md)
+- [Installing and Running](user/running.md)
 
 # Technical
 
@@ -12,6 +13,7 @@
 - [Cargo Workspace](technical/workspace.md)
 - [Continuous Integration](technical/ci.md)
 - [Message Model and Traits](technical/message-model.md)
+- [The `giles` Binary](technical/daemon.md)
 - [Data Root](technical/data-root.md)
 
 # Design Background

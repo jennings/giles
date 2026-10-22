@@ -1,0 +1,48 @@
+# The `giles` Binary
+
+`crates/giles` holds the command-line interface and the daemon's process lifecycle. Everything else
+lives in library crates.
+
+## Command Line
+
+`clap` (derive). `cli::Cli` has the global options and a `cli::Command` enum with one variant per
+subcommand, each carrying its own `clap::Args` struct (`Serve(ServeArgs)`). Later subcommands
+(`status`, `admin`, `sandbox-exec`, `pair`, `usage`, `backup`, `instance`) are added as variants
+with their own argument structs and modules, dispatched from `main`.
+
+`--home <DIR>` is global, so it is accepted before or after the subcommand. It is not tied to
+`GILES_HOME` through `clap`; `giles_core::paths::resolve_root` applies the precedence (flag, then
+`GILES_HOME`, then `$HOME/.giles`) so it can be tested as a pure function (see
+[Data Root](data-root.md)).
+
+`main` is synchronous. Only `serve` builds a Tokio runtime (multi-threaded), so subcommands that
+must not start threads, such as the future `sandbox-exec` trampoline, don't get one.
+
+Errors are `anyhow` in the binary and `thiserror` in libraries; a failed subcommand prints
+`Error: ...` with its causes and exits with status 1.
+
+## Logging
+
+One `tracing-subscriber` `fmt` subscriber, installed in `main` before any subcommand runs. It writes
+to stderr, with ANSI colors only when stderr is a terminal. The filter is `GILES_LOG`, else
+`RUST_LOG`, else `info`; an invalid filter fails startup rather than being ignored.
+
+## `giles serve` Lifecycle
+
+1. Resolve the data root (`DataRoot::from_env`) and create its layout (`create_layout`).
+2. Build the runtime.
+3. Install the SIGINT and SIGTERM handlers (`shutdown::cancel_on_signal`). This happens before
+   anything is logged, so a signal sent after the `giles started` line always takes the graceful
+   path instead of killing the process.
+4. Log `giles started` with the root and admin socket path, plus a warning if the sockets use the
+   `$TMPDIR` fallback.
+5. Wait until the shutdown token is cancelled, log `giles stopped`, and exit with status 0.
+
+The shutdown signal is a `tokio_util::sync::CancellationToken`. The first SIGINT or SIGTERM cancels
+it. Subsystems added later take a clone (or a `child_token()`), stop when it is cancelled, and are
+awaited by `serve` before it returns.
+
+The signal handlers stay installed for the life of the process, so the default "die on signal" no
+longer applies. To keep a hung shutdown interruptible without SIGKILL, any SIGINT or SIGTERM that
+arrives after the token is cancelled logs a warning and calls `std::process::exit(130)` without
+waiting for subsystems.
