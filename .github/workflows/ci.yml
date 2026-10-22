@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A pull request's runs share a group, so a newer push cancels the run in progress. Each push to
+# main gets its own group (per commit), so every main commit gets a finished run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Documentation tool versions; keep in step with the versions used locally.
+  RUMDL_VERSION: "0.3.0"
+  MDBOOK_VERSION: "0.4.40"
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      # With no argument, rustup installs the toolchain pinned in rust-toolchain.toml, with the
+      # components and targets listed there.
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install rumdl
+        uses: rvben/rumdl@v0
+        with:
+          version: ${{ env.RUMDL_VERSION }}
+          install-only: "true"
+      # The official prebuilt release binary.
+      - name: Install mdBook
+        run: |
+          curl -fsSL "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP" mdbook
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Lint Markdown
+        run: rumdl check .
+      - name: Build book
+        run: mdbook build Docs
+
+  # Protobuf checks (`buf lint`, `buf breaking` against main) join as their own job in task 1.4,
+  # when the first `.proto` sources land.

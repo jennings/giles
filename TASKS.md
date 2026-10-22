@@ -38,7 +38,7 @@ Sequential, except 0.2 and 0.3, which can run in parallel after 0.1.
   `giles-types`, `giles-proto`, `giles-plugin-sdk`, `giles-store`. Edition 2024,
   `rust-toolchain.toml` pinned to a stable release, `Cargo.lock` committed, shared workspace
   dependencies and lints, `.gitignore`.
-- [ ] **0.2 CI.** `cargo fmt --check`, `cargo clippy` (warnings denied), `cargo test --workspace`,
+- [x] **0.2 CI.** `cargo fmt --check`, `cargo clippy` (warnings denied), `cargo test --workspace`,
   `rumdl` Markdown lint, `mdbook build`. (`buf` checks are added in 1.4.)
 - [x] **0.3 mdBook skeleton.** `Docs/book.toml` and `SUMMARY.md` with a User Guide and a Technical
   section; `IDEA.md` and `PLAN.md` linked as design background.

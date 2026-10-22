@@ -10,6 +10,7 @@
 
 - [Overview](technical/README.md)
 - [Cargo Workspace](technical/workspace.md)
+- [Continuous Integration](technical/ci.md)
 
 # Design Background
 
