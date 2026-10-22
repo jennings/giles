@@ -70,9 +70,10 @@ Consequences for code:
 
 - A third-party dependency used by two or more crates is declared once in
   `[workspace.dependencies]`, and each crate opts in with `<dep>.workspace = true`, adding the
-  features it needs. The shared stack: `anyhow`, `async-trait`, `bytes`, `futures`, `prost`,
-  `serde` (with `derive`), `serde_json`, `thiserror`, `tokio` (no features enabled), `toml`,
-  `tonic`, `tracing`, `tracing-subscriber`.
+  features it needs. The shared stack: `anyhow`, `async-trait`, `bytes`, `futures`, `jiff` (only
+  `std`; crates add `serde` or time zone database features), `prost`, `serde` (with `derive`),
+  `serde_json`, `thiserror`, `tokio` (no features enabled), `toml`, `tonic`, `tracing`,
+  `tracing-subscriber`.
 - A dependency used by a single crate goes in that crate's own manifest.
 - Internal crates are also listed in `[workspace.dependencies]` with both `path` and `version`, so
   the publishable crates resolve on crates.io.

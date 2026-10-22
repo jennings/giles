@@ -25,6 +25,8 @@ anyhow = "1.0.104"
 async-trait = "0.1.92"
 bytes = "1.12.1"
 futures = "0.3.34"
+# Default features off: each crate opts into the time zone database support it needs.
+jiff = { version = "0.2.38", default-features = false, features = ["std"] }
 libc = "0.2.191"
 prost = "0.14.4"
 serde = { version = "1.0.229", features = ["derive"] }
