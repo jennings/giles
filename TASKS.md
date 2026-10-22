@@ -94,7 +94,7 @@ All parallel. Each task needs only Phase 0.
   (grants, data dir, network, Unix-socket grant, `min_abi`), scrubbed environment with the §12.4
   defaults, fds passed through, then `exec`. Platform backends behind an internal trait
   (implemented in 2.13 and 2.14). Startup host check that reports one clear error.
-- [ ] **1.7 CommonMark renderers** (§9, §10). In `giles-plugin-sdk` on `pulldown-cmark`: sanitized
+- [x] **1.7 CommonMark renderers** (§9, §10). In `giles-plugin-sdk` on `pulldown-cmark`: sanitized
   HTML with remote images dropped (web, email), plain text (email), IRC formatting codes with
   line-limit splitting, WhatsApp markup. Table-driven tests.
 - [ ] **1.8 Anthropic provider** (§4.2, §5, §6.7). Feature `provider-anthropic`: streaming

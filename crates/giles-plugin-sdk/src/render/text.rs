@@ -4,7 +4,7 @@
 use std::borrow::Cow;
 use std::mem;
 
-use pulldown_cmark::{Alignment, Event, HeadingLevel, LinkType, Tag, TagEnd};
+use pulldown_cmark::{Alignment, Event, HeadingLevel, LinkType, Tag, TagEnd, TextMergeStream};
 
 use super::irc::{IRC_BOLD, IRC_ITALIC};
 use super::strip_controls;
@@ -23,18 +23,34 @@ pub fn plain_text(markdown: &str) -> String {
     render(markdown, Flavor::Plain)
 }
 
+/// Renders CommonMark as WhatsApp markup.
+///
+/// - Strong text and headings are `*bold*`, emphasis `_italic_`, strikethrough `~struck~`, inline
+///   code `` `code` ``, code blocks fenced with ```` ``` ````.
+/// - Styles are closed before each line break and reopened after it.
+/// - Lists use `-` and `1.` markers, quotes a `> ` prefix, tables `|` between cells.
+/// - Links show their target as `text <url>`; images show only `[image: alt]`.
+/// - WhatsApp has no escape character, so literal `*`, `_`, `~`, and `` ` `` in text are replaced
+///   with look-alikes (`∗`, `ˍ`, `∼`, `ˋ`), except `*_~` inside a word and anything in a bare URL.
+/// - Raw HTML is shown as text; control characters other than tab and newline are dropped.
+pub fn whatsapp(markdown: &str) -> String {
+    render(markdown, Flavor::WhatsApp)
+}
+
 /// Which text format to write.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Flavor {
     Plain,
     /// IRC formatting codes; split into messages by `super::irc`.
     Irc,
+    WhatsApp,
 }
 
 /// Renders `markdown` in `flavor`, with lines separated by `\n` and no trailing newline.
 pub(super) fn render(markdown: &str, flavor: Flavor) -> String {
     let mut writer = Writer::new(flavor);
-    for event in super::parser(markdown) {
+    // Merged text runs let WhatsApp escaping see a character's neighbors.
+    for event in TextMergeStream::new(super::parser(markdown)) {
         writer.event(event);
     }
     writer.out
@@ -50,7 +66,7 @@ enum Sep {
     Blank(String),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Style {
     Strong,
     Emphasis,
@@ -94,6 +110,8 @@ struct Writer {
     started: bool,
     /// Whether the current line has its prefixes written and can take more text.
     line_open: bool,
+    /// Where the current line's content starts, after its container prefixes.
+    content_start: usize,
     pending: Sep,
     containers: Vec<Container>,
     lists: Vec<List>,
@@ -101,6 +119,8 @@ struct Writer {
     captures: Vec<String>,
     /// Nesting depth of each `Style`, so nested equal styles write one marker pair.
     styles: [usize; 3],
+    /// The styles with a marker written, in the order they were opened.
+    open_styles: Vec<Style>,
     /// Targets of the open links.
     links: Vec<String>,
     raw: Option<Raw>,
@@ -116,11 +136,13 @@ impl Writer {
             out: String::new(),
             started: false,
             line_open: false,
+            content_start: 0,
             pending: Sep::None,
             containers: Vec::new(),
             lists: Vec::new(),
             captures: Vec::new(),
             styles: [0; 3],
+            open_styles: Vec::new(),
             links: Vec::new(),
             raw: None,
             table: None,
@@ -152,7 +174,10 @@ impl Writer {
         match event {
             Event::Start(tag) => self.start(tag),
             Event::End(tag) => self.end(tag),
-            Event::Text(text) if self.in_code_block => self.code_lines(&strip_controls(&text)),
+            Event::Text(text) if self.in_code_block => {
+                let code = self.code_text(&text);
+                self.code_lines(&code);
+            }
             Event::Text(text) => self.prose(&text),
             // An inline HTML tag can span lines; its line breaks are soft breaks.
             Event::InlineHtml(html) => {
@@ -194,7 +219,7 @@ impl Writer {
                 self.block();
                 match self.flavor {
                     Flavor::Plain => self.captures.push(String::new()),
-                    Flavor::Irc => self.style(Style::Strong, true),
+                    Flavor::Irc | Flavor::WhatsApp => self.style(Style::Strong, true),
                 }
             }
             Tag::BlockQuote(_) => {
@@ -210,13 +235,17 @@ impl Writer {
                 self.in_code_block = true;
                 let indent = match self.flavor {
                     Flavor::Plain => "    ",
-                    Flavor::Irc => "",
+                    Flavor::Irc | Flavor::WhatsApp => "",
                 };
                 self.containers.push(Container {
                     first: None,
                     rest: indent.to_owned(),
                     item: false,
                 });
+                if self.flavor == Flavor::WhatsApp {
+                    self.inline("```");
+                    self.end_line();
+                }
             }
             Tag::HtmlBlock => self.block(),
             Tag::List(start) => {
@@ -295,7 +324,7 @@ impl Writer {
                     let text = self.captures.pop().unwrap_or_default();
                     self.heading(level, &text);
                 }
-                Flavor::Irc => {
+                Flavor::Irc | Flavor::WhatsApp => {
                     self.style(Style::Strong, false);
                     self.end_line();
                 }
@@ -306,6 +335,10 @@ impl Writer {
             }
             TagEnd::CodeBlock => {
                 self.end_line();
+                if self.flavor == Flavor::WhatsApp {
+                    self.inline("```");
+                    self.end_line();
+                }
                 self.containers.pop();
                 self.in_code_block = false;
             }
@@ -403,19 +436,42 @@ impl Writer {
             *depth == 0
         };
         if marker_due {
-            let marker = match (self.flavor, style) {
-                (Flavor::Plain, Style::Strong) => "*",
-                (Flavor::Plain, Style::Emphasis) => "_",
-                (Flavor::Plain | Flavor::Irc, Style::Strikethrough) => "~~",
-                (Flavor::Irc, Style::Strong) => IRC_BOLD,
-                (Flavor::Irc, Style::Emphasis) => IRC_ITALIC,
-            };
-            self.inline(marker);
+            if open {
+                self.open_styles.push(style);
+            } else if let Some(i) = self.open_styles.iter().rposition(|s| *s == style) {
+                self.open_styles.remove(i);
+            }
+            self.inline(self.marker(style));
+        }
+    }
+
+    fn marker(&self, style: Style) -> &'static str {
+        match (self.flavor, style) {
+            (Flavor::Plain | Flavor::WhatsApp, Style::Strong) => "*",
+            (Flavor::Plain | Flavor::WhatsApp, Style::Emphasis) => "_",
+            (Flavor::Plain | Flavor::Irc, Style::Strikethrough) => "~~",
+            (Flavor::WhatsApp, Style::Strikethrough) => "~",
+            (Flavor::Irc, Style::Strong) => IRC_BOLD,
+            (Flavor::Irc, Style::Emphasis) => IRC_ITALIC,
         }
     }
 
     fn inline_code(&mut self, code: &str) {
-        self.inline(&format!("`{code}`"));
+        if self.flavor == Flavor::WhatsApp && code.contains('`') {
+            // WhatsApp's inline code can't contain a backtick: show the code as text.
+            self.prose(code);
+        } else {
+            self.inline(&format!("`{code}`"));
+        }
+    }
+
+    /// The text of a code block, which WhatsApp ends at the first triple backtick.
+    fn code_text(&self, text: &str) -> String {
+        let text = strip_controls(text);
+        match self.flavor {
+            Flavor::WhatsApp => text.replace("```", "\u{2cb}\u{2cb}\u{2cb}"),
+            Flavor::Plain | Flavor::Irc => text.into_owned(),
+        }
     }
 
     fn start_raw(&mut self, kind: RawKind) {
@@ -440,10 +496,12 @@ impl Writer {
         }
     }
 
-    /// Escapes prose for the flavor: drops control characters.
+    /// Escapes prose for the flavor: drops control characters, and on WhatsApp neutralizes
+    /// markup characters.
     fn escape<'a>(&self, text: &'a str) -> Cow<'a, str> {
         match self.flavor {
             Flavor::Plain | Flavor::Irc => strip_controls(text),
+            Flavor::WhatsApp => Cow::Owned(whatsapp_literal(&strip_controls(text))),
         }
     }
 
@@ -461,7 +519,12 @@ impl Writer {
             capture.push_str(text);
         } else {
             self.ensure_line();
-            self.out.push_str(text);
+            let line_start = self.out.len() == self.content_start;
+            if self.flavor == Flavor::WhatsApp && line_start && !self.in_code_block {
+                self.out.push_str(&whatsapp_line_start(text));
+            } else {
+                self.out.push_str(text);
+            }
         }
     }
 
@@ -482,6 +545,16 @@ impl Writer {
     fn line_break(&mut self) {
         if let Some(capture) = self.captures.last_mut() {
             capture.push(' ');
+        } else if self.flavor == Flavor::WhatsApp && !self.open_styles.is_empty() {
+            // WhatsApp styles don't span lines: close them before the break, reopen after.
+            let styles = self.open_styles.clone();
+            for style in styles.iter().rev() {
+                self.inline(self.marker(*style));
+            }
+            self.end_line();
+            for style in &styles {
+                self.inline(self.marker(*style));
+            }
         } else {
             self.end_line();
         }
@@ -508,7 +581,7 @@ impl Writer {
     fn blank(&self) -> Sep {
         match self.flavor {
             Flavor::Irc => Sep::Line,
-            Flavor::Plain => Sep::Blank(self.blank_prefix()),
+            Flavor::Plain | Flavor::WhatsApp => Sep::Blank(self.blank_prefix()),
         }
     }
 
@@ -553,6 +626,7 @@ impl Writer {
                 None => self.out.push_str(&container.rest),
             }
         }
+        self.content_start = self.out.len();
         self.line_open = true;
         self.started = true;
     }
@@ -573,6 +647,55 @@ impl Writer {
         self.started = true;
         self.pending = Sep::Line;
     }
+}
+
+/// Replaces a WhatsApp block marker at the start of a line's content (`>`, `- `, or `1. `) with a
+/// look-alike, so text that only resembles a quote or list doesn't become one.
+fn whatsapp_line_start(text: &str) -> Cow<'_, str> {
+    if let Some(rest) = text.strip_prefix('>') {
+        return Cow::Owned(format!("\u{2c3}{rest}"));
+    }
+    if let Some(rest) = text.strip_prefix("- ") {
+        return Cow::Owned(format!("\u{2010} {rest}"));
+    }
+    let digits = text.len() - text.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    match text[digits..].strip_prefix(". ") {
+        Some(rest) if digits > 0 => Cow::Owned(format!("{}\u{2024} {rest}", &text[..digits])),
+        _ => Cow::Borrowed(text),
+    }
+}
+
+/// Replaces the WhatsApp markup characters in `text` that could open or close a style with
+/// look-alikes, since WhatsApp has no escape character. `*`, `_`, and `~` between two
+/// alphanumerics stay (WhatsApp only styles at word boundaries), and words that look like URLs are
+/// left alone so they still work as links.
+fn whatsapp_literal(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for word in text.split_inclusive(char::is_whitespace) {
+        if word.contains("://") || word.starts_with("www.") {
+            out.push_str(word);
+            continue;
+        }
+        let chars: Vec<char> = word.chars().collect();
+        for (i, &c) in chars.iter().enumerate() {
+            let lookalike = match c {
+                '*' => '\u{2217}',
+                '_' => '\u{2cd}',
+                '~' => '\u{223c}',
+                '`' => '\u{2cb}',
+                _ => {
+                    out.push(c);
+                    continue;
+                }
+            };
+            let inside_word = c != '`'
+                && i > 0
+                && chars[i - 1].is_alphanumeric()
+                && chars.get(i + 1).is_some_and(|next| next.is_alphanumeric());
+            out.push(if inside_word { c } else { lookalike });
+        }
+    }
+    out
 }
 
 /// Pads `cell` to `width` characters according to its column's alignment.
@@ -685,6 +808,94 @@ mod tests {
         ];
         for (name, input, expected) in cases {
             assert_eq!(plain_text(input), *expected, "case {name}");
+        }
+    }
+
+    #[test]
+    fn renders_whatsapp() {
+        let cases: &[(&str, &str, &str)] = &[
+            ("empty", "", ""),
+            (
+                "inline styles",
+                "**bold**, *it*, ~~gone~~, `x < y`, ***both***",
+                "*bold*, _it_, ~gone~, `x < y`, _*both*_",
+            ),
+            ("nested strong writes one pair", "**a **b** c**", "*a b c*"),
+            ("heading", "# Title **x**\n\nText", "*Title x*\n\nText"),
+            (
+                "styles close at line breaks",
+                "**a\n*b*  \nc** d",
+                "*a*\n*_b_*\n*c* d",
+            ),
+            (
+                "lists",
+                "- a\n  - b\n- [x] c\n\n1. d",
+                "- a\n  - b\n- [x] c\n\n1. d",
+            ),
+            ("quote", "> a\n>\n> b", "> a\n>\n> b"),
+            (
+                "code block",
+                "Run:\n\n```py\nx = a*b_c ~d `e`\n\nprint(x)\n```",
+                "Run:\n\n```\nx = a*b_c ~d `e`\n\nprint(x)\n```",
+            ),
+            (
+                "code block containing a fence",
+                "````\n```\n````",
+                "```\nˋˋˋ\n```",
+            ),
+            ("inline code with a backtick", "``a`b``", "aˋb"),
+            (
+                "literal markup",
+                "2 \\* 3 \\*4\\* \\_x\\_ ~5 \\`y\\`",
+                "2 ∗ 3 ∗4∗ ˍxˍ ∼5 ˋyˋ",
+            ),
+            (
+                "inline html across lines",
+                "**x <b\nc> y**",
+                "*x <b*\n*c> y*",
+            ),
+            (
+                "literal block markers",
+                "1\\. not a list\n\n\\> not a quote\n\n\\- not an item\n\na\n\\- b\n\n\
+                 | - x | y |\n|---|---|\n| 1 | 2 |\n\n- \\> z\n\n```\n- code\n> kept\n```",
+                "1․ not a list\n\n˃ not a quote\n\n‐ not an item\n\na\n‐ b\n\n‐ x | y\n1 | 2\n\n\
+                 - ˃ z\n\n```\n- code\n> kept\n```",
+            ),
+            (
+                "markup inside words",
+                "snake_case a\\*b\\*c x~y",
+                "snake_case a*b*c x~y",
+            ),
+            (
+                "bare urls",
+                "see https://example.com/a_b/~c?d=e* and www.example.com/_x",
+                "see https://example.com/a_b/~c?d=e* and www.example.com/_x",
+            ),
+            (
+                "links",
+                "[*x* \\_y](https://example.com/a_b) <https://example.com/~c_>",
+                "_x_ ˍy <https://example.com/a_b> https://example.com/~c_",
+            ),
+            (
+                "images",
+                "![_alt_](https://attacker.example/?d=1)",
+                "[image: alt]",
+            ),
+            (
+                "table",
+                "| a | *b* |\n|---|---|\n| 1 | 2 |",
+                "a | _b_\n1 | 2",
+            ),
+            ("raw html", "<b>x</b>", "<b>x</b>"),
+            (
+                "control characters",
+                "a\u{1b}[1mb\u{7}c\n\n```\nx\u{0}y\n```",
+                "a[1mbc\n\n```\nxy\n```",
+            ),
+            ("multibyte", "*Grüße* 👋", "_Grüße_ 👋"),
+        ];
+        for (name, input, expected) in cases {
+            assert_eq!(whatsapp(input), *expected, "case {name}");
         }
     }
 }

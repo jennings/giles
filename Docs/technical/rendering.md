@@ -11,6 +11,7 @@ built-in web channel and the Rust channel plugins share one implementation (§10
 | `is_local_image(url)`           | Web (as `allow_image`) | Whether an image URL loads nothing remote |
 | `plain_text(markdown)`          | Email (text part)      | Readable plain text                       |
 | `irc(markdown, max_line_bytes)` | IRC                    | Message lines with IRC formatting codes   |
+| `whatsapp(markdown)`            | WhatsApp               | WhatsApp markup                           |
 
 ## Shared Rules
 
@@ -80,9 +81,8 @@ remote, protocol-relative, reference-style, and linked images.
 The text renderers share one layout:
 
 - Blocks (paragraphs, headings, code blocks, lists, quotes, tables) are separated by a blank line
-  (on IRC, just a line break).
-  Soft line breaks stay line breaks: in chat and plain-text mail, a line break the model wrote is
-  more often meant than not.
+  (on IRC, just a line break). Soft line breaks stay line breaks: in chat and plain-text mail, a
+  line break the model wrote is more often meant than not.
 - Lists use `-` and `1.` markers followed by a space (an ordered list keeps its start number); an
   item's later lines are indented by the marker's width. Items of a loose list are separated by
   blank lines. Task list items start with `[ ]` or `[x]`.
@@ -146,3 +146,43 @@ a message is split a little early rather than truncated by the server.
 - Every line fits the limit, reopening codes included, unless the limit is below 4 bytes and a
   single character can't fit; then that character is sent alone. When the reopening codes and the
   next character don't fit together, the codes are left out.
+
+## WhatsApp
+
+`whatsapp(markdown)` renders WhatsApp's markup:
+
+- Strong text and headings are `*bold*`, emphasis `_italic_`, strikethrough `~struck~`, inline code
+  `` `code` ``, and code blocks are fenced with three backticks on lines of their own. WhatsApp
+  shows text inside the fences literally.
+- Lists and quotes use the `-`, `1.`, and `>` syntax WhatsApp renders since 2023. WhatsApp has no
+  nested lists: a nested item shows as an indented line. Tables are rows with `|` between cells.
+- WhatsApp styles don't span lines, so open styles are closed before each line break and reopened
+  after it.
+
+WhatsApp has no escape character, so text that only looks like markup must not contain the
+characters that form it. In prose, `*`, `_`, `~`, and `` ` `` are replaced with look-alikes: `∗`
+(U+2217), `ˍ` (U+02CD), `∼` (U+223C), and `ˋ` (U+02CB). Two exceptions keep common text intact:
+
+- `*`, `_`, and `~` between two letters or digits stay (`snake_case`), since WhatsApp only applies
+  a style at word boundaries.
+- A word containing `://` or starting with `www.` stays, so bare URLs still work as links. Link
+  targets and autolinks are written as they are, for the same reason.
+
+The block markers WhatsApp recognizes at the start of a line get the same treatment when they come
+from text rather than from the renderer's own lists and quotes: a leading `>` becomes `˃` (U+02C3),
+a leading `-` and space becomes `‐` (U+2010), and the dot of a leading number and dot (`1.`)
+becomes `․` (U+2024). This covers escaped markers (`1\. not a list`), lines after a soft break, and
+table rows; code blocks are left as they are.
+
+Inline code containing a backtick, which WhatsApp's inline code can't hold, is shown as escaped
+text; a triple backtick inside a code block, which would end it, becomes `ˋˋˋ`.
+
+Limits:
+
+- WhatsApp's formatting rules are not fully published. The rules above follow its help pages and
+  third-party descriptions of its behavior; no WhatsApp client was used to test them. Copying text
+  with a look-alike yields the look-alike, not the original character.
+- A style that touches a letter on the outside, such as CommonMark's intraword `a*b*c` (written as
+  `a_b_c`), is probably shown with its markers rather than styled.
+- `pulldown-cmark` has no bare-URL detection, so markup inside a bare URL (`https://x/*a*`) is
+  parsed as emphasis before any renderer sees it. The same holds for every format.

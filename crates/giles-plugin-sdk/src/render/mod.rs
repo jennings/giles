@@ -10,7 +10,7 @@ mod text;
 
 pub use html::{html, is_local_image};
 pub use irc::irc;
-pub use text::plain_text;
+pub use text::{plain_text, whatsapp};
 
 use std::borrow::Cow;
 
