@@ -9,6 +9,7 @@ built-in web channel and the Rust channel plugins share one implementation (§10
 | ----------------------------- | ---------------------- | ----------------------------------------- |
 | `html(markdown, allow_image)` | Web, email (HTML part) | Sanitized HTML fragment                   |
 | `is_local_image(url)`         | Web (as `allow_image`) | Whether an image URL loads nothing remote |
+| `plain_text(markdown)`        | Email (text part)      | Readable plain text                       |
 
 ## Shared Rules
 
@@ -72,3 +73,33 @@ only tags in the output are the fixed set `pulldown-cmark` writes for CommonMark
 `<a>` and `<img>` tags the renderer builds and escapes itself. The tests cover the attack cases:
 script and image tags, `javascript:` in every spelling, attribute breakout through URLs and titles,
 remote, protocol-relative, reference-style, and linked images.
+
+## Text Layout
+
+The plain-text, IRC, and WhatsApp renderers share one layout:
+
+- Blocks (paragraphs, headings, code blocks, lists, quotes, tables) are separated by a blank line.
+  Soft line breaks stay line breaks: in chat and plain-text mail, a line break the model wrote is
+  more often meant than not.
+- Lists use `-` and `1.` markers followed by a space (an ordered list keeps its start number); an
+  item's later lines are indented by the marker's width. Items of a loose list are separated by
+  blank lines. Task list items start with `[ ]` or `[x]`.
+- Quotes prefix every line with `>` and a space.
+- Links show their target after the text, as `text <url>` (RFC 3986, appendix C); autolinks show
+  the URL once. Text formats are inert, so the target is shown whatever its scheme.
+- Images show only their alt text, as `[image: alt]`, never the URL. An image is the classic
+  injection-exfiltration vector, and nothing is lost by dropping its URL from a text format. This
+  is defense in depth, not a guarantee: link targets are still printed, and some chat clients
+  (such as The Lounge on IRC) prefetch any URL they see, so a prompt-injected link can still leak
+  data to a client that does.
+- Raw HTML is shown as text. Thematic breaks are `---`.
+
+## Plain Text
+
+`plain_text` renders the text part of email:
+
+- Level 1 headings are underlined with `=`, other levels with `-`.
+- `*strong*`, `_emphasis_`, `~~strikethrough~~`, and `` `code` `` keep a light, widely read markup.
+- Code blocks keep their text verbatim, indented by four spaces.
+- Tables are aligned columns separated by ` | `, with a `-` rule under the header row. Widths count
+  characters, so wide (CJK, emoji) and combining characters misalign columns slightly.
