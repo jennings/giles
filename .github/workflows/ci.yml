@@ -19,6 +19,8 @@ env:
   # Documentation tool versions; keep in step with the versions used locally.
   RUMDL_VERSION: "0.3.0"
   MDBOOK_VERSION: "0.4.40"
+  # Protobuf tool version; keep in step with the version used locally.
+  BUF_VERSION: "1.75.0"
 
 jobs:
   rust:
@@ -63,5 +65,32 @@ jobs:
       - name: Build book
         run: mdbook build Docs
 
-  # Protobuf checks (`buf lint`, `buf breaking` against main) join as their own job in task 1.4,
-  # when the first `.proto` sources land.
+  protobuf:
+    name: Protobuf
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Full history, so `buf breaking` can read the base commit.
+          fetch-depth: 0
+      - name: Install buf
+        uses: bufbuild/buf-action@v1
+        with:
+          version: ${{ env.BUF_VERSION }}
+          setup_only: true
+      - name: Lint
+        run: buf lint
+      - name: Check formatting
+        run: buf format --diff --exit-code
+      # Pull requests compare against the base branch; pushes to main compare against the previous
+      # tip of main, covering every commit in the push. A base without buf.yaml (before the first
+      # contracts landed, or a new branch) has nothing to compare against.
+      - name: Check for breaking changes
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -n "${BASE}" ] && git cat-file -e "${BASE}:buf.yaml" 2>/dev/null; then
+            buf breaking --against ".git#ref=${BASE}"
+          else
+            echo "::notice::No buf module at base ${BASE}; skipping buf breaking."
+          fi

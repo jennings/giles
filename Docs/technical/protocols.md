@@ -151,6 +151,9 @@ buf format --diff --exit-code   # `buf format -w` fixes it
 buf breaking --against '<base>' # e.g. a directory or '.git#ref=<commit>'
 ```
 
+CI runs all three in the Protobuf job, comparing each pull request against its base and each push
+to `main` against the previous tip of `main` (see [Continuous Integration](ci.md)).
+
 ## Deviations from the PLAN snippets
 
 The PLAN's Protobuf snippets (sections 8.2 to 8.7) were written before `buf` lint; they're updated

@@ -81,7 +81,7 @@ All parallel. Each task needs only Phase 0.
   triggers on `messages`. Typed query APIs, tested against temporary databases.
 - [ ] **1.3 Blob store** (§11.5). Content-addressed files under `data/blobs/sha256/`: streaming put
   with a size limit, get, media type and name metadata, `MediaRef` ids. (The sweep is 4.2.)
-- [ ] **1.4 Protobuf contracts** (§8). `.proto` sources under `proto/giles/<package>/v1/`:
+- [x] **1.4 Protobuf contracts** (§8). `.proto` sources under `proto/giles/<package>/v1/`:
   `types.v1` (mirroring §5, `BlobRef`), `plugin.v1` (base service, blobs), `channel.v1`,
   `admin.v1`, and the `provider.v1` messages `DescribeResponse` references (`ProviderService` is
   deferred). `giles-proto` `build.rs` with `tonic-build`, using `PROTOC` or a vendored `protoc`.

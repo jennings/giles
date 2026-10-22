@@ -31,8 +31,20 @@ mdbook build Docs
 `rumdl` reads `.config/rumdl.toml` (100-column lines, reflowed). The tool versions are set once, in
 the workflow's `env` block (`RUMDL_VERSION`, `MDBOOK_VERSION`); update them there.
 
-The Protobuf checks (`buf lint`, and `buf breaking` against `main`) are added as a separate job
-with the first `.proto` sources.
+**Protobuf** runs on `ubuntu-latest`. It installs a pinned `buf` (`BUF_VERSION`, with the
+`bufbuild/buf-action` action in setup-only mode) and runs, from the repository root:
+
+```sh
+buf lint
+buf format --diff --exit-code
+buf breaking --against ".git#ref=$BASE"
+```
+
+`$BASE` is the pull request's base commit, or for a push to `main` the previous tip of `main`
+(`github.event.before`), so a push of several commits is checked as a whole. The checkout fetches
+full history so the base is available. If the base has no `buf.yaml` (the push that added the first
+contracts, or a new branch), there is nothing to compare against and the step only logs a notice.
+See [gRPC Protocols](protocols.md) for the rules.
 
 ## Running the checks locally
 
@@ -43,8 +55,11 @@ cargo fmt --all --check \
   && cargo clippy --workspace --all-targets --locked -- -D warnings \
   && cargo test --workspace --locked \
   && rumdl check . \
-  && mdbook build Docs
+  && mdbook build Docs \
+  && buf lint \
+  && buf format --diff --exit-code
 ```
 
-`rumdl fmt .` fixes most Markdown findings, including reflowing long lines. Install `rumdl` and
-`mdbook` at the versions in the workflow so local results match CI.
+`rumdl fmt .` fixes most Markdown findings, including reflowing long lines, and `buf format -w`
+formats the `.proto` files. Install `rumdl`, `mdbook`, and `buf` at the versions in the workflow so
+local results match CI.
