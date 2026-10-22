@@ -806,8 +806,8 @@ User-run plugins reached over TCP, with optional TLS and a bearer token or OAuth
 - The core advertises itself too: `DescribeRequest` carries the core's protocol minor version and a
   list of feature names, so a newer plugin knows whether this core understands a newer field.
 - Unknown variants: the core acks and ignores a `ChannelEvent` it doesn't recognize (so the plugin
-  doesn't resend it forever), and ignores unknown `CompleteEvent` and `CallServerMessage` variants.
-  Plugins ignore unknown fields and fall back to defaults.
+  doesn't resend it forever), and ignores unknown `CompleteResponse` and `CallServerMessage`
+  variants. Plugins ignore unknown fields and fall back to defaults.
 
 ### 7.9 Tool Discovery Cache
 
@@ -880,8 +880,8 @@ Making stdio servers work under the sandbox:
   core; plugin-to-core messages travel only on streams the core opened. A go-plugin-style broker
   can be added later if a feature needs plugin-initiated calls.
 - These contracts cover provider and channel plugins. Toolsets speak MCP instead (section 7.10).
-- Every gRPC plugin serves `giles.plugin.v1.Plugin`, `grpc.health.v1.Health`, and exactly one kind
-  service.
+- Every gRPC plugin serves `giles.plugin.v1.PluginService`, `grpc.health.v1.Health`, and exactly one
+  kind service.
 - Shared message types live in `giles.types.v1` and mirror section 5.
 - Message size: the SDK and the `Remote*` adapters set explicit limits (default 16 MiB per message)
   instead of `tonic`'s 4 MiB default, which a long `CompleteRequest` would exceed. Media never
@@ -893,12 +893,12 @@ Making stdio servers work under the sandbox:
 syntax = "proto3";
 package giles.plugin.v1;
 
-service Plugin {
+service PluginService {
   rpc Describe(DescribeRequest) returns (DescribeResponse);
   rpc Configure(ConfigureRequest) returns (ConfigureResponse);
   rpc Shutdown(ShutdownRequest) returns (ShutdownResponse); // drain hint
-  rpc PutBlob(stream BlobChunk) returns (giles.types.v1.BlobRef); // core to plugin
-  rpc GetBlob(GetBlobRequest) returns (stream BlobChunk);          // plugin to core
+  rpc PutBlob(stream PutBlobRequest) returns (PutBlobResponse);   // core to plugin
+  rpc GetBlob(GetBlobRequest) returns (stream GetBlobResponse);   // plugin to core
   rpc ReleaseBlob(ReleaseBlobRequest) returns (ReleaseBlobResponse);
 }
 
@@ -914,15 +914,15 @@ message DescribeRequest {
   repeated string core_features = 2;  // e.g. "channel.status", "blob.release"
 }
 message DescribeResponse {
+  reserved 4, 12;                // 4: config schema, deferred (plugins validate in Configure);
+                                 // 12: toolset capabilities
   PluginKind kind = 1;
   string name = 2;               // <name> from giles-<type>-<name>
   string version = 3;            // the plugin's own version
-  reserved 4;                    // config schema: deferred; plugins validate in Configure
-  SandboxGrants requested_grants = 5; // advisory only; shown in `giles status`, never applied
+  SandboxGrants requested_grants = 5; // section 12.4; advisory, shown in `giles status`, never applied
   oneof capabilities {
     giles.provider.v1.ProviderCapabilities provider = 10;
     giles.channel.v1.ChannelCapabilities channel = 11;
-    // 12 reserved (toolsets)
   }
 }
 
@@ -948,7 +948,7 @@ message BlobRef {
   string id = 1;         // plugin-local handle, or the core's sha256 id
   string media_type = 2;
   uint64 size = 3;
-  string name = 4;       // optional file name
+  optional string name = 4; // file name
 }
 ```
 
@@ -961,7 +961,10 @@ message BlobChunk {
     bytes data = 2;                     // at most 1 MiB each
   }
 }
+message PutBlobRequest { BlobChunk chunk = 1; }
+message PutBlobResponse { giles.types.v1.BlobRef blob = 1; }
 message GetBlobRequest { string id = 1; }
+message GetBlobResponse { BlobChunk chunk = 1; }
 message ReleaseBlobRequest { repeated string ids = 1; }
 message ReleaseBlobResponse {}
 ```
@@ -984,7 +987,7 @@ package giles.provider.v1;
 
 service ProviderService {
   rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
-  rpc Complete(CompleteRequest) returns (stream CompleteEvent);
+  rpc Complete(CompleteRequest) returns (stream CompleteResponse);
 }
 
 message ProviderCapabilities {
@@ -997,10 +1000,10 @@ message CompleteRequest {
   repeated giles.types.v1.Block system = 2;
   repeated giles.types.v1.Message messages = 3;
   repeated giles.types.v1.ToolSpec tools = 4;
-  GenerationParams params = 5; // max_tokens, temperature, reasoning budget
+  giles.types.v1.GenerationParams params = 5; // max_tokens, temperature, reasoning budget, caching
 }
 
-message CompleteEvent {
+message CompleteResponse {
   oneof event {
     BlockStart block_start = 1;
     TextDelta text_delta = 2;
@@ -1031,7 +1034,7 @@ message CompleteEvent {
 package giles.channel.v1;
 
 service ChannelService {
-  rpc Events(stream EventAck) returns (stream ChannelEvent);
+  rpc Events(stream EventsRequest) returns (stream EventsResponse);
   rpc Send(SendRequest) returns (SendResponse);
 }
 
@@ -1040,6 +1043,9 @@ message ChannelCapabilities {
   reserved 2, 3;          // message edits and webhooks: deferred
   bool can_initiate = 4;  // can start a conversation with an identity (SendRequest.recipient)
 }
+message EventsRequest { oneof request { EventAck ack = 1; } } // core to plugin
+message EventAck { string event_id = 1; }
+message EventsResponse { ChannelEvent event = 1; }               // plugin to core
 
 message ChannelEvent {
   string event_id = 1;
@@ -1050,16 +1056,16 @@ message ChannelEvent {
 }
 
 message InboundMessage {
-  Conversation conversation = 1;  // id, kind (direct/group), optional title
+  giles.types.v1.ConversationRef conversation = 1; // id, kind (direct/group), optional title
   string sender = 2;              // native identifier (section 3.3)
-  string sender_display_name = 3;
+  optional string sender_display_name = 3;
   string text = 4;
   repeated giles.types.v1.BlobRef attachments = 5;
-  string reply_to = 6;
+  optional string reply_to = 6;
   google.protobuf.Timestamp sent_at = 7;
   bool sender_authenticated = 8;  // false: the core drops the message
   repeated string sender_aliases = 9; // other ids for the same sender, e.g. a WhatsApp LID
-  string message_id = 10;         // the message's own id, for reply_to; may differ from event_id
+  optional string message_id = 10; // the message's own id, for reply_to; may differ from event_id
 }
 
 // Shown in `giles status`, ListPlugins, and an admin page that renders QR codes.
@@ -1071,8 +1077,6 @@ message ChannelStatus {
   }
 }
 
-message EventAck { string event_id = 1; }
-
 message SendRequest {
   oneof target {
     string conversation_id = 1;   // reply into an existing conversation
@@ -1080,7 +1084,7 @@ message SendRequest {
   }
   string markdown = 2;           // CommonMark; the channel renders it
   repeated giles.types.v1.BlobRef attachments = 3; // handles from PutBlob
-  string reply_to = 4;
+  optional string reply_to = 4;
   reserved 5;                    // editing a sent message: deferred
 }
 message SendResponse { string message_id = 1; } // or UNAVAILABLE: recipient unreachable
@@ -1098,10 +1102,10 @@ or later, which includes elicitation.
 
 ### 8.7 Admin
 
-The core serves `giles.admin.v1.Admin` on `<root>/run/admin.sock` (mode 0600). The `giles` CLI and
-the web admin pages are its clients. Every call needs the token in `<root>/run/admin.token` (mode
-0600, outside every plugin's grants), because file modes don't separate the core from its plugins,
-which run as the same user.
+The core serves `giles.admin.v1.AdminService` on `<root>/run/admin.sock` (mode 0600). The `giles`
+CLI and the web admin pages are its clients. Every call needs the token in `<root>/run/admin.token`
+(mode 0600, outside every plugin's grants), because file modes don't separate the core from its
+plugins, which run as the same user.
 
 | Area     | RPCs                                                                      |
 | -------- | ------------------------------------------------------------------------- |
@@ -1114,7 +1118,8 @@ which run as the same user.
 | Usage    | `UsageReport`                                                             |
 | Backup   | `Backup`                                                                  |
 
-v1 reads config at startup and has no reload RPC; reload is deferred (D28).
+v1 reads config at startup and has no reload RPC; reload is deferred (D28). The Users and Pairing
+RPCs belong to multi-user support (section 1.1) and are added to `giles.admin.v1` with it.
 
 ## 9. HTTP and Web
 
