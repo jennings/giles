@@ -45,7 +45,7 @@ Sequential, except 0.2 and 0.3, which can run in parallel after 0.1.
 - [ ] **0.4 `giles` binary skeleton** (§11.1). `clap` CLI with `serve`, `tracing` subscriber,
   `anyhow`, `GILES_HOME` resolution (default `~/.giles`), creation of the data root layout, the
   `$TMPDIR` fallback for over-long socket paths, clean shutdown on SIGINT/SIGTERM.
-- [ ] **0.5 `giles-types`** (§4.3, §4.4, §5). The shared contract everything else builds on:
+- [x] **0.5 `giles-types`** (§4.3, §4.4, §5). The shared contract everything else builds on:
   - Message model: `Message`, `Role`, `Block`, `Opaque`, `MessageMeta`, `MediaRef`, `Usage`,
     `StopReason`, with serde (blocks are stored as JSON).
   - Provider types: `CompletionRequest`, `CompletionEvent`, `ToolSpec`, `GenerationParams`,
