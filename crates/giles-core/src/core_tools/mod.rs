@@ -10,9 +10,13 @@
 //! fields; what it needs to know about the turn arrives in each [`CoreCall`]. [`register`] adds
 //! every core tool at startup.
 
+mod load_skill;
 mod memory;
 mod memory_search;
+mod send_attachment;
 
+#[cfg(test)]
+mod media_tests;
 #[cfg(test)]
 mod tests;
 
@@ -24,11 +28,16 @@ use giles_types::{CallContext, ToolSpec};
 use serde_json::Value;
 
 use crate::agent_loop::ToolOutput;
+use crate::media::SessionMedia;
 use crate::registry::RegistryError;
 use crate::runtime::Runtime;
+use crate::sessions::Reply;
+use crate::skills::SkillSet;
 
+pub use load_skill::{LOAD_SKILL, LoadSkillTool, MAX_INLINE_TEXT_BYTES};
 pub use memory::{MEMORY, MemoryTool};
 pub use memory_search::{DEFAULT_LIMIT, MAX_LIMIT, MEMORY_SEARCH, MemorySearchTool, NO_MATCHES};
+pub use send_attachment::{SEND_ATTACHMENT, SendAttachmentTool};
 
 /// Registers every core tool with `runtime`'s registry, so sessions started from now on can
 /// offer them (each agent's `tools` globs still decide).
@@ -46,6 +55,8 @@ pub fn register(runtime: &Runtime) -> Result<(), RegistryError> {
         runtime.store.clone(),
         runtime.config.clone(),
     )))?;
+    registry.register_core_tool(Arc::new(LoadSkillTool::new(runtime.blobs.clone())))?;
+    registry.register_core_tool(Arc::new(SendAttachmentTool::new(runtime.blobs.clone())))?;
     Ok(())
 }
 
@@ -54,6 +65,10 @@ pub fn register(runtime: &Runtime) -> Result<(), RegistryError> {
 pub struct TurnContext {
     /// The turn's session, as loaded when the turn started.
     pub session: Session,
+    /// The session's conversation, where `send_attachment` sends; `None` for an isolated job run.
+    pub reply: Option<Reply>,
+    /// The skills the session's prompt lists, which `load_skill` answers from.
+    pub skills: Arc<SkillSet>,
 }
 
 /// One call of a core tool.
@@ -67,6 +82,8 @@ pub struct CoreCall {
     pub context: CallContext,
     /// The turn.
     pub turn: Arc<TurnContext>,
+    /// The media the session can refer to (its history's), for tools that take a media id.
+    pub media: Arc<SessionMedia>,
 }
 
 /// A tool the core implements.

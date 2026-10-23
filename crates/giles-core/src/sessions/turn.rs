@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use giles_store::{InboxEntry, InboxId, Session, SessionId, Store};
 use giles_types::{
-    Channel, ChannelEvent, ConversationId, Error, EventId, InboundMessage, MessageId,
+    Channel, ChannelEvent, ConversationId, Error, EventId, InboundMessage, MediaRef, MessageId,
     OutboundMessage, SendTarget, Timestamp, UserId,
 };
 use tokio::sync::Notify;
@@ -275,9 +275,23 @@ impl Reply {
     ///
     /// # Errors
     ///
+    /// As [`send_with_attachments`](Self::send_with_attachments).
+    pub async fn send(&self, markdown: impl Into<String>) -> giles_types::Result<MessageId> {
+        self.send_with_attachments(markdown, Vec::new()).await
+    }
+
+    /// Sends `markdown` (may be empty) with `attachments` from the blob store into the
+    /// conversation.
+    ///
+    /// # Errors
+    ///
     /// [`Error::Unavailable`] if the instance has no registered channel; otherwise the
     /// channel's error.
-    pub async fn send(&self, markdown: impl Into<String>) -> giles_types::Result<MessageId> {
+    pub async fn send_with_attachments(
+        &self,
+        markdown: impl Into<String>,
+        attachments: Vec<MediaRef>,
+    ) -> giles_types::Result<MessageId> {
         let channel = self.channel().ok_or_else(|| {
             Error::unavailable(format!("channel `{}` is not available yet", self.instance))
         })?;
@@ -285,7 +299,7 @@ impl Reply {
             .send(OutboundMessage {
                 target: SendTarget::Conversation(self.conversation.clone()),
                 markdown: markdown.into(),
-                attachments: Vec::new(),
+                attachments,
                 reply_to: None,
             })
             .await

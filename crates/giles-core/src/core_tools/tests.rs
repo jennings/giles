@@ -129,7 +129,12 @@ async fn call(
             requester,
             conversation: None,
         },
-        turn: Arc::new(TurnContext { session }),
+        turn: Arc::new(TurnContext {
+            session,
+            reply: None,
+            skills: Arc::default(),
+        }),
+        media: Arc::default(),
     })
     .await
 }

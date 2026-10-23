@@ -63,6 +63,11 @@ A skill with a mistake is skipped, and Giles logs a warning naming the file and 
 agent's other skills keep working. Skills are read when a conversation starts, so edits need no
 restart. Giles never runs scripts that a skill contains.
 
+When the agent loads a skill it also sees the list of the skill's other files (hidden files left
+out) and can read any of them. A file it reads is shown to it and stored like an attachment, so
+it can hand the file to a tool or send it to you (`send_attachment`). Only files inside the
+skill's directory can be read: `..` and links that lead elsewhere are refused.
+
 ## Memory Files
 
 Memory is plain Markdown, one file per scope:

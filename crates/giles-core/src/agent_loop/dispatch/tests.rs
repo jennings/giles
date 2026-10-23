@@ -270,6 +270,8 @@ impl Setup {
                     ended_at: None,
                     last_message_at: None,
                 },
+                reply: None,
+                skills: Arc::default(),
             }),
             skip,
             approvals: Arc::new(approvals),

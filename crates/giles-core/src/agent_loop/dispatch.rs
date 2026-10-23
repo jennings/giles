@@ -254,6 +254,7 @@ impl ToolDispatcher for PolicyDispatcher {
                                     input: call.input,
                                     context,
                                     turn,
+                                    media,
                                 };
                                 async move { tool.call(request).await }.boxed()
                             }

@@ -193,9 +193,14 @@ impl SessionMedia {
     pub fn from_messages(messages: &[Message]) -> Self {
         let mut media = Self::default();
         for message in messages {
-            media.add_all(&message.content);
+            media.add(message);
         }
         media
+    }
+
+    /// Adds the media in `message`; media already known keeps its first name.
+    pub fn add(&mut self, message: &Message) {
+        self.add_all(&message.content);
     }
 
     fn add_all(&mut self, content: &[Block]) {

@@ -314,7 +314,8 @@ fails the turn like any other.
 returns a stream of `(index, ToolOutput { content, is_error })`, one per call, in any order.
 Dropping it must cancel the calls still running. `context` is the `CallContext`: agent,
 requester, and the session's channel conversation. `media` is the session's media (above). `turn`
-is the `core_tools::TurnContext` core tools get (the turn's session), built once per turn. `skip`
+is the `core_tools::TurnContext` core tools get (the turn's session, its `Reply`, and the skills
+its prompt lists), built once per turn. `skip`
 is the steering signal above; `approvals` the turn's `TurnApprovals`, built once per turn by
 `TurnApprovals::for_turn`.
 
@@ -360,7 +361,7 @@ refers to, and the first `ToolCallEvent::Result` is the output; a `call` error, 
 a stream that ends without a result becomes an error result with the error's text. Progress is
 logged. A `ToolCallEvent::ApprovalRequest` (MCP elicitation) is asked through
 `TurnApprovals::answer_question` and answered on the handle's `answers`; that wait is part of the
-call. A core tool runs `CoreTool::call(CoreCall { id, input, context, turn })` (see
+call. A core tool runs `CoreTool::call(CoreCall { id, input, context, turn, media })` (see
 [Core Tools](#core-tools)), and its `ToolOutput` is the output. Its `$media` inputs are checked
 against the session's media too.
 
@@ -376,7 +377,9 @@ the wait for an `ask` approval before it). A call still running at its deadline 
 The core tools (§6.5) live in `giles_core::core_tools`, one module per tool, each implementing
 `CoreTool { fn spec() -> ToolSpec; async fn call(CoreCall) -> ToolOutput }`. A tool keeps its
 long-lived dependencies (store, data root, configuration) in its own fields; per call it gets the
-`ToolUse` id, the input, the `CallContext`, and the shared `TurnContext`. Failures are error
+`ToolUse` id, the input, the `CallContext`, the shared `TurnContext` (`session`, `reply` where
+`send_attachment` sends, `skills` that `load_skill` answers from), and the batch's session media
+(`media`, for tools that take a media id). Failures are error
 results, never panics. `Registry::register_core_tool(Arc<dyn CoreTool>)` stores the
 implementation and adds its spec to the tool index (`ToolIndex::set_core_tool`), and the dispatcher
 finds it with `Registry::core_tool(name)` when the call starts.

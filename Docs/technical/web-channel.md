@@ -243,9 +243,11 @@ calls, reasoning, and provider data (PLAN section 6.9); a message left with noth
 skipped. A user message's time prefix (`[Thu 2026-10-22 14:03 PDT] `, which the agent loop stores
 for the model) is cut with `agent_loop::history::strip_time_prefix`, here and in chat titles, and
 a media reference stored right before its media (`[media:<id> <name> <type>]`) is left out, since
-the media itself is shown. A "New session" marker separates sessions (`/new`, idle reset). Messages
-sent with `send` that the agent loop doesn't store (notices) are only on pages that were open at
-the time. The chat list is
+the media itself is shown. A `send_attachment` call whose result isn't an error shows as an
+assistant message with its caption and the media it sent (looked up by id among the media of the
+loaded rows). A "New session" marker separates sessions (`/new`, idle reset). Messages sent with
+`send` that the agent loop doesn't store (notices) are only on pages that were open at the time.
+The chat list is
 `Store::channel_conversations(instance, user, 200)`, titled with the first line of the first user
 message (80 characters at most).
 

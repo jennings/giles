@@ -105,6 +105,37 @@ same rule as for the directories of binaries Giles runs). Local skills live unde
 which grants can't overlap anyway. `giles_core::media::media_type_for(name, bytes)` gives a file's
 media type from its extension, else `text/plain` for UTF-8 text, else `application/octet-stream`.
 
+### The `load_skill` and `send_attachment` Tools
+
+Core tools in `giles_core::core_tools::{load_skill, send_attachment}`, registered by
+`core_tools::register` with the runtime's blob store.
+
+`load_skill(name, file?)` (`LoadSkillTool`; parallel-safe) answers from
+`TurnContext::skills`, the `SkillSet` the session's prompt lists (`SessionPrompt::skills`), so a
+name the prompt doesn't show is `unknown skill <name>`:
+
+- Without `file`: the body of `SKILL.md`, then `Files of this skill (read one with load_skill and
+  file):` and one `- <path>` line per `list_resources` entry (`- (more files not listed)` when
+  truncated). A listing failure is logged and leaves the body alone.
+- With `file`: `read_resource` (so nothing outside the skill's directory, hidden, or over 10 MiB),
+  then the bytes go into the blob store named by the file's name with `media_type_for`'s type. The
+  result is `` `<path>` (<type>, <n> bytes): `` and the text, for UTF-8 text without NUL bytes up
+  to `MAX_INLINE_TEXT_BYTES` (64 KiB), else `` `<path>` (<type>, <n> bytes) is attached. ``; then
+  the file's reference and media block (`media::attachment`). The file is then media of the
+  session like any other: the model can pass `{"$media": "<id>"}` to a tool (§6.6, §7.10) or send
+  it.
+
+`send_attachment(media, caption?)` (`SendAttachmentTool`; not parallel-safe) sends one of the
+session's media (`CoreCall::media`, every media block of the history, by id) into the turn's
+conversation (`TurnContext::reply`) as an `OutboundMessage` with the caption as its Markdown
+(empty without one) and the media as its one attachment (`Reply::send_with_attachments`). It
+answers `Sent [media:...].`, or an error result: `unknown media <id>` (not in the session's
+history), `this session has no conversation to send to` (an isolated job run), `media <id> is no
+longer stored` (`BlobStore::stat`), or `sending failed: <error>` (e.g. the channel isn't
+registered). The sent attachment isn't stored as a message (that would separate the `ToolUse`
+from its result): the transcript has the call and its result, and the web chat's history shows a
+call that succeeded as an assistant message with the caption and the media.
+
 ## Memory Files
 
 `giles_core::memory` reads and updates memory files: agent-wide `agents/<agent>/MEMORY.md`, per-user

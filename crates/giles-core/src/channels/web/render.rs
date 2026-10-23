@@ -2,15 +2,18 @@
 //! and the transcript history. Model output always goes through the sanitizing CommonMark
 //! renderer with only local images allowed (PLAN section 9).
 
+use std::collections::HashSet;
+
 use askama::Template;
 use giles_plugin_sdk::render::{html, is_local_image};
-use giles_store::{ConversationMessage, Entry, InboxEntry};
+use giles_store::{ConversationMessage, Entry, InboxEntry, SessionId};
 use giles_types::{Block, ChannelEvent, EventId, InboundMessage, MediaRef, Role, Timestamp};
 use tracing::error;
 
 use super::hub::Live;
 use crate::agent_loop::history;
-use crate::media;
+use crate::core_tools::SEND_ATTACHMENT;
+use crate::media::{self, SessionMedia};
 
 /// Media types `/blobs/<id>` shows inline (and the page shows as `<img>`): raster images only, the
 /// same set the renderer accepts as `data:` images. Everything else is a download.
@@ -202,9 +205,15 @@ pub(super) fn out_of_band(fragment: &str) -> String {
 /// and images and documents. A user message's time prefix (`[Thu 2026-10-22 14:03 PDT] `, added
 /// for the model by the agent loop) is left out, and so is each media reference stored before its
 /// media (`[media:<id> <name> <type>]`, [`media::attachment`]): the page shows the media itself.
-/// Tool calls, tool results, reasoning, and provider data never reach the page (PLAN section
-/// 6.9). `None` if nothing is left to show.
-fn visible(role: Role, content: &[Block]) -> Option<(String, Vec<&MediaRef>)> {
+/// A `send_attachment` call that succeeded shows what it sent: its caption and its media
+/// ([`Sent`]). Other tool calls, tool results, reasoning, and provider data never reach the page
+/// (PLAN section 6.9). `None` if nothing is left to show.
+fn visible<'a>(
+    session: SessionId,
+    role: Role,
+    content: &'a [Block],
+    sent: &'a Sent<'a>,
+) -> Option<(String, Vec<&'a MediaRef>)> {
     if content
         .iter()
         .any(|b| matches!(b, Block::ToolResult { .. }))
@@ -222,6 +231,12 @@ fn visible(role: Role, content: &[Block]) -> Option<(String, Vec<&MediaRef>)> {
             Block::Text { text } => texts.push(text.as_str()),
             Block::Image { media: m } | Block::Audio { media: m } => media.push(m),
             Block::Document { media: m, .. } => media.push(m),
+            Block::ToolUse { .. } => {
+                if let Some((caption, m)) = sent.attachment(session, block) {
+                    texts.extend(caption);
+                    media.push(m);
+                }
+            }
             _ => {}
         }
     }
@@ -230,6 +245,54 @@ fn visible(role: Role, content: &[Block]) -> Option<(String, Vec<&MediaRef>)> {
         return None;
     }
     Some((texts.join("\n\n"), media))
+}
+
+/// What `send_attachment` calls sent, for showing them in the transcript: the media the
+/// conversation's messages hold, by id, and the calls whose result isn't an error, by session
+/// and `ToolUse` id (ids are unique only within a session's provider responses).
+#[derive(Default)]
+struct Sent<'a> {
+    library: SessionMedia,
+    succeeded: HashSet<(SessionId, &'a str)>,
+}
+
+impl<'a> Sent<'a> {
+    fn new(rows: &'a [ConversationMessage]) -> Self {
+        let mut sent = Self::default();
+        for row in rows {
+            let Entry::Message(stored) = &row.message.entry else {
+                continue;
+            };
+            sent.library.add(stored);
+            for block in &stored.content {
+                if let Block::ToolResult {
+                    tool_use_id,
+                    is_error: false,
+                    ..
+                } = block
+                {
+                    sent.succeeded.insert((row.session, tool_use_id.as_str()));
+                }
+            }
+        }
+        sent
+    }
+
+    /// The caption and media of `block` if it's a `send_attachment` call that succeeded.
+    fn attachment(
+        &'a self,
+        session: SessionId,
+        block: &'a Block,
+    ) -> Option<(Option<&'a str>, &'a MediaRef)> {
+        let Block::ToolUse { id, name, input } = block else {
+            return None;
+        };
+        if name != SEND_ATTACHMENT || !self.succeeded.contains(&(session, id.as_str())) {
+            return None;
+        }
+        let media = self.library.get(input.get("media")?.as_str()?)?;
+        Some((input.get("caption").and_then(|c| c.as_str()), media))
+    }
 }
 
 /// Whether `text` is the media reference of `next`, the block after it.
@@ -247,13 +310,14 @@ fn is_reference_of(text: &str, next: Option<&Block>) -> bool {
 /// The stored transcript as message elements, with a marker where a new session (`/new`, idle
 /// reset) begins.
 pub(super) fn history(rows: &[ConversationMessage]) -> Vec<String> {
+    let sent = Sent::new(rows);
     let mut items = Vec::new();
     let mut session = None;
     for row in rows {
         let Entry::Message(stored) = &row.message.entry else {
             continue;
         };
-        let Some((text, media)) = visible(stored.role, &stored.content) else {
+        let Some((text, media)) = visible(row.session, stored.role, &stored.content, &sent) else {
             continue;
         };
         if session.is_some_and(|s| s != row.session) {
@@ -333,7 +397,8 @@ pub(super) fn is_stored(live: &Live, rows: &[ConversationMessage]) -> bool {
         Entry::Message(m) => {
             m.role == Role::Assistant
                 && m.meta.at.as_millisecond() >= live.started_at.as_millisecond()
-                && visible(m.role, &m.content).is_some_and(|(text, _)| text.contains(&live.text))
+                && visible(row.session, m.role, &m.content, &Sent::default())
+                    .is_some_and(|(text, _)| text.contains(&live.text))
         }
         Entry::EmptySlot { .. } => false,
     })
@@ -566,6 +631,40 @@ mod tests {
         assert!(items[0].contains("<img"), "{}", items[0]);
         assert!(!items[0].contains("[media:"), "{}", items[0]);
         assert!(items[1].contains("[media:"), "{}", items[1]);
+    }
+
+    #[test]
+    fn history_shows_what_send_attachment_sent() {
+        let photo = media("image/png", Some("cat.png"));
+        let send = |id: &str| Block::ToolUse {
+            id: id.into(),
+            name: "send_attachment".into(),
+            input: serde_json::json!({"media": photo.id.as_str(), "caption": "Your **cat**."}),
+        };
+        let result = |id: &str, is_error: bool| Block::ToolResult {
+            tool_use_id: id.into(),
+            content: vec![text("result")],
+            is_error,
+        };
+        let mut upload = vec![text("[Thu 2026-10-22 14:03 PDT] keep this")];
+        upload.extend(crate::media::attachment(photo.clone()));
+        let rows = vec![
+            row(1, 1, Role::User, upload),
+            row(1, 2, Role::Assistant, vec![send("t1")]),
+            row(1, 3, Role::User, vec![result("t1", false)]),
+            // A failed send shows nothing.
+            row(1, 4, Role::Assistant, vec![send("t2")]),
+            row(1, 5, Role::User, vec![result("t2", true)]),
+            // The same id in another session, failed there: the first session's success
+            // doesn't count for it.
+            row(2, 6, Role::Assistant, vec![send("t1")]),
+            row(2, 7, Role::User, vec![result("t1", true)]),
+        ];
+        let items = history(&rows);
+        assert_eq!(items.len(), 2, "{items:#?}");
+        assert!(items[1].starts_with(r#"<article id="m-h2" class="msg assistant">"#));
+        assert!(items[1].contains("<strong>cat</strong>"), "{}", items[1]);
+        assert!(items[1].contains("<img"), "{}", items[1]);
     }
 
     fn at(secs: i64) -> Timestamp {
