@@ -74,21 +74,13 @@ pub fn base_url(text: &str) -> Result<String, String> {
     Ok(url.as_str().trim_end_matches('/').to_owned())
 }
 
-/// Builds a client that trusts only the bundled Mozilla root certificates (`webpki-root-certs`),
-/// never the OS trust store, and doesn't follow redirects, so an API key header can't be
-/// forwarded to another host.
+/// Builds a provider client: [`tls_client_builder`](crate::net::tls_client_builder) (bundled
+/// roots only, no redirects, so an API key header can't be forwarded to another host) with the
+/// provider's timeouts.
 pub fn client(options: &HttpOptions) -> Result<reqwest::Client, Error> {
-    let roots = webpki_root_certs::TLS_SERVER_ROOT_CERTS
-        .iter()
-        .map(|der| reqwest::Certificate::from_der(der))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(Error::other)?;
-    reqwest::Client::builder()
-        .tls_certs_only(roots)
+    crate::net::tls_client_builder()?
         .connect_timeout(options.connect_timeout)
         .read_timeout(options.read_timeout)
-        .redirect(reqwest::redirect::Policy::none())
-        .user_agent(concat!("giles/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(Error::other)
 }

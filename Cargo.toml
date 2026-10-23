@@ -29,7 +29,7 @@ futures = "0.3.34"
 jiff = { version = "0.2.38", default-features = false, features = ["std"] }
 libc = "0.2.191"
 prost = "0.14.4"
-# HTTP client for the built-in providers. TLS is rustls; `providers::http::client` trusts only the
+# Outbound HTTP client (`giles_core::net`). TLS is rustls; `net::tls_client_builder` trusts only the
 # bundled `webpki-root-certs`, so the platform verifier this feature compiles in is never used.
 reqwest = { version = "0.13.5", default-features = false, features = ["http2", "rustls", "stream"] }
 serde = { version = "1.0.229", features = ["derive"] }

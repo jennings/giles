@@ -19,7 +19,8 @@ with no provider, either one, or both (`--no-default-features --features provide
 
 `providers::http` holds what every HTTP provider needs:
 
-- `client(&HttpOptions)` builds a `reqwest` client on rustls that trusts only the Mozilla roots
+- `client(&HttpOptions)` builds a `reqwest` client from `net::tls_client_builder()`, the core's
+  ungated outbound HTTP setup (also used by the MCP client): rustls trusting only the Mozilla roots
   bundled by `webpki-root-certs` (`tls_certs_only`), never the OS trust store. The binary behaves
   the same on every host and container, and never consults the macOS trust daemon. Redirects are
   not followed, so an API key header can't be forwarded to another host. `HttpOptions` has a

@@ -6,6 +6,7 @@ mod front_matter;
 pub mod http;
 pub mod identity;
 pub mod memory;
+pub mod net;
 pub mod paths;
 pub mod providers;
 pub mod router;
