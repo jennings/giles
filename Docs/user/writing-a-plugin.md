@@ -169,3 +169,55 @@ its own. Events not yet acknowledged are already on disk, so a plugin that is ki
 
 Log to stderr (for example with `tracing-subscriber`); Giles records each line under the instance's
 name. Anything written to stdout is discarded.
+
+## Running a plugin remotely
+
+The same channel can run on another machine, started by you rather than by Giles, and Giles
+connects to it over the network ([Remote Plugins](configuration.md#remote-plugins)). Call
+`serve_remote` instead of `serve` (the rest of `src/main.rs` as above, plus `tokio`'s `net`
+feature):
+
+```rust
+use giles_plugin_sdk::{RemoteAuth, RemoteServer, tls};
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let token = std::env::var("EXAMPLE_TOKEN").map_err(std::io::Error::other)?;
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:7443").await?;
+    let server = RemoteServer::new(listener, "/var/lib/giles-example", RemoteAuth::Bearer(token))
+        .tls(tls::server_config(
+            &std::fs::read("/etc/giles-example/fullchain.pem")?,
+            &std::fs::read("/etc/giles-example/key.pem")?,
+        )?);
+    ChannelPlugin::new("example", env!("CARGO_PKG_VERSION"))
+        .output(OutputMode::Blocks)
+        .serve_remote(server, |ctx: Configure| async move {
+            let config: Config = ctx.parse_config()?;
+            Ok(Example {
+                info: ChannelInfo {
+                    identity_namespace: format!("example:{}", config.server),
+                    output: OutputMode::Blocks,
+                    can_initiate: false,
+                },
+            })
+        })
+        .await
+}
+```
+
+- The directory you pass is the plugin's data directory (`ctx.data_dir()`); it's created if it
+  doesn't exist.
+- `RemoteAuth::Bearer(token)` accepts only calls carrying the token from the instance's
+  `auth = { bearer = ... }`. With `auth = { oauth = ... }`, Giles gets access tokens from your
+  OAuth server instead: check them with `RemoteAuth::verify(|token| ...)` (by signature or
+  introspection; it runs on every call, so cache slow checks). `RemoteAuth::None` accepts anyone
+  who can reach the port.
+- `.tls(...)` takes your certificate chain and key in PEM. Giles checks the certificate against the
+  public Mozilla roots and the host name in `address`, so use a certificate from a public CA (Let's
+  Encrypt works). Without TLS, Giles connects only to an address on its own machine, or with
+  `insecure = true`.
+- Giles connects at its startup and again after a lost connection, calling `configure` only the
+  first time: the channel you built stays. Restart the plugin to change its config. Events not yet
+  acknowledged wait in the data directory for the next connection.
+- The plugin runs until it gets `SIGINT` or `SIGTERM` (or the future given to `shutdown_on`); Giles
+  never stops it.

@@ -171,8 +171,30 @@ client_secret = { secret = "mail-bridge" }
 scopes = ["channel"]
 ```
 
-`oauth` uses the OAuth 2.0 client credentials grant: `token_url` (`https://`), `client_id`,
-`client_secret` (a credential), and optional `scopes`.
+`oauth` uses the OAuth 2.0 client credentials grant: `token_url` (`https://`, or `http://` on this
+machine), `client_id`, `client_secret` (a credential), and optional `scopes`.
+
+##### Remote Plugins
+
+A channel with `address` is a plugin you run yourself, on this machine or another one (see
+[Writing a Plugin](writing-a-plugin.md#running-a-plugin-remotely)); Giles never starts, stops, or
+sandboxes it, and the plugin keeps its own state.
+
+- Giles connects at startup. While the plugin can't be reached (or refuses Giles' token, or the
+  certificate doesn't check out), Giles runs without that channel and tries again after 1 s, then
+  2 s, 4 s, and so on up to every 5 minutes. A lost connection is retried the same way, and so is
+  any other failure, since only you can see when the plugin is fixed. `giles status` shows the
+  instance as `down, retrying at ...` with the last error, or as `running` with no pid.
+- With `https://`, the plugin's certificate must be valid for the host in `address` and issued by
+  a public certificate authority that Giles knows (its built-in copy of the Mozilla list; the
+  system's trust store isn't used). `insecure = true` only allows plain `http://`; it never turns
+  certificate checks off.
+- `auth = { bearer = ... }` sends `Authorization: Bearer <token>` on every call. With `oauth`,
+  Giles asks the token endpoint for an access token before connecting (HTTP Basic with the client
+  id and secret) and sends that instead, getting a new one a minute before it expires (or halfway
+  through its life if it's short). Without `auth`, Giles sends no credentials.
+- When Giles stops, it tells the plugin it's disconnecting and closes the connection; the plugin
+  keeps running, and messages that arrive meanwhile wait in it until Giles connects again.
 
 #### Toolsets
 

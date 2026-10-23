@@ -20,6 +20,7 @@ use tokio::time::Instant;
 use tonic::{Request, Response};
 
 use super::*;
+use crate::config::Secret;
 
 /// What the fake plugin does and saw.
 #[derive(Default)]
@@ -225,13 +226,12 @@ impl Harness {
                 },
             )),
         };
-        let secrets: Arc<[Secret]> = Arc::from(vec![Secret::new(SECRET)]);
         let parts = Parts {
             instance: &InstanceName::new("fake").unwrap(),
             connection: &connection,
             describe: &describe,
             identity_namespace: "fake:ns",
-            secrets: &secrets,
+            secrets: Secrets::new(vec![Secret::new(SECRET)]),
             span: &tracing::Span::none(),
         };
         let channel = RemoteChannel::from_parts(&parts, blobs.clone(), max_blob).unwrap();

@@ -1,9 +1,11 @@
-//! The core's gRPC client over its end of the socket pair (PLAN section 7.4,
-//! `Docs/technical/plugin-transport.md`): a one-shot connector, 16 MiB limits, and per-call
-//! metadata (the bearer token and a W3C `traceparent`).
+//! The core's gRPC client to a plugin: over its end of the socket pair (PLAN section 7.4,
+//! `Docs/technical/plugin-transport.md`) or a remote plugin's TCP connection (section 7.6), with
+//! a one-shot connector, 16 MiB limits, and per-call metadata (the bearer token and a W3C
+//! `traceparent`).
 
 use std::io;
 use std::os::unix::net::UnixStream as StdUnixStream;
+use std::sync::{Arc, PoisonError, RwLock};
 
 use giles_proto::MAX_MESSAGE_SIZE;
 use giles_proto::channel::v1::channel_service_client::ChannelServiceClient;
@@ -121,7 +123,8 @@ pub(crate) enum ConnectError {
     Token(tonic::metadata::errors::InvalidMetadataValue),
 }
 
-/// Adds the per-call metadata: `authorization: Bearer <token>` and a W3C `traceparent`.
+/// Adds the per-call metadata: `authorization: Bearer <token>` (unless a remote plugin is
+/// configured without `auth`) and a W3C `traceparent`.
 ///
 /// The core has no OpenTelemetry layer yet (PLAN section 13.4: export later), so its `tracing`
 /// spans carry no trace ids to propagate. Until then every call gets a fresh random trace id and
@@ -130,22 +133,56 @@ pub(crate) enum ConnectError {
 /// interceptor injects the current span's context instead.
 #[derive(Clone)]
 pub struct CallMetadata {
-    authorization: MetadataValue<Ascii>,
+    authorization: Authorization,
+}
+
+/// The `authorization` header a connection's calls carry.
+#[derive(Clone)]
+pub(crate) enum Authorization {
+    /// None: a remote plugin without `auth`.
+    None,
+    /// The same `Bearer <token>` on every call: a launched plugin's token, a remote plugin's
+    /// static bearer token.
+    Fixed(MetadataValue<Ascii>),
+    /// The current value, which changes when an OAuth access token is refreshed.
+    Shared(Arc<RwLock<MetadataValue<Ascii>>>),
+}
+
+impl Authorization {
+    /// [`Authorization::Fixed`] with `Bearer <token>`, marked sensitive.
+    pub(crate) fn bearer(
+        token: &Secret,
+    ) -> Result<Self, tonic::metadata::errors::InvalidMetadataValue> {
+        let mut value: MetadataValue<Ascii> = format!("Bearer {}", token.expose()).parse()?;
+        value.set_sensitive(true);
+        Ok(Self::Fixed(value))
+    }
 }
 
 impl CallMetadata {
     fn new(token: &Secret) -> Result<Self, tonic::metadata::errors::InvalidMetadataValue> {
-        let mut authorization: MetadataValue<Ascii> =
-            format!("Bearer {}", token.expose()).parse()?;
-        authorization.set_sensitive(true);
-        Ok(Self { authorization })
+        Ok(Self::with(Authorization::bearer(token)?))
+    }
+
+    /// Metadata with `authorization`.
+    pub(crate) fn with(authorization: Authorization) -> Self {
+        Self { authorization }
     }
 }
 
 impl Interceptor for CallMetadata {
     fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
         let metadata = request.metadata_mut();
-        metadata.insert("authorization", self.authorization.clone());
+        match &self.authorization {
+            Authorization::None => {}
+            Authorization::Fixed(value) => {
+                metadata.insert("authorization", value.clone());
+            }
+            Authorization::Shared(value) => {
+                let value = value.read().unwrap_or_else(PoisonError::into_inner).clone();
+                metadata.insert("authorization", value);
+            }
+        }
         if let Some(traceparent) = traceparent() {
             tracing::debug!(%traceparent, "plugin call");
             if let Ok(value) = traceparent.parse() {
@@ -207,5 +244,22 @@ mod tests {
             "Bearer tok-1"
         );
         assert!(request.metadata().get("traceparent").is_some());
+    }
+
+    #[test]
+    fn shared_authorization_follows_the_current_value_and_none_sends_none() {
+        let shared = Arc::new(RwLock::new("Bearer a".parse().unwrap()));
+        let mut metadata = CallMetadata::with(Authorization::Shared(Arc::clone(&shared)));
+        let header = |metadata: &mut CallMetadata| {
+            let request = metadata.call(Request::new(())).unwrap();
+            request
+                .metadata()
+                .get("authorization")
+                .map(|v| v.to_str().unwrap().to_owned())
+        };
+        assert_eq!(header(&mut metadata).as_deref(), Some("Bearer a"));
+        *shared.write().unwrap() = "Bearer b".parse().unwrap();
+        assert_eq!(header(&mut metadata).as_deref(), Some("Bearer b"));
+        assert_eq!(header(&mut CallMetadata::with(Authorization::None)), None);
     }
 }

@@ -38,8 +38,8 @@ use tokio_util::io::StreamReader;
 use tonic::{Code, Status, Streaming};
 use tracing::{Instrument as _, debug, info, warn};
 
-use super::{LaunchedPlugin, PluginConnection};
-use crate::config::{InstanceName, Secret, scrub};
+use super::{LaunchedPlugin, PluginConnection, RemotePlugin, Secrets};
+use crate::config::InstanceName;
 
 /// How long a `GetBlob` call may wait for its response, and a transfer for each chunk, before
 /// the core gives up on it (and leaves the event unacked, to come again).
@@ -70,7 +70,7 @@ struct Shared {
     connection: PluginConnection,
     blobs: BlobStore,
     max_blob: u64,
-    secrets: Arc<[Secret]>,
+    secrets: Secrets,
     span: tracing::Span,
     /// The ack half of the newest `Events` stream.
     acks: Mutex<Option<mpsc::UnboundedSender<EventsRequest>>>,
@@ -80,13 +80,14 @@ struct Shared {
     releases: mpsc::UnboundedSender<Vec<String>>,
 }
 
-/// What a [`RemoteChannel`] is built from: the parts of a [`LaunchedPlugin`] it uses.
+/// What a [`RemoteChannel`] is built from: the parts of a [`LaunchedPlugin`] or a
+/// [`RemotePlugin`] it uses.
 pub(super) struct Parts<'a> {
     pub instance: &'a InstanceName,
     pub connection: &'a PluginConnection,
     pub describe: &'a giles_proto::plugin::v1::DescribeResponse,
     pub identity_namespace: &'a str,
-    pub secrets: &'a Arc<[Secret]>,
+    pub secrets: Secrets,
     pub span: &'a tracing::Span,
 }
 
@@ -105,7 +106,24 @@ impl RemoteChannel {
             connection: &plugin.connection,
             describe: &plugin.describe,
             identity_namespace: &plugin.identity_namespace,
-            secrets: &plugin.secrets,
+            secrets: Secrets::new(Arc::clone(&plugin.secrets)),
+            span: &plugin.span,
+        };
+        Self::from_parts(&parts, blobs, max_blob)
+    }
+
+    /// [`RemoteChannel::new`] for a remote plugin.
+    ///
+    /// # Errors
+    ///
+    /// As for [`RemoteChannel::new`].
+    pub fn from_remote(plugin: &RemotePlugin, blobs: BlobStore, max_blob: u64) -> Result<Self> {
+        let parts = Parts {
+            instance: &plugin.instance,
+            connection: &plugin.connection,
+            describe: &plugin.describe,
+            identity_namespace: &plugin.identity_namespace,
+            secrets: plugin.secrets.clone(),
             span: &plugin.span,
         };
         Self::from_parts(&parts, blobs, max_blob)
@@ -131,7 +149,7 @@ impl RemoteChannel {
             connection: parts.connection.clone(),
             blobs,
             max_blob,
-            secrets: Arc::clone(parts.secrets),
+            secrets: parts.secrets.clone(),
             span: parts.span.clone(),
             acks: Mutex::new(None),
             unacked: Mutex::default(),
@@ -220,8 +238,7 @@ fn ack_request(id: &str) -> EventsRequest {
 
 impl Shared {
     fn scrub(&self, text: &str) -> String {
-        let secrets: Vec<&Secret> = self.secrets.iter().collect();
-        scrub(text, &secrets)
+        self.secrets.scrub(text)
     }
 
     /// A failed call as a component error, its message scrubbed: `UNAVAILABLE` stays
@@ -360,7 +377,7 @@ impl Shared {
             received: u64,
             done: bool,
         }
-        let secrets = Arc::clone(&self.secrets);
+        let secrets = self.secrets.clone();
         let state = State {
             chunks,
             received: 0,
@@ -368,7 +385,7 @@ impl Shared {
         };
         Box::pin(stream::unfold(state, move |mut state| {
             let failure = Arc::clone(&failure);
-            let secrets = Arc::clone(&secrets);
+            let secrets = secrets.clone();
             async move {
                 if state.done {
                     return None;
@@ -547,12 +564,11 @@ fn stalled() -> Fetch {
 
 /// A `GetBlob` error status: refused if the plugin says the request or the handle is wrong
 /// (asking again gets the same answer), else failed.
-fn get_blob_failed(secrets: &[Secret], status: &Status) -> Fetch {
-    let secrets: Vec<&Secret> = secrets.iter().collect();
+fn get_blob_failed(secrets: &Secrets, status: &Status) -> Fetch {
     let detail = format!(
         "GetBlob failed: {:?}: {}",
         status.code(),
-        scrub(status.message(), &secrets)
+        secrets.scrub(status.message())
     );
     match status.code() {
         Code::NotFound => Fetch::Refused {

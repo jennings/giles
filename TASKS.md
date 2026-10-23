@@ -292,7 +292,7 @@ other and with the rest of this phase.
   dir; phone number identity with the LID as an alias; echoes of its own messages dropped; group
   chats reported as group; WhatsApp markup; media as blobs. **Needs:** 2.15, 1.7, 1.13.
   End-to-end with the core needs 2.18.
-- [ ] **3.7 Remote plugins** (§7.6). User-run gRPC plugins over TCP: optional TLS, plain TCP to a
+- [x] **3.7 Remote plugins** (§7.6). User-run gRPC plugins over TCP: optional TLS, plain TCP to a
   non-loopback address refused unless `insecure = true`; bearer token or OAuth client credentials;
   degraded with backoff while unreachable; the core only calls `Shutdown` and disconnects.
   **Needs:** 2.18.

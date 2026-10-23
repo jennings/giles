@@ -1,5 +1,5 @@
-//! The plugin host (PLAN sections 7.3 to 7.5): launching gRPC channel plugins and connecting
-//! them to the core.
+//! The plugin host (PLAN sections 7.3 to 7.6): launching gRPC channel plugins, connecting to
+//! remote ones, and connecting them to the core.
 //!
 //! [`Launcher::launch_channel`] takes one configured plugin channel from discovery to a configured
 //! plugin: it finds the binary ([`discover_plugin`]), kills an orphan an earlier core left running
@@ -9,16 +9,23 @@
 //! and calls `Describe` and `Configure`. The result is a [`LaunchedPlugin`]: the connection, the
 //! `Describe` and `Configure` results, and the [`PluginProcess`].
 //!
-//! [`RemoteChannel`] is a launched plugin's `ChannelService` as a `giles_types::Channel`.
-//! [`PluginHost`] supervises every configured plugin channel ([`supervisor`]): it launches it,
-//! registers its `RemoteChannel` with the registry and the session manager ([`ChannelWiring`]),
-//! checks its health, relaunches it with backoff, records its `Describe` answer in the cache
-//! ([`DescribeCache`]), and stops it at shutdown. See `Docs/technical/plugin-host.md`.
+//! [`Launcher::connect_remote`] does the same for a remote plugin channel (one with `address`)
+//! that someone else runs: TCP, optionally TLS, a bearer token or OAuth client credentials
+//! ([`oauth`]), then `Describe` and `Configure`. The result is a [`RemotePlugin`].
+//!
+//! [`RemoteChannel`] is a plugin's `ChannelService` as a `giles_types::Channel`. [`PluginHost`]
+//! supervises every configured plugin channel ([`supervisor`]): it launches it (or connects to
+//! it), registers its `RemoteChannel` with the registry and the session manager
+//! ([`ChannelWiring`]), checks its health, relaunches (or reconnects) it with backoff, records a
+//! launched plugin's `Describe` answer in the cache ([`DescribeCache`]), and stops it (or
+//! disconnects) at shutdown. See `Docs/technical/plugin-host.md`.
 
 mod describe_cache;
 mod grpc;
+mod oauth;
 mod orphans;
 mod process;
+mod remote;
 mod remote_channel;
 mod spec;
 pub mod supervisor;
@@ -34,6 +41,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use giles_plugin_sdk::convert::output_mode_from_proto;
+use giles_plugin_sdk::tls::rustls::RootCertStore;
 use giles_proto::channel::v1::channel_service_server::SERVICE_NAME as CHANNEL_SERVICE;
 use giles_proto::handshake::{EXIT_NO_SHARED_PROTOCOL, HandshakeError, HandshakeLine};
 use giles_proto::plugin::v1::{
@@ -51,6 +59,7 @@ use tracing::{Instrument as _, info, warn};
 pub use self::describe_cache::{DescribeCache, DescribeInfo, RequestedGrants};
 pub use self::grpc::{CallMetadata, PluginConnection, PluginTransport};
 pub use self::process::{PluginProcess, STDERR_TARGET};
+pub use self::remote::{REMOTE_CONNECT_TIMEOUT, REMOTE_SHUTDOWN_TIMEOUT, RemotePlugin, Secrets};
 pub use self::remote_channel::{BLOB_CHUNK_TIMEOUT, RemoteChannel};
 use self::spec::{OFFERED_PROTOCOLS, launch_spec};
 use self::supervisor::{HEALTH_TIMEOUT, Launch, LaunchFailure, Running, Supervision};
@@ -95,14 +104,21 @@ const STDERR_DRAIN: Duration = Duration::from_secs(1);
 /// The longest handshake line read; anything longer is malformed.
 const MAX_HANDSHAKE_LINE: u64 = 256;
 
-/// A launch failed. Every message is safe to log: plugin-provided text has the instance's secrets
-/// and the token scrubbed.
+/// A launch (or a remote plugin's connection) failed. Every message is safe to log:
+/// plugin-provided text has the instance's secrets and the token scrubbed.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum LaunchError {
     /// The instance isn't a launched plugin (built-in or remote).
     #[error("the instance is not a launched plugin")]
     NotLaunched,
+    /// The instance isn't a remote plugin.
+    #[error("the instance is not a remote plugin")]
+    NotRemote,
+    /// No credentials for a remote plugin: the OAuth token request failed, or the bearer token
+    /// can't be sent.
+    #[error("cannot authenticate to the plugin: {0}")]
+    Auth(String),
     /// The binary is neither in `<root>/plugins/` nor on `PATH`.
     #[error("plugin binary {binary} not found in {} or on PATH", .plugins_dir.display())]
     NotFound {
@@ -219,7 +235,8 @@ impl LaunchError {
             | Self::Exited { .. }
             | Self::HandshakeTimeout { .. }
             | Self::Handshake { .. }
-            | Self::Connect(_) => true,
+            | Self::Connect(_)
+            | Self::Auth(_) => true,
             Self::Rpc { call, code, .. } => {
                 *call == "Describe"
                     || !matches!(
@@ -260,7 +277,7 @@ fn last_line(lines: &[String]) -> String {
 /// Looks up an environment variable (for `PATH`).
 type EnvFn = dyn Fn(&str) -> Option<OsString> + Send + Sync;
 
-/// Launches plugins for one data root.
+/// Launches plugins for one data root, and connects to remote ones.
 #[derive(Clone)]
 pub struct Launcher {
     root: DataRoot,
@@ -268,6 +285,8 @@ pub struct Launcher {
     sandbox: Result<(), String>,
     env: Arc<EnvFn>,
     handshake_timeout: Duration,
+    /// Trusted for remote plugins over TLS instead of the bundled roots.
+    remote_roots: Option<Arc<RootCertStore>>,
 }
 
 impl std::fmt::Debug for Launcher {
@@ -285,7 +304,8 @@ impl Launcher {
     /// `giles sandbox-exec`). `sandbox` is the result of the host's sandbox check
     /// ([`sandbox::check_host`], which `serve` runs once at startup): an error refuses every
     /// sandboxed launch with that one message (PLAN section 12.1). It finds binaries on the
-    /// process's `PATH` and waits [`HANDSHAKE_TIMEOUT`] for the handshake line.
+    /// process's `PATH`, waits [`HANDSHAKE_TIMEOUT`] for the handshake line, and checks remote
+    /// plugins' TLS certificates against the bundled Mozilla roots.
     pub fn new(root: DataRoot, trampoline: PathBuf, sandbox: Result<(), String>) -> Self {
         Self {
             root,
@@ -293,6 +313,7 @@ impl Launcher {
             sandbox,
             env: Arc::new(|name| std::env::var_os(name)),
             handshake_timeout: HANDSHAKE_TIMEOUT,
+            remote_roots: None,
         }
     }
 
@@ -307,6 +328,14 @@ impl Launcher {
     #[must_use]
     pub fn handshake_timeout(mut self, timeout: Duration) -> Self {
         self.handshake_timeout = timeout;
+        self
+    }
+
+    /// Checks remote plugins' TLS certificates against `roots` instead of the bundled Mozilla
+    /// roots (tests with their own certificate authority).
+    #[must_use]
+    pub fn remote_tls_roots(mut self, roots: RootCertStore) -> Self {
+        self.remote_roots = Some(Arc::new(roots));
         self
     }
 
@@ -821,19 +850,40 @@ impl ChannelWiring {
     pub fn attach(&self, plugin: &LaunchedPlugin, max_blob: u64) -> Result<(), String> {
         let channel = RemoteChannel::new(plugin, self.blobs.clone(), max_blob)
             .map_err(|error| error.to_string())?;
-        let channel: Arc<dyn Channel> = Arc::new(channel);
+        self.register(&plugin.instance, &plugin.component, Arc::new(channel))
+    }
+
+    /// [`attach`](Self::attach) for a remote plugin, replacing the channel of an earlier
+    /// connection.
+    ///
+    /// # Errors
+    ///
+    /// As for [`attach`](Self::attach).
+    pub fn attach_remote(&self, plugin: &RemotePlugin, max_blob: u64) -> Result<(), String> {
+        let channel = RemoteChannel::from_remote(plugin, self.blobs.clone(), max_blob)
+            .map_err(|error| error.to_string())?;
+        self.register(&plugin.instance, &plugin.component, Arc::new(channel))
+    }
+
+    fn register(
+        &self,
+        instance: &InstanceName,
+        component: &str,
+        channel: Arc<dyn Channel>,
+    ) -> Result<(), String> {
         self.registry
-            .register_channel(&plugin.instance, channel.clone())
+            .register_channel(instance, channel.clone())
             .map_err(|error| error.to_string())?;
         self.sessions
-            .attach_channel(plugin.instance.clone(), plugin.component.clone(), channel);
+            .attach_channel(instance.clone(), component.to_owned(), channel);
         Ok(())
     }
 }
 
-/// The plugin channels of a running core, each supervised ([`supervisor`]): launched at
-/// startup, registered as channels, health-checked, relaunched with backoff, and stopped at
-/// shutdown. Its [`statuses`](Self::statuses) are what `giles status` shows.
+/// The plugin channels of a running core, each supervised ([`supervisor`]): launched (or, if
+/// remote, connected to) at startup, registered as channels, health-checked, relaunched (or
+/// reconnected) with backoff, and stopped (or disconnected) at shutdown. Its
+/// [`statuses`](Self::statuses) are what `giles status` shows.
 #[derive(Debug)]
 pub struct PluginHost {
     launcher: Launcher,
@@ -853,9 +903,10 @@ impl PluginHost {
         }
     }
 
-    /// Starts supervising every plugin channel in `config` and returns once each has had its
-    /// first launch attempt: up and registered ([`ChannelWiring::attach`]), or failed (logged,
-    /// and relaunched with backoff or once its binary changes).
+    /// Starts supervising every plugin channel in `config`, launched or remote, and returns once
+    /// each has had its first launch (or connection) attempt: up and registered
+    /// ([`ChannelWiring::attach`]), or failed (logged, and relaunched with backoff or once its
+    /// binary changes; a remote plugin is always retried with backoff).
     ///
     /// Cancel-safe: dropping the future (a shutdown during startup) leaves supervision running
     /// until [`PluginHost::stop_all`], which also abandons launches in progress (killing their
@@ -864,19 +915,26 @@ impl PluginHost {
         let attempts: Vec<_> = config
             .channels
             .values()
-            .filter(|instance| matches!(instance.runtime, ChannelRuntime::Plugin(_)))
-            .map(|instance| {
-                let launch = Arc::new(PluginLaunch {
-                    launcher: self.launcher.clone(),
-                    instance: instance.clone(),
-                    wiring: self.wiring.clone(),
-                });
-                self.supervision.supervise(
+            .filter_map(|instance| {
+                let launch: Arc<dyn Launch> = match &instance.runtime {
+                    ChannelRuntime::Plugin(_) => Arc::new(PluginLaunch {
+                        launcher: self.launcher.clone(),
+                        instance: instance.clone(),
+                        wiring: self.wiring.clone(),
+                    }),
+                    ChannelRuntime::Remote(_) => Arc::new(RemoteLaunch {
+                        launcher: self.launcher.clone(),
+                        instance: instance.clone(),
+                        wiring: self.wiring.clone(),
+                    }),
+                    ChannelRuntime::BuiltIn => return None,
+                };
+                Some(self.supervision.supervise(
                     instance.name.clone(),
                     instance.component.clone(),
                     instance.config_hash,
                     launch,
-                )
+                ))
             })
             .collect();
         futures::future::join_all(attempts).await;
@@ -1031,6 +1089,69 @@ impl Running for Live {
         if let Err(error) = self.0.stop(STOP_GRACE).await {
             warn!(%error, "cannot stop the plugin");
         }
+    }
+}
+
+/// The connections to one configured remote plugin channel, for its supervisor.
+struct RemoteLaunch {
+    launcher: Launcher,
+    instance: ChannelInstance,
+    wiring: ChannelWiring,
+}
+
+#[async_trait]
+impl Launch for RemoteLaunch {
+    /// None: the core doesn't run the plugin, so there is no binary or `Describe` cache.
+    async fn binary(&self) -> Option<(PathBuf, [u8; 32])> {
+        None
+    }
+
+    /// Connects. Every failure is retried with backoff: whoever runs the plugin can fix it
+    /// (start it, upgrade it, restart it with another config) without the core noticing.
+    async fn launch(&self) -> Result<Box<dyn Running>, LaunchFailure> {
+        let plugin = self
+            .launcher
+            .connect_remote(&self.instance)
+            .await
+            .map_err(|error| LaunchFailure {
+                message: error.to_string(),
+                retryable: true,
+            })?;
+        if let Err(reason) = self.wiring.attach_remote(&plugin, self.instance.max_blob) {
+            plugin.stop(REMOTE_SHUTDOWN_TIMEOUT).await;
+            return Err(LaunchFailure {
+                message: format!("cannot register the plugin's channel: {reason}"),
+                retryable: true,
+            });
+        }
+        Ok(Box::new(Connected(plugin)))
+    }
+}
+
+/// A connected remote plugin under supervision.
+struct Connected(RemotePlugin);
+
+#[async_trait]
+impl Running for Connected {
+    fn pid(&self) -> Option<u32> {
+        None
+    }
+
+    fn describe(&self) -> Option<DescribeInfo> {
+        DescribeInfo::from_describe(&self.0.describe)
+    }
+
+    async fn exited(&mut self) -> String {
+        self.0.closed().await;
+        "disconnected".to_owned()
+    }
+
+    async fn check_health(&self) -> Result<(), String> {
+        check_health(&self.0.connection, &self.0.secrets.get()).await
+    }
+
+    async fn stop(self: Box<Self>) {
+        self.0.stop(REMOTE_SHUTDOWN_TIMEOUT).await;
     }
 }
 

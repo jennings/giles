@@ -54,9 +54,9 @@ afterwards.
 
 Components built outside the registry are added with:
 
-- `register_channel(&InstanceName, Arc<dyn Channel>)`: plugin channels (the plugin host's
-  `RemoteChannel`, see [Plugin Host](plugin-host.md#remotechannel)), remote channels (3.7), or a
-  built-in constructed elsewhere.
+- `register_channel(&InstanceName, Arc<dyn Channel>)`: plugin channels, launched or remote (the
+  plugin host's `RemoteChannel`, see [Plugin Host](plugin-host.md#remotechannel)), or a built-in
+  constructed elsewhere.
 - `register_toolset(&InstanceName, Arc<dyn Toolset>).await`: every MCP toolset, once at startup,
   by the toolset host ([Toolsets](toolsets.md#lifecycle)).
 - `register_provider(&InstanceName, Arc<dyn Provider>)`: future provider plugins and fakes in

@@ -92,6 +92,17 @@ impl Home {
         link
     }
 
+    /// Appends `channels` (TOML tables) to `giles.toml`, e.g. once a remote plugin's address is
+    /// known.
+    pub fn add_channels(&self, channels: &str) {
+        use std::io::Write as _;
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(self.root.config_file())
+            .unwrap();
+        writeln!(file, "\n{channels}").unwrap();
+    }
+
     /// Sets environment variable `name`, as config references (`{ env = "NAME" }`) see it.
     pub fn set_env(&mut self, name: &str, value: &str) {
         self.env.retain(|(k, _)| k != name);
@@ -167,6 +178,12 @@ impl Home {
     /// each), and a plugin host that supervises every plugin channel (launched without a
     /// trampoline), returning after each one's first launch attempt.
     pub async fn start_core(&self) -> Core {
+        self.start_core_with(self.launcher(PathBuf::from("/nonexistent/giles")))
+            .await
+    }
+
+    /// [`Home::start_core`] with the plugin host using `launcher`.
+    pub async fn start_core_with(&self, launcher: Launcher) -> Core {
         let runtime = Runtime::start(self.root.clone(), Arc::new(self.config()))
             .await
             .unwrap();
@@ -185,10 +202,7 @@ impl Home {
             sessions: sessions.clone(),
             blobs: runtime.blobs.clone(),
         };
-        let host = Arc::new(PluginHost::new(
-            self.launcher(PathBuf::from("/nonexistent/giles")),
-            wiring,
-        ));
+        let host = Arc::new(PluginHost::new(launcher, wiring));
         tokio::time::timeout(WAIT, host.start(&self.config()))
             .await
             .unwrap();

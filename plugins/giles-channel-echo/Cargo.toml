@@ -26,6 +26,8 @@ giles-core = { workspace = true, features = ["provider-anthropic"] }
 giles-proto.workspace = true
 hyper-util.workspace = true
 libc.workspace = true
+# Test certificates for the remote plugin over TLS.
+rcgen.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["net", "process"] }

@@ -28,8 +28,8 @@ bytes.workspace = true
 croner = { version = "4.0.2", default-features = false, features = ["jiff"] }
 futures.workspace = true
 # The proto <-> domain conversions the admin service and the `RemoteChannel` adapter share with
-# plugins, and the web channel's renderer.
-giles-plugin-sdk = { workspace = true, default-features = false }
+# plugins, the web channel's renderer, and (`tls`) the TLS client settings for remote plugins.
+giles-plugin-sdk = { workspace = true, default-features = false, features = ["tls"] }
 giles-proto.workspace = true
 giles-store.workspace = true
 giles-types.workspace = true
@@ -53,6 +53,7 @@ sha2.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
+tokio-rustls.workspace = true
 tokio-util = { workspace = true, features = ["io", "rt"] }
 toml.workspace = true
 tonic.workspace = true

@@ -109,7 +109,7 @@ pub(crate) trait Launch: Send + Sync {
     async fn launch(&self) -> Result<Box<dyn Running>, LaunchFailure>;
 }
 
-/// A launched plugin, as supervision sees it.
+/// A launched plugin, or a connected remote plugin, as supervision sees it.
 #[async_trait]
 pub(crate) trait Running: Send {
     /// Its process id; `None` for a remote plugin.
@@ -118,14 +118,17 @@ pub(crate) trait Running: Send {
     /// What it reported in `Describe`.
     fn describe(&self) -> Option<DescribeInfo>;
 
-    /// Resolves once the process has exited (and the rest of its process group is killed),
-    /// saying how. Cancel-safe.
+    /// Resolves once it has gone, saying how: a launched plugin's process has exited (and the
+    /// rest of its process group is killed); a remote plugin's connection has closed.
+    /// Cancel-safe.
     async fn exited(&mut self) -> String;
 
     /// One `grpc.health.v1` check of its channel service; the error says why it failed.
     async fn check_health(&self) -> Result<(), String>;
 
-    /// Stops it: `Shutdown`, then `SIGTERM`, then `SIGKILL` to its process group.
+    /// Stops it. A launched plugin: `Shutdown`, then `SIGTERM`, then `SIGKILL` to its process
+    /// group. A remote plugin: `Shutdown`, then the connection is closed (every client of it
+    /// fails from then on); the plugin keeps running.
     async fn stop(self: Box<Self>);
 }
 

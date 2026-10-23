@@ -247,9 +247,10 @@ before converting it, so it accepts any handle, and it never trusts one: it fetc
 
 ## Remote Plugins
 
-A plugin someone runs themselves, which the core connects to over TCP (PLAN section 7.6), calls
-`ChannelPlugin::serve_remote(server, configure)` instead of `serve`. The services, `Configure`,
-persistence, and blobs are the same; what differs:
+A plugin someone runs themselves, which the core connects to over TCP (PLAN section 7.6, the core
+side in [Plugin Host](plugin-host.md#remote-plugins)), calls `ChannelPlugin::serve_remote(server,
+configure)` instead of `serve`. The services, `Configure`, persistence, and blobs are the same;
+what differs:
 
 - `RemoteServer::new(listener, data_dir, auth)` takes a bound `tokio::net::TcpListener`, the data
   directory (created with mode 0700 if missing; `giles-sdk/` inside it as above), and a
