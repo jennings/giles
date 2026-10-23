@@ -421,8 +421,7 @@ impl Launcher {
                 binary = %binary.display(),
                 "running the plugin unsandboxed (`unsandboxed = true`)",
             );
-            let lang = std::env::var_os("LANG");
-            let env = sandbox::scrubbed_env(&spec, lang.as_deref());
+            let env = sandbox::scrubbed_env(&spec, &|name| std::env::var_os(name));
             (
                 binary.as_path(),
                 Vec::new(),

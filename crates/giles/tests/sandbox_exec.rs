@@ -134,6 +134,36 @@ fn unsandboxed_command_gets_only_the_scrubbed_environment() {
 }
 
 #[test]
+fn named_variables_are_inherited_from_the_trampoline() {
+    let env = Env::new();
+    let mut spec = env.unsandboxed();
+    for name in ["MCP_TOKEN", "UNSET_VAR"] {
+        spec.inherit_env.insert(name.into());
+    }
+    let mut cmd = env.command(&spec, &["/usr/bin/env"]);
+    cmd.env("MCP_TOKEN", "token-123").env_remove("UNSET_VAR");
+    let (output, stderr) = run(cmd);
+    assert!(output.status.success(), "{}\n{stderr}", output.status);
+    let mut names: Vec<String> = text(&output.stdout)
+        .lines()
+        .map(|line| line.split_once('=').unwrap().0.to_owned())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "GILES_PLUGIN_DATA",
+            "HOME",
+            "LANG",
+            "MCP_TOKEN",
+            "PATH",
+            "TMPDIR"
+        ]
+    );
+    assert!(text(&output.stdout).contains("MCP_TOKEN=token-123\n"));
+}
+
+#[test]
 fn unsandboxed_command_inherits_fds_0_to_3_and_its_exit_status() {
     let env = Env::new();
     let fd3_path = env.dir.path().join("fd3");

@@ -106,6 +106,7 @@ plugin's grants, and passes its path ([Plugin Host](plugin-host.md#the-sandbox-s
   "min_abi": 4,
   "unsandboxed": false,
   "env": {"GILES_PLUGIN_MAGIC": "...", "GILES_PLUGIN_PROTOCOLS": "1"},
+  "inherit_env": [],
   "path": "/usr/bin:/bin"
 }
 ```
@@ -121,6 +122,7 @@ plugin's grants, and passes its path ([Plugin Host](plugin-host.md#the-sandbox-s
 | `min_abi`      | unset              | Lowest Landlock ABI to accept (Linux; ignored on macOS). Below it the trampoline exits 125. |
 | `unsandboxed`  | `false`            | Skip the backend, with a warning. The environment is still scrubbed. |
 | `env`          | `{}`               | Variables to pass: `GILES_*` names and `LANG`.                      |
+| `inherit_env`  | `[]`               | Names of variables the command takes from the trampoline's own environment (below). |
 | `path`         | `/usr/bin:/bin`    | The command's `PATH`.                                               |
 
 Validation (`Spec::validate`, no filesystem access):
@@ -129,6 +131,8 @@ Validation (`Spec::validate`, no filesystem access):
   would defeat grant overlap checks) and without NUL bytes.
 - `env` names are `LANG` or `GILES_` plus at least one of `A-Z`, `0-9`, `_`; `GILES_PLUGIN_DATA` is
   derived, so it's rejected. Values can't contain NUL.
+- `inherit_env` names are any variable name (not empty, no `=` or NUL) except the derived `HOME`,
+  `TMPDIR`, `PATH`, and `GILES_PLUGIN_DATA` (`sandbox::DERIVED_ENV`).
 - `network` grants are exactly `tcp:<port>` with a port from 1 to 65535. Duplicates collapse; an
   empty list means `false`. No grant allows binding a port: plugins never listen.
 - `min_abi` is at least 1.
@@ -149,20 +153,28 @@ listed paths.
 
 ## Environment
 
-`scrubbed_env(spec, inherited_lang)` is the plugin's whole environment (PLAN section 12.4):
+`scrubbed_env(spec, inherited)` is the plugin's whole environment (PLAN section 12.4); `inherited`
+looks up the trampoline's own variables:
 
 | Variable            | Value                                                          |
 | ------------------- | -------------------------------------------------------------- |
 | `GILES_*`           | From `env`, e.g. `GILES_PLUGIN_MAGIC`, `GILES_PLUGIN_PROTOCOLS` |
+| `inherit_env` names | The trampoline's value, if it has one (replacing one from `env`) |
 | `GILES_PLUGIN_DATA` | `data_dir`                                                     |
 | `HOME`              | `data_dir`                                                     |
 | `TMPDIR`            | `data_dir/tmp`                                                 |
 | `PATH`              | `path`, else `/usr/bin:/bin`                                   |
-| `LANG`              | From `env`, else the trampoline's own `LANG`, else unset       |
+| `LANG`              | From the above, else the trampoline's own `LANG`, else unset   |
 
 Nothing else from the trampoline's environment reaches the plugin. In particular the core's
 `GILES_HOME`, `GILES_LOG`, and any secrets in its environment don't. The token travels on stdin,
 never in the environment.
+
+`inherit_env` exists for stdio toolsets, whose configured `env` (often credentials such as an API
+token) the server needs under arbitrary names. The core sets those values on the trampoline's
+process and lists their names in `inherit_env`, so the values never touch the spec file or the
+command line. Only the listed names pass: a variable the core's own environment happens to have
+under another name doesn't.
 
 ## Backend Trait
 

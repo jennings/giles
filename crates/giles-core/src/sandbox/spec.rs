@@ -72,9 +72,16 @@ pub struct Spec {
     pub unsandboxed: bool,
     /// Variables passed to the command: `GILES_*` names (except the derived
     /// [`PLUGIN_DATA_ENV`]) and `LANG`. Nothing else from the trampoline's environment reaches
-    /// the command, except `LANG` when this map doesn't set it.
+    /// the command, except `LANG` when this map doesn't set it, and [`Spec::inherit_env`].
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    /// Variables the command takes from the trampoline's own environment, by name; one the
+    /// trampoline doesn't have is left unset. This is how a stdio toolset's configured `env`
+    /// (often credentials) reaches it without being written to the spec file: the core sets the
+    /// values on the trampoline's process. Any name but the derived `HOME`, `TMPDIR`, `PATH`, and
+    /// [`PLUGIN_DATA_ENV`]; an inherited value replaces one from [`Spec::env`].
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub inherit_env: BTreeSet<String>,
     /// The command's `PATH`: absolute directories separated by `:`. Unset means
     /// [`DEFAULT_PATH`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -134,6 +141,12 @@ pub enum SpecError {
     /// A value in `env` contains a NUL byte.
     #[error("invalid sandbox spec: the value of `env.{0}` contains a NUL byte")]
     EnvValue(String),
+    /// A name in `inherit_env` can't be passed.
+    #[error(
+        "invalid sandbox spec: `inherit_env` may not name {0:?}: it is empty, contains `=` or \
+         NUL, or is set by the sandbox (HOME, TMPDIR, PATH, {PLUGIN_DATA_ENV})"
+    )]
+    InheritEnvName(String),
     /// A `network` port list is empty or contains port 0.
     #[error("invalid sandbox spec: `network` {0}")]
     Network(&'static str),
@@ -156,6 +169,7 @@ impl Spec {
             min_abi: None,
             unsandboxed: false,
             env: BTreeMap::new(),
+            inherit_env: BTreeSet::new(),
             path: None,
         }
     }
@@ -212,6 +226,13 @@ impl Spec {
             if value.contains('\0') {
                 return Err(SpecError::EnvValue(name.clone()));
             }
+        }
+        if let Some(name) = self
+            .inherit_env
+            .iter()
+            .find(|name| !is_inheritable_env_name(name))
+        {
+            return Err(SpecError::InheritEnvName(name.clone()));
         }
         if let Network::Tcp(ports) = &self.network {
             if ports.is_empty() {
@@ -279,6 +300,15 @@ fn is_passable_env_name(name: &str) -> bool {
         }
         None => false,
     }
+}
+
+/// The variables the trampoline derives from the spec ([`scrubbed_env`](super::scrubbed_env)),
+/// which a spec can neither set nor inherit.
+pub const DERIVED_ENV: [&str; 4] = ["HOME", "TMPDIR", "PATH", PLUGIN_DATA_ENV];
+
+/// Any valid variable name except the [`DERIVED_ENV`] ones.
+fn is_inheritable_env_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains(['=', '\0']) && !DERIVED_ENV.contains(&name)
 }
 
 /// Parses one `tcp:<port>` grant.
@@ -475,6 +505,32 @@ mod tests {
         }
         let err = parse_err(r#"{"data_dir": "/d", "env": {"GILES_X": "a\u0000b"}}"#);
         assert!(err.contains("`env.GILES_X` contains a NUL byte"), "{err}");
+    }
+
+    #[test]
+    fn inherited_variables_are_any_name_but_the_derived_ones() {
+        let spec = Spec::parse(
+            r#"{"data_dir": "/d", "inherit_env": ["GITHUB_TOKEN", "lower_case", "LANG"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            spec.inherit_env,
+            BTreeSet::from(["GITHUB_TOKEN", "LANG", "lower_case"].map(String::from))
+        );
+        assert_eq!(Spec::parse(&spec.to_json().unwrap()).unwrap(), spec);
+        for name in [
+            "HOME",
+            "TMPDIR",
+            "PATH",
+            PLUGIN_DATA_ENV,
+            "",
+            "A=B",
+            "A\\u0000",
+        ] {
+            let json = format!(r#"{{"data_dir": "/d", "inherit_env": ["{name}"]}}"#);
+            let err = parse_err(&json);
+            assert!(err.contains("`inherit_env` may not name"), "{name}: {err}");
+        }
     }
 
     #[test]

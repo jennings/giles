@@ -36,7 +36,9 @@ use tracing::warn;
 use self::backend::{Launch, Platform, SandboxBackend};
 pub use self::env::scrubbed_env;
 pub use self::host::{HostError, HostReport};
-pub use self::spec::{DEFAULT_PATH, Network, PLUGIN_DATA_ENV, Spec, SpecError, TMP_DIR_NAME};
+pub use self::spec::{
+    DEFAULT_PATH, DERIVED_ENV, Network, PLUGIN_DATA_ENV, Spec, SpecError, TMP_DIR_NAME,
+};
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("the plugin sandbox supports only Linux and macOS");
@@ -209,7 +211,7 @@ fn prepare(spec: &Spec, command: &[OsString]) -> Result<(Command, PathBuf), Sand
         return Err(SandboxError::RelativeCommand(program.to_owned()));
     }
     prepare_data_dir(spec)?;
-    let env = scrubbed_env(spec, std::env::var_os("LANG").as_deref());
+    let env = scrubbed_env(spec, &|name| std::env::var_os(name));
 
     let launch = Launch {
         program: program.to_owned(),
@@ -355,10 +357,7 @@ mod tests {
             .get_envs()
             .map(|(k, v)| (k.to_owned(), v.unwrap().to_owned()))
             .collect();
-        assert_eq!(
-            envs,
-            scrubbed_env(&spec, std::env::var_os("LANG").as_deref())
-        );
+        assert_eq!(envs, scrubbed_env(&spec, &|name| std::env::var_os(name)));
     }
 
     /// Without Landlock, or below `min_abi`, nothing is restricted and nothing runs. (A launch
@@ -400,10 +399,7 @@ mod tests {
             .get_envs()
             .map(|(k, v)| (k.to_owned(), v.unwrap().to_owned()))
             .collect();
-        assert_eq!(
-            envs,
-            scrubbed_env(&spec, std::env::var_os("LANG").as_deref())
-        );
+        assert_eq!(envs, scrubbed_env(&spec, &|name| std::env::var_os(name)));
     }
 
     #[test]
