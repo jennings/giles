@@ -271,7 +271,8 @@ whole id segments: `claude-opus-4-5` matches `claude-opus-4-5-20251101` but not
 
 Unit tests next to each module cover the pure parts: SSE parsing at every chunk boundary, config
 validation, request bodies, the stream state machine, and model mapping. `tests/anthropic.rs` runs
-the provider against a local HTTP server on 127.0.0.1 that replays hand-written responses in the
-documented wire format (`tests/fixtures/anthropic/*.sse`, `models_page*.json`) in 7-byte chunks. It
-checks exact request bodies and headers, exact event sequences, that the stored blocks of a response
-reproduce the API's blocks when sent back, and the error mapping. Nothing calls the real API.
+the provider against a local HTTP server on 127.0.0.1 (`tests/support/`, shared by the provider
+tests) that records requests and replays hand-written responses in the documented wire format
+(`tests/fixtures/anthropic/*.sse`, `models_page*.json`) in 7-byte chunks. It checks exact request
+bodies and headers, exact event sequences, that the stored blocks of a response reproduce the API's
+blocks when sent back, and the error mapping. Nothing calls the real API.
