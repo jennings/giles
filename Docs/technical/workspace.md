@@ -5,6 +5,11 @@ whose members are `crates/*`. First-party plugins will live in `plugins/giles-<k
 `"plugins/*"` is added to `members` in the same commit that creates the first one, because Cargo
 rejects a glob over a directory that doesn't exist.
 
+Spikes live in `spikes/<name>/` as standalone crates with their own `Cargo.lock`, outside the
+workspace (`exclude = ["spikes"]`; `exclude` takes path prefixes, not globs), so their dependencies
+never reach the workspace build, its lockfile, or CI. Build one from its own directory. The only one
+so far is [the WhatsApp spike](whatsapp-spike.md).
+
 ## Crates
 
 | Crate              | Kind | Published | Contents                                                     |

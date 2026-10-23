@@ -31,6 +31,7 @@
 - [Configuration](technical/config.md)
 - [Identity and Routing](technical/identity-and-routing.md)
 - [Skills and Memory Files](technical/skills-and-memory.md)
+- [WhatsApp Spike](technical/whatsapp-spike.md)
 
 # Design Background
 

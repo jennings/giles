@@ -1,0 +1,25 @@
+[package]
+name = "whatsapp-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Throwaway spike for TASKS.md 1.13: link, send, and receive DMs with whatsapp-rust"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+qrcode = { version = "0.14", default-features = false }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
+# The latest release. Known 0.7.0 bugs fixed only on `main`, and how to test `main` instead, are in
+# Docs/technical/whatsapp-spike.md.
+# Default features minus `simd`, which needs a nightly compiler in 0.7.0 (`portable_simd`).
+whatsapp-rust = { version = "0.7.0", default-features = false, features = [
+  "signal",
+  "sqlite-storage",
+  "tokio-native",
+  "tokio-runtime",
+  "tokio-transport",
+  "ureq-client",
+] }
