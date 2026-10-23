@@ -57,7 +57,12 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     // Every toolset, registered now with its cached tools (so resumed turns see them) and started
     // in the background.
     let toolsets = ToolsetHost::start(
-        ToolsetLauncher::new(root.clone(), giles_exe.clone(), sandbox.clone().map(drop)),
+        ToolsetLauncher::new(
+            root.clone(),
+            giles_exe.clone(),
+            sandbox.clone().map(drop),
+            runtime.blobs.clone(),
+        ),
         &runtime.registry,
     )
     .await;

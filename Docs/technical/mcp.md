@@ -6,11 +6,14 @@ server and implements the `giles_types::Toolset` trait, so the rest of the core 
 
 ## Connecting
 
-| Constructor                                         | Transport                                       |
-| --------------------------------------------------- | ----------------------------------------------- |
-| `McpToolset::connect_stdio(instance, cmd, secrets, trampoline)` | Spawns a `tokio::process::Command`, stdio pipes |
-| `McpToolset::connect_http(instance, &server)`       | Streamable HTTP, optional bearer token          |
-| `McpToolset::connect_io(instance, rd, wr)`          | An open byte stream pair (in-process servers)   |
+| Constructor                                                            | Transport                                       |
+| ---------------------------------------------------------------------- | ----------------------------------------------- |
+| `McpToolset::connect_stdio(instance, cmd, secrets, trampoline, media)` | Spawns a `tokio::process::Command`, stdio pipes |
+| `McpToolset::connect_http(instance, &server, blobs)`                   | Streamable HTTP, optional bearer token          |
+| `McpToolset::connect_io(instance, rd, wr, media)`                      | An open byte stream pair (in-process servers)   |
+
+`media` (`McpMedia::new(blobs)`) and `blobs` name the blob store that keeps the media the
+server's tools return (see result content below).
 
 Every constructor returns once the server has answered `initialize` and the client has sent
 `notifications/initialized`: the handshake is the readiness signal. A server gets `INIT_TIMEOUT`
@@ -129,11 +132,19 @@ then drops any late response. The server cancels the handler (an `rmcp` server c
 request's cancellation token).
 
 **Result content.** Text content becomes `Block::Text`. So does the text of an embedded text
-resource; a resource link becomes `[resource link: <uri>]`. Images, audio, and blob resources are
-replaced with a text placeholder naming what was dropped, such as `[image (image/png, 5120 bytes)
-dropped: Giles doesn't take media from MCP tools yet]`: storing them in the blob store is task 2.21.
-If the result has no text content but has `structuredContent`, that JSON is the text.
-`isError` (default false) becomes `is_error`.
+resource; a resource link becomes `[resource link: <uri>]`. Images, audio, and blob resources go
+to the blob store (`mcp/media.rs`): the base64 is decoded (padding optional) and stored with its
+media type, and the item becomes the media block for that type (`media::block`: `Image`, `Audio`,
+or `Document` named after the last segment of a resource's URI). When the agent loop stores the
+result, each media block gets its `[media:<id> <name> <type>]` reference, so the model can pass it
+on (`send_attachment`, `{"$media": "<id>"}`), and a model that doesn't take the type sees only the
+reference. The media type is the server's, lowercased and without parameters, and
+`application/octet-stream` unless it is a plain `type/subtype` (at most 127 characters), since
+channels and providers act on it. An item over `MAX_RESULT_MEDIA_BYTES` (50 MiB decoded, the same
+as `DEFAULT_MAX_BLOB` for plugins), with invalid base64, or that can't be stored (logged) is
+replaced with a text placeholder, e.g. `[image (image/png, 5120 bytes) dropped: invalid base64]`.
+If the result has no text content but has `structuredContent`, that JSON is the text. `isError`
+(default false) becomes `is_error`.
 
 **Approvals.** `answers` exists and accepts sends while the call runs, but nothing reads it yet:
 the client doesn't declare elicitation, and a server that asks anyway is declined. Mapping
@@ -161,15 +172,17 @@ fails by its own account (`isError: true`) is a normal `Result` event, not an er
 
 ## Staged Work
 
-- 2.21: media in and out of tools, toolset skill directories, elicitation as approval requests.
+- 2.21: media inputs, toolset skill directories, elicitation as approval requests.
 
 ## Tests
 
 `crates/giles-core/tests/support/mcp_server.rs` is a small `rmcp` server (paginated tools,
-`list_changed`, gated progress, a tool that waits to be cancelled, elicitation, exit). It runs:
+`list_changed`, gated progress, a tool that waits to be cancelled, elicitation, media results,
+exit). It runs:
 
 - in process over a duplex pipe (`tests/mcp.rs`), with a relay task in between whose abort stands
-  in for a crash;
+  in for a crash; it also checks that an image, audio, and a PDF resource come back as media blocks
+  whose blobs hold the bytes the server sent;
 - as a real stdio child (`tests/mcp_stdio.rs`): the test binary re-executes itself with
   `GILES_MCP_TEST_SERVER` set and serves MCP instead of running tests. Libtest would print to
   stdout, so this target has `harness = false` and its `main` runs the tests. It checks stderr

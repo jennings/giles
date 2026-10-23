@@ -1,5 +1,5 @@
 //! The MCP client against an in-process `rmcp` server over a duplex pipe: listing, `list_changed`,
-//! calls with progress, errors, cancellation, and a server that goes away.
+//! calls with progress, media results, errors, cancellation, and a server that goes away.
 #![allow(missing_docs)]
 
 #[path = "support/mcp_server.rs"]
@@ -8,21 +8,32 @@ mod mcp_server;
 use std::time::Duration;
 
 use futures::StreamExt;
-use giles_core::mcp::McpToolset;
+use giles_core::mcp::{McpMedia, McpToolset};
+use giles_store::BlobStore;
 use giles_types::{
-    AgentId, Block, CallContext, Error, ToolCall, ToolCallEvent, ToolCallHandle, Toolset,
+    AgentId, Block, CallContext, Error, MediaRef, ToolCall, ToolCallEvent, ToolCallHandle, Toolset,
 };
 use rmcp::ServiceExt;
 use serde_json::{Value, json};
+use tokio::io::AsyncReadExt as _;
 use tokio::task::JoinHandle;
 
-use self::mcp_server::{TOOLS, TestServer, no_input};
+use self::mcp_server::{TOOLS, TestServer, blob_store, no_input};
 
 const WAIT: Duration = Duration::from_secs(10);
 
-/// Starts `server` and connects to it. The pipe between them goes through a relay task; aborting
-/// it cuts the connection the way a crashing server would, without a goodbye.
-async fn start(server: TestServer) -> (McpToolset, JoinHandle<()>) {
+/// The server side of a connection.
+struct Server {
+    /// The task relaying between client and server; aborting it cuts the connection the way a
+    /// crashing server would, without a goodbye.
+    relay: JoinHandle<()>,
+    /// Where the client stores media.
+    blobs: BlobStore,
+    _dir: tempfile::TempDir,
+}
+
+/// Starts `server` and connects to it through a relay task.
+async fn start(server: TestServer) -> (McpToolset, Server) {
     let (client, mut client_relay) = tokio::io::duplex(1 << 16);
     let (server_io, mut server_relay) = tokio::io::duplex(1 << 16);
     tokio::spawn(async move {
@@ -33,8 +44,17 @@ async fn start(server: TestServer) -> (McpToolset, JoinHandle<()>) {
         let _ = tokio::io::copy_bidirectional(&mut client_relay, &mut server_relay).await;
     });
     let (read, write) = tokio::io::split(client);
-    let toolset = McpToolset::connect_io("test", read, write).await.unwrap();
-    (toolset, relay)
+    let (dir, blobs) = blob_store().await;
+    let media = McpMedia::new(blobs.clone());
+    let toolset = McpToolset::connect_io("test", read, write, media)
+        .await
+        .unwrap();
+    let server = Server {
+        relay,
+        blobs,
+        _dir: dir,
+    };
+    (toolset, server)
 }
 
 fn ctx() -> CallContext {
@@ -153,6 +173,44 @@ async fn calls_report_progress_then_the_result() {
     assert_eq!(result(handle).await.unwrap(), (vec![text("done")], false));
 }
 
+/// The bytes of the stored blob `media`.
+async fn stored(blobs: &BlobStore, media: &MediaRef) -> Vec<u8> {
+    let mut blob = blobs.get(&media.id).await.unwrap().expect("stored");
+    let mut bytes = Vec::new();
+    blob.reader.read_to_end(&mut bytes).await.unwrap();
+    bytes
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn images_audio_and_blob_resources_are_stored_as_media() {
+    let (toolset, server) = start(TestServer::default()).await;
+    let (content, is_error) = result(call(&toolset, "media", no_input()).await)
+        .await
+        .unwrap();
+    assert!(!is_error);
+    let [text_block, image, audio, document] = content.as_slice() else {
+        panic!("unexpected content {content:?}");
+    };
+    assert_eq!(*text_block, text("Here they are."));
+    let (Block::Image { media: image }, Block::Audio { media: audio }) = (image, audio) else {
+        panic!("not an image and audio: {content:?}");
+    };
+    let Block::Document {
+        media: document,
+        name,
+    } = document
+    else {
+        panic!("not a document: {document:?}");
+    };
+    assert_eq!((image.media_type.as_str(), image.size), ("image/png", 5));
+    assert_eq!(audio.media_type, "audio/ogg");
+    assert_eq!(document.media_type, "application/pdf");
+    assert_eq!(name.as_deref(), Some("q3.pdf"));
+    for media in [image, audio, document] {
+        assert_eq!(stored(&server.blobs, media).await, b"hello");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn results_carry_text_and_is_error() {
     let (toolset, _server) = start(TestServer::default()).await;
@@ -238,7 +296,7 @@ async fn a_server_that_goes_away_is_unavailable() {
         next(&mut handle).await,
         Some(Ok(ToolCallEvent::Progress { .. }))
     ));
-    server.abort();
+    server.relay.abort();
     match next(&mut handle).await {
         Some(Err(error @ Error::Unavailable { .. })) => {
             assert!(error.to_string().contains("MCP server test"), "{error}");

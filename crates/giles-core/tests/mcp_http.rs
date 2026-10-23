@@ -23,7 +23,7 @@ use rmcp::transport::streamable_http_server::session::local::LocalSessionManager
 use rmcp::transport::{StreamableHttpServerConfig, StreamableHttpService};
 use serde_json::{Value, json};
 
-use self::mcp_server::{Shared, TOOLS, TestServer, no_input};
+use self::mcp_server::{Shared, TOOLS, TestServer, blob_store, no_input};
 
 const TOKEN: &str = "s3cret-token";
 /// Gets a 403 whose body echoes the `Authorization` header, as some servers do.
@@ -94,7 +94,8 @@ async fn next(handle: &mut ToolCallHandle) -> Option<giles_types::Result<ToolCal
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_right_token_lists_calls_and_cancels() {
     let (url, shared) = serve().await;
-    let toolset = McpToolset::connect_http("remote", &server(&url, Some(TOKEN)))
+    let (_dir, blobs) = blob_store().await;
+    let toolset = McpToolset::connect_http("remote", &server(&url, Some(TOKEN)), blobs)
         .await
         .unwrap();
 
@@ -151,8 +152,9 @@ async fn the_right_token_lists_calls_and_cancels() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_wrong_or_missing_token_is_rejected() {
     let (url, _shared) = serve().await;
+    let (_dir, blobs) = blob_store().await;
     for token in [Some(WRONG_TOKEN), Some(FORBIDDEN_TOKEN), None] {
-        match McpToolset::connect_http("remote", &server(&url, token)).await {
+        match McpToolset::connect_http("remote", &server(&url, token), blobs.clone()).await {
             Err(Error::InvalidRequest(message)) => {
                 assert!(
                     message.starts_with("MCP server remote rejected the credentials"),
@@ -186,7 +188,8 @@ fn refused_address() -> (socket2::Socket, std::net::SocketAddr) {
 async fn an_unreachable_server_is_unavailable() {
     let (_reserved, addr) = refused_address();
     let url = format!("http://{addr}/mcp");
-    match McpToolset::connect_http("remote", &server(&url, Some(TOKEN))).await {
+    let (_dir, blobs) = blob_store().await;
+    match McpToolset::connect_http("remote", &server(&url, Some(TOKEN)), blobs).await {
         Err(error @ Error::Unavailable { .. }) => assert!(error.is_retryable()),
         other => panic!("expected Unavailable, got {other:?}"),
     }

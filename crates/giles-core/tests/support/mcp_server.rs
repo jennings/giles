@@ -8,7 +8,7 @@ use rmcp::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ElicitRequestParams,
     ErrorData, Implementation, JsonObject, ListToolsResult, PaginatedRequestParams,
-    ProgressNotificationParam, ServerCapabilities, ServerConfig, Tool,
+    ProgressNotificationParam, ResourceContents, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use serde_json::{Value, json};
@@ -18,7 +18,7 @@ use tokio::sync::{Notify, Semaphore};
 pub const PAGE_SIZE: usize = 2;
 
 /// The tools every server starts with, sorted.
-pub const TOOLS: [&str; 9] = [
+pub const TOOLS: [&str; 10] = [
     "add_tool",
     "ask",
     "cancellations",
@@ -26,9 +26,13 @@ pub const TOOLS: [&str; 9] = [
     "exit",
     "fail",
     "hang",
+    "media",
     "pid",
     "progress_steps",
 ];
+
+/// What the `media` tool's image, audio, and resource carry, base64: `hello`.
+pub const MEDIA_BASE64: &str = "aGVsbG8=";
 
 /// What the tests observe and steer.
 pub struct Shared {
@@ -98,6 +102,11 @@ impl TestServer {
             tool(
                 "hang",
                 "Reports progress once, then waits to be cancelled",
+                object(),
+            ),
+            tool(
+                "media",
+                "Returns an image, audio, and a PDF resource",
                 object(),
             ),
             tool("pid", "The server's process id", object()),
@@ -197,6 +206,18 @@ impl ServerHandler for TestServer {
                 self.shared.cancelled_notify.notify_waiters();
                 Err(ErrorData::internal_error("cancelled", None))
             }
+            "media" => Ok(CallToolResult::success(vec![
+                ContentBlock::text("Here they are."),
+                ContentBlock::image(MEDIA_BASE64, "image/png"),
+                ContentBlock::audio(MEDIA_BASE64, "audio/ogg"),
+                ContentBlock::resource(ResourceContents::BlobResourceContents {
+                    uri: "file:///reports/q3.pdf".to_owned(),
+                    mime_type: Some("application/pdf".to_owned()),
+                    blob: MEDIA_BASE64.to_owned(),
+                    meta: None,
+                }),
+            ])
+            .into()),
             "pid" => Ok(text(std::process::id().to_string())),
             "progress_steps" => {
                 let steps = argument("steps").as_u64().unwrap_or(2);
@@ -223,4 +244,16 @@ impl ServerHandler for TestServer {
 /// An empty JSON object, for tool inputs.
 pub fn no_input() -> Value {
     Value::Object(JsonObject::new())
+}
+
+/// A blob store in a fresh temporary directory, which must outlive it.
+pub async fn blob_store() -> (tempfile::TempDir, giles_store::BlobStore) {
+    let dir = tempfile::tempdir().unwrap();
+    let db = giles_store::Store::open(dir.path().join("giles.db"))
+        .await
+        .unwrap();
+    let blobs = giles_store::BlobStore::open(dir.path().join("blobs"), db)
+        .await
+        .unwrap();
+    (dir, blobs)
 }

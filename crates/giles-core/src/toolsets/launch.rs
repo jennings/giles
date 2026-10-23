@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use giles_store::BlobStore;
 use giles_types::{Error, Result};
 use tokio::process::Command;
 use tracing::{info, warn};
@@ -14,7 +15,7 @@ use crate::config::{
     Auth, InstanceName, Kind, NetworkGrant, Program, Remote, StdioServer, ToolsetInstance,
     ToolsetTransport, discover_plugin, find_program,
 };
-use crate::mcp::{HttpServer, McpToolset};
+use crate::mcp::{HttpServer, McpMedia, McpToolset};
 use crate::paths::DataRoot;
 use crate::plugin_host::{prepare_data_dir, write_private};
 use crate::sandbox::{self, Network, Spec};
@@ -29,6 +30,7 @@ pub struct ToolsetLauncher {
     root: DataRoot,
     trampoline: PathBuf,
     sandbox: std::result::Result<(), String>,
+    blobs: BlobStore,
     env: Arc<EnvFn>,
 }
 
@@ -56,17 +58,20 @@ pub struct ResolvedProgram {
 impl ToolsetLauncher {
     /// A launcher for `root` whose sandbox trampoline is `trampoline` (the `giles` binary, run as
     /// `giles sandbox-exec`). `sandbox` is the host's sandbox check ([`sandbox::check_host`],
-    /// run once by `serve`): an error refuses every sandboxed server with that message. Programs
-    /// are looked up on the process's `PATH`.
+    /// run once by `serve`): an error refuses every sandboxed server with that message. Media
+    /// the servers' tools return is stored in `blobs`. Programs are looked up on the process's
+    /// `PATH`.
     pub fn new(
         root: DataRoot,
         trampoline: PathBuf,
         sandbox: std::result::Result<(), String>,
+        blobs: BlobStore,
     ) -> Self {
         Self {
             root,
             trampoline,
             sandbox,
+            blobs,
             env: Arc::new(|name| std::env::var_os(name)),
         }
     }
@@ -139,7 +144,9 @@ impl ToolsetLauncher {
                 let resolved = self.resolve(&instance.name, server)?;
                 self.launch(&instance.name, server, &resolved).await
             }
-            ToolsetTransport::Http(remote) => connect_remote(&instance.name, remote).await,
+            ToolsetTransport::Http(remote) => {
+                connect_remote(&instance.name, remote, self.blobs.clone()).await
+            }
         }
     }
 
@@ -234,7 +241,8 @@ impl ToolsetLauncher {
             sandboxed,
             "starting the toolset",
         );
-        McpToolset::connect_stdio(name, command, secrets, sandboxed).await
+        let media = McpMedia::new(self.blobs.clone());
+        McpToolset::connect_stdio(name, command, secrets, sandboxed, media).await
     }
 }
 
@@ -260,8 +268,13 @@ fn stdio_spec(data_dir: &Path, plan: &Plan, server: &StdioServer) -> Spec {
     spec
 }
 
-/// Connects to a remote server with its bearer token, if any.
-async fn connect_remote(instance: &InstanceName, remote: &Remote) -> Result<McpToolset> {
+/// Connects to a remote server with its bearer token, if any, storing the media its tools return
+/// in `blobs`.
+async fn connect_remote(
+    instance: &InstanceName,
+    remote: &Remote,
+    blobs: BlobStore,
+) -> Result<McpToolset> {
     let mut server = HttpServer::new(remote.url.clone());
     server.bearer = match &remote.auth {
         None => None,
@@ -274,7 +287,7 @@ async fn connect_remote(instance: &InstanceName, remote: &Remote) -> Result<McpT
             ));
         }
     };
-    McpToolset::connect_http(instance.as_str(), &server).await
+    McpToolset::connect_http(instance.as_str(), &server, blobs).await
 }
 
 fn unavailable(instance: &InstanceName, message: impl std::fmt::Display) -> Error {

@@ -30,6 +30,7 @@ use giles_core::config::{Builtins, Config, LoadOptions};
 use giles_core::paths::DataRoot;
 use giles_core::sandbox::{self, SandboxError, Spec};
 use giles_core::toolsets::ToolsetLauncher;
+use giles_store::{BlobStore, Store};
 use giles_types::{Error, Toolset};
 use rmcp::ServiceExt;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -177,9 +178,16 @@ impl Home {
         .unwrap()
     }
 
-    fn launcher(&self, sandbox: Result<(), String>) -> ToolsetLauncher {
+    /// The data root's blob store.
+    async fn blobs(&self) -> BlobStore {
+        let db = Store::open(self.root.database_file()).await.unwrap();
+        BlobStore::open(self.root.blobs_dir(), db).await.unwrap()
+    }
+
+    fn launcher(&self, sandbox: Result<(), String>, blobs: BlobStore) -> ToolsetLauncher {
         let path = self.path();
-        ToolsetLauncher::new(self.root.clone(), std::env::current_exe().unwrap(), sandbox)
+        let exe = std::env::current_exe().unwrap();
+        ToolsetLauncher::new(self.root.clone(), exe, sandbox, blobs)
             .env(move |name| (name == "PATH").then(|| path.clone()))
     }
 }
@@ -260,7 +268,8 @@ async fn sandboxed_stdio_server(log: &Log) {
     ));
     let config = home.config();
     let host = sandbox::check_host().map(|_| ()).map_err(|e| e.to_string());
-    let launcher = home.launcher(host.clone());
+    let blobs = home.blobs().await;
+    let launcher = home.launcher(host.clone(), blobs.clone());
 
     if let Err(reason) = host {
         // No sandbox on this host (a Linux kernel without Landlock): nothing runs.
@@ -336,7 +345,7 @@ async fn unsandboxed_stdio_server(log: &Log) {
     let home = Home::new(&stdio_toolset("loose", port, "unsandboxed = true"));
     let config = home.config();
     // Even a host without a sandbox runs it.
-    let launcher = home.launcher(Err("no sandbox here".to_owned()));
+    let launcher = home.launcher(Err("no sandbox here".to_owned()), home.blobs().await);
     let toolset = launcher.connect(&config.toolsets["loose"]).await.unwrap();
     assert_eq!(tool_names(&toolset).await, TOOLS);
     // The same scrubbed environment and working directory, without the sandbox.
@@ -380,7 +389,8 @@ async fn remote_server_with_a_bearer_token(_log: &Log) {
          [toolset.wrong]\nurl = \"{url}\"\nauth = {{ bearer = \"not-the-token\" }}\n"
     ));
     let config = home.config();
-    let launcher = home.launcher(Err("remote servers need no sandbox".to_owned()));
+    let no_sandbox = Err("remote servers need no sandbox".to_owned());
+    let launcher = home.launcher(no_sandbox, home.blobs().await);
     let toolset = launcher.connect(&config.toolsets["remote"]).await.unwrap();
     assert_eq!(tool_names(&toolset).await, TOOLS);
     match launcher.connect(&config.toolsets["wrong"]).await {

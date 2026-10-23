@@ -237,6 +237,9 @@ server answers. The remembered list is used only for the same program (by conten
 `[toolset.<name>]` table, and every start of the server lists the tools afresh. A list the server
 changes while it runs reaches conversations that start afterwards.
 
+Images, audio, and files a tool returns are kept like attachments (up to 50 MiB each): the model
+sees them if its provider takes that type, and can send them on with `send_attachment`.
+
 ```toml
 [toolset.files]
 command = "/opt/homebrew/bin/mcp-server-filesystem"

@@ -10,12 +10,13 @@
 mod mcp_server;
 
 use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use futures::StreamExt;
 use giles_core::config::Secret;
-use giles_core::mcp::{DirectCommand, McpToolset, STDERR_TARGET};
+use giles_core::mcp::{DirectCommand, McpMedia, McpToolset, STDERR_TARGET};
+use giles_store::{BlobStore, Store};
 use giles_types::{
     AgentId, Block, CallContext, Error, ToolCall, ToolCallEvent, ToolCallHandle, Toolset,
 };
@@ -29,6 +30,13 @@ const SERVER_ENV: &str = "GILES_MCP_TEST_SERVER";
 const SECRET_ENV: &str = "GILES_MCP_TEST_SECRET";
 const SECRET: &str = "test-secret-0123456789";
 const WAIT: Duration = Duration::from_secs(10);
+
+/// The blob store every connection stores media in, opened by `main`.
+static BLOBS: OnceLock<BlobStore> = OnceLock::new();
+
+fn media() -> McpMedia {
+    McpMedia::new(BLOBS.get().expect("main opens the blob store").clone())
+}
 
 fn main() {
     if std::env::var_os(SERVER_ENV).is_some() {
@@ -48,6 +56,16 @@ fn main() {
         .enable_all()
         .build()
         .unwrap();
+    let blobs_dir = tempfile::tempdir().unwrap();
+    let blobs = runtime.block_on(async {
+        let db = Store::open(blobs_dir.path().join("giles.db"))
+            .await
+            .unwrap();
+        BlobStore::open(blobs_dir.path().join("blobs"), db)
+            .await
+            .unwrap()
+    });
+    BLOBS.set(blobs).unwrap();
     macro_rules! run {
         ($($test:ident),* $(,)?) => {$(
             print!("test {} ... ", stringify!($test));
@@ -171,7 +189,8 @@ async fn try_connect_with(
     server
         .env
         .insert(SECRET_ENV.to_owned(), Secret::new(SECRET.to_owned()));
-    McpToolset::connect_stdio(instance, server.command(), server.secrets(), trampoline).await
+    let (command, secrets) = (server.command(), server.secrets());
+    McpToolset::connect_stdio(instance, command, secrets, trampoline, media()).await
 }
 
 async fn call(toolset: &McpToolset, name: &str, input: Value) -> ToolCallHandle {
@@ -333,7 +352,8 @@ async fn a_crashed_server_takes_its_process_group(log: &Log) {
 
 async fn a_missing_command_is_unavailable(_log: &Log) {
     let server = DirectCommand::new("/nonexistent/giles-mcp-server");
-    match McpToolset::connect_stdio("missing", server.command(), server.secrets(), false).await {
+    let command = server.command();
+    match McpToolset::connect_stdio("missing", command, server.secrets(), false, media()).await {
         Err(Error::Unavailable { message, .. }) => {
             assert!(
                 message.starts_with("MCP server missing: can't start"),

@@ -2,11 +2,12 @@
 //!
 //! Doc: `Docs/technical/mcp.md`. Each [`McpToolset`] is one connection, made ready by the
 //! `initialize` handshake; [`crate::toolsets`] launches stdio servers in their sandbox and
-//! supervises every connection. Staged: media, skills, and elicitation are task 2.21.
+//! supervises every connection.
 
 mod client;
 mod convert;
 mod http;
+mod media;
 mod stdio;
 
 use std::borrow::Cow;
@@ -37,6 +38,7 @@ use tracing::Instrument;
 use self::client::{ClientState, ProgressSubscription};
 use self::convert::Origin;
 pub use self::http::HttpServer;
+pub use self::media::{MAX_RESULT_MEDIA_BYTES, McpMedia};
 pub use self::stdio::{DirectCommand, STDERR_TARGET};
 use crate::config::Secret;
 use crate::sandbox;
@@ -62,6 +64,8 @@ pub struct McpToolset {
     service: RunningService<RoleClient, ClientState>,
     /// Becomes `true` when the connection ends.
     closed: watch::Receiver<bool>,
+    /// Where media in tool results goes.
+    media: McpMedia,
     /// A stdio server's exit status, once it has exited.
     exit: Option<watch::Receiver<Option<ExitStatus>>>,
     /// Kills a stdio server on drop.
@@ -92,11 +96,14 @@ impl McpToolset {
     /// With `trampoline` (`command` runs the sandbox trampoline), an exit that
     /// [`sandbox::is_trampoline_failure`] recognizes is [`Error::InvalidRequest`] instead:
     /// retrying won't help.
+    ///
+    /// `media` says where media in tool results goes.
     pub async fn connect_stdio(
         instance: impl Into<String>,
         command: tokio::process::Command,
         secrets: Vec<Secret>,
         trampoline: bool,
+        media: McpMedia,
     ) -> Result<Self> {
         let origin = Arc::new(Origin {
             instance: instance.into(),
@@ -117,28 +124,39 @@ impl McpToolset {
             exit: spawned.exit,
             trampoline,
         };
-        connect(origin, span, (spawned.stdout, spawned.stdin), Some(child)).await
+        let io = (spawned.stdout, spawned.stdin);
+        connect(origin, span, io, Some(child), media).await
     }
 
     /// Connects to a remote server over streamable HTTP, with the server's bearer token if it has
     /// one; the token is scrubbed from error messages. Returns once the server has answered
-    /// `initialize`.
+    /// `initialize`. Media in tool results is stored in `blobs`.
     ///
     /// A non-HTTP url and rejected credentials (HTTP 401 or 403) are [`Error::InvalidRequest`]; an
     /// unreachable server is [`Error::Unavailable`].
-    pub async fn connect_http(instance: impl Into<String>, server: &HttpServer) -> Result<Self> {
+    pub async fn connect_http(
+        instance: impl Into<String>,
+        server: &HttpServer,
+        blobs: giles_store::BlobStore,
+    ) -> Result<Self> {
         let origin = Arc::new(Origin {
             instance: instance.into(),
             secrets: server.secrets(),
         });
         let span = span(&origin.instance);
         let transport = server.transport(&origin)?;
-        connect(origin, span, transport, None).await
+        connect(origin, span, transport, None, McpMedia::new(blobs)).await
     }
 
     /// Connects over an already open byte stream pair carrying newline-delimited JSON-RPC, as
-    /// stdio does. For servers in the same process (tests, embedded servers).
-    pub async fn connect_io<R, W>(instance: impl Into<String>, read: R, write: W) -> Result<Self>
+    /// stdio does. For servers in the same process (tests, embedded servers). `media` says where
+    /// media in tool results goes.
+    pub async fn connect_io<R, W>(
+        instance: impl Into<String>,
+        read: R,
+        write: W,
+        media: McpMedia,
+    ) -> Result<Self>
     where
         R: AsyncRead + Send + Unpin + 'static,
         W: AsyncWrite + Send + Unpin + 'static,
@@ -148,7 +166,7 @@ impl McpToolset {
             secrets: Vec::new(),
         });
         let span = span(&origin.instance);
-        connect(origin, span, (read, write), None).await
+        connect(origin, span, (read, write), None, media).await
     }
 
     /// The instance name, for messages; tool names are bare.
@@ -215,6 +233,7 @@ async fn connect<T, E, A>(
     span: tracing::Span,
     transport: T,
     child: Option<Child>,
+    media: McpMedia,
 ) -> Result<McpToolset>
 where
     T: IntoTransport<RoleClient, E, A>,
@@ -242,6 +261,7 @@ where
                 origin,
                 service,
                 closed,
+                media,
                 exit,
                 _child: guard,
             });
@@ -396,9 +416,10 @@ impl Toolset for McpToolset {
     }
 
     /// Sends `tools/call` with a progress token and returns at once. The events are the server's
-    /// progress notifications, then the result; a JSON-RPC error response or a lost connection is
-    /// the stream's last item, as an error. Dropping `events` before the result sends
-    /// `notifications/cancelled` for the request.
+    /// progress notifications, then the result, its images, audio, and blob resources stored in
+    /// the blob store as media blocks ([`MAX_RESULT_MEDIA_BYTES`] each); a JSON-RPC error
+    /// response or a lost connection is the stream's last item, as an error. Dropping `events`
+    /// before the result sends `notifications/cancelled` for the request.
     ///
     /// `answers` takes no answers yet: elicitation is task 2.21, and until then the server's
     /// requests are declined. `call.media` isn't handed to the server yet either (2.21); the input
@@ -435,7 +456,15 @@ impl Toolset for McpToolset {
         let (events, events_rx) = mpsc::channel(CALL_EVENT_BUFFER);
         let (answers, answers_rx) = mpsc::channel(1);
         tokio::spawn(
-            run_call(self.origin.clone(), handle, progress, events, answers_rx).instrument(span),
+            run_call(
+                self.origin.clone(),
+                self.media.clone(),
+                handle,
+                progress,
+                events,
+                answers_rx,
+            )
+            .instrument(span),
         );
         let events = futures::stream::unfold(events_rx, |mut events| async move {
             events.recv().await.map(|event| (event, events))
@@ -451,6 +480,7 @@ impl Toolset for McpToolset {
 /// drops the events first.
 async fn run_call(
     origin: Arc<Origin>,
+    media: McpMedia,
     handle: RequestHandle<RoleClient>,
     mut progress: ProgressSubscription,
     events: mpsc::Sender<Result<ToolCallEvent>>,
@@ -490,7 +520,10 @@ async fn run_call(
         }
     }
     let event = match response {
-        Ok(ServerResult::CallToolResult(result)) => Ok(convert::tool_result(result)),
+        Ok(ServerResult::CallToolResult(result)) => {
+            let result = convert::tool_result(result);
+            Ok(media::store_result(result, &media.blobs, MAX_RESULT_MEDIA_BYTES).await)
+        }
         Ok(_) => Err(Error::other(
             origin.message("unexpected response to tools/call"),
         )),

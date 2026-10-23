@@ -7,10 +7,12 @@ going for the life of the daemon (`ToolsetHost`).
 
 ## Connecting
 
-`ToolsetLauncher::new(root, trampoline, sandbox)` mirrors the [plugin host](plugin-host.md)'s
+`ToolsetLauncher::new(root, trampoline, sandbox, blobs)` mirrors the [plugin host](plugin-host.md)'s
 `Launcher`: `trampoline` is the `giles` binary (run as `giles sandbox-exec`), and `sandbox` is the
-host check `serve` runs once; an error refuses every sandboxed server with that message.
-`.env(f)` replaces the process environment for `PATH` lookups (tests).
+host check `serve` runs once; an error refuses every sandboxed server with that message. `blobs`
+is the runtime's blob store, where every connection keeps the media its tools return
+([MCP Client](mcp.md#mapping-mcp-to-the-toolset-trait)). `.env(f)` replaces the process
+environment for `PATH` lookups (tests).
 
 `connect(&ToolsetInstance)` returns an `McpToolset` once the server has answered `initialize`:
 

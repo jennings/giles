@@ -55,34 +55,98 @@ pub(crate) fn tool_specs(tools: Vec<Tool>) -> Vec<ToolSpec> {
     specs
 }
 
-/// A `tools/call` result as a [`ToolCallEvent::Result`].
+/// One item of a `tools/call` result: a block as it is, or media still to be stored
+/// ([`super::media::store_result`]).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Part {
+    /// Text, or text standing in for content Giles doesn't take.
+    Block(Block),
+    /// Image, audio, or blob resource content.
+    Media(IncomingMedia),
+}
+
+/// Media in a tool result, as the server sent it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct IncomingMedia {
+    /// What MCP called it, for messages: `image`, `audio`, or `resource <uri>`.
+    pub(crate) what: String,
+    /// The media type ([`media_type`]).
+    pub(crate) media_type: String,
+    /// The file name: the last segment of a resource's URI.
+    pub(crate) name: Option<String>,
+    /// The content, base64.
+    pub(crate) data: String,
+}
+
+impl IncomingMedia {
+    /// The decoded size of the content, without decoding it. Whitespace isn't expected (MCP
+    /// sends standard base64 without line breaks); padding is accounted for.
+    pub(crate) fn decoded_len(&self) -> u64 {
+        let data = self.data.trim_end_matches('=');
+        (data.len() as u64 * 3) / 4
+    }
+
+    /// The text that takes the media's place when it can't be stored, e.g. `[image (image/png,
+    /// 5120 bytes) dropped: <why>]`.
+    pub(crate) fn dropped(&self, why: impl std::fmt::Display) -> Block {
+        Block::text(format!(
+            "[{} ({}, {} bytes) dropped: {why}]",
+            self.what,
+            self.media_type,
+            self.decoded_len()
+        ))
+    }
+}
+
+/// A `tools/call` result, before its media is stored.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ToolResult {
+    /// The content, in order.
+    pub(crate) parts: Vec<Part>,
+    /// Whether the tool failed by its own account (`isError`, default false).
+    pub(crate) is_error: bool,
+}
+
+/// A `tools/call` result's content.
 ///
-/// Text content becomes [`Block::Text`], and so does the text of an embedded text resource. Images,
-/// audio, and blob resources are replaced with a text placeholder saying what was dropped: storing
-/// them as blobs is task 2.21. A resource link becomes a text line with its URI. If the result has
-/// no text at all but has `structuredContent`, that JSON is the text.
-pub(crate) fn tool_result(result: CallToolResult) -> ToolCallEvent {
+/// Text content becomes [`Block::Text`], and so does the text of an embedded text resource.
+/// Images, audio, and blob resources become [`Part::Media`]. A resource link becomes a text line
+/// with its URI. If the result has no text at all but has `structuredContent`, that JSON is the
+/// text.
+pub(crate) fn tool_result(result: CallToolResult) -> ToolResult {
     let has_text = result
         .content
         .iter()
         .any(|block| matches!(block, ContentBlock::Text(text) if !text.text.is_empty()));
-    let mut content: Vec<Block> = result.content.into_iter().map(content_block).collect();
+    let mut parts: Vec<Part> = result.content.into_iter().map(content_part).collect();
     if !has_text && let Some(structured) = result.structured_content {
-        content.push(Block::Text {
+        parts.push(Part::Block(Block::Text {
             text: structured.to_string(),
-        });
+        }));
     }
-    ToolCallEvent::Result {
-        content,
+    ToolResult {
+        parts,
         is_error: result.is_error.unwrap_or(false),
     }
 }
 
-fn content_block(block: ContentBlock) -> Block {
+fn content_part(block: ContentBlock) -> Part {
+    let media = |what: String, mime_type: Option<&str>, name, data| {
+        Part::Media(IncomingMedia {
+            what,
+            media_type: media_type(mime_type.unwrap_or_default()),
+            name,
+            data,
+        })
+    };
     let text = match block {
         ContentBlock::Text(text) => text.text,
-        ContentBlock::Image(image) => dropped("image", &image.mime_type, decoded_len(&image.data)),
-        ContentBlock::Audio(audio) => dropped("audio", &audio.mime_type, decoded_len(&audio.data)),
+        ContentBlock::Image(image) => {
+            return media("image".into(), Some(&image.mime_type), None, image.data);
+        }
+        ContentBlock::Audio(audio) => {
+            return media("audio".into(), Some(&audio.mime_type), None, audio.data);
+        }
         ContentBlock::Resource(resource) => match resource.resource {
             ResourceContents::TextResourceContents { text, .. } => text,
             ResourceContents::BlobResourceContents {
@@ -90,12 +154,10 @@ fn content_block(block: ContentBlock) -> Block {
                 mime_type,
                 blob,
                 ..
-            } => format!(
-                "[resource {uri} ({}, {} bytes) dropped: Giles doesn't take media from MCP tools \
-                 yet]",
-                mime_type.as_deref().unwrap_or("application/octet-stream"),
-                decoded_len(&blob),
-            ),
+            } => {
+                let name = resource_name(&uri);
+                return media(format!("resource {uri}"), mime_type.as_deref(), name, blob);
+            }
             _ => "[unsupported MCP resource content dropped]".to_owned(),
         },
         ContentBlock::ResourceLink(link) => format!("[resource link: {}]", link.uri),
@@ -111,20 +173,43 @@ fn content_block(block: ContentBlock) -> Block {
                 .unwrap_or_else(|| "unknown".to_owned())
         ),
     };
-    Block::Text { text }
+    Part::Block(Block::Text { text })
 }
 
-fn dropped(kind: &str, mime_type: &str, bytes: u64) -> String {
-    format!(
-        "[{kind} ({mime_type}, {bytes} bytes) dropped: Giles doesn't take media from MCP tools yet]"
-    )
+/// The longest media type kept; a longer one is `application/octet-stream`.
+const MAX_MEDIA_TYPE_LEN: usize = 127;
+
+/// The media type a server gave, as the blob store records it: lowercase, without parameters
+/// (`audio/ogg; codecs=opus` is `audio/ogg`), and `application/octet-stream` unless it is a
+/// plain `type/subtype` of RFC 6838 characters, so a server can't put anything else where
+/// channels and providers read a media type.
+pub(crate) fn media_type(raw: &str) -> String {
+    const FALLBACK: &str = "application/octet-stream";
+    let essence = raw.split(';').next().unwrap_or_default().trim();
+    let token = |part: &str| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"!#$&^_.+-".contains(&b))
+    };
+    match essence.split_once('/') {
+        Some((kind, sub)) if essence.len() <= MAX_MEDIA_TYPE_LEN && token(kind) && token(sub) => {
+            essence.to_ascii_lowercase()
+        }
+        _ => FALLBACK.to_owned(),
+    }
 }
 
-/// The decoded size of base64 `data`, without decoding it. Whitespace isn't expected (MCP sends
-/// standard base64 without line breaks); padding is accounted for.
-fn decoded_len(data: &str) -> u64 {
-    let data = data.trim_end_matches('=');
-    (data.len() as u64 * 3) / 4
+/// The longest file name taken from a resource URI, in characters.
+const MAX_NAME_CHARS: usize = 255;
+
+/// A resource's file name: the last path segment of its URI, without query or fragment, if it
+/// has one of at most 255 characters.
+fn resource_name(uri: &str) -> Option<String> {
+    let path = uri.split(['?', '#']).next().unwrap_or_default();
+    let last = path.rsplit('/').next().unwrap_or_default();
+    let name = if path.contains('/') { last } else { "" };
+    (!name.is_empty() && name.chars().count() <= MAX_NAME_CHARS).then(|| name.to_owned())
 }
 
 /// A progress notification as a [`ToolCallEvent::Progress`], or `None` if it doesn't advance past
@@ -238,11 +323,17 @@ mod tests {
         }
     }
 
-    fn result_of(event: ToolCallEvent) -> (Vec<Block>, bool) {
-        match event {
-            ToolCallEvent::Result { content, is_error } => (content, is_error),
-            other => panic!("not a result: {other:?}"),
-        }
+    /// The content with each media part as `<media <what>>`.
+    fn result_of(result: ToolResult) -> (Vec<Block>, bool) {
+        let content = result
+            .parts
+            .into_iter()
+            .map(|part| match part {
+                Part::Block(block) => block,
+                Part::Media(media) => text(&format!("<media {}>", media.what)),
+            })
+            .collect();
+        (content, result.is_error)
     }
 
     #[test]
@@ -305,41 +396,90 @@ mod tests {
     }
 
     #[test]
-    fn media_is_replaced_with_a_placeholder_naming_what_was_dropped() {
-        // 8 base64 characters with one padding character decode to 5 bytes.
+    fn media_is_kept_with_its_type_name_and_data() {
         let result = CallToolResult::success(vec![
             ContentBlock::image("aGVsbG8=", "image/png"),
-            ContentBlock::audio("aGVsbG8h", "audio/wav"),
+            ContentBlock::audio("aGVsbG8h", "Audio/OGG; codecs=opus"),
             ContentBlock::resource(ResourceContents::BlobResourceContents {
-                uri: "file:///a.pdf".to_owned(),
+                uri: "file:///reports/q3.pdf?v=2".to_owned(),
                 mime_type: Some("application/pdf".to_owned()),
                 blob: "aGk=".to_owned(),
                 meta: None,
             }),
+            ContentBlock::resource(ResourceContents::BlobResourceContents {
+                uri: "urn:x".to_owned(),
+                mime_type: None,
+                blob: String::new(),
+                meta: None,
+            }),
         ]);
-        let (content, _) = result_of(tool_result(result));
-        let texts: Vec<&str> = content
-            .iter()
-            .map(|block| match block {
-                Block::Text { text } => text.as_str(),
-                other => panic!("not text: {other:?}"),
+        let media: Vec<IncomingMedia> = tool_result(result)
+            .parts
+            .into_iter()
+            .map(|part| match part {
+                Part::Media(media) => media,
+                other => panic!("not media: {other:?}"),
             })
             .collect();
-        assert!(
-            texts[0].starts_with("[image (image/png, 5 bytes) dropped"),
-            "{}",
-            texts[0]
+        let incoming =
+            |what: &str, media_type: &str, name: Option<&str>, data: &str| IncomingMedia {
+                what: what.to_owned(),
+                media_type: media_type.to_owned(),
+                name: name.map(str::to_owned),
+                data: data.to_owned(),
+            };
+        assert_eq!(
+            media,
+            [
+                incoming("image", "image/png", None, "aGVsbG8="),
+                incoming("audio", "audio/ogg", None, "aGVsbG8h"),
+                incoming(
+                    "resource file:///reports/q3.pdf?v=2",
+                    "application/pdf",
+                    Some("q3.pdf"),
+                    "aGk="
+                ),
+                incoming("resource urn:x", "application/octet-stream", None, ""),
+            ]
         );
-        assert!(
-            texts[1].starts_with("[audio (audio/wav, 6 bytes) dropped"),
-            "{}",
-            texts[1]
+        // 8 base64 characters with one padding character decode to 5 bytes.
+        assert_eq!(media[0].decoded_len(), 5);
+        assert_eq!(media[1].decoded_len(), 6);
+        assert_eq!(
+            media[0].dropped("too large"),
+            text("[image (image/png, 5 bytes) dropped: too large]")
         );
-        assert!(
-            texts[2].starts_with("[resource file:///a.pdf (application/pdf, 2 bytes) dropped"),
-            "{}",
-            texts[2]
+    }
+
+    #[test]
+    fn media_types_are_plain_type_slash_subtype_or_octet_stream() {
+        assert_eq!(media_type("IMAGE/PNG"), "image/png");
+        assert_eq!(media_type(" text/plain ; charset=utf-8"), "text/plain");
+        assert_eq!(media_type("image/svg+xml"), "image/svg+xml");
+        for bad in [
+            "",
+            "png",
+            "image/",
+            "/png",
+            "image/png/x",
+            "image/p ng",
+            "image/png\n[media:x]",
+            &format!("image/{}", "x".repeat(130)),
+        ] {
+            assert_eq!(media_type(bad), "application/octet-stream", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn resource_names_are_the_last_path_segment() {
+        assert_eq!(resource_name("file:///a/b.txt").as_deref(), Some("b.txt"));
+        assert_eq!(
+            resource_name("https://x/y.png#top").as_deref(),
+            Some("y.png")
         );
+        assert_eq!(resource_name("file:///dir/"), None);
+        assert_eq!(resource_name("urn:isbn:1"), None);
+        assert_eq!(resource_name(&format!("file:///{}", "n".repeat(256))), None);
     }
 
     #[test]
