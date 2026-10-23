@@ -488,7 +488,8 @@ async fn events_blobs_and_acks_survive_a_crash() {
     })
     .await;
 
-    // The core fetches the attachment, stores it, releases it.
+    // The core fetches the attachment, stores it, releases it. The event isn't acked yet, so the
+    // plugin keeps the blob until it is.
     let (header, bytes) = get_blob(&plugin, media.id.as_str()).await.unwrap();
     assert_eq!(header.media_type, "text/plain");
     assert_eq!(header.size, 5);
@@ -500,8 +501,7 @@ async fn events_blobs_and_acks_survive_a_crash() {
         })
         .await
         .unwrap();
-    let status = get_blob(&plugin, media.id.as_str()).await.unwrap_err();
-    assert_eq!(status.code(), Code::NotFound);
+    assert!(get_blob(&plugin, media.id.as_str()).await.is_ok());
 
     acks.unbounded_send(ack("e1")).unwrap();
     let acks_file = data.path().join("acks.jsonl");
@@ -509,6 +509,9 @@ async fn events_blobs_and_acks_survive_a_crash() {
         read_lines(&acks_file) == [json!({"event_id": "e1"})]
     })
     .await;
+    // Acked: its blob is gone.
+    let status = get_blob(&plugin, media.id.as_str()).await.unwrap_err();
+    assert_eq!(status.code(), Code::NotFound);
 
     // A crash: no Shutdown, no end-of-file.
     plugin.child.start_kill().unwrap();

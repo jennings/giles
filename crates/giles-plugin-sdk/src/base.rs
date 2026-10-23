@@ -526,9 +526,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn release_blob_frees_blobs_and_checks_ids() {
+    async fn release_blob_keeps_blobs_unacked_events_use_and_checks_ids() {
         let mut f = fixture().await;
         let media = f.blobs.put("hello", "text/plain", None).await.unwrap();
+        // The event that carries it is spooled.
+        f.blobs.claim(std::slice::from_ref(&media.id));
         assert_eq!(get(&mut f.client, HELLO_SHA256).await.unwrap().len(), 2);
 
         let status = f
@@ -539,8 +541,8 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(status.code(), Code::InvalidArgument);
-        assert!(f.blobs.exists(&media.id).await.unwrap(), "nothing released");
 
+        // Released before the ack arrives: kept for the unacked event, and idempotent.
         for _ in 0..2 {
             f.client
                 .release_blob(ReleaseBlobRequest {
@@ -549,6 +551,10 @@ mod tests {
                 .await
                 .unwrap();
         }
+        assert_eq!(get(&mut f.client, HELLO_SHA256).await.unwrap().len(), 2);
+
+        // The ack deletes it.
+        f.blobs.unclaim(vec![media.id.clone()]).await.unwrap();
         assert_eq!(
             get(&mut f.client, HELLO_SHA256).await.unwrap_err().code(),
             Code::NotFound

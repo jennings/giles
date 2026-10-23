@@ -152,7 +152,7 @@ async fn fixture_in(data: Arc<tempfile::TempDir>, can_initiate: bool) -> Fixture
             })
         })
     };
-    let spool = Spool::open(Arc::clone(&dirs)).unwrap();
+    let spool = Spool::open(Arc::clone(&dirs), context.blobs.clone()).unwrap();
     let (kind, routes) = ChannelPlugin::new("fake", "0.0.1")
         .can_initiate(can_initiate)
         .requested_grants(Grants {

@@ -142,9 +142,10 @@ with a QR code, pair code, or URL that `giles status` and the admin pages show t
 
 Attachments never travel inside messages. For an inbound attachment, store the bytes with
 `ctx.blobs().put(bytes, media_type, name)` (or `put_reader`) before emitting the event, and put the
-returned `MediaRef` in the message's `attachments`; Giles fetches it and then tells the plugin to
-delete it. For an outbound attachment, read it in `send` with `blobs.read(&media)`, `open`, or
-`path`; it's only valid until `send` returns.
+returned `MediaRef` in the message's `attachments`; Giles fetches it, and the SDK deletes it once
+Giles has acked every event that carries it. Put only blobs you emit: one never sent is deleted at
+the plugin's next start. For an outbound attachment, read it in `send` with `blobs.read(&media)`,
+`open`, or `path`; it's only valid until `send` returns.
 
 ## Sending
 

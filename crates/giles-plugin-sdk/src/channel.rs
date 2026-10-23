@@ -162,7 +162,7 @@ impl ChannelPlugin {
             Box::pin(async move { Ok(Arc::new(built.await?) as Arc<dyn Channel>) })
         });
         server::run(&display_name, move |context| {
-            let spool = Spool::open(Arc::clone(&context.dirs))?;
+            let spool = Spool::open(Arc::clone(&context.dirs), context.blobs.clone())?;
             Ok(self.services(configure, spool, context))
         })
         .await
@@ -359,10 +359,19 @@ async fn pump_events(
         };
         error_delay = None;
         let id = event.id().clone();
+        let attachments: Vec<MediaId> = match &event {
+            ChannelEvent::Message { message, .. } => {
+                message.attachments.iter().map(|m| m.id.clone()).collect()
+            }
+            _ => Vec::new(),
+        };
         let wire = match event_to_proto(event) {
             Ok(wire) => wire,
             Err(e) => {
                 tracing::error!(%id, "dropping an event the protocol can't carry: {e}");
+                if let Err(e) = spool.blobs().abandon(attachments).await {
+                    tracing::warn!(%id, "deleting a dropped event's blobs: {e}");
+                }
                 continue;
             }
         };

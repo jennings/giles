@@ -48,7 +48,7 @@ rest of the directory.
 
 ```text
 giles-sdk/
-  blobs/<sha256>       blobs the plugin put, until the core releases them
+  blobs/<sha256>       blobs the plugin put, until no unacked event refers to them
   blobs/<sha256>.json  their media type and file name
   outbound/<sha256>    blobs the core put, until the Send that uses them ends
   events/<seq>.pb      events the core hasn't acked yet
@@ -57,8 +57,9 @@ giles-sdk/
 
 At startup the SDK empties `outbound/` and `tmp/`: a blob the core put is valid only until the RPC
 that uses it ends, which can't outlive the process, and a file left in `tmp/` is an interrupted
-write. Every file reaches its final name by a rename from `tmp/`, so no reader ever sees a partial
-one.
+write. It also deletes the inbound blobs in `blobs/` that no event in `events/` refers to (see
+[Blobs](#blobs)). Every file reaches its final name by a rename from `tmp/`, so no reader ever sees
+a partial one.
 
 ## Base service
 
@@ -81,22 +82,31 @@ adapter's decision (2.18).
   the last media type and name win.
 - `GetBlob` serves only those blobs: the header (`BlobRef` with the file's actual size), then the
   data in chunks of at most 1 MiB. An unknown id is `NOT_FOUND`; a malformed one is
-  `INVALID_ARGUMENT`. A blob whose sidecar is gone (a release racing a new put of the same bytes)
-  is served as `application/octet-stream`.
-- `ReleaseBlob` deletes the named blobs, in both directions. Unknown ids are fine (releasing is
-  idempotent); a malformed id fails the whole call before anything is deleted. Nothing is freed
-  implicitly. Inbound blobs aren't counted: if two pending events carry the same bytes they share
-  one file, so releasing it for the first event removes it for the second too, and a later
-  `GetBlob` for it is `NOT_FOUND`. How the core handles that is up to the `RemoteChannel` adapter.
+  `INVALID_ARGUMENT`. A blob whose sidecar is missing is served as `application/octet-stream`.
+- Inbound blobs live as long as something refers to them. Identical bytes share one file, so the
+  SDK counts, in memory, the attachments of spooled (unacked) events and the `put`s whose event
+  hasn't reached the spool yet (counted before the files are written, so an ack of another event
+  with the same bytes can't delete a blob a new event is about to use). Acking an event deletes
+  each of its blobs that nothing else refers to; that is what frees inbound blobs. An event that
+  never reaches the spool (a repeat of one already pending, or one the protocol can't carry) gives
+  its `put`s up the same way. A crash between deleting the acked event's file and deleting its
+  blobs, or a blob put and never sent, leaves files no spooled event refers to, and startup deletes
+  them: the core acks only after storing an event and its attachments, so an unspooled blob is
+  never needed again.
+- `ReleaseBlob` deletes the named inbound blobs that nothing refers to and leaves the rest:
+  releasing one an unacked event still carries (a second event with the same bytes, or the event
+  whose ack hasn't arrived yet) does nothing, and the ack deletes it later. It never touches
+  `outbound/`. Unknown ids are fine (releasing is idempotent); a malformed id fails the whole call
+  before anything is deleted.
 - Outbound: `PutBlob` must send the header first, then data chunks of at most 1 MiB, exactly the
   header's `size` in total; anything else is `INVALID_ARGUMENT` and leaves nothing behind. A
   non-empty header id must equal the SHA-256 of the data. The blob lands in `outbound/` (not
   synced: it's transient) and the response carries its handle. Uploads of the same bytes share the
   file and are counted: each `PutBlob` adds a reference, and each `Send` that used the handle drops
   one when it ends, however it ends; the file goes with the last reference, so overlapping `Send`s
-  with the same attachment don't break each other. The channel's `send` reads it with
-  `Blobs::open`, `read`, or `path`. `ReleaseBlob` of the id drops every reference at once, and the
-  next start empties `outbound/`.
+  with the same attachment don't break each other. An inbound blob with the same bytes is a
+  separate file with its own lifetime. The channel's `send` reads it with `Blobs::open`, `read`,
+  or `path`, and the next start empties `outbound/`.
 
 ## Public API
 
