@@ -231,3 +231,45 @@ and `client_config()` (a `rustls::ClientConfig` with those roots, the safe defau
 versions, and the `aws-lc-rs` provider named explicitly), and re-exports `rustls`. This is the
 same trust store as the core's built-in providers, never the OS store, which a sandboxed plugin may
 not be able to read. A plugin that needs no TLS can turn the feature off.
+
+## The echo plugin
+
+`plugins/giles-channel-echo` (`publish = false`) is a channel plugin for tests of the plugin host,
+built on the SDK. It talks to nobody; tests drive it through files in its data directory:
+
+| Path            | Meaning                                                                     |
+| --------------- | --------------------------------------------------------------------------- |
+| `inject/*.json` | Inbound events to emit, in file-name order (write elsewhere, rename in)     |
+| `sent.jsonl`    | One line per `Send`: `message_id` (`echo-<n>`), `message`, `attachment_texts` |
+| `acks.jsonl`    | One line per event the core acked: `event_id`                               |
+
+An injection is `{"event": <ChannelEvent>, "attachments": [{"text", "media_type", "name"}]}`, the
+event in `giles-types` JSON and `attachments` optional (message events only; each is stored with
+`Blobs::put` and appended to the message's attachments, so `GetBlob` and `ReleaseBlob` can be
+exercised). The plugin deletes an injection when the SDK polls its stream again, that is once the
+event is persisted, so after that only the SDK's spool has it: killing the plugin then shows that
+the SDK resends it. A file that doesn't parse is renamed to `*.bad`.
+
+Config, all optional, unknown keys refused: `namespace` (default `"echo"`); `echo` (default
+`false`; when set, every sent message comes back as an inbound message from `echo_sender`, default
+`"echo-user"`, in the same conversation, with event and message id `echo-<n>` and the attachments
+stored again as the plugin's own blobs); `unavailable` (recipients whose sends fail with
+`UNAVAILABLE`). It reports `output = blocks` and `can_initiate = true`.
+
+Its integration tests (`plugins/giles-channel-echo/tests/plugin.rs`) launch the binary exactly as
+the core will: a `socketpair`, the plugin's end made fd 3 with `dup2` in `pre_exec`, the token on
+stdin, the scrubbed environment, then the handshake line, then every RPC through the generated
+clients with a bearer interceptor and 16 MiB limits.
+
+### Using it from other tests
+
+Cargo gives integration tests the path of a binary (`env!("CARGO_BIN_EXE_giles-channel-echo")`)
+only within the binary's own package, and builds the binary before running them. So tests that
+launch the echo plugin through the real host (plugin launch, supervision, `RemoteChannel`) belong in
+`plugins/giles-channel-echo/tests/`, with `giles-core` as a dev-dependency of the echo crate; that
+works for `cargo test --workspace`, `cargo test -p giles-channel-echo`, and any target or build
+directory. A discovery test can symlink that path into `<root>/plugins/`.
+
+From another package there's no reliable path: test executables live in the build directory
+(`CARGO_BUILD_BUILD_DIR`), binaries in the target directory, and `cargo test -p giles-core` doesn't
+build the echo binary at all.

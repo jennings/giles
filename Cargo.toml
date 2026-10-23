@@ -1,7 +1,6 @@
 [workspace]
 resolver = "3"
-# Add "plugins/*" once the first plugin lands: Cargo rejects a glob over a missing directory.
-members = ["crates/*"]
+members = ["crates/*", "plugins/*"]
 # Spikes (e.g. spikes/whatsapp, TASKS.md 1.13) are standalone crates with their own lockfiles, kept
 # out of the workspace build and CI. `exclude` takes path prefixes, not globs.
 exclude = ["spikes"]

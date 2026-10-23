@@ -838,6 +838,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "giles-channel-echo"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "giles-plugin-sdk",
+ "giles-proto",
+ "hyper-util",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tonic",
+ "tonic-health",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "giles-core"
 version = "0.1.0"
 dependencies = [

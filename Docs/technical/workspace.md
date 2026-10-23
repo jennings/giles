@@ -1,9 +1,8 @@
 # Cargo Workspace
 
 Cargo builds the whole repository. The root `Cargo.toml` is a virtual workspace (`resolver = "3"`)
-whose members are `crates/*`. First-party plugins will live in `plugins/giles-<kind>-<name>`;
-`"plugins/*"` is added to `members` in the same commit that creates the first one, because Cargo
-rejects a glob over a directory that doesn't exist.
+whose members are `crates/*` and `plugins/*`. First-party plugins live in
+`plugins/giles-<kind>-<name>`.
 
 Spikes live in `spikes/<name>/` as standalone crates with their own `Cargo.lock`, outside the
 workspace (`exclude = ["spikes"]`; `exclude` takes path prefixes, not globs), so their dependencies
@@ -12,14 +11,15 @@ so far is [the WhatsApp spike](whatsapp-spike.md).
 
 ## Crates
 
-| Crate              | Kind | Published | Contents                                                     |
-| ------------------ | ---- | --------- | ------------------------------------------------------------ |
-| `giles`            | bin  | no        | The daemon and its command-line interface                    |
-| `giles-core`       | lib  | no        | Orchestration: agent loop, routing, sessions, scheduling     |
-| `giles-types`      | lib  | yes       | Domain types and the `Provider`, `Channel`, `Toolset` traits |
-| `giles-proto`      | lib  | yes       | Generated gRPC code for the plugin and admin protocols       |
-| `giles-plugin-sdk` | lib  | yes       | Serves a trait implementation as an out-of-process plugin    |
-| `giles-store`      | lib  | no        | SQLite and file storage under `GILES_HOME`                   |
+| Crate                | Kind | Published | Contents                                                     |
+| -------------------- | ---- | --------- | ------------------------------------------------------------ |
+| `giles`              | bin  | no        | The daemon and its command-line interface                    |
+| `giles-core`         | lib  | no        | Orchestration: agent loop, routing, sessions, scheduling     |
+| `giles-types`        | lib  | yes       | Domain types and the `Provider`, `Channel`, `Toolset` traits |
+| `giles-proto`        | lib  | yes       | Generated gRPC code for the plugin and admin protocols       |
+| `giles-plugin-sdk`   | lib  | yes       | Serves a trait implementation as an out-of-process plugin    |
+| `giles-store`        | lib  | no        | SQLite and file storage under `GILES_HOME`                   |
+| `giles-channel-echo` | bin  | no        | Test-only channel plugin for host tests                      |
 
 Dependencies between them:
 
@@ -32,6 +32,7 @@ flowchart TD
   sdk[giles-plugin-sdk] --> types
   sdk --> proto
   store --> types
+  echo[giles-channel-echo] --> sdk
 ```
 
 `giles-types` is the contract shared by the core and plugins, so it depends on no other Giles
