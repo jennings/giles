@@ -129,8 +129,8 @@ Codes (pairing, `/link`, and web login):
 - 5 wrong attempts from a sender, or against a code, invalidate the code and lock the sender out for
   an hour.
 
-Core commands (`/new`, `/stop`, `/link`, approval replies) are handled by the core before routing
-and never reach an agent.
+Core commands (`/new`, `/stop`, `/link`, approval replies) are handled by the core and never reach
+an agent. They're recognized after routing, before the agent, since they act on the routed session.
 
 ### 3.3 Sender Authenticity
 

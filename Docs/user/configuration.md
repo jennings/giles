@@ -59,7 +59,25 @@ Giles v1 serves one person, the owner. Required.
 | `default`    | the only identity        | Where jobs and other proactive messages go; required when there are several identities |
 | `timezone`   | the agent's, else system | The owner's time zone, for message times and job schedules  |
 
-Messages from any identity not listed here are dropped and logged.
+Messages from any identity not listed here are dropped and logged, as are messages a channel
+couldn't verify the sender of, and messages in group conversations, which v1 doesn't support.
+
+An identity is `<namespace>:<id>`. Each channel decides its namespace and the form of its ids, for
+example:
+
+| Channel  | Example identity                  |
+| -------- | --------------------------------- |
+| Web      | `web:owner`                       |
+| IRC      | `irc:libera.chat:account:stephen` |
+| Email    | `email:me@example.com`            |
+| WhatsApp | `whatsapp:+15551234567`           |
+
+A message counts as the owner's if its sender, or any other id the channel reports for the same
+person (WhatsApp reports both the phone number and an internal id), is listed.
+
+Identities match exactly, capitalization included, except that email domains ignore case
+(`email:me@Example.com` matches `me@example.com`, but not `Me@example.com`). A message from an
+unlisted identity is logged with the identity as the channel reported it, so you can copy it here.
 
 ```toml
 [owner]
@@ -263,7 +281,9 @@ instance's `config`, values that came from references read `<redacted>`.
 ### `[[routes]]`
 
 Routes pick the agent for each conversation. They are tried in order and the first match wins; a
-route matches when every key it sets matches. A conversation no route matches is ignored.
+route matches when every key it sets matches. Conversation ids match exactly, capitalization
+included. Messages in a conversation no route matches are dropped and logged, including
+[chat commands](commands.md).
 
 | Key            | Meaning                                                            |
 | -------------- | ------------------------------------------------------------------ |

@@ -138,10 +138,10 @@ The five tracks run in parallel.
   config; instance name to trait object; prefixed tool index (`<instance>__<tool>`, 64-character
   limit, reserved core tool names, sorted) and skill index. Providers plug in as 1.8 and 1.9 land.
   **Needs:** 1.1.
-- [ ] **2.2 Identity, routing, core commands** (§1.1, §3.2, §3.3, §6.1). Drop (and log)
+- [x] **2.2 Identity, routing, core commands** (§1.1, §3.2, §3.3, §6.1). Drop (and log)
   unauthenticated senders, identities not in `[owner]`, and group conversations; match the sender
   or any alias; enforce the identity-namespace prefix; ordered routes, first match wins; intercept
-  `/new`, `/stop`, and approval replies before routing. **Needs:** 1.1.
+  `/new`, `/stop`, and approval replies after routing, before the agent. **Needs:** 1.1.
 - [ ] **2.3 Inbox and sessions** (§6.2, §6.3, §8.5). Store each event in `inbox` with
   (instance, event id) dedupe, then ack; prune dedupe keys after 30 days; session key (agent,
   instance, conversation); at most one turn per session with an inbox-backed queue; consecutive

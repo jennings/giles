@@ -7,6 +7,7 @@
 - [Overview](user/README.md)
 - [Installing and Running](user/running.md)
 - [Configuration](user/configuration.md)
+- [Chat Commands](user/commands.md)
 - [Model Providers](user/providers.md)
 - [Skills and Memory Files](user/skills-and-memory.md)
 
@@ -26,6 +27,7 @@
 - [HTTP Server](technical/http.md)
 - [gRPC Protocols](technical/protocols.md)
 - [Configuration](technical/config.md)
+- [Identity and Routing](technical/identity-and-routing.md)
 - [Skills and Memory Files](technical/skills-and-memory.md)
 
 # Design Background
