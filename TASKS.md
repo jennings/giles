@@ -62,7 +62,7 @@ Sequential, except 0.2 and 0.3, which can run in parallel after 0.1.
 
 All parallel. Each task needs only Phase 0.
 
-- [ ] **1.1 Config loading** (§1.1, §7.7, §11.2, §12.4).
+- [x] **1.1 Config loading** (§1.1, §7.7, §11.2, §12.4).
   - `giles.toml`: `[core]`, `[owner]` (identities, default), `[provider.*]`, `[channel.*]`,
     `[toolset.*]` with the core-owned instance keys, `[[routes]]`.
   - `agents/<agent>/agent.toml`: models, `compaction_model`, `tools`, `ask`, iteration caps,
