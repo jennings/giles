@@ -7,6 +7,7 @@ use rmcp::model::{
     ResourceContents, Tool,
 };
 use rmcp::service::{ClientInitializeError, ServiceError};
+use rmcp::transport::streamable_http_client::StreamableHttpError;
 
 use crate::config::{Secret, scrub};
 
@@ -175,11 +176,11 @@ pub(crate) fn rpc_error(origin: &Origin, error: ErrorData) -> Error {
     }
 }
 
-/// Maps a failed `initialize` handshake. Rejected credentials and an unsupported protocol version
-/// are [`Error::InvalidRequest`] (retrying won't help); the server being unreachable or closing the
-/// connection is [`Error::Unavailable`].
+/// Maps a failed `initialize` handshake. Rejected credentials (HTTP 401 or 403) and an unsupported
+/// protocol version are [`Error::InvalidRequest`] (retrying won't help); the server being
+/// unreachable or closing the connection is [`Error::Unavailable`].
 pub(crate) fn init_error(origin: &Origin, error: ClientInitializeError) -> Error {
-    if error.is_authorization_required() {
+    if credentials_rejected(&error) {
         return Error::InvalidRequest(origin.scrub(&format!(
             "MCP server {} rejected the credentials: {error}",
             origin.instance
@@ -197,6 +198,29 @@ pub(crate) fn init_error(origin: &Origin, error: ClientInitializeError) -> Error
         }
         other => Error::other(origin.message(format_args!("initialization failed: {other}"))),
     }
+}
+
+/// Whether the handshake failed on HTTP 401 or 403. `rmcp` classifies these only when the server
+/// sends `WWW-Authenticate`; without it, it reports an unexpected response whose message starts
+/// with the status (`HTTP 401 Unauthorized: <body>`). `tests/mcp_http.rs` pins both shapes.
+fn credentials_rejected(error: &ClientInitializeError) -> bool {
+    if error.is_authorization_required() || error.auth_challenge().is_some() {
+        return true;
+    }
+    let ClientInitializeError::TransportError { error, .. } = error else {
+        return false;
+    };
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error.error.as_ref());
+    while let Some(current) = source {
+        if let Some(StreamableHttpError::UnexpectedServerResponse(message)) =
+            current.downcast_ref::<StreamableHttpError<reqwest::Error>>()
+            && (message.starts_with("HTTP 401 ") || message.starts_with("HTTP 403 "))
+        {
+            return true;
+        }
+        source = current.source();
+    }
+    false
 }
 
 #[cfg(test)]

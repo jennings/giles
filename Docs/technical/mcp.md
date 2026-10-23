@@ -9,6 +9,7 @@ server and implements the `giles_types::Toolset` trait, so the rest of the core 
 | Constructor                                         | Transport                                       |
 | --------------------------------------------------- | ----------------------------------------------- |
 | `McpToolset::connect_stdio(instance, cmd, secrets)` | Spawns a `tokio::process::Command`, stdio pipes |
+| `McpToolset::connect_http(instance, &server)`       | Streamable HTTP, optional bearer token          |
 | `McpToolset::connect_io(instance, rd, wr)`          | An open byte stream pair (in-process servers)   |
 
 Every constructor returns once the server has answered `initialize` and the client has sent
@@ -27,7 +28,7 @@ of the `mcp` tracing span around the connection. Tool names stay bare; the regis
 `<instance>__` prefix (PLAN section 6.5).
 
 **Secrets.** Each connection has the instance's secret values: a stdio server's `env` values (passed
-to `connect_stdio`) and later a remote server's bearer token. They are replaced with `<redacted>`
+to `connect_stdio`) or a remote server's bearer token. They are replaced with `<redacted>`
 by `config::scrub` in everything the client logs or returns: each stderr line, and every error
 message, since server error messages and HTTP error bodies can echo a credential back.
 
@@ -59,6 +60,25 @@ instance's `env` values.
 - Failing to spawn, the server exiting during the handshake, and no answer in time are all
   `Error::Unavailable`. If the server exited, the message ends with its status, e.g.
   `(server process: exit status: 125)`.
+
+### Streamable HTTP
+
+`HttpServer { url, bearer, connect_timeout }` describes a remote server: an `http` or `https`
+`url::Url` (any other scheme is `InvalidRequest`), an optional bearer token (a `config::Secret`),
+and a connect timeout (10 s by default). The deprecated HTTP+SSE transport isn't supported (PLAN
+section 7.10).
+
+- **Auth.** The token is sent as `Authorization: Bearer <token>` on every request; `reqwest` marks
+  the header sensitive so its own logging hides it, and the token is scrubbed from error messages
+  (an HTTP error body can echo it). A 401 or 403 during the handshake, with or without
+  `WWW-Authenticate`, is `InvalidRequest` ("rejected the credentials"), not `Unavailable`:
+  retrying the same token won't help. OAuth is not supported.
+- **HTTP client.** `net::tls_client_builder()`, shared with the built-in providers: rustls trusting
+  only the bundled Mozilla roots (`webpki-root-certs`), no native-tls or OpenSSL, and no redirects,
+  so the token can't be forwarded to another host. MCP adds the connect timeout and no read
+  timeout: the server's event stream can be quiet for a long time.
+- Sessions, the `GET` event stream, and session re-creation after an expired session (HTTP 404)
+  are `rmcp`'s defaults.
 
 ## Mapping MCP to the Toolset Trait
 
@@ -124,6 +144,7 @@ are sent unchanged; copying blobs into a stdio server's `TMPDIR` is task 2.21.
 | Failure                                                  | `giles_types::Error`               |
 | -------------------------------------------------------- | ---------------------------------- |
 | Connection closed, transport failure, server exited      | `Unavailable` (retryable)          |
+| HTTP 401 or 403 during `initialize`                      | `InvalidRequest`                   |
 | JSON-RPC `-32600`, `-32601`, `-32602` (e.g. unknown tool) | `InvalidRequest`, server's message |
 | Any other JSON-RPC error                                 | `Other`, server's message          |
 | No common protocol version                               | `InvalidRequest`                   |
@@ -151,3 +172,7 @@ fails by its own account (`isError: true`) is a normal `Result` event, not an er
   logging with an echoed `env` secret redacted, cancellation reaching the child, a crash and the
   exit status from `closed()`, the exit status in a failed handshake's message (a child that exits
   with 125), and that dropping the toolset kills a server that ignores stdin closing.
+- over streamable HTTP (`tests/mcp_http.rs`): `rmcp`'s `StreamableHttpService` in `axum` on
+  `127.0.0.1`, behind a middleware that requires the bearer token. It checks listing, progress, and
+  cancellation with the right token; rejection of a wrong, missing, or forbidden one (the 403 body
+  echoes the token, which must come back scrubbed); and an unreachable server.

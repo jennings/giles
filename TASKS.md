@@ -116,7 +116,7 @@ All parallel. Each task needs only Phase 0.
   unique-match rules; cap checked on the batch result, with the current entries and overflow
   returned on failure; usage header (`[67% — 1,474/2,200]`); per-file lock and
   write-to-temp-then-rename.
-- [ ] **1.12 MCP client** (§7.10, §8.6). A `Toolset` over `rmcp`: stdio (spawned directly for now)
+- [x] **1.12 MCP client** (§7.10, §8.6). A `Toolset` over `rmcp`: stdio (spawned directly for now)
   and streamable HTTP with bearer auth; `tools/list` to bare `ToolSpec`s; `list_changed` to
   `tool_changes()`; `tools/call` to a `ToolCallHandle` with progress events;
   `notifications/cancelled` when a call is dropped; text result content to blocks. Tested against

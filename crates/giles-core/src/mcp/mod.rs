@@ -6,6 +6,7 @@
 
 mod client;
 mod convert;
+mod http;
 mod stdio;
 
 use std::borrow::Cow;
@@ -35,6 +36,7 @@ use tracing::Instrument;
 
 use self::client::{ClientState, ProgressSubscription};
 use self::convert::Origin;
+pub use self::http::HttpServer;
 pub use self::stdio::{DirectCommand, STDERR_TARGET};
 use crate::config::Secret;
 
@@ -109,6 +111,22 @@ impl McpToolset {
             exit: spawned.exit,
         };
         connect(origin, span, (spawned.stdout, spawned.stdin), Some(child)).await
+    }
+
+    /// Connects to a remote server over streamable HTTP, with the server's bearer token if it has
+    /// one; the token is scrubbed from error messages. Returns once the server has answered
+    /// `initialize`.
+    ///
+    /// A non-HTTP url and rejected credentials (HTTP 401 or 403) are [`Error::InvalidRequest`]; an
+    /// unreachable server is [`Error::Unavailable`].
+    pub async fn connect_http(instance: impl Into<String>, server: &HttpServer) -> Result<Self> {
+        let origin = Arc::new(Origin {
+            instance: instance.into(),
+            secrets: server.secrets(),
+        });
+        let span = span(&origin.instance);
+        let transport = server.transport(&origin)?;
+        connect(origin, span, transport, None).await
     }
 
     /// Connects over an already open byte stream pair carrying newline-delimited JSON-RPC, as
