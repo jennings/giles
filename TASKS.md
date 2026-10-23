@@ -195,15 +195,11 @@ The five tracks run in parallel.
   logged, `min_abi` enforced; seccomp allowlist based on Docker's default profile (`ENOSYS` for
   unlisted syscalls, `EPERM` for the denied list and ungranted socket families, native arch only,
   `socketpair(AF_UNIX)` allowed). **Needs:** 1.6.
-- [ ] **2.14 Sandbox: macOS** (§12.3). Generated deny-by-default Seatbelt profile with a Mach
-  allowlist, real paths, IP-only network grants, applied through `sandbox-exec`. **Needs:** 1.6.
-  Parallel with 2.13.
-- [x] **2.15 Plugin SDK** (§7.4, §8.1–§8.3, §8.5). `giles-plugin-sdk`: magic-cookie check, token
 - [x] **2.14 Sandbox: macOS** (§12.3). Generated deny-by-default Seatbelt profile with no Mach
   services, real paths, writable roots that can't be swapped for links, IP-only network grants
   (plus mDNSResponder's socket for DNS), per-path `unix` grants, applied through `sandbox-exec`.
   **Needs:** 1.6. Parallel with 2.13.
-- [ ] **2.15 Plugin SDK** (§7.4, §8.1–§8.3, §8.5). `giles-plugin-sdk`: magic-cookie check, token
+- [x] **2.15 Plugin SDK** (§7.4, §8.1–§8.3, §8.5). `giles-plugin-sdk`: magic-cookie check, token
   from stdin, protocol choice from `GILES_PLUGIN_PROTOCOLS`, gRPC on fd 3, handshake line
   `1|<protocol>|fd|3|grpc`, bearer check, exit on stdin EOF; `Plugin` base service and
   `grpc.health.v1`; plugin-side blob handles; serve a `Channel` as `ChannelService`, with unacked
