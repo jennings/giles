@@ -1,6 +1,7 @@
 //! Serving a [`Channel`] as `giles.channel.v1.ChannelService` (PLAN section 8.5).
 
 use std::collections::VecDeque;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -31,6 +32,7 @@ use crate::blobs::Blobs;
 use crate::convert::{
     event_to_proto, outbound_from_proto, output_mode_to_proto, status_from_error,
 };
+use crate::remote::RemoteServer;
 use crate::server::{self, Context};
 use crate::spool::Spool;
 
@@ -142,7 +144,9 @@ impl ChannelPlugin {
     /// `grpc.health.v1.Health`, and `ChannelService` on fd 3, and calls `configure` when the core
     /// sends the instance config. Errors from `configure` go back to the core:
     /// [`Error::InvalidRequest`](giles_types::Error::InvalidRequest) for a bad config, naming the
-    /// key. After a successful `Configure`, `configure` isn't called again.
+    /// key. After a successful `Configure`, `configure` isn't called again: a repeated
+    /// `Configure` with the same instance name and config gets the same answer, and one with a
+    /// different config fails with `FAILED_PRECONDITION`.
     ///
     /// It returns when the core asks the plugin to shut down or goes away (stdin closes), after
     /// giving open calls a few seconds to finish. Run by hand, it explains that it's a Giles plugin
@@ -157,14 +161,49 @@ impl ChannelPlugin {
         C: Channel + 'static,
     {
         let display_name = format!("giles-channel-{}", self.name);
-        let configure: Box<ConfigureFn> = Box::new(move |context| {
-            let built = configure(context);
-            Box::pin(async move { Ok(Arc::new(built.await?) as Arc<dyn Channel>) })
-        });
-        server::run(&display_name, move |context| {
-            let spool = Spool::open(Arc::clone(&context.dirs), context.blobs.clone())?;
-            Ok(self.services(configure, spool, context))
-        })
+        let configure = configure_fn(configure);
+        server::run(
+            &display_name,
+            Box::new(move |context| {
+                let spool = Spool::open(Arc::clone(&context.dirs), context.blobs.clone())?;
+                Ok(self.services(configure, spool, context))
+            }),
+        )
+        .await
+    }
+
+    /// Runs the plugin as a remote plugin (PLAN section 7.6) on `server`'s listener until its
+    /// shutdown signal (`SIGINT` or `SIGTERM` by default), then gives open calls a few seconds to
+    /// finish and returns.
+    ///
+    /// The services and `configure` work as with [`serve`](Self::serve), with the state in the
+    /// server's data directory, except for the lifecycle: one core at a time connects, and it may
+    /// disconnect and connect again (a restart, a network failure). Each connection calls
+    /// `Describe` and `Configure` again; the channel built by the first `Configure` stays, and
+    /// events not acked by the last connection are sent again on the next. `Shutdown` only ends
+    /// the core's open `Events` stream: the core is disconnecting, and the plugin keeps serving.
+    /// To change the instance's config, restart the plugin.
+    ///
+    /// Unlike [`serve`](Self::serve), it doesn't need to run first in `main`, and several can
+    /// run in one process (each with its own data directory).
+    ///
+    /// # Errors
+    ///
+    /// The data directory or the SDK's state in it can't be opened, or the gRPC server failed.
+    pub async fn serve_remote<F, Fut, C>(self, server: RemoteServer, configure: F) -> io::Result<()>
+    where
+        F: Fn(Configure) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<C>> + Send + 'static,
+        C: Channel + 'static,
+    {
+        let configure = configure_fn(configure);
+        server::run_remote(
+            server,
+            Box::new(move |context| {
+                let spool = Spool::open(Arc::clone(&context.dirs), context.blobs.clone())?;
+                Ok(self.services(configure, spool, context))
+            }),
+        )
         .await
     }
 
@@ -183,7 +222,7 @@ impl ChannelPlugin {
             health: context.health.clone(),
             shutdown: context.shutdown.clone(),
             configure_lock: tokio::sync::Mutex::new(()),
-            channel: OnceLock::new(),
+            configured: OnceLock::new(),
             pump: tokio::sync::Mutex::new(None),
             stream: Mutex::new(CancellationToken::new()),
         });
@@ -231,9 +270,9 @@ impl Configure {
         })
     }
 
-    /// The instance's data directory (`GILES_PLUGIN_DATA`): the plugin's only writable directory,
-    /// kept across restarts and upgrades. The SDK's own state is in its `giles-sdk/` subdirectory;
-    /// leave that alone.
+    /// The instance's data directory: the plugin's only writable directory, kept across restarts
+    /// and upgrades (`GILES_PLUGIN_DATA` for a launched plugin, the [`RemoteServer`]'s for a
+    /// remote one). The SDK's own state is in its `giles-sdk/` subdirectory; leave that alone.
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
     }
@@ -246,6 +285,27 @@ impl Configure {
 
 type ConfigureFn = dyn Fn(Configure) -> BoxFuture<'static, Result<Arc<dyn Channel>>> + Send + Sync;
 
+/// Boxes an author's `configure`.
+fn configure_fn<F, Fut, C>(configure: F) -> Box<ConfigureFn>
+where
+    F: Fn(Configure) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<C>> + Send + 'static,
+    C: Channel + 'static,
+{
+    Box::new(move |context| {
+        let built = configure(context);
+        Box::pin(async move { Ok(Arc::new(built.await?) as Arc<dyn Channel>) })
+    })
+}
+
+/// The result of the successful `Configure`.
+struct Configured {
+    instance: String,
+    config: serde_json::Value,
+    namespace: String,
+    channel: Arc<dyn Channel>,
+}
+
 /// State shared by the `Describe`/`Configure` half and `ChannelService`.
 struct Shared {
     meta: ChannelPlugin,
@@ -257,7 +317,7 @@ struct Shared {
     shutdown: CancellationToken,
     /// Serializes `Configure` calls.
     configure_lock: tokio::sync::Mutex<()>,
-    channel: OnceLock<Arc<dyn Channel>>,
+    configured: OnceLock<Configured>,
     /// Moves events from the channel into the spool; started by the first `Events` call.
     pump: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     /// Cancels the current `Events` stream when a newer one opens.
@@ -266,9 +326,9 @@ struct Shared {
 
 impl Shared {
     fn channel(&self) -> Result<Arc<dyn Channel>, Status> {
-        self.channel
+        self.configured
             .get()
-            .cloned()
+            .map(|configured| Arc::clone(&configured.channel))
             .ok_or_else(|| Status::failed_precondition("the plugin isn't configured yet"))
     }
 
@@ -431,15 +491,21 @@ impl Kind for ChannelKind {
     ) -> Result<String, Status> {
         let shared = &self.0;
         let _serialized = shared.configure_lock.lock().await;
-        if shared.channel.get().is_some() {
-            return Err(Status::failed_precondition(
-                "the plugin is already configured",
-            ));
+        if let Some(configured) = shared.configured.get() {
+            // A remote plugin's core reconnecting configures it again.
+            return if configured.instance == instance && configured.config == config {
+                Ok(configured.namespace.clone())
+            } else {
+                Err(Status::failed_precondition(
+                    "the plugin is already configured with another instance name or config; \
+                     restart it to change them",
+                ))
+            };
         }
         tracing::info!(%instance, "configuring");
         let context = Configure {
-            instance,
-            config,
+            instance: instance.clone(),
+            config: config.clone(),
             data_dir: shared.data_dir.clone(),
             blobs: shared.blobs.clone(),
         };
@@ -463,12 +529,21 @@ impl Kind for ChannelKind {
             )));
         }
         let namespace = info.identity_namespace.clone();
-        let _ = shared.channel.set(channel);
+        let _ = shared.configured.set(Configured {
+            instance,
+            config,
+            namespace: namespace.clone(),
+            channel,
+        });
         shared
             .health
             .set_service_status(channel_service_server::SERVICE_NAME, ServingStatus::Serving)
             .await;
         Ok(namespace)
+    }
+
+    fn core_detached(&self) {
+        self.0.stream.lock().expect("never poisoned").cancel();
     }
 }
 

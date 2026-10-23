@@ -15,9 +15,14 @@
 //! - blobs: attachments in both directions through [`Blobs`];
 //! - exiting when the core goes away (stdin closes) or asks it to (`Shutdown`).
 //!
+//! The same channel can instead run as a remote plugin (PLAN section 7.6) that its operator starts
+//! and the core connects to over TCP: [`ChannelPlugin::serve_remote`] with a [`RemoteServer`]
+//! (optionally TLS, and a [`RemoteAuth`] check of the core's token).
+//!
 //! With the `tls` feature (on by default), the `tls` module gives the plugin's own connections
-//! `rustls` with the bundled Mozilla roots. The `config` module parses durations and sizes in a
-//! plugin's `config` table the way `giles.toml` writes them.
+//! `rustls` with the bundled Mozilla roots, and a remote plugin its TLS server config. The
+//! `config` module parses durations and sizes in a plugin's `config` table the way `giles.toml`
+//! writes them.
 //!
 //! See [`ChannelPlugin`] for a complete example. The user guide's "Writing a Plugin" page and
 //! `Docs/technical/plugin-sdk.md` in the repository describe the behavior in detail.
@@ -31,6 +36,7 @@ mod channel;
 pub mod config;
 pub mod convert;
 mod dirs;
+mod remote;
 pub mod render;
 mod server;
 mod spool;
@@ -45,3 +51,4 @@ pub use base::Grants;
 pub use blobs::Blobs;
 pub use channel::{ChannelPlugin, Configure};
 pub use giles_types;
+pub use remote::{RemoteAuth, RemoteServer};

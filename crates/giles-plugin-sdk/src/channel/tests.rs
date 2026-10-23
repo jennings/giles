@@ -22,7 +22,7 @@ use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::health_client::HealthClient;
 
 use super::*;
-use crate::base::Base;
+use crate::base::{Base, OnShutdown};
 use crate::convert::event_from_proto;
 use crate::dirs::SdkDirs;
 use crate::test_support::serve;
@@ -109,6 +109,14 @@ struct Fixture {
 /// `Channel::info` disagree with the plugin, `{"namespace": ...}` sets its namespace, and
 /// `{"fail": true}` fails `configure`.
 async fn fixture_in(data: Arc<tempfile::TempDir>, can_initiate: bool) -> Fixture {
+    fixture_with(data, can_initiate, OnShutdown::Exit).await
+}
+
+async fn fixture_with(
+    data: Arc<tempfile::TempDir>,
+    can_initiate: bool,
+    on_shutdown: OnShutdown,
+) -> Fixture {
     let dirs = Arc::new(SdkDirs::open(data.path()).unwrap());
     let (health, health_service) = tonic_health::server::health_reporter();
     let context = Context {
@@ -160,7 +168,12 @@ async fn fixture_in(data: Arc<tempfile::TempDir>, can_initiate: bool) -> Fixture
             ..Grants::default()
         })
         .services(configure, spool, &context);
-    let base = Base::new(kind, context.blobs.clone(), context.shutdown.clone());
+    let base = Base::new(
+        kind,
+        context.blobs.clone(),
+        on_shutdown,
+        context.shutdown.clone(),
+    );
     let grpc = serve(
         Server::builder()
             .add_routes(routes)
@@ -359,8 +372,44 @@ async fn configure_builds_the_channel_once_and_reports_serving() {
         tonic_health::pb::health_check_response::ServingStatus::Serving
     );
 
-    let status = f.configure("{}").await.unwrap_err();
+    // The same Configure again (a remote plugin's core reconnecting) gets the same answer;
+    // anything else is refused.
+    assert_eq!(f.configure("{}").await.unwrap(), "fake:home");
+    let status = f.configure(r#"{"namespace": "fake:x"}"#).await.unwrap_err();
     assert_eq!(status.code(), Code::FailedPrecondition);
+    let status = f
+        .plugin
+        .configure(ConfigureRequest {
+            instance: "office".into(),
+            config_json: "{}".into(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::FailedPrecondition);
+}
+
+#[tokio::test]
+async fn a_remote_plugins_core_reconnecting_gets_the_unacked_events_again() {
+    let data = Arc::new(tempfile::tempdir().unwrap());
+    let mut f = fixture_with(data, true, OnShutdown::Detach).await;
+    f.configure("{}").await.unwrap();
+    let (_acks, mut events) = f.open_events().await.unwrap();
+    f.emit(message("e1"));
+    assert_eq!(next_event(&mut events).await, message("e1"));
+
+    // The core disconnects: its stream ends, and the plugin keeps running.
+    f.plugin.shutdown(ShutdownRequest {}).await.unwrap();
+    let ended = tokio::time::timeout(WAIT, events.message()).await.unwrap();
+    assert!(matches!(ended, Ok(None)), "{ended:?}");
+    assert!(!f.shutdown.is_cancelled());
+
+    // It connects again: the same Configure, then the unacked event and new ones.
+    assert_eq!(f.configure("{}").await.unwrap(), "fake:home");
+    let (_acks, mut events) = f.open_events().await.unwrap();
+    assert_eq!(next_event(&mut events).await, message("e1"));
+    f.emit(message("e2"));
+    assert_eq!(next_event(&mut events).await, message("e2"));
+    assert_eq!(f.seen.lock().unwrap().senders.len(), 1, "one channel");
 }
 
 #[tokio::test]

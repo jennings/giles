@@ -51,6 +51,11 @@ tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 # The Mozilla root certificates every Giles TLS client trusts instead of the OS store.
 webpki-root-certs = "1.0.10"
+# TLS for remote plugins (`giles_plugin_sdk::RemoteServer`, the core's plugin host); rustls itself
+# comes from `giles_plugin_sdk::tls`.
+tokio-rustls = { version = "0.26.6", default-features = false }
+# Test certificates for remote plugins over TLS.
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "crypto", "pem"] }
 
 # `hyper-util` and `tower` make the one-shot connector that reaches a plugin over a socket pair (the
 # plugin host and tests).

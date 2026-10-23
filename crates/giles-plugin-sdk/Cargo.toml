@@ -12,8 +12,9 @@ categories = ["api-bindings", "network-programming"]
 
 [features]
 default = ["tls"]
-# `giles_plugin_sdk::tls`: rustls with the bundled Mozilla roots, for plugins' own connections.
-tls = ["dep:rustls", "dep:webpki-root-certs"]
+# `giles_plugin_sdk::tls`: rustls with the bundled Mozilla roots, for plugins' own connections, and
+# TLS for remote plugins (`RemoteServer::tls`).
+tls = ["dep:rustls", "dep:tokio-rustls", "dep:webpki-root-certs"]
 
 [dependencies]
 async-trait.workspace = true
@@ -31,7 +32,8 @@ serde_json.workspace = true
 serde_path_to_error = "0.1.20"
 sha2.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "net", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "net", "rt", "signal", "sync", "time"] }
+tokio-rustls = { workspace = true, optional = true }
 tokio-util.workspace = true
 tonic.workspace = true
 tonic-health.workspace = true
@@ -40,6 +42,7 @@ webpki-root-certs = { workspace = true, optional = true }
 
 [dev-dependencies]
 hyper-util.workspace = true
+rcgen.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 toml.workspace = true

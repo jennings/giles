@@ -39,7 +39,8 @@ the SDK never writes to stdout; the core drains and ignores it.
 
 A `tonic` interceptor layered over the whole server, health included, requires the metadata
 `authorization: Bearer <token>`; anything else gets `UNAUTHENTICATED` without affecting the
-connection. The comparison doesn't exit early on the first differing byte.
+connection. The comparison doesn't exit early on the first differing byte. A remote plugin checks
+the token its `RemoteAuth` names instead ([Remote Plugins](#remote-plugins)).
 
 ## State in the data directory
 
@@ -65,7 +66,8 @@ a partial one.
 
 `PluginService` delegates `Describe` and `Configure` to the kind (see [Channels](#channels)).
 `Configure` parses `config_json` first and answers `INVALID_ARGUMENT` if it isn't JSON. `Shutdown`
-answers at once and then starts the bounded shutdown described under [Lifecycle](#lifecycle).
+answers at once and then starts the bounded shutdown described under [Lifecycle](#lifecycle); in a
+remote plugin it only ends the core's open `Events` stream ([Remote Plugins](#remote-plugins)).
 
 ### Blobs
 
@@ -132,7 +134,9 @@ async fn main() -> ExitCode {
 - `serve(configure)` takes `Fn(Configure) -> impl Future<Output = Result<impl Channel>>` and
   returns the process's `ExitCode`. It uses the ambient tokio runtime; `#[tokio::main]` is enough.
   Fd 3 is adopted after the runtime started, which is why step 4 above checks it's a socket before
-  taking ownership.
+  taking ownership. `serve_remote(RemoteServer, configure)` runs the same channel as a remote
+  plugin ([Remote Plugins](#remote-plugins)); `RemoteServer` and `RemoteAuth` are re-exported at
+  the crate root.
 - `Configure` gives `instance()`, `config()` (the JSON `Value`), `parse_config::<T>()` (serde,
   errors as `Error::InvalidRequest("invalid config: ...")` naming the key), `data_dir()`, and
   `blobs()`.
@@ -155,9 +159,10 @@ async fn main() -> ExitCode {
 Either way it cancels the shutdown token (ending every `Events` stream and the event pump), marks
 the server `NOT_SERVING` in health, and starts `tonic`'s graceful shutdown. Calls in flight get
 `DRAIN_TIMEOUT` (5 s) to finish; open streams that the core doesn't end (a health `Watch`) are cut
-after that, and `serve` returns. The SDK never exits for any other reason, and it installs no
+after that, and `serve` returns. The SDK never exits for any other reason, and `serve` installs no
 signal handlers: the core's SIGTERM and SIGKILL keep their default effect, which is safe because
-unacked events are already on disk.
+unacked events are already on disk. (`serve_remote` stops on `SIGINT` or `SIGTERM` by default,
+with the same drain.)
 
 Health (`grpc.health.v1`): the overall service `""` and `giles.plugin.v1.PluginService` are
 `SERVING` from the start; `giles.channel.v1.ChannelService` is `NOT_SERVING` until `Configure`
@@ -174,8 +179,10 @@ follow the core's rule (`giles_core::identity::validate_namespace`): the plugin 
 `<name>:...` (so plugin `echo` may report `echo` or `echo:test`, but not `echoer`), with every
 `:`-separated part non-empty and free of whitespace and control characters. A mismatch is a plugin
 bug and fails with `INTERNAL`, naming the namespace. It returns the namespace and marks
-`ChannelService` serving. A failed `Configure` can be retried; a second successful one is refused
-with `FAILED_PRECONDITION`, as are `Events` and `Send` before the first.
+`ChannelService` serving. A failed `Configure` can be retried. After a successful one, the same
+`Configure` again (the same instance name and config: a remote plugin's core reconnecting) gets the
+same namespace without calling `configure`, and any other is refused with `FAILED_PRECONDITION`;
+`Events` and `Send` before the first are refused the same way.
 
 `Configure::parse_config` deserializes through `serde_path_to_error`, so every error names the key
 path, e.g. `invalid config: tls.verify: invalid type: string "yes", expected a boolean`.
@@ -238,15 +245,45 @@ before converting it, so it accepts any handle, and it never trusts one: it fetc
 
 `Unavailable`'s `retry_after` doesn't cross the wire in v1; the outbox retries with its own backoff.
 
+## Remote Plugins
+
+A plugin someone runs themselves, which the core connects to over TCP (PLAN section 7.6), calls
+`ChannelPlugin::serve_remote(server, configure)` instead of `serve`. The services, `Configure`,
+persistence, and blobs are the same; what differs:
+
+- `RemoteServer::new(listener, data_dir, auth)` takes a bound `tokio::net::TcpListener`, the data
+  directory (created with mode 0700 if missing; `giles-sdk/` inside it as above), and a
+  `RemoteAuth`: `Bearer(token)` (exact match, as for a launched plugin; an empty token refuses
+  every call, with a warning, so an unset setting can't open the plugin), `Verify(fn)` (the token
+  after `Bearer `, never empty, for tokens an OAuth server issued to the core), or `None`. There
+  are no startup checks, no fd 3, no stdin, and no handshake line.
+- `.tls(rustls::ServerConfig)` serves TLS (`tls` feature), setting the `h2` ALPN protocol. Each
+  connection's handshake runs on its own task with a 10 s limit, so a slow or failing client
+  doesn't hold up the accept loop; failures are logged at info level with the peer address, as is
+  every accepted connection. Without it, the server speaks HTTP/2 over plain TCP.
+- `.shutdown_on(future)` replaces the default stop signal, `SIGINT` or `SIGTERM`. Then the server
+  drains as under [Lifecycle](#lifecycle) and `serve_remote` returns `Ok(())`; it returns an
+  `io::Error` if the data directory or the SDK's state can't be opened or the server fails.
+- The core may connect, disconnect, and connect again (its restarts, network failures). Every
+  connection calls `Describe` and `Configure`; the channel built by the first successful
+  `Configure` stays (a repeated identical `Configure` gets the same answer, a different config is
+  refused until the plugin restarts), and the pump keeps spooling events between connections, so
+  the next `Events` stream starts with everything the last one left unacked.
+- `Shutdown` (`base::OnShutdown::Detach`) ends the current `Events` stream and nothing else: the
+  core is disconnecting, and the plugin keeps serving. The health status stays `SERVING`.
+
 ## TLS
 
-The SDK makes no TLS connections of its own: the core reaches a plugin over a private socket pair.
-Channel plugins make their own (IRC, IMAP, SMTP, WhatsApp), so the default `tls` feature exposes
-`giles_plugin_sdk::tls`: `root_store()` (the Mozilla roots compiled in from `webpki-root-certs`)
-and `client_config()` (a `rustls::ClientConfig` with those roots, the safe default protocol
-versions, and the `aws-lc-rs` provider named explicitly), and re-exports `rustls`. This is the
+The SDK makes no TLS connections of its own: the core reaches a launched plugin over a private
+socket pair. Channel plugins make their own (IRC, IMAP, SMTP, WhatsApp), so the default `tls`
+feature exposes `giles_plugin_sdk::tls`: `root_store()` (the Mozilla roots compiled in from
+`webpki-root-certs`), `client_config()` (a `rustls::ClientConfig` with those roots, the safe
+default protocol versions, and the `aws-lc-rs` provider named explicitly), and
+`client_config_with_roots(roots)` (the same with other roots), and re-exports `rustls`. This is the
 same trust store as the core's built-in providers, never the OS store, which a sandboxed plugin may
-not be able to read. A plugin that needs no TLS can turn the feature off.
+not be able to read. `server_config(cert_chain_pem, key_pem)` is a remote plugin's server config
+(the chain with the server's certificate first; a PKCS #8, PKCS #1, or SEC1 key that must match
+it; no client certificates). A plugin that needs no TLS can turn the feature off.
 
 ## The echo plugin
 
@@ -271,6 +308,11 @@ Config, all optional, unknown keys refused: `namespace` (default `"echo"`); `ech
 `"echo-user"`, in the same conversation, with event and message id `echo-<n>` and the attachments
 stored again as the plugin's own blobs); `unavailable` (recipients whose sends fail with
 `UNAVAILABLE`). It reports `output = blocks` and `can_initiate = true`.
+
+With arguments it runs as a remote plugin, the example of `serve_remote`:
+`giles-channel-echo --listen <address> --data <dir> [--tls-cert <pem> --tls-key <pem>]` accepts
+`Bearer $GILES_ECHO_TOKEN` (anything if that isn't set), prints `listening on <address>` on stdout
+once bound (for port 0), and runs until `SIGINT` or `SIGTERM`, with `<dir>` as its data directory.
 
 Its integration tests (`plugins/giles-channel-echo/tests/plugin.rs`) launch the binary exactly as
 the core will: a `socketpair`, the plugin's end made fd 3 with `dup2` in `pre_exec`, the token on

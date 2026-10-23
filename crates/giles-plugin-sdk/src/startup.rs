@@ -58,7 +58,7 @@ pub(crate) enum StartupError {
     #[error("writing the handshake line: {0}")]
     Handshake(io::Error),
     /// The gRPC server failed.
-    #[error("serving gRPC on fd 3: {0}")]
+    #[error("serving gRPC: {0}")]
     Serve(String),
 }
 

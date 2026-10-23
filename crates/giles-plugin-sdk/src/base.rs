@@ -63,21 +63,41 @@ pub(crate) trait Kind: Send + Sync + 'static {
         instance: String,
         config: serde_json::Value,
     ) -> Result<String, Status>;
+
+    /// A remote plugin's core said it is disconnecting (`Shutdown`): end what it has open.
+    fn core_detached(&self);
+}
+
+/// What `Shutdown` does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OnShutdown {
+    /// A launched plugin exits: the core is stopping it.
+    Exit,
+    /// A remote plugin keeps running for the next core connection ([`Kind::core_detached`]).
+    Detach,
 }
 
 /// Serves `PluginService` for one [`Kind`].
 pub(crate) struct Base {
     kind: Arc<dyn Kind>,
     blobs: Blobs,
+    on_shutdown: OnShutdown,
     shutdown: CancellationToken,
 }
 
 impl Base {
-    /// `shutdown` is cancelled when the core calls `Shutdown`.
-    pub(crate) fn new(kind: Arc<dyn Kind>, blobs: Blobs, shutdown: CancellationToken) -> Self {
+    /// `shutdown` is cancelled when the core calls `Shutdown` if `on_shutdown` is
+    /// [`OnShutdown::Exit`].
+    pub(crate) fn new(
+        kind: Arc<dyn Kind>,
+        blobs: Blobs,
+        on_shutdown: OnShutdown,
+        shutdown: CancellationToken,
+    ) -> Self {
         Self {
             kind,
             blobs,
+            on_shutdown,
             shutdown,
         }
     }
@@ -116,8 +136,16 @@ impl PluginService for Base {
         &self,
         _request: Request<ShutdownRequest>,
     ) -> Result<Response<ShutdownResponse>, Status> {
-        tracing::info!("the core asked the plugin to shut down");
-        self.shutdown.cancel();
+        match self.on_shutdown {
+            OnShutdown::Exit => {
+                tracing::info!("the core asked the plugin to shut down");
+                self.shutdown.cancel();
+            }
+            OnShutdown::Detach => {
+                tracing::info!("the core is disconnecting; serving the next connection");
+                self.kind.core_detached();
+            }
+        }
         Ok(Response::new(ShutdownResponse {}))
     }
 
@@ -256,6 +284,8 @@ pub(crate) fn internal(error: impl std::fmt::Display) -> Status {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use giles_proto::plugin::v1::PluginKind;
     use giles_proto::plugin::v1::plugin_service_client::PluginServiceClient;
     use giles_proto::plugin::v1::plugin_service_server::PluginServiceServer;
@@ -268,7 +298,10 @@ mod tests {
 
     const HELLO_SHA256: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
 
-    struct FakeKind;
+    #[derive(Default)]
+    struct FakeKind {
+        detached: AtomicUsize,
+    }
 
     #[async_trait]
     impl Kind for FakeKind {
@@ -296,20 +329,30 @@ mod tests {
                 None => Err(Status::invalid_argument("namespace: missing")),
             }
         }
+
+        fn core_detached(&self) {
+            self.detached.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     struct Fixture {
         _data: tempfile::TempDir,
         blobs: Blobs,
+        kind: Arc<FakeKind>,
         shutdown: CancellationToken,
         client: PluginServiceClient<Channel>,
     }
 
     async fn fixture() -> Fixture {
+        fixture_with(OnShutdown::Exit).await
+    }
+
+    async fn fixture_with(on_shutdown: OnShutdown) -> Fixture {
         let data = tempfile::tempdir().unwrap();
         let blobs = Blobs::new(Arc::new(SdkDirs::open(data.path()).unwrap()));
         let shutdown = CancellationToken::new();
-        let base = Base::new(Arc::new(FakeKind), blobs.clone(), shutdown.clone());
+        let kind = Arc::new(FakeKind::default());
+        let base = Base::new(kind.clone(), blobs.clone(), on_shutdown, shutdown.clone());
         let channel = serve(tonic::transport::Server::builder().add_service(
             PluginServiceServer::new(base).max_decoding_message_size(giles_proto::MAX_MESSAGE_SIZE),
         ))
@@ -317,6 +360,7 @@ mod tests {
         Fixture {
             _data: data,
             blobs,
+            kind,
             shutdown,
             client: PluginServiceClient::new(channel),
         }
@@ -412,6 +456,16 @@ mod tests {
         assert!(!f.shutdown.is_cancelled());
         f.client.shutdown(ShutdownRequest {}).await.unwrap();
         assert!(f.shutdown.is_cancelled());
+        assert_eq!(f.kind.detached.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_remote_plugin_only_detaches_on_shutdown() {
+        let mut f = fixture_with(OnShutdown::Detach).await;
+        f.client.shutdown(ShutdownRequest {}).await.unwrap();
+        f.client.shutdown(ShutdownRequest {}).await.unwrap();
+        assert!(!f.shutdown.is_cancelled(), "the plugin keeps running");
+        assert_eq!(f.kind.detached.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
