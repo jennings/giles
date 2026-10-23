@@ -19,7 +19,8 @@ Every constructor returns once the server has answered `initialize` and the clie
 `notifications/initialized`: the handshake is the readiness signal. A server gets `INIT_TIMEOUT`
 (30 s) to answer. The client introduces itself as `giles` with the crate version and asks for
 protocol version 2025-11-25 (`ProtocolVersion::LATEST_WITH_INITIALIZE`, the newest one that still
-has `initialize`). It declares no client capabilities: no roots, no sampling, no elicitation.
+has `initialize`). Its only client capability is form-mode elicitation (`"elicitation": {"form":
+{}}`): no roots, no sampling, no URL-mode elicitation.
 
 A server that answers with an older version is accepted, not refused: PLAN section 8.6's 2025-06-18
 is the version the core targets, not a floor. Such a server just lacks the newer features; before
@@ -99,7 +100,7 @@ section 7.10).
 | `notifications/progress`           | `ToolCallEvent::Progress`                                    |
 | `CallToolResult`                   | `ToolCallEvent::Result { content, is_error }`                |
 | `notifications/cancelled`          | Sent when the handle's `events` stream is dropped            |
-| `elicitation/create`               | Declined (task 2.21)                                         |
+| `elicitation/create` (form mode)   | `ToolCallEvent::ApprovalRequest` of the call that asked; the answer on `answers` |
 
 **Tool specs.** `name`, `description` (the `title` if there is no description, else empty), and
 `inputSchema` as is. `annotations` are ignored, as PLAN section 7.10 says. `list_tools` follows
@@ -146,9 +147,41 @@ replaced with a text placeholder, e.g. `[image (image/png, 5120 bytes) dropped: 
 If the result has no text content but has `structuredContent`, that JSON is the text. `isError`
 (default false) becomes `is_error`.
 
-**Approvals.** `answers` exists and accepts sends while the call runs, but nothing reads it yet:
-the client doesn't declare elicitation, and a server that asks anyway is declined. Mapping
-`elicitation/create` to `ToolCallEvent::ApprovalRequest` is task 2.21.
+**Elicitation** (`mcp/elicitation.rs`, PLAN sections 6.4 and 7.10). A server may ask a question
+while a call runs. The client hands it to the call it is for, whose task emits
+`ToolCallEvent::ApprovalRequest { id: "elicitation-<n>", message, schema }` (`schema` is the
+`requestedSchema` as JSON); the agent loop asks the turn's requester through the channel
+([Approvals](approvals.md)) and sends the `ApprovalAnswer` back on `answers`. The answer becomes
+the `ElicitResult` (MCP 2025-06-18):
+
+| Answer                                             | `ElicitResult`                         |
+| -------------------------------------------------- | -------------------------------------- |
+| `Approve { content: None }` (v1's `yes`)            | `accept` with `content: {}`            |
+| `Approve { content: Some(object) }`                | `accept` with the object as `content`  |
+| `Approve { content: Some(non-object) }`            | `cancel` (not a valid answer)          |
+| `Deny` (`no`, expired, superseded by a message, unattended) | `decline`                     |
+| `answers` dropped, now or before the question      | `decline`                              |
+| The call ends first (result, deadline, cancellation), or the server cancels the question | `cancel` |
+
+A v1 answer is only yes or no, so `yes` sends an empty object: that satisfies a schema with no
+required fields (a confirmation), and `rmcp`'s typed `elicit` treats `accept` without content as an
+error. A question whose `requestedSchema.required` names any field can't be answered that way, so
+it is declined at once (logged), without asking anyone. URL-mode questions (not declared) are
+declined too.
+
+**Which call asked.** MCP has no field linking a question to a request. Over streamable HTTP a
+question arrives on the response stream of the `tools/call` that asked it, which `rmcp` records in
+the request's extensions (`InboundStreamOrigin::OutboundRequest(id)`); the question goes to that
+call. A question on HTTP's standalone stream (`InboundStreamOrigin::Unassociated`) is unrelated to
+any running request, as the transport spec says, and is declined. Over stdio and in-process pipes
+(no extension) nothing tells calls apart, so the question goes to the only call running, and is
+declined (logged) when there is none or there are several: guessing could show one person another
+conversation's question and let them answer it. Every call registers in the connection's
+`CallRouter` before its request goes out and records the request id
+once it's sent; a question carrying the id of a call still being sent waits for it. Answers have no
+timeout of their own: the approval's `approval_timeout` denies an unanswered one, and the call's
+deadline (which an elicitation wait counts against, unlike an `ask` approval) ends the call, which
+cancels the question.
 
 **Skills.** `list_skills` is empty and `get_skill` is `NotFound`: toolset skill directories are
 task 2.21.
@@ -196,17 +229,22 @@ fails by its own account (`isError: true`) is a normal `Result` event, not an er
 
 ## Staged Work
 
-- 2.21: toolset skill directories, elicitation as approval requests.
+- 2.21: toolset skill directories.
 
 ## Tests
 
 `crates/giles-core/tests/support/mcp_server.rs` is a small `rmcp` server (paginated tools,
-`list_changed`, gated progress, a tool that waits to be cancelled, elicitation, media results, a
-tool that reads the file at a path, exit). It runs:
+`list_changed`, gated progress, a tool that waits to be cancelled, a tool that asks a question by
+elicitation and reports the answer, media results, a tool that reads the file at a path, exit). It
+runs:
 
 - in process over a duplex pipe (`tests/mcp.rs`), with a relay task in between whose abort stands
   in for a crash; it also checks that an image, audio, and a PDF resource come back as media blocks
-  whose blobs hold the bytes the server sent;
+  whose blobs hold the bytes the server sent, that a question is an approval request whose answers
+  reach the server as `accept` with content, `accept` with `{}`, and `decline`, that a question
+  whose schema requires a field is declined without asking, that a question is declined once
+  `answers` is dropped, and that with two calls running on the pipe a question is declined
+  without asking anyone;
 - as a real stdio child (`tests/mcp_stdio.rs`): the test binary re-executes itself with
   `GILES_MCP_TEST_SERVER` set and serves MCP instead of running tests. Libtest would print to
   stdout, so this target has `harness = false` and its `main` runs the tests. It checks stderr
@@ -219,10 +257,17 @@ tool that reads the file at a path, exit). It runs:
 - over streamable HTTP (`tests/mcp_http.rs`): `rmcp`'s `StreamableHttpService` in `axum` on
   `127.0.0.1`, behind a middleware that requires the bearer token. It checks listing, progress, and
   cancellation with the right token; rejection of a wrong, missing, or forbidden one (the 403 body
-  echoes the token, which must come back scrubbed); an unreachable server; and that a call with
-  media is refused.
+  echoes the token, which must come back scrubbed); an unreachable server; that a call with
+  media is refused; and that with two calls running, a question reaches the one whose response
+  stream it came on.
 
 `mcp/files.rs` unit tests cover the copy (contents, mode 0600, gone on drop, nothing left after a
 missing blob), a link in place of the directory (refused, nothing written where it points), the
 sweep (only `giles-media-*` entries, a link removed rather than followed), and safe file names.
 The [toolsets tests](toolsets.md#tests) hand a file to a real server, sandboxed and not.
+`mcp/elicitation.rs` unit tests cover routing (by stream, the lone call without stream
+information, nobody on the standalone stream, waiting for a call being sent, a call ending while a
+question waits), the answer mapping, and the waiting questions.
+`tests/approvals.rs` runs the test server as a toolset of a whole daemon: its question reaches the
+owner through the channel, `yes` and `no` come back as `accept` (`{}`) and `decline`, and a
+question left unanswered ends with the call's deadline, its prompt then cancelled.

@@ -1,12 +1,20 @@
 //! Approvals end to end (PLAN section 6.4): prompts sent through the channel, `yes`/`no`/`yes!`
 //! replies consumed by the session manager, expiry, denial by a new message, and questions a
-//! running call asks (MCP elicitation), on paused time.
+//! running call asks (MCP elicitation, from a fake toolset and from a real MCP server), on paused
+//! time.
 
+#[path = "support/mcp_server.rs"]
+mod mcp_server;
 #[path = "support/turns.rs"]
 mod turns;
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use giles_core::config::InstanceName;
+use giles_core::mcp::{McpMedia, McpToolset};
+use mcp_server::TestServer;
+use rmcp::ServiceExt;
 use serde_json::json;
 use turns::{Daemon, PREFIX, calls, text};
 
@@ -348,6 +356,77 @@ async fn a_question_from_a_running_call_is_asked_and_answered() {
     let transcript = d.transcript().await;
     assert_eq!(transcript[2], "result t1: answer Approve { content: None }");
     assert_eq!(transcript[6], "result t2: answer Deny");
+    d.stop().await;
+}
+
+/// Replaces the fake toolset `met` with an MCP connection to the test server, before any turn.
+async fn serve_mcp(d: &Daemon) {
+    let (client, server) = tokio::io::duplex(1 << 16);
+    tokio::spawn(async move {
+        let running = TestServer::default().serve(server).await.unwrap();
+        let _ = running.waiting().await;
+    });
+    let (read, write) = tokio::io::split(client);
+    let media = McpMedia::new(d.runtime.blobs.clone());
+    let toolset = McpToolset::connect_io("met", read, write, media)
+        .await
+        .unwrap();
+    d.runtime
+        .registry
+        .register_toolset(&InstanceName::new("met").unwrap(), Arc::new(toolset))
+        .await
+        .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_mcp_servers_question_is_asked_and_answered_through_the_channel() {
+    let mut d = Daemon::start("").await;
+    serve_mcp(&d).await;
+    d.provider.push(calls(&[("t1", "met__ask", json!({}))]));
+    d.provider.push(text("Hello."));
+    d.provider.push(calls(&[("t2", "met__ask", json!({}))]));
+    d.provider.push(text("Fine."));
+    d.say("Ask me");
+    let sent = d.next_sent().await;
+    let c = code(&sent);
+    assert_eq!(
+        sent,
+        format!("The tool `met__ask` asks: `Your name?` Reply `yes {c}` or `no {c}`.")
+    );
+    d.say(&format!("yes {c}"));
+    assert_eq!(d.next_sent().await, "Hello.");
+    d.idle().await;
+
+    d.say("Ask again");
+    let c = code(&d.next_sent().await);
+    d.say(&format!("no {c}"));
+    assert_eq!(d.next_sent().await, "Fine.");
+    d.idle().await;
+    // The server saw `accept` with `{}` (v1 answers carry no content), then `decline`.
+    let transcript = d.transcript().await;
+    assert_eq!(transcript[2], "result t1: Accept {}");
+    assert_eq!(transcript[6], "result t2: Decline");
+    d.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_unanswered_mcp_question_ends_at_the_calls_deadline() {
+    let mut d = Daemon::start("").await;
+    serve_mcp(&d).await;
+    d.provider.push(calls(&[("t1", "met__ask", json!({}))]));
+    d.provider.push(text("Too slow."));
+    d.say("Ask me");
+    let c = code(&d.next_sent().await);
+    // `met` has the default 5 minute deadline, shorter than the 10 minute approval timeout.
+    tokio::time::sleep(Duration::from_secs(6 * 60)).await;
+    assert_eq!(d.next_sent().await, "Too slow.");
+    d.idle().await;
+    assert_eq!(d.transcript().await[2], "result! t1: timed out after 5m");
+    d.say(&format!("yes {c}"));
+    assert_eq!(
+        d.next_sent().await,
+        format!("Approval request `{c}` was cancelled.")
+    );
     d.stop().await;
 }
 

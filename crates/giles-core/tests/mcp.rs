@@ -11,7 +11,8 @@ use futures::StreamExt;
 use giles_core::mcp::{McpMedia, McpToolset};
 use giles_store::BlobStore;
 use giles_types::{
-    AgentId, Block, CallContext, Error, MediaRef, ToolCall, ToolCallEvent, ToolCallHandle, Toolset,
+    AgentId, ApprovalAnswer, ApprovalDecision, ApprovalId, Block, CallContext, Error, MediaRef,
+    ToolCall, ToolCallEvent, ToolCallHandle, Toolset,
 };
 use rmcp::ServiceExt;
 use serde_json::{Value, json};
@@ -278,14 +279,88 @@ async fn dropping_the_events_cancels_the_call_on_the_server() {
     );
 }
 
+/// Calls `ask` and returns the call, after its approval request.
+async fn asked(toolset: &McpToolset) -> (ToolCallHandle, ApprovalId) {
+    let mut handle = call(toolset, "ask", no_input()).await;
+    match next(&mut handle).await {
+        Some(Ok(ToolCallEvent::ApprovalRequest {
+            id,
+            message,
+            schema,
+        })) => {
+            assert_eq!(message, "Your name?");
+            let schema = schema.expect("a schema");
+            assert_eq!(schema["properties"]["name"]["type"], "string", "{schema}");
+            (handle, id)
+        }
+        other => panic!("expected an approval request, got {other:?}"),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn elicitation_is_declined() {
+async fn a_question_is_an_approval_request_and_the_answer_goes_back() {
     let (toolset, _server) = start(TestServer::default()).await;
-    let handle = call(&toolset, "ask", no_input()).await;
+    let answers = [
+        (
+            ApprovalDecision::Approve {
+                content: Some(json!({"name": "Ada"})),
+            },
+            r#"Accept {"name":"Ada"}"#,
+        ),
+        // A v1 `yes` carries no content: the server gets an empty object.
+        (ApprovalDecision::Approve { content: None }, "Accept {}"),
+        (ApprovalDecision::Deny, "Decline"),
+    ];
+    for (decision, said) in answers {
+        let (handle, id) = asked(&toolset).await;
+        handle
+            .answers
+            .send(ApprovalAnswer { id, decision })
+            .await
+            .unwrap();
+        assert_eq!(result(handle).await.unwrap(), (vec![text(said)], false));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_question_whose_schema_requires_fields_is_declined_without_asking() {
+    let (toolset, _server) = start(TestServer::default()).await;
+    // `result` fails on an approval request: nobody is asked.
+    let handle = call(&toolset, "ask", json!({"required": true})).await;
     assert_eq!(
         result(handle).await.unwrap(),
         (vec![text("Decline")], false)
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_answers_a_question_is_declined() {
+    let (toolset, _server) = start(TestServer::default()).await;
+    let (handle, _id) = asked(&toolset).await;
+    let ToolCallHandle { events, answers } = handle;
+    drop(answers);
+    let handle = ToolCallHandle {
+        events,
+        answers: tokio::sync::mpsc::channel(1).0,
+    };
+    assert_eq!(
+        result(handle).await.unwrap(),
+        (vec![text("Decline")], false)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_question_two_running_calls_could_have_asked_is_declined() {
+    let (toolset, _server) = start(TestServer::default()).await;
+    let mut hang = call(&toolset, "hang", no_input()).await;
+    assert!(matches!(
+        next(&mut hang).await,
+        Some(Ok(ToolCallEvent::Progress { .. }))
+    ));
+    // Nothing on a pipe says which call asks, so nobody is asked.
+    let ask = call(&toolset, "ask", no_input()).await;
+    assert_eq!(result(ask).await.unwrap(), (vec![text("Decline")], false));
+    drop(hang);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

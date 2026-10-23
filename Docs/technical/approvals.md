@@ -145,9 +145,11 @@ A running call's `ToolCallEvent::ApprovalRequest { id, message, schema }` goes t
 `answer_question(tool, message)` through the same board: same codes, prompts, replies, expiry,
 and denial by a new message. `yes` (and `yes!`, which allows nothing further for a question)
 answers `ApprovalDecision::Approve { content: None }` on the handle's `answers`; anything else
-`Deny`. v1 answers only yes or no: a question whose `schema` asks for data gets no content (the MCP
-side, TASKS.md 2.21, maps that onto the server's schema or declines). The wait is part of the
-running call, so its deadline keeps running; an unattended turn declines at once.
+`Deny`. v1 answers only yes or no, without content: an MCP server gets `accept` with an empty
+object for `yes` and `decline` for anything else, and a question whose schema requires a field
+never reaches the board, the MCP client declines it at once
+([MCP Client](mcp.md#mapping-mcp-to-the-toolset-trait)). The wait is part of the running call,
+so its deadline keeps running; an unattended turn declines at once.
 
 ## Web Buttons
 

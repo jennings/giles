@@ -188,17 +188,24 @@ impl ServerHandler for TestServer {
                 Ok(text("added"))
             }
             "ask" => {
+                // With `required: true` the name is a required field.
+                let mut schema = json!({
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                });
+                if argument("required").as_bool().unwrap_or(false) {
+                    schema["required"] = json!(["name"]);
+                }
                 let params = ElicitRequestParams::FormElicitationParams {
                     meta: None,
                     message: "Your name?".to_owned(),
-                    requested_schema: serde_json::from_value(json!({
-                        "type": "object",
-                        "properties": {"name": {"type": "string"}},
-                    }))
-                    .unwrap(),
+                    requested_schema: serde_json::from_value(schema).unwrap(),
                 };
                 match context.peer.create_elicitation(params).await {
-                    Ok(result) => Ok(text(format!("{:?}", result.action))),
+                    Ok(result) => Ok(text(match result.content {
+                        Some(content) => format!("{:?} {content}", result.action),
+                        None => format!("{:?}", result.action),
+                    })),
                     Err(error) => Ok(text(format!("elicitation failed: {error}"))),
                 }
             }

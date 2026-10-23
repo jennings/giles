@@ -6,6 +6,7 @@
 
 mod client;
 mod convert;
+mod elicitation;
 mod files;
 mod http;
 mod media;
@@ -38,6 +39,7 @@ use tracing::Instrument;
 
 use self::client::{ClientState, ProgressSubscription};
 use self::convert::Origin;
+use self::elicitation::{CallSlot, Pending};
 use self::files::HandedFiles;
 pub use self::http::HttpServer;
 pub use self::media::{MAX_RESULT_MEDIA_BYTES, McpMedia};
@@ -444,8 +446,12 @@ impl Toolset for McpToolset {
     /// file's path; the files are removed once the call ends. Other servers take no media
     /// inputs: a call with media is [`Error::InvalidRequest`] (PLAN section 7.10).
     ///
-    /// `answers` takes no answers yet: elicitation is task 2.21, and until then the server's
-    /// requests are declined.
+    /// A question the server asks while the call runs (`elicitation/create`) is an
+    /// [`ToolCallEvent::ApprovalRequest`] of the call; its answer on `answers` goes back as the
+    /// `ElicitResult`: approved is `accept` (with the answer's content, if any), denied `decline`,
+    /// and a question still open when the call ends is `cancel`. Once `answers` is dropped, open
+    /// and later questions are declined. A question no single running call can have asked is
+    /// declined (see `mcp/elicitation.rs`).
     async fn call(&self, call: ToolCall, _ctx: CallContext) -> Result<ToolCallHandle> {
         let parent = span(&self.origin.instance);
         let span = tracing::debug_span!(
@@ -460,11 +466,14 @@ impl Toolset for McpToolset {
             params = params.with_arguments(arguments);
         }
         let request = ClientRequest::CallToolRequest(Request::new(params));
+        // Registered before the request goes out, so a question that comes at once finds it.
+        let slot = self.service.service().calls.register();
         let handle = self
             .peer()
             .send_cancellable_request(request, PeerRequestOptions::no_options())
             .await
             .map_err(|error| convert::service_error(&self.origin, error))?;
+        slot.sent(handle.id.clone());
         let progress = self
             .service
             .service()
@@ -477,7 +486,9 @@ impl Toolset for McpToolset {
             media: self.media.clone(),
             progress,
             events,
-            _answers: answers_rx,
+            slot,
+            answers: answers_rx,
+            questions: Pending::default(),
             _files: files,
         };
         tokio::spawn(run_call(task, handle).instrument(span));
@@ -542,14 +553,16 @@ struct CallTask {
     media: McpMedia,
     progress: ProgressSubscription,
     events: mpsc::Sender<Result<ToolCallEvent>>,
-    /// Held so the caller's sends succeed while the call runs; nothing reads it until 2.21.
-    _answers: mpsc::Receiver<ApprovalAnswer>,
+    /// The questions the server asks for this call.
+    slot: CallSlot,
+    answers: mpsc::Receiver<ApprovalAnswer>,
+    questions: Pending,
     /// The media files handed to the server, removed when the call ends.
     _files: Option<HandedFiles>,
 }
 
-/// Drives one call: forwards progress, then the result, and cancels the request if the consumer
-/// drops the events first.
+/// Drives one call: forwards progress and the server's questions, then the result, and cancels
+/// the request if the consumer drops the events first.
 async fn run_call(mut task: CallTask, handle: RequestHandle<RoleClient>) {
     let events = task.events.clone();
     let id = handle.id.clone();
@@ -575,6 +588,14 @@ async fn run_call(mut task: CallTask, handle: RequestHandle<RoleClient>) {
                     // A closed channel is noticed on the next turn.
                     let _ = events.send(Ok(event)).await;
                 }
+            }
+            Some(question) = task.slot.receiver.recv() => {
+                if let Some(event) = task.questions.ask(question) {
+                    let _ = events.send(Ok(event)).await;
+                }
+            }
+            answer = task.answers.recv(), if !task.questions.closed() => {
+                task.questions.answer(answer);
             }
         }
     };

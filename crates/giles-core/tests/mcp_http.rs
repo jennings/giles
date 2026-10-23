@@ -17,8 +17,8 @@ use futures::StreamExt;
 use giles_core::config::Secret;
 use giles_core::mcp::{HttpServer, McpToolset};
 use giles_types::{
-    AgentId, Block, CallContext, Error, MediaId, MediaRef, ToolCall, ToolCallEvent, ToolCallHandle,
-    Toolset,
+    AgentId, ApprovalAnswer, ApprovalDecision, Block, CallContext, Error, MediaId, MediaRef,
+    ToolCall, ToolCallEvent, ToolCallHandle, Toolset,
 };
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::{StreamableHttpServerConfig, StreamableHttpService};
@@ -148,6 +148,43 @@ async fn the_right_token_lists_calls_and_cancels() {
     })
     .await
     .expect("the server never saw the cancellation");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_question_reaches_the_call_whose_stream_it_came_on() {
+    let (url, _shared) = serve().await;
+    let (_dir, blobs) = blob_store().await;
+    let toolset = McpToolset::connect_http("remote", &server(&url, Some(TOKEN)), blobs)
+        .await
+        .unwrap();
+    // Another call is running, but the question comes on the stream of the one that asks.
+    let mut hang = call(&toolset, "hang", no_input()).await;
+    assert!(matches!(
+        next(&mut hang).await,
+        Some(Ok(ToolCallEvent::Progress { .. }))
+    ));
+    let mut ask = call(&toolset, "ask", no_input()).await;
+    let Some(Ok(ToolCallEvent::ApprovalRequest { id, message, .. })) = next(&mut ask).await else {
+        panic!("expected an approval request");
+    };
+    assert_eq!(message, "Your name?");
+    let decision = ApprovalDecision::Approve {
+        content: Some(json!({"name": "Ada"})),
+    };
+    ask.answers
+        .send(ApprovalAnswer { id, decision })
+        .await
+        .unwrap();
+    assert_eq!(
+        next(&mut ask).await.unwrap().unwrap(),
+        ToolCallEvent::Result {
+            content: vec![Block::Text {
+                text: r#"Accept {"name":"Ada"}"#.to_owned()
+            }],
+            is_error: false,
+        }
+    );
+    drop(hang);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

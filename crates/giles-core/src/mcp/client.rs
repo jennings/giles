@@ -5,11 +5,14 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use rmcp::ClientHandler;
 use rmcp::model::{
-    ClientCapabilities, ClientConfig, ElicitRequestParams, ElicitResult, ElicitationAction,
-    ErrorData, Implementation, ProgressNotificationParam, ProgressToken, ProtocolVersion,
+    ClientCapabilities, ClientConfig, ElicitRequestParams, ElicitResult, ElicitationCapability,
+    ErrorData, FormElicitationCapability, Implementation, ProgressNotificationParam, ProgressToken,
+    ProtocolVersion,
 };
 use rmcp::service::{NotificationContext, RequestContext, RoleClient};
 use tokio::sync::{mpsc, watch};
+
+use super::elicitation::CallRouter;
 
 /// The protocol version the core asks for: the newest one that still has the `initialize`
 /// handshake (PLAN section 8.6 requires 2025-06-18 or later). Servers may answer with an older
@@ -26,6 +29,8 @@ const EARLY_PROGRESS: usize = 32;
 pub(crate) struct ClientState {
     pub(crate) instance: String,
     pub(crate) progress: ProgressRouter,
+    /// The calls running, for the questions servers ask.
+    pub(crate) calls: CallRouter,
     /// Bumped on every `notifications/tools/list_changed`.
     pub(crate) tools_changed: watch::Sender<u64>,
 }
@@ -35,34 +40,35 @@ impl ClientState {
         Self {
             instance,
             progress: ProgressRouter::default(),
+            calls: CallRouter::default(),
             tools_changed: watch::Sender::new(0),
         }
     }
 }
 
 impl ClientHandler for ClientState {
-    /// The core declares no client capabilities: no roots, no sampling, and no elicitation yet
-    /// (task 2.21).
+    /// The core declares form-mode elicitation (`elicitation: {form: {}}`): a server may ask the
+    /// person whose turn it is a question mid-call. No roots, no sampling, no URL mode.
     fn get_info(&self) -> ClientConfig {
+        let mut elicitation = ElicitationCapability::new();
+        elicitation.form = Some(FormElicitationCapability::new());
+        let mut capabilities = ClientCapabilities::default();
+        capabilities.elicitation = Some(elicitation);
         ClientConfig::new(
-            ClientCapabilities::default(),
+            capabilities,
             Implementation::new("giles", env!("CARGO_PKG_VERSION")),
         )
         .with_protocol_version(PROTOCOL_VERSION)
     }
 
-    /// Elicitation is task 2.21. The core doesn't declare the capability, so a compliant server
-    /// doesn't ask; one that does anyway is declined.
+    /// Hands the question to the call that asked it, as an approval request
+    /// ([`CallRouter::ask`]).
     async fn create_elicitation(
         &self,
-        _request: ElicitRequestParams,
-        _context: RequestContext<RoleClient>,
+        request: ElicitRequestParams,
+        context: RequestContext<RoleClient>,
     ) -> Result<ElicitResult, ErrorData> {
-        tracing::warn!(
-            instance = %self.instance,
-            "declined an MCP elicitation request: elicitation isn't supported yet"
-        );
-        Ok(ElicitResult::new(ElicitationAction::Decline))
+        Ok(self.calls.ask(&self.instance, request, context).await)
     }
 
     async fn on_progress(
