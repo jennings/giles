@@ -292,7 +292,7 @@ pub struct PluginStatus {
     pub instance: InstanceName,
     pub component: String,
     pub binary: Option<PathBuf>,          // found at the last lookup, links resolved
-    pub state: PluginState,               // Starting | Running { pid, since } |
+    pub state: PluginState,               // Starting | Running { pid: Option<u32>, since } |
                                           // BackingOff { until } | Failed | Stopped
     pub restarts: u32,                    // relaunches since the core started
     pub last_error: Option<String>,       // last launch failure, crash, or failed check; kept
@@ -306,9 +306,9 @@ scrubbed of the instance's secrets and the token. The channel's own status (`Con
 `NeedsAuth`, ...) is recorded by the session manager (`Sessions::channel_status`).
 
 `PluginHost` implements `admin::PluginControl` for the [Admin Service](admin.md): `plugins()`
-returns the statuses as `PluginRuntime`s (`Running { pid }` as `pid: Some(pid)`; the version and
-`requested_grants`, field for field as `SandboxGrants`, from `describe`), and `restart` is
-`PluginHost::restart`. `serve` shares one `Arc<PluginHost>` between the two.
+returns the statuses as `PluginRuntime`s (the state as is; the version and `requested_grants`,
+field for field as `SandboxGrants`, from `describe`), and `restart` is `PluginHost::restart`.
+`serve` shares one `Arc<PluginHost>` between the two.
 
 ### The Describe Cache
 

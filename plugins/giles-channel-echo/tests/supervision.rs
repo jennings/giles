@@ -24,7 +24,7 @@ use self::support::{Core, Home, owner_message, wait_until};
 /// The pid of the running echo plugin.
 fn running_pid(core: &Core) -> Option<u32> {
     match core.host.status("echo")?.state {
-        PluginState::Running { pid, .. } => Some(pid),
+        PluginState::Running { pid, .. } => pid,
         _ => None,
     }
 }

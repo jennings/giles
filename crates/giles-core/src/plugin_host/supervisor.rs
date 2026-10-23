@@ -1,7 +1,8 @@
-//! Supervision (PLAN section 7.5): one task per plugin channel that launches it (registering its
-//! channel), checks its health every [`HEALTH_INTERVAL`], relaunches it with backoff when it
-//! crashes or fails a check, waits for a new binary after a failure that won't pass, and stops it
-//! at shutdown. Its state is kept for `giles status` ([`PluginStatus`]).
+//! Supervision (PLAN sections 7.5 and 7.6): one task per plugin channel that launches it (or
+//! connects to it, for a remote plugin) and registers its channel, checks its health every
+//! [`HEALTH_INTERVAL`], relaunches it with backoff when it crashes or fails a check, waits for a
+//! new binary after a failure that won't pass, and stops it at shutdown. Its state is kept for
+//! `giles status` ([`PluginStatus`]).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -46,8 +47,8 @@ pub enum PluginState {
     Starting,
     /// Up, registered, and healthy at the last check.
     Running {
-        /// Its process id.
-        pid: u32,
+        /// Its process id; `None` for a remote plugin, which the core doesn't run.
+        pid: Option<u32>,
         /// When it came up.
         since: Timestamp,
     },
@@ -111,8 +112,8 @@ pub(crate) trait Launch: Send + Sync {
 /// A launched plugin, as supervision sees it.
 #[async_trait]
 pub(crate) trait Running: Send {
-    /// Its process id.
-    fn pid(&self) -> u32;
+    /// Its process id; `None` for a remote plugin.
+    fn pid(&self) -> Option<u32>;
 
     /// What it reported in `Describe`.
     fn describe(&self) -> Option<DescribeInfo>;

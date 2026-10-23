@@ -96,8 +96,8 @@ fn info(version: &str) -> DescribeInfo {
 
 #[async_trait]
 impl Running for FakeRun {
-    fn pid(&self) -> u32 {
-        self.pid
+    fn pid(&self) -> Option<u32> {
+        Some(self.pid)
     }
 
     fn describe(&self) -> Option<DescribeInfo> {
@@ -267,7 +267,7 @@ async fn launch_failures_back_off_too() {
     h.settle().await;
     let status = h.status();
     assert!(
-        matches!(status.state, PluginState::Running { pid: 1, .. }),
+        matches!(status.state, PluginState::Running { pid: Some(1), .. }),
         "{status:?}"
     );
     assert_eq!(status.restarts, 2);
@@ -308,7 +308,7 @@ async fn a_failed_health_check_restarts_the_plugin() {
     h.settle().await;
     assert!(matches!(
         h.status().state,
-        PluginState::Running { pid: 1, .. }
+        PluginState::Running { pid: Some(1), .. }
     ));
     h.fake.healthy.store(false, Ordering::SeqCst);
     assert_eq!(h.next_stop().await, 1);

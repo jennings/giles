@@ -915,10 +915,7 @@ impl PluginControl for PluginHost {
 fn plugin_runtime(status: PluginStatus) -> PluginRuntime {
     let state = match status.state {
         PluginState::Starting => PluginRunState::Starting,
-        PluginState::Running { pid, since } => PluginRunState::Running {
-            pid: Some(pid),
-            since,
-        },
+        PluginState::Running { pid, since } => PluginRunState::Running { pid, since },
         PluginState::BackingOff { until } => PluginRunState::BackingOff { until },
         PluginState::Failed => PluginRunState::Failed,
         PluginState::Stopped => PluginRunState::Stopped,
@@ -1000,8 +997,8 @@ struct Live(LaunchedPlugin);
 
 #[async_trait]
 impl Running for Live {
-    fn pid(&self) -> u32 {
-        self.0.process.pid()
+    fn pid(&self) -> Option<u32> {
+        Some(self.0.process.pid())
     }
 
     fn describe(&self) -> Option<DescribeInfo> {
@@ -1213,7 +1210,7 @@ mod tests {
 
         let running = PluginStatus {
             state: PluginState::Running {
-                pid: 42,
+                pid: Some(42),
                 since: until,
             },
             describe: None,
