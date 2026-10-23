@@ -9,6 +9,11 @@ repository.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = ["provider-anthropic"]
+# The built-in Anthropic provider.
+provider-anthropic = ["giles-core/provider-anthropic"]
+
 [dependencies]
 anyhow.workspace = true
 clap = { version = "4.6.7", features = ["derive"] }

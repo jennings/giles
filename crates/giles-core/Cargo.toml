@@ -9,12 +9,20 @@ repository.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = ["provider-anthropic"]
+# The built-in Anthropic Messages API provider (`providers::anthropic`).
+provider-anthropic = ["dep:reqwest", "dep:webpki-root-certs"]
+
 [dependencies]
+bytes.workspace = true
 croner = { version = "4.0.2", default-features = false, features = ["jiff"] }
+futures.workspace = true
 giles-proto.workspace = true
 giles-store.workspace = true
 giles-types.workspace = true
 jiff = { workspace = true, features = ["tz-system", "tzdb-zoneinfo", "tzdb-bundle-always"] }
+reqwest = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 serde_path_to_error = "0.1.20"
@@ -23,6 +31,7 @@ thiserror.workspace = true
 toml.workspace = true
 tracing.workspace = true
 url = "2.5.8"
+webpki-root-certs = { version = "1.0.10", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
@@ -31,7 +40,6 @@ libc.workspace = true
 workspace = true
 
 [dev-dependencies]
-futures.workspace = true
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 prost.workspace = true
 tempfile.workspace = true

@@ -13,7 +13,7 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 # Internal crates.
-giles-core = { path = "crates/giles-core", version = "0.1.0" }
+giles-core = { path = "crates/giles-core", version = "0.1.0", default-features = false }
 giles-plugin-sdk = { path = "crates/giles-plugin-sdk", version = "0.1.0" }
 giles-proto = { path = "crates/giles-proto", version = "0.1.0" }
 giles-store = { path = "crates/giles-store", version = "0.1.0" }
@@ -29,6 +29,9 @@ futures = "0.3.34"
 jiff = { version = "0.2.38", default-features = false, features = ["std"] }
 libc = "0.2.191"
 prost = "0.14.4"
+# HTTP client for the built-in providers. TLS is rustls; `providers::http::client` trusts only the
+# bundled `webpki-root-certs`, so the platform verifier this feature compiles in is never used.
+reqwest = { version = "0.13.5", default-features = false, features = ["http2", "rustls", "stream"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
