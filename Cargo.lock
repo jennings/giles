@@ -386,6 +386,7 @@ dependencies = [
  "anyhow",
  "clap",
  "giles-core",
+ "libc",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -403,6 +404,8 @@ dependencies = [
  "giles-types",
  "hyper-util",
  "prost",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
@@ -410,6 +413,7 @@ dependencies = [
  "tonic-health",
  "tonic-prost",
  "tower",
+ "tracing",
 ]
 
 [[package]]

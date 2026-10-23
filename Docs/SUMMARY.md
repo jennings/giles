@@ -16,6 +16,7 @@
 - [The `giles` Binary](technical/daemon.md)
 - [Data Root](technical/data-root.md)
 - [Plugin Transport](technical/plugin-transport.md)
+- [Plugin Sandbox](technical/sandbox.md)
 - [Rendering Model Output](technical/rendering.md)
 - [gRPC Protocols](technical/protocols.md)
 

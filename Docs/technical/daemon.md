@@ -6,9 +6,14 @@ lives in library crates.
 ## Command Line
 
 `clap` (derive). `cli::Cli` has the global options and a `cli::Command` enum with one variant per
-subcommand, each carrying its own `clap::Args` struct (`Serve(ServeArgs)`). Later subcommands
-(`status`, `admin`, `sandbox-exec`, `pair`, `usage`, `backup`, `instance`) are added as variants
-with their own argument structs and modules, dispatched from `main`.
+subcommand, each carrying its own `clap::Args` struct (`Serve(ServeArgs)`,
+`SandboxExec(SandboxExecArgs)`). Later subcommands (`status`, `admin`, `pair`, `usage`, `backup`,
+`instance`) are added as variants with their own argument structs and modules, dispatched from
+`main`.
+
+`giles sandbox-exec <SPEC> -- <COMMAND>...` is the internal plugin sandbox trampoline (see
+[Plugin Sandbox](sandbox.md)); `--home` is accepted there but unused. Its failures exit 125 to
+127 like `env(1)` instead of 1 (see [Exit Status](sandbox.md#exit-status)).
 
 `--home <DIR>` is global, so it is accepted before or after the subcommand. It is not tied to
 `GILES_HOME` through `clap`; `giles_core::paths::resolve_root` applies the precedence (flag, then
@@ -16,7 +21,7 @@ with their own argument structs and modules, dispatched from `main`.
 [Data Root](data-root.md)).
 
 `main` is synchronous. Only `serve` builds a Tokio runtime (multi-threaded), so subcommands that
-must not start threads, such as the future `sandbox-exec` trampoline, don't get one.
+must not start threads, such as the `sandbox-exec` trampoline, don't get one.
 
 Errors are `anyhow` in the binary and `thiserror` in libraries; a failed subcommand prints
 `Error: ...` with its causes and exits with status 1.

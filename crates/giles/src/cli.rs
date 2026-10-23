@@ -1,5 +1,6 @@
 //! Command-line arguments.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
@@ -22,11 +23,25 @@ pub struct Cli {
 pub enum Command {
     /// Run the daemon in the foreground until SIGINT or SIGTERM.
     Serve(ServeArgs),
+    /// Run a command in the plugin sandbox (internal: the daemon launches plugins through it).
+    SandboxExec(SandboxExecArgs),
 }
 
 /// Arguments to `giles serve`.
 #[derive(Debug, Args)]
 pub struct ServeArgs {}
+
+/// Arguments to `giles sandbox-exec`.
+#[derive(Debug, Args)]
+pub struct SandboxExecArgs {
+    /// The sandbox spec: a JSON file written by the daemon.
+    #[arg(value_name = "SPEC")]
+    pub spec: PathBuf,
+
+    /// The command to run (an absolute path) and its arguments, after `--`.
+    #[arg(last = true, required = true, value_name = "COMMAND")]
+    pub command: Vec<OsString>,
+}
 
 #[cfg(test)]
 mod tests {
@@ -57,5 +72,37 @@ mod tests {
     fn a_subcommand_is_required() {
         assert!(Cli::try_parse_from(["giles"]).is_err());
         assert!(Cli::try_parse_from(["giles", "--home", "/h"]).is_err());
+    }
+
+    #[test]
+    fn sandbox_exec_takes_everything_after_the_separator() {
+        let cli = Cli::try_parse_from([
+            "giles",
+            "sandbox-exec",
+            "/run/spec.json",
+            "--",
+            "/bin/plugin",
+            "--home",
+            "-x",
+        ])
+        .unwrap();
+        let Command::SandboxExec(args) = cli.command else {
+            panic!("{:?}", cli.command);
+        };
+        assert_eq!(args.spec, Path::new("/run/spec.json"));
+        assert_eq!(args.command, ["/bin/plugin", "--home", "-x"]);
+        assert_eq!(cli.home, None);
+    }
+
+    #[test]
+    fn sandbox_exec_needs_a_spec_and_a_command_after_the_separator() {
+        for args in [
+            &["giles", "sandbox-exec"][..],
+            &["giles", "sandbox-exec", "/spec"],
+            &["giles", "sandbox-exec", "/spec", "--"],
+            &["giles", "sandbox-exec", "/spec", "/bin/plugin"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
+        }
     }
 }
