@@ -101,11 +101,11 @@ instances of one component:
 ```toml
 [channel.irc-libera]
 component = "irc"          # runs giles-channel-irc
-config = { server = "irc.libera.chat:6697" }
+config = { server = "irc.libera.chat", nick = "jeeves", network = "libera.chat" }
 
 [channel.irc-oftc]
 component = "irc"
-config = { server = "irc.oftc.net:6697" }
+config = { server = "irc.oftc.net", nick = "jeeves", network = "oftc.net" }
 ```
 
 Every key of an instance table belongs to Giles, except `config`: that table is passed to the
@@ -492,9 +492,10 @@ sandbox = { network = ["tcp:6697"] }
 
 [channel.libera.config]
 server = "irc.libera.chat:6697"
+network = "libera.chat"
 nick = "jeeves"
 channels = ["#giles"]
-sasl_password = { secret = "libera" }
+sasl = { password = { secret = "libera" } }
 
 [toolset.github]
 url = "https://api.githubcopilot.com/mcp/"

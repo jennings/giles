@@ -1056,7 +1056,7 @@ fn the_documented_full_example_is_valid() {
     assert_eq!(config.routes.len(), 2);
     assert_eq!(config.agents[&agent_id("jeeves")].jobs.len(), 2);
     let libera = config.channels["libera"].config.to_json();
-    assert_eq!(libera["sasl_password"], "correct horse battery staple");
+    assert_eq!(libera["sasl"]["password"], "correct horse battery staple");
 }
 
 /// Instances whose credentials come from `secrets.toml`, the environment, and literals.
