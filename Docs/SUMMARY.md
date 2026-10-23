@@ -7,6 +7,7 @@
 - [Overview](user/README.md)
 - [Installing and Running](user/running.md)
 - [Configuration](user/configuration.md)
+- [Model Providers](user/providers.md)
 
 # Technical
 

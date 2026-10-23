@@ -48,3 +48,86 @@ limit and be tested against every chunk boundary.
   `From<SseError>`, which `giles_types::Error` has (as `Error::Other`), so a provider writes
   `sse::events(http::body_stream(response))`. Body errors pass through, and the first error ends
   the stream.
+
+## Anthropic
+
+`providers::anthropic` speaks the [Messages API](https://platform.claude.com/docs/en/api/messages)
+(`POST /v1/messages` with `stream: true`). Its API family name, `Opaque::api`, is `anthropic`.
+
+### Configuration
+
+`AnthropicConfig::from_json` validates the instance's `config` table, as JSON with secret references
+already resolved, and returns `Error::InvalidRequest` naming the bad key (never the API key). The
+keys are in [Providers](../user/providers.md). `ApiKey` wraps the key so `Debug` shows
+`ApiKey(<redacted>)`. The connect and read timeouts (`HttpOptions`) are fields of the struct, not
+config keys.
+
+### Media
+
+Request bodies carry images and PDFs inline as base64. The provider reads them through a
+`providers::MediaSource` (`async fn read(&self, &MediaRef) -> Result<Bytes>`), the blob store in
+the daemon. It returns only bytes, because the media type is already in the `MediaRef`. The model's
+accepted types are `image/jpeg`, `image/png`, `image/gif`, `image/webp`, and `application/pdf`
+(`anthropic::MEDIA_TYPES`). An `Image`, `Audio`, or `Document` block whose type isn't one of them is
+sent as its text reference, `[media:<id> <name> <type>]`, so a stray unsupported attachment never
+makes every later request fail (PLAN section 5). The core is expected to leave out media the model
+doesn't accept, by `ModelInfo::accepts`, when it builds the turn (2.4); this is the backstop.
+
+### Request mapping
+
+| Giles                                          | Messages API                                                                               |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `system` (text blocks only)                    | `system` text blocks, the last with `cache_control`; omitted when empty                    |
+| consecutive messages of the same role          | one message; messages left empty by dropped blocks are skipped first                       |
+| `Text`                                         | `text`; empty text is dropped (the API rejects it)                                         |
+| `Image`/`Document`/`Audio` of an accepted type | `image` or `document` (by media type) with a base64 source; `Document.name` is `title`     |
+| media of another type                          | `text` with the reference                                                                  |
+| `ToolUse`                                      | `tool_use`                                                                                 |
+| `ToolResult`                                   | `tool_result`; `content` omitted when empty, `is_error: true` only when set                |
+| `Reasoning` with `opaque` `{api: "anthropic"}` | `thinking` with `thinking: text` (empty when `None`) and the stored `signature`            |
+| other `Reasoning`                              | dropped: the API rejects thinking without its signature                                    |
+| `Opaque` with `api: "anthropic"`               | `data`, unchanged (`redacted_thinking`, `server_tool_use`, `web_search_tool_result`, ...)  |
+| `Opaque` of another API                        | dropped (PLAN section 5)                                                                   |
+| `ToolSpec`                                     | `tools` entry with the name unchanged; `description` omitted when empty                    |
+| `max_tokens`                                   | request, else config `max_tokens`, else the model family's maximum, else 16,384            |
+| `reasoning_budget: None`                       | `{type: "disabled"}` where the model accepts it, else no `thinking` field                  |
+| `reasoning_budget: Some(n)`                    | `{type: "enabled", budget_tokens: n}` on Claude 4.5 and earlier, else `{type: "adaptive"}` |
+| `temperature`                                  | sent only before API version `2026-10-21`, and only to Claude 4.6 and earlier              |
+
+A tool result may hold only text and media; any other block in it is `Error::InvalidRequest`, as is
+a non-text system block. Merging consecutive messages turns the core's one-message-per-inbound
+event into the alternating turns the API expects; the API would merge them too, but doing it here
+keeps the request explicit.
+
+Thinking has changed across model generations: Claude 4.5 and earlier take a token budget, 4.6
+deprecates it, and 4.7 and later reject it and take `adaptive` thinking, with the depth set by
+`effort` (not mapped). A `None` budget means "reasoning off where the API allows"
+(`GenerationParams`), so it sends `{type: "disabled"}` to the families that accept it: Claude 4.5
+through 4.8, Opus 5, Sonnet 5, and Haiku 5.5, where thinking is otherwise off by default or on by
+default (5.x) but can be turned off. Opus 5.5, Sonnet 5.5, Fable, and Mythos reject `disabled`
+(thinking is always on), and unknown models may too, so they get no `thinking` field and the
+model's default. The family of a model id comes from a small built-in table (`models.rs`), with
+specific rows such as `claude-opus-5-5` ahead of their generation's (`claude-opus-5`); unknown ids
+are treated as new models (adaptive thinking, no `disabled`, no sampling parameters).
+
+`temperature` is sent only when both sides accept it. API version `2026-10-21` removed
+`temperature`, `top_p`, and `top_k` for every model, and Claude 4.7 and later reject a non-default
+`temperature` on every API version. So with the default `anthropic_version` (`2023-06-01`) it goes
+only to Claude 4.6 and 4.5 models; elsewhere the request samples at the default rather than failing
+with an error that model fallback wouldn't retry.
+
+### Prompt caching
+
+PLAN section 6.7 lays out the prompt so the prefix (tools, then system, then messages) is stable.
+The request sets both:
+
+- automatic caching: a top-level `cache_control`, so the API puts a breakpoint on the last
+  cacheable block and moves it forward as the conversation grows;
+- an explicit breakpoint on the last `system` block, so the tools and system prompt stay cached
+  even when the conversation's breakpoint misses (more than 20 blocks since the last write).
+
+Both use the same TTL: 1 hour for `CacheRetention::Long` (human-paced sessions; `"ttl": "1h"`) and
+the API's 5-minute default for `Short` (job runs). The 1-hour TTL needs no beta header. Using one
+TTL avoids the API's rule that longer TTLs must come before shorter ones, and its 400 error when
+the automatic breakpoint lands on a block that has an explicit `cache_control` with a different
+TTL. Two of the four breakpoint slots are used.
