@@ -108,6 +108,34 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
         .await?;
     // Config and runtime jobs; their replies and approval prompts go through the outbox.
     let scheduler = runtime.start_scheduler(sessions.clone(), runner, shutdown.clone());
+    // Plugin supervision (started below) and the admin service, built before the HTTP application.
+    let wiring = ChannelWiring {
+        registry: runtime.registry.clone(),
+        sessions: sessions.clone(),
+        blobs: runtime.blobs.clone(),
+    };
+    let plugins = Arc::new(PluginHost::new(
+        Launcher::new(root.clone(), giles_exe, sandbox.clone().map(drop)),
+        wiring,
+    ));
+    // Login links come from the built-in web channel, if one is configured.
+    #[cfg(feature = "channel-web")]
+    let login_links = runtime
+        .registry
+        .web_channel()
+        .map(|web| web as Arc<dyn giles_core::admin::LoginLinks>);
+    #[cfg(not(feature = "channel-web"))]
+    let login_links = None;
+    let admin = Arc::new(AdminService::new(AdminOptions {
+        config: config.clone(),
+        store: runtime.store.clone(),
+        sandbox,
+        started_at,
+        channels: Arc::new(sessions.clone()),
+        plugins: Some(plugins.clone() as Arc<dyn PluginControl>),
+        login_links,
+        clock: Arc::new(SystemClock),
+    }));
     let builder = http::RouterBuilder::new();
     #[cfg(feature = "channel-web")]
     let builder = match &web {
@@ -142,39 +170,12 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     };
     let mut http_server =
         tokio::spawn(async move { tokio::try_join!(main_server, proxy_server).map(|_| ()) });
+    let admin_server = tokio::spawn(admin_listener.serve(admin, shutdown.clone()));
     // Every configured plugin channel, supervised: registered and attached to the sessions as it
     // comes up, relaunched with backoff when it fails. Startup waits for each first attempt and
     // for every toolset's first start (a failed toolset retries in the background); a shutdown
     // during startup stops waiting, and `stop_all` abandons the launches still running (killing
     // their plugins).
-    let wiring = ChannelWiring {
-        registry: runtime.registry.clone(),
-        sessions: sessions.clone(),
-        blobs: runtime.blobs.clone(),
-    };
-    let plugins = Arc::new(PluginHost::new(
-        Launcher::new(root.clone(), giles_exe, sandbox.clone().map(drop)),
-        wiring,
-    ));
-    // Login links come from the built-in web channel, if one is configured.
-    #[cfg(feature = "channel-web")]
-    let login_links = runtime
-        .registry
-        .web_channel()
-        .map(|web| web as Arc<dyn giles_core::admin::LoginLinks>);
-    #[cfg(not(feature = "channel-web"))]
-    let login_links = None;
-    let admin = AdminService::new(AdminOptions {
-        config: config.clone(),
-        store: runtime.store.clone(),
-        sandbox,
-        started_at,
-        channels: Arc::new(sessions.clone()),
-        plugins: Some(plugins.clone() as Arc<dyn PluginControl>),
-        login_links,
-        clock: Arc::new(SystemClock),
-    });
-    let admin_server = tokio::spawn(admin_listener.serve(admin, shutdown.clone()));
     tokio::select! {
         _ = async { tokio::join!(plugins.start(&config), toolsets.started()) } => {}
         () = shutdown.cancelled() => {}

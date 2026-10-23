@@ -154,7 +154,7 @@ impl Harness {
         let statuses = Arc::new(FakeStatuses::default());
         let lock = InstanceLock::acquire(&root).unwrap();
         let listener = AdminListener::bind(&root, &lock).unwrap();
-        let service = AdminService::new(AdminOptions {
+        let service = Arc::new(AdminService::new(AdminOptions {
             config: Arc::new(config),
             store: store.clone(),
             sandbox: fakes
@@ -167,7 +167,7 @@ impl Harness {
                 .links
                 .then(|| Arc::new(FakeLinks) as Arc<dyn LoginLinks>),
             clock: Arc::new(FixedClock),
-        });
+        }));
         let shutdown = CancellationToken::new();
         let server = tokio::spawn(listener.serve(service, shutdown.clone()));
         Self {

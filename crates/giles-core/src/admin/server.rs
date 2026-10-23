@@ -4,6 +4,7 @@ use std::fs::{self, Permissions};
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use giles_proto::MAX_MESSAGE_SIZE;
@@ -105,14 +106,15 @@ impl AdminListener {
     }
 
     /// Serves `service` until `shutdown` is cancelled, then waits up to [`DRAIN_TIMEOUT`] for
-    /// open calls and removes the socket and the token file.
+    /// open calls and removes the socket and the token file. The service is shared: the web
+    /// admin pages call the same one in-process.
     ///
     /// # Errors
     ///
     /// If the gRPC server fails.
     pub async fn serve(
         self,
-        service: AdminService,
+        service: Arc<AdminService>,
         shutdown: CancellationToken,
     ) -> Result<(), tonic::transport::Error> {
         let Self {
@@ -132,7 +134,7 @@ impl AdminListener {
             };
             Some((accepted, listener))
         });
-        let service = AdminServiceServer::new(service)
+        let service = AdminServiceServer::from_arc(service)
             .max_decoding_message_size(MAX_MESSAGE_SIZE)
             .max_encoding_message_size(MAX_MESSAGE_SIZE);
         let server = Server::builder()

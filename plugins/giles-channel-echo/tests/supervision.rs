@@ -113,7 +113,7 @@ async fn the_admin_service_shows_and_restarts_a_running_plugin() {
         clock: Arc::new(SystemClock),
     });
     let shutdown = CancellationToken::new();
-    let server = tokio::spawn(listener.serve(admin, shutdown.clone()));
+    let server = tokio::spawn(listener.serve(Arc::new(admin), shutdown.clone()));
     let mut client = admin::connect(&home.root).await.unwrap();
 
     // `giles status` lists every plugin with what supervision knows.
