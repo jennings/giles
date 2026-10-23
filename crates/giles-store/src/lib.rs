@@ -14,6 +14,7 @@
 //! - Row ids ([`SessionId`] and friends) are opaque newtypes over SQLite rowids.
 
 mod blobs;
+mod conversations;
 mod db;
 mod error;
 mod inbox;
@@ -28,6 +29,7 @@ mod usage;
 mod web_sessions;
 
 pub use blobs::{Blob, BlobMeta, BlobReader, BlobStore, SweepGuard};
+pub use conversations::{ConversationActivity, ConversationMessage, ConversationTranscript};
 pub use db::{OpenOptions, Store};
 pub use error::{BoxError, Error, Result};
 pub use inbox::{InboxEntry, InboxId, InboxState, NewInboxEvent};

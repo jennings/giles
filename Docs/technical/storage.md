@@ -130,6 +130,18 @@ adapters merge consecutive `User` messages where an API requires alternating rol
 The store doesn't decide when to compact or what a synthetic result says; the agent loop does
 (tasks 2.3 to 2.10).
 
+## Conversations
+
+A conversation is every keyed session with one channel instance and conversation id, whatever the
+agent, ended sessions included. The web channel reads its chat list and chat history this way.
+
+| Method                  | Contract                                                            |
+| ----------------------- | ------------------------------------------------------------------- |
+| `channel_conversations` | A user's conversations on one instance, most recently active first (last message, else last session start), with when the first session started and the text of the first user message if it starts with a text block (filled slots skipped). |
+| `conversation_transcript` | In one read transaction: the last N transcript rows of a conversation, oldest first, each with its session (sessions in id order, then by `seq`; summarized messages included, as a transcript to show, not a prompt; empty slots as `Entry::EmptySlot`), and the `waiting` inbox rows routed to its sessions that are `queued` or `started`, oldest first. A started row's message may be in the transcript already (its turn stores it). |
+
+Neither has an index of its own: both scan `sessions` (small: one row per conversation and reset).
+
 ## Search
 
 `search` is an FTS5 table over messages for `memory_search` (PLAN 6.7). It holds the top-level

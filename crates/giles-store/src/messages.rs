@@ -148,7 +148,8 @@ impl Prepared {
 
 const SELECT: &str = "SELECT id, seq, role, content, meta, tool_use_id FROM messages";
 
-fn from_row(row: &Row<'_>) -> Result<StoredMessage> {
+/// Maps a row whose first six columns are those of [`SELECT`].
+pub(crate) fn from_row(row: &Row<'_>) -> Result<StoredMessage> {
     let content: Option<String> = row.get(3)?;
     let entry = match content {
         Some(content) => Entry::Message(Message {

@@ -94,10 +94,10 @@ pub struct InboxEntry {
     pub received_at: Timestamp,
 }
 
-const SELECT: &str =
+pub(crate) const SELECT: &str =
     "SELECT id, instance, event_id, session_id, user_id, payload, state, received_at FROM inbox";
 
-fn from_row(row: &Row<'_>) -> Result<InboxEntry> {
+pub(crate) fn from_row(row: &Row<'_>) -> Result<InboxEntry> {
     Ok(InboxEntry {
         id: row.get(0)?,
         instance: row.get(1)?,
