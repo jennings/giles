@@ -3,19 +3,24 @@
 
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "used by AnthropicProvider, added with streaming")
+    expect(dead_code, reason = "used by AnthropicProvider in the next commit")
 )]
 mod config;
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "used by AnthropicProvider, added with streaming")
+    expect(dead_code, reason = "used by AnthropicProvider in the next commit")
 )]
 mod models;
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "used by AnthropicProvider, added with streaming")
+    expect(dead_code, reason = "used by AnthropicProvider in the next commit")
 )]
 mod request;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "used by AnthropicProvider in the next commit")
+)]
+mod stream;
 
 pub use config::{AnthropicConfig, ApiKey, DEFAULT_ANTHROPIC_VERSION, DEFAULT_BASE_URL};
 pub use models::MEDIA_TYPES;

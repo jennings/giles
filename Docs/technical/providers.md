@@ -131,3 +131,68 @@ the API's 5-minute default for `Short` (job runs). The 1-hour TTL needs no beta 
 TTL avoids the API's rule that longer TTLs must come before shorter ones, and its 400 error when
 the automatic breakpoint lands on a block that has an explicit `cache_control` with a different
 TTL. Two of the four breakpoint slots are used.
+
+### Stream mapping
+
+`StreamMapper` turns the response's server-sent events into `CompletionEvent`s one event at a time.
+It checks the `CompletionEvent` contract instead of trusting the stream: a block starting while
+another is open, a delta or stop for a block that isn't open, a delta of the wrong type, malformed
+JSON, and `message_stop` with a block open or without a stop reason are all `Error::Other`. The
+API's block indexes are matched as given, and Giles' indexes are renumbered from 0.
+
+| Messages API event                                | `CompletionEvent`                                                           |
+| ------------------------------------------------- | --------------------------------------------------------------------------- |
+| `message_start`                                   | `Usage`                                                                     |
+| `content_block_start` `text`                      | `BlockStart { kind: Text }`                                                 |
+| `content_block_start` `tool_use`                  | `BlockStart { kind: ToolUse, tool: Some((id, name)) }`                      |
+| `content_block_start` `thinking`                  | `BlockStart { kind: Reasoning }`                                            |
+| `content_block_start` of any other type           | `BlockStart { kind: Opaque }`                                               |
+| `text_delta`                                      | `TextDelta` (empty deltas are dropped)                                      |
+| `input_json_delta` on `tool_use`                  | `ToolInputDelta`; the JSON is accumulated and parsed at the stop            |
+| `thinking_delta`                                  | `ReasoningDelta`                                                            |
+| `signature_delta`                                 | none; the signature goes into the block                                     |
+| `input_json_delta` on an opaque block             | none; parsed at the stop into the block's `input`                           |
+| `citations_delta`, unknown deltas                 | none                                                                        |
+| `content_block_stop`                              | `BlockStop` with the complete block                                         |
+| `message_delta`                                   | `Usage`; its `stop_reason` is kept                                          |
+| `message_stop`                                    | `Stop`; the stream ends                                                     |
+| `ping`, unknown event types                       | none                                                                        |
+| `error`                                           | an `Err` item, mapped by error type; the stream ends                        |
+
+The blocks in `BlockStop`:
+
+- `text` becomes `Text`. Citations are dropped; the cited text is kept, and the API accepts the
+  text back without them.
+- `tool_use` becomes `ToolUse`, with the input from the accumulated JSON, or from the start event
+  if no deltas came. Input cut off by `max_tokens` isn't valid JSON, so it becomes `{}` (logged)
+  and the block can still be stored and sent back; the core answers it with `truncated`.
+- `thinking` becomes `Reasoning { text, opaque }`: `text` is `None` when empty (the
+  `display: "omitted"` default on newer models), and `opaque` is `{api: "anthropic", data:
+  {"signature": ...}}`. The request mapping rebuilds the `thinking` block from both.
+- Everything else (`redacted_thinking`, `server_tool_use`, `web_search_tool_result`, and types added
+  later) becomes `Opaque { api: "anthropic", data }` holding the whole block as received, sent back
+  unchanged.
+
+Usage: Anthropic's `input_tokens` already excludes cache reads and writes, so the mapping is
+direct: `input_tokens`, `output_tokens`, `cache_read_input_tokens` to `cache_read_tokens`, and
+`cache_creation_input_tokens` to `cache_write_tokens`. `message_start` sets the totals and each
+`message_delta` replaces the fields it carries (its counts are cumulative; server tools can update
+the input counts at the end). Every `Usage` event carries the running totals, so the last one wins.
+
+Stop reasons: `end_turn` is `EndTurn`, `tool_use` is `ToolUse`, `max_tokens` and
+`model_context_window_exceeded` are `MaxTokens`, and `refusal` is `Refusal`. `stop_sequence` and
+`pause_turn` are `EndTurn`: Giles sends no stop sequences and configures no server tools, so neither
+should occur; if one does, the turn ends with what was produced. An unknown reason is logged and
+ends the turn.
+
+Mid-stream `error` events map by error type: `overloaded_error`, `api_error`, `rate_limit_error`,
+and `timeout_error` are `Error::Unavailable` (retryable); `not_found_error` is `Error::NotFound`;
+`invalid_request_error`, `authentication_error`, `permission_error`, `billing_error`, and
+`request_too_large` are `Error::InvalidRequest`; others are `Error::Other`.
+
+On Claude Fable 5.1, Opus 5.5, Sonnet 5.5, and Haiku 5.5, a replayed thinking signature is bound
+to the system prompt, tools, and messages before it: for accounts created from 2026-08-31, a
+replayed block whose earlier history changed is rejected with a 400. Transcripts are append-only
+within a session, so this only matters where the core rewrites history: after compaction (PLAN
+section 6.8), the kept messages' `Reasoning` blocks follow a new system prompt and summary, so
+compaction has to drop them from the history it sends.
