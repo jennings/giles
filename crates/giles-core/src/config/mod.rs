@@ -8,12 +8,14 @@
 //! held as [`Secret`]s or in a [`PluginConfig`], whose `Debug` output is redacted.
 
 mod agent;
+mod discovery;
 mod error;
 mod giles;
 mod instances;
 mod model;
 mod names;
 mod plugin_config;
+mod sandbox;
 mod secrets;
 mod units;
 
@@ -21,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use giles_types::AgentId;
 use serde::de::DeserializeOwned;
@@ -32,6 +34,7 @@ pub use agent::{
     ActiveHours, AgentConfig, AskTo, BusyMode, DEFAULT_APPROVAL_TIMEOUT,
     DEFAULT_MAX_ITERATIONS_JOBS, DEFAULT_MEMORY_CAP, Job, JobPrompt, JobSession,
 };
+pub use discovery::{discover_plugin, find_program};
 pub use error::{ConfigError, KeyPath, Position, Segment};
 pub use giles::{CoreConfig, DEFAULT_HTTP_LISTEN, Identity, OwnerConfig, Route};
 pub use instances::{
@@ -42,24 +45,30 @@ pub use instances::{
 pub use model::ModelRef;
 pub use names::{Builtins, Component, InstanceName, Kind, is_valid_name, plugin_binary};
 pub use plugin_config::PluginConfig;
+pub use sandbox::{Grants, NetworkGrant, check_grant};
 pub use secrets::{MIN_SCRUB_LEN, REDACTED, Secret, scrub};
 pub use units::{parse_duration, parse_size};
 
 /// What [`Config::load_with`] needs besides the data root.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct LoadOptions<'a> {
     /// The components compiled into this core.
     pub builtins: Builtins,
-    /// Looks up an environment variable for `{ env = "NAME" }` references.
+    /// Looks up an environment variable, for `{ env = "NAME" }` references and the `PATH` that
+    /// plugin binaries and toolset commands are found on.
     pub env: &'a dyn Fn(&str) -> Option<OsString>,
+    /// The running `giles` binary, whose directory no grant may write to. `None` skips that check.
+    pub giles_exe: Option<PathBuf>,
 }
 
 impl Default for LoadOptions<'static> {
-    /// The v1 built-ins ([`Builtins::V1`]) and the process environment.
+    /// The v1 built-ins ([`Builtins::V1`]), the process environment, and
+    /// [`std::env::current_exe`].
     fn default() -> Self {
         Self {
             builtins: Builtins::V1,
             env: &process_env,
+            giles_exe: std::env::current_exe().ok(),
         }
     }
 }
@@ -158,6 +167,7 @@ impl Config {
 
         let ctx = instances::Ctx {
             file,
+            root,
             builtins: &options.builtins,
             resolver: &resolver,
         };
@@ -175,6 +185,46 @@ impl Config {
         for (name, instance) in std::mem::take(&mut raw.toolset) {
             let instance = ctx.toolset(&name, instance)?;
             toolsets.insert(instance.name.clone(), instance);
+        }
+
+        // Directories holding binaries Giles runs may be read but not written by any plugin.
+        let mut binary_dirs = sandbox::BinaryDirs::default();
+        if let Some(exe) = &options.giles_exe {
+            binary_dirs.add(exe, "the giles binary".to_owned());
+        }
+        let mut sandboxes = Vec::new();
+        for channel in channels.values() {
+            if let ChannelRuntime::Plugin(launch) = &channel.runtime {
+                if let Some(binary) =
+                    discover_plugin(root, Kind::Channel, &channel.component, options.env)
+                {
+                    let what = format!("channel {}'s plugin, {}", channel.name, binary.display());
+                    binary_dirs.add(&binary, what);
+                }
+                sandboxes.push((Kind::Channel, &channel.name, &launch.sandbox));
+            }
+        }
+        for toolset in toolsets.values() {
+            if let ToolsetTransport::Stdio(stdio) = &toolset.transport {
+                let binary = match &stdio.program {
+                    Program::Command(command) => find_program(command, options.env),
+                    Program::Plugin { component, .. } => {
+                        discover_plugin(root, Kind::Toolset, component, options.env)
+                    }
+                };
+                if let Some(binary) = binary {
+                    let what = format!("toolset {}'s server, {}", toolset.name, binary.display());
+                    binary_dirs.add(&binary, what);
+                }
+                sandboxes.push((Kind::Toolset, &toolset.name, &stdio.sandbox));
+            }
+        }
+        for (kind, name, sandbox) in sandboxes {
+            let path = KeyPath::root()
+                .key(kind.as_str())
+                .key(name.as_str())
+                .key("sandbox");
+            binary_dirs.check(file, &path, &sandbox.grants)?;
         }
 
         let provider_names: BTreeSet<&str> = providers.keys().map(InstanceName::as_str).collect();

@@ -1335,3 +1335,287 @@ fn errors_never_show_credential_values() {
     assert_eq!(err.key.to_string(), "token");
     assert!(!shown.contains("98765432"), "{shown}");
 }
+
+#[test]
+fn sandbox_grants() {
+    let home = Home::new(MINIMAL);
+    let own = home.path("data/plugins/files");
+    home.write(
+        "giles.toml",
+        &format!(
+            "{MINIMAL}[channel.irc]\n\
+             [channel.libera]\ncomponent = \"irc\"\n\
+             sandbox = {{ network = [\"tcp:6697\"], read = [\"/opt/homebrew/\"], min_abi = 4 }}\n\
+             [toolset.files]\ncommand = \"/bin/files\"\n\
+             sandbox = {{ read = [\"/Users/me/Documents\"], write = [{own:?}, \"{own}/./tmp\"], \
+             unix = [\"/var/run/docker.sock\"] }}\n\
+             [toolset.fetch]\ncommand = \"/bin/fetch\"\nsandbox = {{ network = true }}\n\
+             [toolset.shell]\ncommand = \"/bin/sh\"\nunsandboxed = true\n",
+            own = own.display()
+        ),
+    );
+    let config = home.load_ok();
+    let launch = |name: &str| match &config.channels[name].runtime {
+        ChannelRuntime::Plugin(launch) => launch.sandbox.clone(),
+        other => panic!("{other:?}"),
+    };
+    let stdio = |name: &str| match &config.toolsets[name].transport {
+        ToolsetTransport::Stdio(stdio) => stdio.sandbox.clone(),
+        other => panic!("{other:?}"),
+    };
+
+    // Channels get the network by default, stdio toolsets don't.
+    assert_eq!(
+        launch("irc").grants,
+        Grants {
+            network: NetworkGrant::All,
+            ..Grants::default()
+        }
+    );
+    let libera = launch("libera").grants;
+    assert_eq!(libera.network, NetworkGrant::TcpPorts(vec![6697]));
+    assert_eq!(libera.read, [PathBuf::from("/opt/homebrew")]);
+    assert_eq!(libera.min_abi, Some(4));
+
+    let files = stdio("files");
+    assert!(!files.unsandboxed);
+    assert_eq!(files.grants.network, NetworkGrant::None);
+    assert_eq!(files.grants.read, [PathBuf::from("/Users/me/Documents")]);
+    assert_eq!(files.grants.write, [own.clone(), own.join("tmp")]);
+    assert_eq!(files.grants.unix, [PathBuf::from("/var/run/docker.sock")]);
+    assert_eq!(files.grants.min_abi, None);
+    assert_eq!(stdio("fetch").grants.network, NetworkGrant::All);
+    let shell = stdio("shell");
+    assert!(shell.unsandboxed);
+    assert_eq!(shell.grants.network, NetworkGrant::None);
+}
+
+#[test]
+fn sandbox_rules() {
+    let shapes = [
+        ("[channel.web]", "channel.web", "built-in"),
+        (
+            "[channel.x]\ncomponent = \"irc\"\naddress = \"https://x\"",
+            "channel.x",
+            "remote channel",
+        ),
+        (
+            "[toolset.t]\nurl = \"https://x\"",
+            "toolset.t",
+            "remote toolset",
+        ),
+        (
+            "[toolset.t]\ncommand = \"/x\"\nunsandboxed = true",
+            "toolset.t",
+            "no effect",
+        ),
+    ];
+    for (toml, key, reason) in shapes {
+        let home = Home::new(&format!("{MINIMAL}{toml}\nsandbox = {{}}\n"));
+        assert_error(&home, "giles.toml", &format!("{key}.sandbox"), reason);
+    }
+
+    let grants = [
+        ("read = [\"relative\"]", "read[0]", "not an absolute path"),
+        ("write = [\"/a/../b\"]", "write[0]", "`..`"),
+        ("network = \"on\"", "network", "true, false, or a list"),
+        ("network = [\"udp:53\"]", "network", "tcp:<port>"),
+        ("min_abi = 0", "min_abi", "at least 1"),
+        ("exec = []", "exec", "unknown field `exec`"),
+    ];
+    for (toml, key, reason) in grants {
+        let home = Home::new(&format!(
+            "{MINIMAL}[toolset.t]\ncommand = \"/x\"\nsandbox = {{ {toml} }}\n"
+        ));
+        assert_error(
+            &home,
+            "giles.toml",
+            &format!("toolset.t.sandbox.{key}"),
+            reason,
+        );
+    }
+}
+
+#[test]
+fn grants_must_not_overlap_the_data_root() {
+    let home = Home::new(MINIMAL);
+    let root = home.root.root().to_path_buf();
+    let parent = root.parent().unwrap().to_path_buf();
+    let overlapping = [
+        root.clone(),
+        root.join("giles.toml"),
+        root.join("secrets.toml"),
+        root.join("plugins"),
+        root.join("agents/jeeves"),
+        root.join("data"),
+        root.join("data/plugins"),
+        root.join("data/plugins/other"),
+        root.join("data/plugins/t-other"),
+        root.join("run/admin.sock"),
+        parent.clone(),
+        PathBuf::from("/"),
+    ];
+    let grant = |key: &str, paths: &[&Path]| {
+        let paths: Vec<String> = paths.iter().map(|p| format!("{p:?}")).collect();
+        home.write(
+            "giles.toml",
+            &format!(
+                "{MINIMAL}[toolset.t]\ncommand = \"/x\"\nsandbox = {{ {key} = [{}] }}\n",
+                paths.join(", ")
+            ),
+        );
+    };
+    for key in ["read", "write", "unix"] {
+        for path in &overlapping {
+            grant(key, &[path]);
+            assert_error(
+                &home,
+                "giles.toml",
+                &format!("toolset.t.sandbox.{key}[0]"),
+                "overlaps the data root",
+            );
+        }
+    }
+    // The instance's own data directory, and anything in it, may be granted.
+    let own = root.join("data/plugins/t");
+    grant("write", &[&own, &own.join("cache")]);
+    home.load_ok();
+    // A sibling of the root that shares a name prefix is not inside it.
+    grant("read", &[Path::new(&format!("{}-backup", root.display()))]);
+    home.load_ok();
+}
+
+#[test]
+fn grants_through_a_symlink_into_the_data_root_are_rejected() {
+    let home = Home::new(MINIMAL);
+    let link = home.dir.path().with_extension("link");
+    std::os::unix::fs::symlink(home.root.root(), &link).unwrap();
+    let grant = link.join("secrets.toml");
+    home.write(
+        "giles.toml",
+        &format!("{MINIMAL}[toolset.t]\ncommand = \"/x\"\nsandbox = {{ read = [{grant:?}] }}\n"),
+    );
+    let result = home.load();
+    std::fs::remove_file(&link).unwrap();
+    let err = result.unwrap_err();
+    assert_eq!(err.key.to_string(), "toolset.t.sandbox.read[0]");
+    assert!(err.reason.contains("overlaps the data root"), "{err}");
+}
+
+#[test]
+fn check_grant_applies_the_same_rule() {
+    let home = Home::new(MINIMAL);
+    let name = InstanceName::new("files").unwrap();
+    assert!(check_grant(&home.root, &name, Path::new("/opt/homebrew")).is_ok());
+    assert!(check_grant(&home.root, &name, &home.path("data/plugins/files/x")).is_ok());
+    let err = check_grant(&home.root, &name, &home.path("plugins")).unwrap_err();
+    assert!(err.contains("overlaps the data root"), "{err}");
+}
+
+#[test]
+fn grants_must_not_write_where_binaries_live() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tools = tempfile::tempdir().unwrap();
+    let tools = tools.path();
+    let executable = |relative: &str| {
+        let path = tools.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    };
+    let giles = executable("giles-bin/giles");
+    executable("path/giles-channel-irc");
+    executable("path/uvx");
+    let server = executable("venv/bin/server");
+    let real_shell = executable("real/giles-toolset-shell");
+    std::fs::create_dir_all(tools.join("other")).unwrap();
+    std::os::unix::fs::symlink(&real_shell, tools.join("path/giles-toolset-shell")).unwrap();
+    let path_var = tools.join("path").into_os_string();
+    let env = move |name: &str| (name == "PATH").then(|| path_var.clone());
+
+    let home = Home::new(MINIMAL);
+    let load = |instance: &str, sandbox: &str, giles_exe: Option<PathBuf>| {
+        let mut toml = format!(
+            "{MINIMAL}[channel.irc]\n[toolset.venv]\ncommand = {server:?}\n\
+             [toolset.uv]\ncommand = \"uvx\"\n[toolset.shell]\n"
+        );
+        toml = toml.replace(
+            &format!("[{instance}]\n"),
+            &format!("[{instance}]\nsandbox = {{ {sandbox} }}\n"),
+        );
+        home.write("giles.toml", &toml);
+        let options = LoadOptions {
+            env: &env,
+            giles_exe,
+            ..LoadOptions::default()
+        };
+        Config::load_with(&home.root, &options)
+    };
+    let dir = |relative: &str| format!("{:?}", tools.join(relative));
+
+    let rejected = [
+        ("channel.irc", "write", "giles-bin", "the giles binary"),
+        (
+            "channel.irc",
+            "write",
+            "giles-bin/giles",
+            "the giles binary",
+        ),
+        ("channel.irc", "write", "path", "channel irc's plugin"),
+        (
+            "toolset.venv",
+            "unix",
+            "path/plugin.sock",
+            "channel irc's plugin",
+        ),
+        ("toolset.shell", "write", "venv", "toolset venv's server"),
+        (
+            "toolset.venv",
+            "write",
+            "venv/bin/cache",
+            "toolset venv's server",
+        ),
+        ("toolset.venv", "write", "real", "toolset shell's server"),
+    ];
+    for (instance, key, grant, what) in rejected {
+        let err = load(
+            instance,
+            &format!("{key} = [{}]", dir(grant)),
+            Some(giles.clone()),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.key.to_string(),
+            format!("{instance}.sandbox.{key}[0]"),
+            "{err}"
+        );
+        assert!(err.reason.contains(what), "{grant}: {err}");
+        assert!(err.reason.contains("may read there"), "{err}");
+        assert!(err.position.is_some(), "{err}");
+    }
+    // A directory holding only `uvx`, found on PATH, is protected too.
+    std::fs::remove_file(tools.join("path/giles-channel-irc")).unwrap();
+    std::fs::remove_file(tools.join("path/giles-toolset-shell")).unwrap();
+    let err = load("toolset.venv", &format!("write = [{}]", dir("path")), None).unwrap_err();
+    assert!(err.reason.contains("toolset uv's server"), "{err}");
+
+    // Reading is fine, and so is writing elsewhere.
+    for (instance, sandbox) in [
+        (
+            "channel.irc",
+            format!("read = [{}, {}]", dir("path"), dir("giles-bin")),
+        ),
+        ("toolset.venv", format!("write = [{}]", dir("other"))),
+    ] {
+        load(instance, &sandbox, Some(giles.clone())).unwrap_or_else(|e| panic!("{e}"));
+    }
+    // Without a known giles binary, its directory isn't checked.
+    load(
+        "channel.irc",
+        &format!("write = [{}]", dir("giles-bin")),
+        None,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+}

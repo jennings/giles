@@ -124,6 +124,7 @@ or, with `address`, connects to where someone else runs it.
 | `component`   | all               | name       | The component                                            |
 | `config`      | all               | `{}`       | Settings for the component                               |
 | `max_blob`    | plugins           | `"50 MiB"` | The largest attachment Giles accepts from the plugin     |
+| `sandbox`     | launched plugins  |            | Extra sandbox grants ([Sandbox](#sandbox))               |
 | `unsandboxed` | launched plugins  | `false`    | Run without a sandbox (logged as a warning at every launch) |
 | `address`     | remote plugins    |            | `https://host:port` (or `http://`) of a running plugin   |
 | `auth`        | remote plugins    | none       | `{ bearer = <credential> }` or `{ oauth = { ... } }`, below |
@@ -165,6 +166,7 @@ A toolset is an MCP server. It runs one of three ways:
 | `args`        | stdio      | `[]`      | Arguments                                                     |
 | `env`         | stdio      | `{}`      | Environment variables to set, name to credential              |
 | `idle_stop`   | stdio      | off       | Stop the server after this long without calls (a duration); it restarts on the next call |
+| `sandbox`     | stdio      |           | Extra sandbox grants ([Sandbox](#sandbox))                    |
 | `unsandboxed` | stdio      | `false`   | Run without a sandbox (logged as a warning at every launch)   |
 | `url`         | remote     |           | The server's `https://` (or `http://`) URL                    |
 | `auth`        | remote     | none      | `{ bearer = <credential> }`                                   |
@@ -179,6 +181,7 @@ Toolsets have no `config` table: a stdio server is configured through its `args`
 [toolset.files]
 command = "/opt/homebrew/bin/mcp-server-filesystem"
 args = ["/Users/me/Documents"]
+sandbox = { read = ["/Users/me/Documents"] }
 idle_stop = "30m"
 
 [toolset.github]
@@ -186,6 +189,40 @@ url = "https://api.githubcopilot.com/mcp/"
 auth = { bearer = { env = "GITHUB_TOKEN" } }
 deadline = "2m"
 ```
+
+### Sandbox
+
+Every plugin Giles launches (channel plugins and stdio toolsets) runs in a sandbox. By default it
+can read its own binary, system libraries, TLS certificates, and DNS configuration, and read and
+write only its own data directory, `<data root>/data/plugins/<instance>/`. Channel plugins may use
+the network; stdio toolsets may not. `sandbox` grants more:
+
+```toml
+sandbox = { network = ["tcp:443"], read = ["/opt/homebrew"], write = ["/Users/me/Notes"] }
+```
+
+| Key       | Meaning                                                                          |
+| --------- | -------------------------------------------------------------------------------- |
+| `network` | `true` for all IP traffic, `false` for none, or TCP ports as `["tcp:443"]` (enforced where Linux Landlock ABI 4 is available, kernel 6.7 or later; elsewhere all ports are open) |
+| `read`    | Absolute paths the plugin may read                                               |
+| `write`   | Absolute paths the plugin may read and write                                     |
+| `unix`    | Absolute paths of Unix sockets the plugin may connect to                         |
+| `min_abi` | Linux only: refuse to start the plugin unless the kernel's Landlock ABI is at least this |
+
+No grant may touch the data root, except the instance's own data directory: a path inside the
+data root, or one containing it (such as your home directory when the data root is `~/.giles`), is
+an error. Otherwise a plugin could read `secrets.toml` or edit `giles.toml`. The same goes for the
+private directory holding Giles' sockets when they live outside the data root. Paths that go
+through a symbolic link are checked where the link leads, as it is when Giles starts; a link
+created or changed later isn't, so don't grant directories that other programs can rewire.
+
+`write` and `unix` grants also may not touch a directory holding a program Giles runs: the
+`giles` binary itself, and each plugin or toolset command, wherever Giles finds it
+(`<data root>/plugins/`, then `$PATH`). Granting `write = ["/opt/homebrew"]` would let a plugin
+replace `giles` or another plugin. Reading those directories is fine.
+
+`unsandboxed = true` turns the sandbox off for one instance, and can't be combined with `sandbox`.
+Built-in components run inside Giles and remote plugins run elsewhere, so neither takes these keys.
 
 ### Secrets
 
@@ -316,6 +353,7 @@ config = { base_url = "http://127.0.0.1:11434/v1" }
 
 [channel.libera]
 component = "irc"
+sandbox = { network = ["tcp:6697"] }
 
 [channel.libera.config]
 server = "irc.libera.chat:6697"
@@ -331,6 +369,7 @@ deadline = "2m"
 [toolset.files]
 command = "/opt/homebrew/bin/mcp-server-filesystem"
 args = ["/Users/stephen/Documents"]
+sandbox = { read = ["/Users/stephen/Documents"], write = ["/Users/stephen/Documents/Inbox"] }
 idle_stop = "30m"
 parallel = true
 

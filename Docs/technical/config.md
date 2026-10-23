@@ -9,8 +9,8 @@
 ```rust
 // The v1 built-ins and the process environment.
 let config: Config = Config::load(&data_root)?;
-// Explicit built-ins and environment (tests, or a core built with fewer features).
-let options = LoadOptions { builtins, env: &|name| lookup(name) };
+// Explicit built-ins, environment, and giles binary (tests, or a core built with fewer features).
+let options = LoadOptions { builtins, env: &|name| lookup(name), giles_exe: Some(exe) };
 let config: Config = Config::load_with(&data_root, &options)?;
 ```
 
@@ -130,6 +130,59 @@ Keeping values out of output:
 
 `Config`'s `Debug` output is therefore safe to log. Literal strings in a `config` table are not
 secrets as far as Giles knows; the user guide tells operators to use references for credentials.
+
+## Sandbox Grants
+
+`sandbox` is accepted only where the core launches the process (channel plugins without
+`address`, stdio toolsets) and not together with `unsandboxed = true`. It becomes
+`Sandbox { unsandboxed, grants: Grants { network, read, write, unix, min_abi } }`, the input the
+sandbox trampoline's spec is built from (PLAN section 12):
+
+- `network`: `NetworkGrant::{None, All, TcpPorts(sorted, unique)}`. Unset means the kind's
+  default, applied here: `All` for channels, `None` for stdio toolsets. An empty port list is
+  `None`.
+- `read`, `write`, `unix`: absolute paths without `..`, normalized lexically (no `.`, repeated or
+  trailing separators). `unix` holds socket paths: on Linux any entry also allows
+  `socket(AF_UNIX)`; Seatbelt can restrict by path.
+- `min_abi`: at least 1; only Linux enforces it.
+
+Every `read`, `write`, and `unix` path is checked against the protected directories: the data
+root and the socket directory (which differs from `<root>/run` when socket paths fall back to
+`$TMPDIR`). The data root contains the plugin directory `<root>/plugins/`, so plugin binaries
+there are covered. A grant is rejected if, in any of its spellings, it is a protected directory,
+inside one, or contains one (`Path::starts_with`, so whole components: `/srv/giles-backup` is not
+inside `/srv/giles`), unless that spelling is inside the instance's own data directory,
+`DataRoot::plugin_data_dir(instance)`.
+
+The spellings of a path are the lexical path and, when it differs, the path with symlinks
+resolved: the longest existing ancestor is canonicalized and the rest appended. Protected
+directories and the own data directory are expanded the same way (on macOS, `/var` and `/tmp` are
+symlinks into `/private`). Limits: the check sees the filesystem at startup. A symlink created or
+retargeted afterwards, or a bind mount, can make a granted path lead into the data root; Landlock
+and Seatbelt resolve paths again when the sandbox is applied, so the trampoline (task 1.6) should
+re-run the same check on the spec it receives. `check_grant(root, instance, path)` exposes the rule
+for paths the core adds itself, such as a stdio server's install prefix.
+
+### Binary directories
+
+The "plugin directories" of PLAN section 12.4 are the directories holding binaries Giles runs. A
+plugin that could replace one would run its code at the next launch, possibly unsandboxed or with
+another instance's grants, so after every instance is validated the loader collects:
+
+- the directory of the running `giles` binary, which is also the `sandbox-exec` trampoline
+  (`LoadOptions::giles_exe`, default `std::env::current_exe()`);
+- for each launched channel plugin and each stdio toolset, the directory of its binary as found
+  now: `discover_plugin(root, kind, component, env)` for plugins (`<root>/plugins/`, then each
+  absolute `PATH` entry, executable regular files only; PLAN section 7.3), and
+  `find_program(command, env)` for a toolset `command` (as given if absolute, else on `PATH`).
+
+Each binary contributes the parent of every spelling of its path, so a symlinked binary protects
+both the link's directory and its target's. `write` and `unix` grants overlapping one of these
+directories, in either direction, are rejected (`BinaryDirs::check`); `read` grants are allowed,
+since the core itself adds a stdio server's install prefix to its read grants (PLAN section
+7.10). A binary that isn't found protects nothing here; the plugin host reports it at launch. The
+plugin host and stdio launcher should call `discover_plugin` and `find_program` rather than
+searching themselves, so what is launched is what was checked.
 
 ## Values
 

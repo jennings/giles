@@ -15,8 +15,10 @@ use url::{Host, Url};
 use super::error::{ConfigError, KeyPath};
 use super::names::{Builtins, Component, InstanceName, Kind, invalid_name_reason, is_valid_name};
 use super::plugin_config::PluginConfig;
+use super::sandbox::{self, Grants, Protected, RawSandbox};
 use super::secrets::{Resolver, Secret};
 use super::units::{ByteSize, HumanDuration};
+use crate::paths::DataRoot;
 
 /// The largest blob the core fetches from a plugin when the instance sets no `max_blob`: 50 MiB
 /// (PLAN section 8.3).
@@ -78,11 +80,14 @@ pub struct Launch {
 }
 
 /// How a launched plugin or stdio toolset is sandboxed (PLAN section 12).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Sandbox {
-    /// `unsandboxed = true`: launch without a sandbox, with a warning at every launch.
+    /// `unsandboxed = true`: launch without a sandbox, with a warning at every launch. `grants`
+    /// is then the default and unused.
     pub unsandboxed: bool,
+    /// The `sandbox` grants, with the kind's network default applied.
+    pub grants: Grants,
 }
 
 /// A remote component: a gRPC plugin at `address`, or an MCP server at `url` (PLAN section 7.6).
@@ -198,6 +203,7 @@ pub(crate) struct RawChannel {
     auth: Option<toml::Value>,
     insecure: Option<bool>,
     max_blob: Option<ByteSize>,
+    sandbox: Option<RawSandbox>,
     unsandboxed: Option<bool>,
 }
 
@@ -215,12 +221,14 @@ pub(crate) struct RawToolset {
     idle_stop: Option<HumanDuration>,
     parallel: Option<bool>,
     skills: Option<Vec<PathBuf>>,
+    sandbox: Option<RawSandbox>,
     unsandboxed: Option<bool>,
 }
 
 /// What instance validation needs to know besides the raw table.
 pub(crate) struct Ctx<'a> {
     pub file: &'a Path,
+    pub root: &'a DataRoot,
     pub builtins: &'a Builtins,
     pub resolver: &'a Resolver<'a>,
 }
@@ -304,12 +312,14 @@ impl Ctx<'_> {
                 self.forbid(&path, "address", address.is_some(), why)?;
                 self.forbid(&path, "auth", raw.auth.is_some(), why)?;
                 self.forbid(&path, "insecure", raw.insecure.is_some(), why)?;
+                self.forbid(&path, "sandbox", raw.sandbox.is_some(), why)?;
                 self.forbid(&path, "unsandboxed", raw.unsandboxed.is_some(), why)?;
                 self.forbid(&path, "max_blob", raw.max_blob.is_some(), why)?;
                 ChannelRuntime::BuiltIn
             }
             (Component::Plugin { .. }, Some(address)) => {
                 let why = "on a remote channel (one with `address`)";
+                self.forbid(&path, "sandbox", raw.sandbox.is_some(), why)?;
                 self.forbid(&path, "unsandboxed", raw.unsandboxed.is_some(), why)?;
                 ChannelRuntime::Remote(self.remote(
                     &path,
@@ -326,9 +336,7 @@ impl Ctx<'_> {
                 self.forbid(&path, "insecure", raw.insecure.is_some(), why)?;
                 ChannelRuntime::Plugin(Launch {
                     binary: binary.clone(),
-                    sandbox: Sandbox {
-                        unsandboxed: raw.unsandboxed.unwrap_or(false),
-                    },
+                    sandbox: self.sandbox(&path, &name, raw.sandbox, raw.unsandboxed, false)?,
                 })
             }
         };
@@ -354,6 +362,7 @@ impl Ctx<'_> {
             self.forbid(&path, "args", raw.args.is_some(), why)?;
             self.forbid(&path, "env", raw.env.is_some(), why)?;
             self.forbid(&path, "idle_stop", raw.idle_stop.is_some(), why)?;
+            self.forbid(&path, "sandbox", raw.sandbox.is_some(), why)?;
             self.forbid(&path, "unsandboxed", raw.unsandboxed.is_some(), why)?;
             ToolsetTransport::Http(self.remote(
                 &path,
@@ -395,9 +404,7 @@ impl Ctx<'_> {
                 args: raw.args.unwrap_or_default(),
                 env: self.env(&path.key("env"), raw.env)?,
                 idle_stop,
-                sandbox: Sandbox {
-                    unsandboxed: raw.unsandboxed.unwrap_or(false),
-                },
+                sandbox: self.sandbox(&path, &name, raw.sandbox, raw.unsandboxed, true)?,
             })
         };
         let deadline = raw.deadline.map_or(DEFAULT_TOOL_DEADLINE, |d| d.0);
@@ -416,6 +423,34 @@ impl Ctx<'_> {
             deadline,
             parallel: raw.parallel.unwrap_or(false),
             skills,
+        })
+    }
+
+    /// A launched instance's `sandbox` and `unsandboxed`. Grants may not overlap the data root
+    /// except the instance's own data directory, nor the socket directory.
+    fn sandbox(
+        &self,
+        path: &KeyPath,
+        name: &InstanceName,
+        raw: Option<RawSandbox>,
+        unsandboxed: Option<bool>,
+        toolset: bool,
+    ) -> Result<Sandbox, ConfigError> {
+        let unsandboxed = unsandboxed.unwrap_or(false);
+        if unsandboxed && raw.is_some() {
+            return Err(self.err(
+                path.key("sandbox"),
+                "has no effect with `unsandboxed = true`",
+            ));
+        }
+        let own = self
+            .root
+            .plugin_data_dir(name.as_str())
+            .map_err(|e| self.err(path.clone(), e.to_string()))?;
+        let protected = Protected::new(self.root.root(), self.root.socket_dir(), &own);
+        Ok(Sandbox {
+            unsandboxed,
+            grants: sandbox::grants(self.file, &path.key("sandbox"), raw, toolset, &protected)?,
         })
     }
 
