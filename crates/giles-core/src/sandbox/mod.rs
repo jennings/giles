@@ -22,6 +22,8 @@ mod host;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "macos")]
+mod roots;
 mod spec;
 
 use std::ffi::OsString;

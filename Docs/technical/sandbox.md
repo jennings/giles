@@ -191,10 +191,10 @@ Backend-specific failures become new `SandboxError` variants (the enum is `#[non
 ## macOS: Seatbelt
 
 Code: `sandbox/macos.rs` (backend, host check), `sandbox/macos/profile.rs` (the rules),
-`sandbox/macos/paths.rs` (real paths). Tests: unit tests there, and
-`crates/giles/tests/sandbox_macos.rs`, which runs probes (`/bin/sh`, `/bin/cat`, `/usr/bin/nc`, and
-the test binary itself as a Rust program) under the real `giles sandbox-exec` and checks each grant
-from both sides.
+`sandbox/macos/paths.rs` (real paths), and `sandbox/roots.rs` (the writable roots, shared with
+Linux). Tests: unit tests there, and `crates/giles/tests/sandbox_macos.rs`, which runs probes
+(`/bin/sh`, `/bin/cat`, `/usr/bin/nc`, and the test binary itself as a Rust program) under the real
+`giles sandbox-exec` and checks each grant from both sides.
 
 `apply` checks the command (see [Exit Status](#exit-status)), generates a profile for the spec, and
 returns `/usr/bin/sandbox-exec -p <profile> <program> <args>`. `sandbox-exec` applies the profile

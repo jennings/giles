@@ -8,7 +8,8 @@ use std::collections::BTreeSet;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use super::paths::{Resolved, resolve};
+use super::paths::resolve;
+use crate::sandbox::roots::writable_roots;
 use crate::sandbox::{Network, SandboxError, Spec};
 
 /// System directories, read-only: libraries and frameworks (PLAN section 12.4's "system
@@ -98,6 +99,7 @@ impl Profile {
                 .chain(&spec.write)
                 .map(PathBuf::as_path)
                 .collect::<Vec<_>>(),
+            resolve,
         )?;
         let stops: Vec<PathBuf> = roots.iter().map(|root| root.real.clone()).collect();
         let mut lookup: BTreeSet<PathBuf> = SYSTEM_LINKS.iter().map(PathBuf::from).collect();
@@ -219,45 +221,6 @@ impl Profile {
         );
         out
     }
-}
-
-/// Resolves the writable roots so that none of them follows a link strictly inside any of them.
-///
-/// The command can create links anywhere strictly inside a root (not the root's own entry,
-/// which the profile protects), so a root nested in another root (a `write` grant inside the
-/// data directory, say) must not follow links there. Which roots contain which is only known
-/// once they're resolved, so this resolves them all, and while some root's walk followed a link
-/// strictly inside another root, resolves them again with that root as a stop. Every round adds
-/// a stop, so there are at most as many rounds as roots; a set that still doesn't settle (links
-/// changing under it) is refused.
-fn writable_roots(roots: &[&Path]) -> Result<Vec<Resolved>, SandboxError> {
-    let mut stops: Vec<PathBuf> = Vec::new();
-    let mut planted: Option<(PathBuf, PathBuf)> = None;
-    for _ in 0..=roots.len() {
-        let resolved: Vec<Resolved> = roots.iter().map(|root| resolve(root, &stops)).collect();
-        let inside = |root: &Resolved| {
-            resolved.iter().zip(roots).find_map(|(other, path)| {
-                other
-                    .links
-                    .iter()
-                    .find(|link| *link != &root.real && link.starts_with(&root.real))
-                    .map(|link| (path.to_path_buf(), link.clone()))
-            })
-        };
-        let mut new_stops = Vec::new();
-        for root in &resolved {
-            if let Some(found) = inside(root) {
-                planted = Some(found);
-                new_stops.push(root.real.clone());
-            }
-        }
-        if new_stops.is_empty() {
-            return Ok(resolved);
-        }
-        stops.extend(new_stops);
-    }
-    let (path, link) = planted.unwrap_or_default();
-    Err(SandboxError::WritableLink { path, link })
 }
 
 /// One SBPL filter.

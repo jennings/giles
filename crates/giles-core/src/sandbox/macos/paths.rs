@@ -11,17 +11,14 @@
 //! twice, so a link that changes during the walk can't make a check and the result disagree. Below
 //! a "stop" (a writable root, where the plugin can create links) it follows nothing.
 
-use std::collections::VecDeque;
 use std::ffi::{CString, OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
-/// How many links one walk follows before giving up, like the kernel's `MAXSYMLINKS`. A loop
-/// never resolves, so whatever it guards fails closed.
-const MAX_LINKS: usize = 32;
+use crate::sandbox::roots::{MAX_LINKS, Walk, names};
 
 /// `openat` flags: no following a final link (it fails with `ELOOP` instead), `O_EVTONLY` so
 /// that opening needs no read permission, and `O_NONBLOCK` and `O_NOCTTY` so that a FIFO or a
@@ -42,6 +39,16 @@ pub(super) struct Resolved {
     /// Everything the walk looked up (directories, links, and the final component), which the
     /// process needs `file-read-metadata` on to get there. Excludes `/`.
     pub visited: Vec<PathBuf>,
+}
+
+impl Walk for Resolved {
+    fn real(&self) -> &Path {
+        &self.real
+    }
+
+    fn links(&self) -> &[PathBuf] {
+        &self.links
+    }
 }
 
 /// Resolves the absolute `path`, following no link at or below any of `stops` (real paths).
@@ -102,17 +109,6 @@ pub(super) fn resolve(path: &Path, stops: &[PathBuf]) -> Resolved {
         links,
         visited,
     }
-}
-
-/// The components to walk: names and `..`.
-fn names(path: &Path) -> VecDeque<OsString> {
-    path.components()
-        .filter_map(|component| match component {
-            Component::Normal(name) => Some(name.to_owned()),
-            Component::ParentDir => Some(OsString::from("..")),
-            Component::RootDir | Component::CurDir | Component::Prefix(_) => None,
-        })
-        .collect()
 }
 
 /// Where `file`, just opened by name in the directory `dir`, is, as stored. A directory's path
