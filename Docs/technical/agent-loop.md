@@ -10,7 +10,7 @@ model stops asking for tools. The session code that hands it turns is in
 | ----------------------------- | ------------------------------------------------------------------ |
 | `AgentLoop`                   | The `TurnRunner`: `new(registry, store, clock, dispatcher, approvals)`, `from_runtime(runtime, approvals)` |
 | `AgentLoop::session_prompt`   | The session's cached prefix, assembled at its first turn           |
-| `AgentLoop::rebuild_prompt`   | A fresh `system` for the session, same tools (compaction)          |
+| `AgentLoop::rebuild_prompt`   | A fresh `system` and skill list for the session, same tools (compaction) |
 | `ToolDispatcher`              | Runs one message's calls: `dispatch(ToolBatch) -> stream of (index, ToolOutput)` |
 | `PolicyDispatcher`            | The daemon's dispatcher: call-time checks, parallel runs, deadlines |
 | `CallPolicy`                  | A call's `parallel` and `deadline`, from its toolset or the core tool list |
@@ -19,10 +19,11 @@ model stops asking for tools. The session code that hands it turns is in
 | `ChannelOutput`               | Sends assistant text through `Turn::reply`: `blocks` or `deltas`   |
 | `history::user_message`       | An inbound message's stored form, with its time prefix             |
 | `history::request_messages`   | A request's messages from `Store::load_history`                    |
-| `prompt::SessionPrompt`       | A session's `system` blocks and its `Arc<SessionTools>`            |
+| `prompt::SessionPrompt`       | A session's `system` blocks, `Arc<SessionTools>`, and `Arc<SkillSet>` |
 | `prompt::SessionTools`        | The registry's tool snapshot filtered by the `tools` allowlist     |
-| `prompt::assemble`            | Tools plus a fresh `system`, at session start                      |
-| `prompt::build_system`        | A fresh `system` only (compaction, TASKS.md 2.10)                  |
+| `prompt::assemble`            | Tools plus `build`, at session start                               |
+| `prompt::build`               | Fresh skills and `system` for given tools (also compaction)        |
+| `prompt::build_system`        | A fresh `system` listing given skills                              |
 | `prompt::render_system`       | The pure renderer: `SystemParts` to text                           |
 | `glob::matches(_any)`         | Tool-name globs (`*`, `?`) for `tools` and `ask`                   |
 | `compaction`                  | Summarizes older history near the context window (§6.8)           |
@@ -56,7 +57,9 @@ One text block (none at all when every part is empty), with these parts separate
    can't read a skill, and listing them would only invite failing calls): one line of instructions
    (load a fitting skill with `load_skill`), then `` - `<name>`: <description> `` per skill, sorted
    by name, with each description's whitespace runs collapsed to single spaces. Discovery warnings
-   are logged and the broken skill is left out.
+   are logged and the broken skill is left out. The listed `SkillSet` is kept with the prefix
+   (`SessionPrompt::skills`), and `load_skill` answers from it, so the model can load exactly the
+   skills it was shown.
 3. `# Memory`: an introduction (entries are separated by `§` lines; this is a snapshot from the
    start of the conversation), then one `## <title>` section per file, each with a one-line
    description and the file's entries joined by `§` lines (front-matter left out), or `(empty)`:
@@ -93,10 +96,10 @@ first request after the restart misses and writes a new cache entry; the session
 prefix. Storing the prefix would avoid that one miss but freeze tools the registry may no longer
 serve, so v1 recomputes.
 
-`rebuild_prompt(session, agent, current)` re-reads the files into a new `system`, keeps `current`'s
-tools (tools are fixed for the session's life, also for an isolated job run, which has no cache
-entry), and replaces the cache entry. Compaction (below) calls it after writing summaries, and the
-turn goes on with the returned prompt.
+`rebuild_prompt(session, agent, current)` re-reads the files into a new `system` and skill list,
+keeps `current`'s tools (tools are fixed for the session's life, also for an isolated job run,
+which has no cache entry), and replaces the cache entry. Compaction (below) calls it after writing
+summaries, and the turn goes on with the returned prompt.
 
 ## Messages
 

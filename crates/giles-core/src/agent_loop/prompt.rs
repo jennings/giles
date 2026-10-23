@@ -28,6 +28,7 @@ use crate::config::AgentConfig;
 use crate::memory::{self, MemoryError};
 use crate::paths::{DataRoot, PathsError};
 use crate::registry::{IndexedTool, Registry, RegistryError, ToolSnapshot};
+use crate::skills::SkillSet;
 
 /// The core tool that reads a skill's instructions (PLAN section 6.6).
 pub const LOAD_SKILL: &str = "load_skill";
@@ -44,13 +45,17 @@ pub const AGENT_MEMORY_TITLE: &str = "Agent memory";
 /// The heading of the per-user memory section (the `memory` tool's `user` scope).
 pub const USER_MEMORY_TITLE: &str = "User memory";
 
-/// The prompt prefix of one session: its tools and its `system`.
+/// The prompt prefix of one session: its tools and its `system`, and the skills `system` lists.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionPrompt {
     /// The `system` blocks: one text block (empty when there is nothing to say).
     pub system: Vec<Block>,
     /// The tools offered, fixed for the session.
     pub tools: Arc<SessionTools>,
+    /// The skills `system` lists, read when it was built: `load_skill` answers from these, so
+    /// the model can load exactly the skills it was shown. Empty unless the session offers
+    /// [`LOAD_SKILL`].
+    pub skills: Arc<SkillSet>,
 }
 
 impl SessionPrompt {
@@ -211,30 +216,43 @@ pub fn memory_user(session: &Session) -> Option<&UserId> {
     }
 }
 
-/// Reads `SOUL.md`, the agent's skills, and the memory snapshot for `session`. The skills are
-/// left out unless `tools` (the session's) include [`LOAD_SKILL`]: without it the model can't
-/// read a skill, so listing them would only invite failing calls.
+/// The skills a session lists: the agent's skills if `tools` (the session's) include
+/// [`LOAD_SKILL`], else none. Without it the model can't read a skill, so listing them would only
+/// invite failing calls.
 ///
 /// # Errors
 ///
-/// A file that exists but can't be read, or skill discovery failing. Missing files are empty.
+/// Skill discovery failing.
+pub async fn session_skills(
+    registry: &Registry,
+    agent: &AgentConfig,
+    tools: &SessionTools,
+) -> Result<SkillSet, PromptError> {
+    Ok(if tools.get(LOAD_SKILL).is_some() {
+        registry.agent_skills(&agent.id).await?
+    } else {
+        SkillSet::default()
+    })
+}
+
+/// Reads `SOUL.md` and the memory snapshot for `session`, with `skills` (the session's,
+/// [`session_skills`]).
+///
+/// # Errors
+///
+/// A file that exists but can't be read. Missing files are empty.
 pub async fn load_parts(
     registry: &Registry,
     agent: &AgentConfig,
     session: &Session,
-    tools: &SessionTools,
+    skills: &SkillSet,
 ) -> Result<SystemParts, PromptError> {
     let root = registry.root();
     let soul = read_soul(&agent.dir.join(SOUL_FILE)).await?;
-    let skills = if tools.get(LOAD_SKILL).is_some() {
-        registry.agent_skills(&agent.id).await?.summaries()
-    } else {
-        Vec::new()
-    };
     let memory = load_memory(root, agent, memory_user(session)).await?;
     Ok(SystemParts {
         soul,
-        skills,
+        skills: skills.summaries(),
         memory,
     })
 }
@@ -289,8 +307,7 @@ async fn read_soul(path: &Path) -> Result<Option<String>, PromptError> {
     }
 }
 
-/// `system` for `session`, freshly read: at session start and after compaction. `tools` are the
-/// session's tools: the skills are listed only if they include [`LOAD_SKILL`].
+/// `system` for `session`, freshly read, listing `skills` (the session's, [`session_skills`]).
 ///
 /// # Errors
 ///
@@ -299,9 +316,9 @@ pub async fn build_system(
     registry: &Registry,
     agent: &AgentConfig,
     session: &Session,
-    tools: &SessionTools,
+    skills: &SkillSet,
 ) -> Result<Vec<Block>, PromptError> {
-    let text = render_system(&load_parts(registry, agent, session, tools).await?);
+    let text = render_system(&load_parts(registry, agent, session, skills).await?);
     Ok(if text.is_empty() {
         Vec::new()
     } else {
@@ -309,22 +326,39 @@ pub async fn build_system(
     })
 }
 
-/// The whole prompt prefix for a session starting now: the registry's current tools filtered by
-/// the agent's allowlist, and a fresh `system`.
+/// The prompt prefix for `session` offering `tools`, with its skills and `system` freshly read:
+/// at session start, and after compaction with the session's tools.
 ///
 /// # Errors
 ///
-/// As [`load_parts`].
+/// As [`session_skills`] and [`load_parts`].
+pub async fn build(
+    registry: &Registry,
+    agent: &AgentConfig,
+    session: &Session,
+    tools: Arc<SessionTools>,
+) -> Result<SessionPrompt, PromptError> {
+    let skills = session_skills(registry, agent, &tools).await?;
+    Ok(SessionPrompt {
+        system: build_system(registry, agent, session, &skills).await?,
+        tools,
+        skills: Arc::new(skills),
+    })
+}
+
+/// The whole prompt prefix for a session starting now: the registry's current tools filtered by
+/// the agent's allowlist, and [`build`].
+///
+/// # Errors
+///
+/// As [`build`].
 pub async fn assemble(
     registry: &Registry,
     agent: &AgentConfig,
     session: &Session,
 ) -> Result<SessionPrompt, PromptError> {
     let tools = SessionTools::from_snapshot(&registry.tools().snapshot(), &agent.tools);
-    Ok(SessionPrompt {
-        system: build_system(registry, agent, session, &tools).await?,
-        tools: Arc::new(tools),
-    })
+    build(registry, agent, session, Arc::new(tools)).await
 }
 
 #[cfg(test)]

@@ -235,6 +235,13 @@ async fn full_agent_in_a_direct_session() {
 
     let prompt = assemble(&home, "jeeves", SessionKind::Direct).await;
     assert_snapshot("jeeves-direct", &render(&prompt));
+    // The skills listed are the ones kept for `load_skill`, the agent's winning over a global.
+    let names: Vec<_> = prompt.skills.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["allotment", "travel", "weekly-review"]);
+    assert_eq!(
+        prompt.skills.get("travel").unwrap().description,
+        "Plan trips the Jeeves way."
+    );
 }
 
 /// An agent with nothing but models: no files, no skills, no tools. `system` still shows agent
@@ -303,4 +310,5 @@ async fn skills_are_listed_only_with_load_skill() {
     assert!(prompt.tools.get("load_skill").is_none());
     assert!(!prompt.system_text().contains("# Skills"));
     assert!(!prompt.system_text().contains("weekly-review"));
+    assert!(prompt.skills.is_empty());
 }

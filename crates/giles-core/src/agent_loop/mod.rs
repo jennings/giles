@@ -165,13 +165,13 @@ impl AgentLoop {
         Ok(prompt)
     }
 
-    /// Rebuilds `session`'s `system` from the files as they are now (a fresh memory snapshot),
-    /// keeping `current`'s tools (fixed for the session's life), and caches the result: for
-    /// compaction (PLAN section 6.7).
+    /// Rebuilds `session`'s `system` and the skills it lists from the files as they are now (a
+    /// fresh memory snapshot), keeping `current`'s tools (fixed for the session's life), and
+    /// caches the result: for compaction (PLAN section 6.7).
     ///
     /// # Errors
     ///
-    /// As [`prompt::build_system`].
+    /// As [`prompt::build`].
     pub async fn rebuild_prompt(
         &self,
         session: &Session,
@@ -179,10 +179,7 @@ impl AgentLoop {
         current: &SessionPrompt,
     ) -> Result<Arc<SessionPrompt>, PromptError> {
         let tools = current.tools.clone();
-        let prompt = Arc::new(SessionPrompt {
-            system: prompt::build_system(&self.registry, agent, session, &tools).await?,
-            tools,
-        });
+        let prompt = Arc::new(prompt::build(&self.registry, agent, session, tools).await?);
         self.remember(session.key(), session.id, prompt.clone());
         Ok(prompt)
     }
