@@ -75,6 +75,30 @@ parse is logged and skipped.
      message (under a hold, between turns); a `dm` run's reply is in the DM already.
    - A cancelled or failed turn delivers nothing (logged).
 
+## The `schedule` Tool
+
+`core_tools::ScheduleTool` (registered by `core_tools::register`, not parallel-safe) is how the
+agent manages runtime jobs for the turn's requester. Input (strict: `deny_unknown_fields`, each
+action refuses the keys of the others): `action` = `create` | `list` | `cancel`.
+
+- `create`: `prompt` and exactly one of `cron` (five fields), `at` (RFC 3339 with an offset, or
+  `YYYY-MM-DDTHH:MM` in the user's time zone) or `in` (a delay, `parse_duration`), plus optional
+  `session` (`isolated` default, `dm`). `in` becomes `at`; a past time or a cron pattern with no
+  future match is refused. It stores a `RuntimeSpec` with the requester as creator, calls
+  `JobChanges::notify()`, and answers e.g. "Scheduled job #2: every `0 9 * * 1-5`, next Fri
+  2026-10-23 09:00 BST."
+- `list`: the requester's jobs with this agent (number, schedule and next run, session, prompt
+  cut to 100 characters), then the agent's config jobs as read-only.
+- `cancel`: `id`; deletes the job only if it's this agent's and the requester created it, then
+  notifies the scheduler, whose task for it stops: a run waiting for the DM is dropped, but a run
+  whose turn has started (the job cancelling itself) finishes and delivers its reply.
+
+Limits: a turn without a requester (a config job's run) can only list. A job run (the
+`TurnContext` has `job` set) can list and cancel but not create, so no job can spawn more jobs.
+A user has at most `MAX_RUNTIME_JOBS_PER_USER` (20) runtime jobs with one agent; `create` beyond
+that answers "too many scheduled jobs (at most 20); cancel one first". Times are shown in the same
+zone messages use (the owner's, else the agent's, else the system's).
+
 ## Tests
 
 `scheduler/schedule.rs`: time zones and DST, firing strictly after, one-shots, coalescing, active

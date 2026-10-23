@@ -143,7 +143,8 @@ impl JobChanges {
             .send_modify(|version| *version = version.wrapping_add(1));
     }
 
-    fn subscribe(&self) -> watch::Receiver<u64> {
+    /// A receiver that sees every later [`notify`](Self::notify).
+    pub(crate) fn subscribe(&self) -> watch::Receiver<u64> {
         self.0.subscribe()
     }
 }

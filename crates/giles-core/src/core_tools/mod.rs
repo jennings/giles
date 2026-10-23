@@ -13,6 +13,7 @@
 mod load_skill;
 mod memory;
 mod memory_search;
+mod schedule;
 mod send_attachment;
 
 #[cfg(test)]
@@ -31,12 +32,15 @@ use crate::agent_loop::ToolOutput;
 use crate::media::SessionMedia;
 use crate::registry::RegistryError;
 use crate::runtime::Runtime;
-use crate::sessions::Reply;
+use crate::sessions::{Reply, SystemClock};
 use crate::skills::SkillSet;
 
 pub use load_skill::{LOAD_SKILL, LoadSkillTool, MAX_INLINE_TEXT_BYTES};
 pub use memory::{MEMORY, MemoryTool};
 pub use memory_search::{DEFAULT_LIMIT, MAX_LIMIT, MEMORY_SEARCH, MemorySearchTool, NO_MATCHES};
+pub use schedule::{
+    MAX_LISTED_PROMPT_CHARS, MAX_RUNTIME_JOBS_PER_USER, Request, SCHEDULE, ScheduleTool,
+};
 pub use send_attachment::{SEND_ATTACHMENT, SendAttachmentTool};
 
 /// Registers every core tool with `runtime`'s registry, so sessions started from now on can
@@ -57,6 +61,12 @@ pub fn register(runtime: &Runtime) -> Result<(), RegistryError> {
     )))?;
     registry.register_core_tool(Arc::new(LoadSkillTool::new(runtime.blobs.clone())))?;
     registry.register_core_tool(Arc::new(SendAttachmentTool::new(runtime.blobs.clone())))?;
+    registry.register_core_tool(Arc::new(ScheduleTool::new(
+        runtime.store.clone(),
+        runtime.config.clone(),
+        runtime.jobs.clone(),
+        Arc::new(SystemClock),
+    )))?;
     Ok(())
 }
 
@@ -69,6 +79,9 @@ pub struct TurnContext {
     pub reply: Option<Reply>,
     /// The skills the session's prompt lists, which `load_skill` answers from.
     pub skills: Arc<SkillSet>,
+    /// Whether the turn is a job run (in a job session or a DM); `schedule` refuses to create
+    /// jobs from one, so a job can't spawn more jobs.
+    pub job: bool,
 }
 
 /// One call of a core tool.

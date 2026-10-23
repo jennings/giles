@@ -163,6 +163,7 @@ impl Setup {
                 session,
                 reply,
                 skills,
+                job: false,
             }),
             media: Arc::new(SessionMedia::from_messages(&[history])),
         })

@@ -456,6 +456,12 @@ How jobs run:
 - With `ask_to`, approval prompts are sent to your default identity; answer them in your DM there.
   Before you have a DM with the agent, `ask` tools are denied.
 
+The agent can also schedule jobs itself with the `schedule` tool when you ask ("remind me at 5",
+"every weekday at 9, ask me for my stand-up notes"): one-off or on a cron schedule, in your time
+zone. It can list your jobs (and the ones in `agent.toml`, which it can't change) and cancel yours.
+Allow it with `schedule` in `tools`. You can have up to 20 such jobs with each agent, and a
+scheduled job can't schedule more jobs.
+
 ## Full Example
 
 This configuration, with `GITHUB_TOKEN` set in Giles' environment, is checked by Giles' test suite,

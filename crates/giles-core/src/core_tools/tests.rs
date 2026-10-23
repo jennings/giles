@@ -1,5 +1,6 @@
-//! The `memory` and `memory_search` tools through [`CoreTool::call`], against a temporary data
-//! root and database. The agent `jeeves` has a 60-character memory cap.
+//! The `memory`, `memory_search`, and `schedule` tools through [`CoreTool::call`], against a
+//! temporary data root and database. The agent `jeeves` has a 60-character memory cap and one
+//! config job.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -12,11 +13,12 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use super::memory::{self, Scope, Target, parse_input, target};
-use super::memory_search;
 use super::*;
+use super::{memory_search, schedule};
 use crate::config::{Config, LoadOptions};
 use crate::identity::owner;
 use crate::paths::DataRoot;
+use crate::scheduler::JobChanges;
 
 const AGENT: &str = "jeeves";
 const CAP: usize = 60;
@@ -45,7 +47,11 @@ impl Setup {
         );
         write(
             &format!("agents/{AGENT}/agent.toml"),
-            &format!("models = [\"anthropic/test-model\"]\nmemory_cap = {CAP}\n"),
+            &format!(
+                "models = [\"anthropic/test-model\"]\nmemory_cap = {CAP}\n\
+                 [[jobs]]\nid = \"check-in\"\ncron = \"0 9 * * *\"\nsession = \"dm\"\n\
+                 prompt = \"Anything to tell me?\"\n"
+            ),
         );
         write(
             "agents/other/agent.toml",
@@ -114,12 +120,24 @@ fn dm() -> Session {
     session(SessionKind::Direct, Some(owner()))
 }
 
-/// Calls `tool` in a turn of `requester` in `session`.
+/// Calls `tool` in a turn of `requester` in `session` (a job run if it's a job session).
 async fn call(
     tool: &dyn CoreTool,
     input: Value,
     requester: Option<UserId>,
     session: Session,
+) -> ToolOutput {
+    let job = session.kind == SessionKind::Job;
+    call_as(tool, input, requester, session, job).await
+}
+
+/// Calls `tool` in a turn of `requester` in `session`, a job run if `job`.
+async fn call_as(
+    tool: &dyn CoreTool,
+    input: Value,
+    requester: Option<UserId>,
+    session: Session,
+    job: bool,
 ) -> ToolOutput {
     tool.call(CoreCall {
         id: "t1".to_owned(),
@@ -133,6 +151,7 @@ async fn call(
             session,
             reply: None,
             skills: Arc::default(),
+            job,
         }),
         media: Arc::default(),
     })
@@ -744,4 +763,277 @@ fn search_spec_is_read_only_and_parallel_safe() {
         json!(MAX_LIMIT)
     );
     assert_eq!(spec.input_schema["additionalProperties"], json!(false));
+}
+
+/// 17:00 in London (BST), the owner's time zone in these tests.
+fn schedule_now() -> Timestamp {
+    "2026-10-22T16:00:00Z".parse().unwrap()
+}
+
+struct FixedClock;
+
+impl crate::sessions::Clock for FixedClock {
+    fn now(&self) -> Timestamp {
+        schedule_now()
+    }
+}
+
+#[test]
+fn schedule_input_is_parsed_strictly() {
+    use crate::config::JobSession;
+    use crate::scheduler::RuntimeSpec;
+
+    let london = jiff::tz::TimeZone::get("Europe/London").unwrap();
+    let parse = |input: Value| schedule::parse_input(input, schedule_now(), &london);
+    let once = |at: &str, prompt: &str| {
+        Ok(Request::Create(RuntimeSpec {
+            cron: None,
+            at: Some(at.parse().unwrap()),
+            prompt: prompt.to_owned(),
+            session: JobSession::Isolated,
+        }))
+    };
+    assert_eq!(
+        parse(json!({"action": "create", "prompt": "Tea.", "in": "20m"})),
+        once("2026-10-22T16:20:00Z", "Tea.")
+    );
+    // Without an offset, in the user's zone (BST); with one, as given.
+    assert_eq!(
+        parse(json!({"action": "create", "prompt": "Tea.", "at": "2026-10-22T18:30"})),
+        once("2026-10-22T17:30:00Z", "Tea.")
+    );
+    assert_eq!(
+        parse(json!({"action": "create", "prompt": "Tea.", "at": "2026-10-22T18:30:00Z"})),
+        once("2026-10-22T18:30:00Z", "Tea.")
+    );
+    assert_eq!(
+        parse(
+            json!({"action": "create", "prompt": "Notes?", "cron": "0 9 * * 1-5",
+                     "session": "dm"})
+        ),
+        Ok(Request::Create(RuntimeSpec {
+            cron: Some("0 9 * * 1-5".into()),
+            at: None,
+            prompt: "Notes?".into(),
+            session: JobSession::Dm,
+        }))
+    );
+    assert_eq!(parse(json!({"action": "list"})), Ok(Request::List));
+    assert_eq!(
+        parse(json!({"action": "cancel", "id": 3})),
+        Ok(Request::Cancel(giles_store::RuntimeJobId::new(3)))
+    );
+
+    for (input, error) in [
+        (json!({"action": "create", "prompt": "p"}), "exactly one of"),
+        (
+            json!({"action": "create", "prompt": "p", "in": "1h", "cron": "0 9 * * *"}),
+            "exactly one of",
+        ),
+        (
+            json!({"action": "create", "in": "1h"}),
+            "`prompt` is required",
+        ),
+        (
+            json!({"action": "create", "prompt": " ", "in": "1h"}),
+            "`prompt` is required",
+        ),
+        (
+            json!({"action": "create", "prompt": "p", "at": "2026-10-22T16:59"}),
+            "has passed",
+        ),
+        (
+            json!({"action": "create", "prompt": "p", "at": "tomorrow"}),
+            "invalid time",
+        ),
+        (
+            json!({"action": "create", "prompt": "p", "in": "soon"}),
+            "invalid duration",
+        ),
+        (
+            json!({"action": "create", "prompt": "p", "cron": "0 9 * *"}),
+            "invalid cron",
+        ),
+        (
+            json!({"action": "create", "prompt": "p", "cron": "0 0 30 2 *"}),
+            "never matches again",
+        ),
+        (
+            json!({"action": "create", "prompt": "p", "in": "1h", "id": 1}),
+            "only for `cancel`",
+        ),
+        (json!({"action": "list", "prompt": "p"}), "takes no"),
+        (json!({"action": "list", "id": 1}), "only for `cancel`"),
+        (json!({"action": "cancel"}), "`id` is required"),
+        (json!({"action": "pause"}), "unknown action"),
+        (json!({"action": "list", "extra": 1}), "unknown field"),
+        (
+            json!({"action": "create", "prompt": "p", "in": "1h", "session": "group"}),
+            "unknown variant",
+        ),
+    ] {
+        let got = parse(input.clone()).unwrap_err();
+        assert!(got.contains(error), "{input}: {got}");
+    }
+}
+
+#[tokio::test]
+async fn schedule_creates_lists_and_cancels_only_the_requesters_jobs() {
+    let s = Setup::new().await;
+    let changes = JobChanges::default();
+    let mut seen = changes.subscribe();
+    let tool = ScheduleTool::new(
+        s.store.clone(),
+        s.config.clone(),
+        changes.clone(),
+        Arc::new(FixedClock),
+    );
+    let jeeves = AgentId::new(AGENT).unwrap();
+
+    let once = call(
+        &tool,
+        json!({"action": "create", "prompt": "Call the dentist.", "in": "1h"}),
+        Some(owner()),
+        dm(),
+    )
+    .await;
+    assert_eq!(
+        ok(&once),
+        "Scheduled job #1: once, Thu 2026-10-22 18:00 BST."
+    );
+    assert!(seen.has_changed().unwrap(), "the scheduler wasn't told");
+    seen.borrow_and_update();
+    let jobs = s.store.jobs(None, None).await.unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].agent, jeeves);
+    assert_eq!(jobs[0].creator, owner());
+    assert_eq!(
+        jobs[0].spec,
+        json!({"at": "2026-10-22T17:00:00Z", "prompt": "Call the dentist.", "session": "isolated"})
+    );
+    let repeating = call(
+        &tool,
+        json!({"action": "create", "prompt": "Stand-up notes?", "cron": "0 9 * * 1-5",
+               "session": "dm"}),
+        Some(owner()),
+        dm(),
+    )
+    .await;
+    assert_eq!(
+        ok(&repeating),
+        "Scheduled job #2: every `0 9 * * 1-5`, next Fri 2026-10-23 09:00 BST."
+    );
+    assert!(seen.has_changed().unwrap());
+    seen.borrow_and_update();
+    // Someone else's job, and another agent's.
+    let theirs = s
+        .store
+        .job_create(
+            jeeves.clone(),
+            user("ann"),
+            json!({"at": "2026-10-23T09:00:00Z", "prompt": "Theirs."}),
+            schedule_now(),
+        )
+        .await
+        .unwrap();
+    s.store
+        .job_create(
+            AgentId::new("other").unwrap(),
+            owner(),
+            json!({"at": "2026-10-23T09:00:00Z", "prompt": "Elsewhere."}),
+            schedule_now(),
+        )
+        .await
+        .unwrap();
+
+    let listed = call(&tool, json!({"action": "list"}), Some(owner()), dm()).await;
+    assert_eq!(
+        ok(&listed),
+        "Jobs scheduled for this user (cancel by number):\n\
+         - #1: once, Thu 2026-10-22 18:00 BST (on its own): Call the dentist.\n\
+         - #2: every `0 9 * * 1-5`, next Fri 2026-10-23 09:00 BST (in the DM): Stand-up notes?\n\n\
+         Configured jobs (read-only):\n\
+         - `check-in`: every `0 9 * * *`, next Fri 2026-10-23 09:00 BST (in the DM): Anything to \
+         tell me?"
+    );
+
+    // Not theirs to cancel; their own, once.
+    let other = json!({"action": "cancel", "id": theirs.id.get()});
+    let refused = call(&tool, other, Some(owner()), dm()).await;
+    assert_eq!(err(&refused), "no job #3 of this user's to cancel");
+    assert!(s.store.job(theirs.id).await.unwrap().is_some());
+    assert!(!seen.has_changed().unwrap());
+    let cancel = json!({"action": "cancel", "id": 1});
+    assert_eq!(
+        ok(&call(&tool, cancel.clone(), Some(owner()), dm()).await),
+        "Cancelled job #1."
+    );
+    assert!(seen.has_changed().unwrap());
+    assert!(err(&call(&tool, cancel, Some(owner()), dm()).await).contains("no job #1"));
+
+    // A config job's turn has no requester: it can list the configured jobs only.
+    let job_session = session(SessionKind::Job, Some(owner()));
+    let create = json!({"action": "create", "prompt": "p", "in": "1h"});
+    assert!(
+        err(&call(&tool, create, None, job_session.clone()).await).contains("no requesting user")
+    );
+    let listed = call(&tool, json!({"action": "list"}), None, job_session).await;
+    assert!(ok(&listed).starts_with("Runtime jobs belong to users; this turn has none.\n\n"));
+}
+
+#[test]
+fn schedule_spec_is_strict() {
+    let spec = schedule::spec();
+    assert_eq!(spec.name, SCHEDULE);
+    assert_eq!(spec.input_schema["additionalProperties"], json!(false));
+    assert_eq!(spec.input_schema["required"], json!(["action"]));
+    assert_eq!(
+        spec.input_schema["properties"]["action"]["enum"],
+        json!(["create", "list", "cancel"])
+    );
+}
+
+#[tokio::test]
+async fn schedule_refuses_jobs_from_job_runs_and_past_the_cap() {
+    let s = Setup::new().await;
+    let tool = ScheduleTool::new(
+        s.store.clone(),
+        s.config.clone(),
+        JobChanges::default(),
+        Arc::new(FixedClock),
+    );
+    let create = json!({"action": "create", "prompt": "Again.", "in": "1h"});
+
+    // A runtime job's run (requester = its creator), in its own session or the DM: no new jobs,
+    // but it may list and cancel.
+    let refused = call_as(&tool, create.clone(), Some(owner()), dm(), true).await;
+    assert!(err(&refused).contains("can't be scheduled from a scheduled job's run"));
+    let job_session = session(SessionKind::Job, Some(owner()));
+    let refused = call(&tool, create.clone(), Some(owner()), job_session).await;
+    assert!(err(&refused).contains("can't be scheduled from a scheduled job's run"));
+    assert!(s.store.jobs(None, None).await.unwrap().is_empty());
+    ok(&call_as(&tool, json!({"action": "list"}), Some(owner()), dm(), true).await);
+
+    // At most MAX_RUNTIME_JOBS_PER_USER per user and agent.
+    let jeeves = AgentId::new(AGENT).unwrap();
+    for _ in 1..MAX_RUNTIME_JOBS_PER_USER {
+        s.store
+            .job_create(
+                jeeves.clone(),
+                owner(),
+                json!({"cron": "0 9 * * *", "prompt": "p"}),
+                schedule_now(),
+            )
+            .await
+            .unwrap();
+    }
+    ok(&call(&tool, create.clone(), Some(owner()), dm()).await);
+    let full = call(&tool, create.clone(), Some(owner()), dm()).await;
+    assert_eq!(
+        err(&full),
+        "too many scheduled jobs (at most 20); cancel one first"
+    );
+    // Another user has their own allowance.
+    let ann = session(SessionKind::Direct, Some(user("ann")));
+    ok(&call(&tool, create, Some(user("ann")), ann).await);
 }

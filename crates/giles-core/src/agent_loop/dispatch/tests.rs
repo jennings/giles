@@ -272,6 +272,7 @@ impl Setup {
                 },
                 reply: None,
                 skills: Arc::default(),
+                job: true,
             }),
             skip,
             approvals: Arc::new(approvals),

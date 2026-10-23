@@ -191,6 +191,7 @@ async fn drive(agent_loop: &AgentLoop, turn: &Turn) -> Result<TurnOutcome, TurnE
             session: turn.session.clone(),
             reply: turn.reply.clone(),
             skills: prompt.skills.clone(),
+            job: turn.job.is_some() || session.kind == SessionKind::Job,
         }),
     };
     let approvals = Arc::new(TurnApprovals::for_turn(
