@@ -31,6 +31,12 @@ smallest valid `giles.toml` declares the owner:
 identities = ["web:owner"]
 ```
 
+Next it opens its database (`data/giles.db`, created on first start) and builds the components the
+configuration names. A provider whose `config` it rejects, or a built-in component that isn't
+available yet (the `web` channel is still to come), stops startup with an error naming the file,
+line, and key. Channel plugins and toolsets can't be started yet: each one is logged as
+`instance not started`.
+
 It runs until it receives SIGINT (Ctrl-C) or SIGTERM, then shuts down and exits with status 0. If
 shutdown takes too long, a second Ctrl-C or SIGTERM makes it exit at once with status 130. Any other
 non-zero status means it failed to start; the error is printed on standard error.

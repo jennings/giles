@@ -186,6 +186,9 @@ fn sigterm_stops_cleanly_and_home_flag_beats_giles_home() {
         "{log}"
     );
     assert_layout(&home);
+    // The runtime opened the database and built the (empty) registry.
+    assert!(home.join("data/giles.db").is_file());
+    assert!(log.contains("registry ready"), "{log}");
     assert!(!env.path("env-home").exists());
     assert!(!env.home().join(".giles").exists());
 }
@@ -349,5 +352,31 @@ fn busy_http_listen_fails_at_startup() {
         stderr.contains(&format!("cannot listen for HTTP on {addr}")),
         "{stderr}"
     );
+    assert!(!stderr.contains("giles started"), "{stderr}");
+}
+
+#[cfg(feature = "provider-anthropic")]
+#[test]
+fn a_component_that_cannot_be_built_fails_with_the_file_and_key() {
+    let env = Env::new();
+    let home = env.path("home");
+    write_config(
+        &home,
+        "[owner]\nidentities = [\"web:owner\"]\n\
+         [provider.anthropic]\nconfig = { api_key = \"sk-secret-key\", bogus = 1 }\n",
+    );
+    let output = env
+        .command(&["serve", "--home", home.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let expected = format!(
+        "{}:4:1: provider.anthropic.config: ",
+        home.join("giles.toml").display()
+    );
+    assert!(stderr.contains(&expected), "{stderr}");
+    assert!(stderr.contains("bogus"), "{stderr}");
+    assert!(!stderr.contains("sk-secret-key"), "{stderr}");
     assert!(!stderr.contains("giles started"), "{stderr}");
 }

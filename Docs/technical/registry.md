@@ -1,8 +1,23 @@
-# Registry
+# Registry and Startup
 
 `giles_core::registry` maps configured instance names to the trait objects that serve them
 (PLAN sections 4.1, 7.2, and 13.3), and holds the prefixed tool index, the per-agent skill index,
-and model resolution.
+and model resolution. `giles_core::runtime` builds it at startup together with the stores.
+
+## Startup
+
+`Runtime::start(root, Arc<Config>)` runs after the configuration is loaded and the sandbox host
+check has run ([The `giles` Binary](daemon.md#giles-serve-lifecycle)):
+
+1. Open the database, `data/giles.db` (`giles_store::Store::open`, which migrates it).
+2. Open the blob store, `data/blobs` (`BlobStore::open`).
+3. `Registry::from_config(root, config, media)` with `media` a `giles_core::blobs::BlobMedia` over
+   the blob store.
+4. `Registry::log_summary()`: one `instance not started` line per pending instance, then
+   `registry ready` with the counts of providers, channels, toolsets, tools, and pending instances.
+
+`Runtime` is `Clone` and holds `root`, `config`, `store`, `blobs`, and `registry: Arc<Registry>`.
+Errors are a `StartError` (`Store`, `Blobs`, `Registry`); `giles serve` prints it and exits.
 
 ## Built-in Components
 

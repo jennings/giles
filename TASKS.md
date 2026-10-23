@@ -134,7 +134,7 @@ The five tracks run in parallel.
 
 ### Track A: Message Path
 
-- [ ] **2.1 Registry and startup wiring** (§6.5, §13.3). Built-in components constructed from
+- [x] **2.1 Registry and startup wiring** (§6.5, §13.3). Built-in components constructed from
   config; instance name to trait object; prefixed tool index (`<instance>__<tool>`, 64-character
   limit, reserved core tool names, sorted) and skill index. Providers plug in as 1.8 and 1.9 land.
   **Needs:** 1.1.

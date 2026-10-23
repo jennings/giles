@@ -1,11 +1,13 @@
 //! `giles serve`: the daemon.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::Context;
 use giles_core::config::Config;
 use giles_core::http;
 use giles_core::paths::DataRoot;
+use giles_core::runtime::Runtime;
 use giles_core::sandbox;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -38,6 +40,9 @@ async fn serve(root: DataRoot, config: Config) -> anyhow::Result<()> {
         );
     }
     check_sandbox();
+    // The database, the blob store, and every component the configuration names.
+    let config = Arc::new(config);
+    let _runtime = Runtime::start(root.clone(), config.clone()).await?;
 
     let listener = http::bind(config.core.http_listen).await?;
     let http_addr = listener

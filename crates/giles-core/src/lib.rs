@@ -13,5 +13,6 @@ pub mod paths;
 pub mod providers;
 pub mod registry;
 pub mod router;
+pub mod runtime;
 pub mod sandbox;
 pub mod skills;
