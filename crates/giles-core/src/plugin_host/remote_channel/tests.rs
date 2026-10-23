@@ -693,6 +693,20 @@ async fn send_errors_keep_their_meaning_and_hide_secrets() {
         .unwrap_err();
     assert!(!error.is_retryable(), "{error:?}");
 
+    // A plugin that dies (UNKNOWN: connection closed mid-call) or drains for a restart
+    // (CANCELLED) mid-send may not have sent anything: worth retrying.
+    for status in [
+        Status::cancelled("draining"),
+        Status::unknown("connection closed before message completed"),
+        Status::deadline_exceeded("too slow"),
+    ] {
+        lock(&h.state).send_error = Some(status);
+        let error = send(SendTarget::Conversation(ConversationId::new("c1").unwrap()))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Unavailable { .. }), "{error:?}");
+    }
+
     // An attachment the core doesn't have fails before anything is sent.
     lock(&h.state).send_error = None;
     let missing = MediaRef {
@@ -712,7 +726,7 @@ async fn send_errors_keep_their_meaning_and_hide_secrets() {
         .await
         .unwrap_err();
     assert!(matches!(error, Error::NotFound(_)), "{error:?}");
-    assert_eq!(lock(&h.state).sends.len(), 2);
+    assert_eq!(lock(&h.state).sends.len(), 5);
 }
 
 #[tokio::test]

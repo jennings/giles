@@ -225,12 +225,18 @@ impl Shared {
     }
 
     /// A failed call as a component error, its message scrubbed: `UNAVAILABLE` stays
-    /// [`Error::Unavailable`] (the outbox retries it), `INVALID_ARGUMENT` is
-    /// [`Error::InvalidRequest`], `NOT_FOUND` is [`Error::NotFound`].
+    /// [`Error::Unavailable`] (the outbox retries it), and so do `CANCELLED`, `UNKNOWN`, and
+    /// `DEADLINE_EXCEEDED`, which a call gets when the plugin dies or drains for a restart
+    /// mid-call. `UNKNOWN` is also what the SDK sends for a plugin's own generic errors
+    /// (`Error::Other`, via `status_from_error`), so those are retryable too. `INVALID_ARGUMENT`
+    /// is [`Error::InvalidRequest`], `NOT_FOUND` is [`Error::NotFound`].
     fn rpc_error(&self, call: &str, status: &Status) -> Error {
         let message = self.scrub(status.message());
         match status.code() {
             Code::Unavailable => Error::unavailable(format!("{call}: {message}")),
+            code @ (Code::Cancelled | Code::Unknown | Code::DeadlineExceeded) => {
+                Error::unavailable(format!("{call} failed: {code:?}: {message}"))
+            }
             Code::InvalidArgument => Error::InvalidRequest(format!("{call}: {message}")),
             Code::NotFound => Error::NotFound(format!("{call}: {message}")),
             code => Error::other(format!("{call} failed: {code:?}: {message}")),

@@ -206,9 +206,12 @@ depends on `giles-plugin-sdk` without its `tls` feature); they move fields rathe
   SHA-256, so the plugin can check the bytes; chunks of at most 1 MiB, read through the blob
   store's hash-checking reader) and then calls `Send` with the returned handles. The handles are
   the plugin's until that `Send` ends; the core doesn't release them. Errors keep their meaning:
-  `UNAVAILABLE` is `Error::Unavailable` (the outbox retries it), `INVALID_ARGUMENT` is
-  `InvalidRequest`, `NOT_FOUND` is `NotFound`, anything else `Other`. An attachment missing from the
-  blob store fails before anything is sent.
+  `UNAVAILABLE` is `Error::Unavailable` (the outbox retries it), and so are `CANCELLED`, `UNKNOWN`,
+  and `DEADLINE_EXCEEDED`, which a call gets when the plugin dies or drains for a restart mid-call.
+  `UNKNOWN` is also what the SDK sends for a plugin's own generic errors (`Error::Other`, via
+  `status_from_error`), so those reach the core as `Unavailable` and are retried too.
+  `INVALID_ARGUMENT` is `InvalidRequest`, `NOT_FOUND` is `NotFound`, anything else `Other`. An
+  attachment missing from the blob store fails before anything is sent.
 
 ### Inbound Attachments
 
