@@ -19,7 +19,8 @@ pub mod toolset;
 
 pub use channel::{
     AuthChallenge, Channel, ChannelEvent, ChannelInfo, ChannelStatus, ConversationKind,
-    ConversationRef, InboundMessage, OutboundMessage, OutputMode, SendTarget,
+    ConversationRef, DeltaSink, DeltaWriter, InboundMessage, OutboundMessage, OutputMode,
+    SendTarget,
 };
 pub use error::{Error, Result};
 pub use id::{

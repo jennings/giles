@@ -33,7 +33,39 @@ pub trait Channel: Send + Sync {
 
     /// Sends a message and returns its id on the channel. A recipient who can't be reached right
     /// now (e.g. an IRC account that isn't online) is [`Error::Unavailable`](crate::Error).
+    ///
+    /// Always delivers a whole message, also on a channel with [`OutputMode::Deltas`]: notices,
+    /// approval prompts, and replies the core doesn't stream arrive here.
     async fn send(&self, msg: OutboundMessage) -> Result<MessageId>;
+
+    /// Live output (PLAN section 6.9): `Some` on a channel that streams assistant text as the
+    /// model writes it, which must also declare [`OutputMode::Deltas`]. `None` (the default) means
+    /// the core sends whole chunks through [`Channel::send`] instead.
+    fn deltas(&self) -> Option<&dyn DeltaSink> {
+        None
+    }
+}
+
+/// Where a [`OutputMode::Deltas`] channel takes live assistant output (PLAN section 6.9): one
+/// [`DeltaWriter`] per assistant text block, fed with the model's text deltas.
+pub trait DeltaSink: Send + Sync {
+    /// Starts a live assistant message in `conversation` and returns the writer that fills it.
+    /// The channel shows the message as soon as it starts.
+    fn start(&self, conversation: &ConversationId) -> Result<Box<dyn DeltaWriter>>;
+}
+
+/// One live assistant message, from [`DeltaSink::start`].
+///
+/// The message's text is everything [`push`](Self::push)ed, in order. [`finish`](Self::finish)
+/// marks it complete. Dropping the writer without finishing it (the turn was stopped or failed)
+/// leaves the text pushed so far on the channel, marked as cut off.
+#[async_trait]
+pub trait DeltaWriter: Send {
+    /// Appends `text` (a `TextDelta`) to the message. Cheap: the channel may coalesce updates.
+    fn push(&mut self, text: &str);
+
+    /// Ends the message and returns its id on the channel.
+    async fn finish(self: Box<Self>) -> Result<MessageId>;
 }
 
 /// What a channel is and can do, declared once.
@@ -257,6 +289,36 @@ mod tests {
             reply_to: Some(MessageId::new("3EB0").unwrap()),
             sent_at: Some("2026-10-22T12:00:00Z".parse().unwrap()),
         }
+    }
+
+    /// A channel that overrides nothing optional.
+    struct Plain(ChannelInfo);
+
+    #[async_trait]
+    impl Channel for Plain {
+        fn info(&self) -> &ChannelInfo {
+            &self.0
+        }
+        async fn events(&self) -> Result<BoxStream<'static, Result<ChannelEvent>>> {
+            Err(crate::Error::unavailable("no events"))
+        }
+        async fn ack(&self, _: &EventId) -> Result<()> {
+            Ok(())
+        }
+        async fn send(&self, _: OutboundMessage) -> Result<MessageId> {
+            Err(crate::Error::unavailable("no send"))
+        }
+    }
+
+    #[test]
+    fn channels_have_no_live_output_unless_they_opt_in() {
+        let channel = Plain(ChannelInfo {
+            identity_namespace: "irc".into(),
+            output: OutputMode::Blocks,
+            can_initiate: true,
+        });
+        let channel: &dyn Channel = &channel;
+        assert!(channel.deltas().is_none());
     }
 
     #[test]

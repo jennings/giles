@@ -164,9 +164,28 @@ pub trait Channel: Send + Sync {
     async fn events(&self) -> Result<BoxStream<'static, Result<ChannelEvent>>>;
     async fn ack(&self, event: &EventId) -> Result<()>;
     async fn send(&self, msg: OutboundMessage) -> Result<MessageId>;
+    fn deltas(&self) -> Option<&dyn DeltaSink> { None }
+}
+
+pub trait DeltaSink: Send + Sync {
+    fn start(&self, conversation: &ConversationId) -> Result<Box<dyn DeltaWriter>>;
+}
+
+#[async_trait]
+pub trait DeltaWriter: Send {
+    fn push(&mut self, text: &str);
+    async fn finish(self: Box<Self>) -> Result<MessageId>;
 }
 ```
 
+- `deltas()` is the live-output hook of PLAN section 6.9. A channel that streams assistant text
+  (in v1 only the built-in web channel) returns `Some` and declares `OutputMode::Deltas`; every
+  other channel keeps the default `None` and gets whole chunks through `send`. The agent loop
+  (TASKS.md 2.8) starts one `DeltaWriter` per assistant text block (`BlockStart` of a text
+  block), `push`es each `TextDelta`, and `finish`es it at `BlockStop`; the message's text is the
+  concatenation of the pushed deltas. Dropping a writer unfinished (the turn was stopped or failed)
+  leaves what was pushed on the channel, marked as cut off. `send` still delivers whole messages
+  on a deltas channel: notices, approval prompts, and any reply the core doesn't stream.
 - `ChannelInfo` has the `identity_namespace` (e.g. `whatsapp`, `irc:libera.chat`; the core accepts
   it only if it starts with the channel component's name), `output: OutputMode` (`Deltas` or
   `Blocks`), and `can_initiate`. A plugin reports the namespace in `ConfigureResponse`; the

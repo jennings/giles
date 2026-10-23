@@ -250,7 +250,10 @@ pub trait Channel: Send + Sync {
     /// the core has stored it.
     async fn events(&self) -> Result<BoxStream<'static, Result<ChannelEvent>>>;
     async fn ack(&self, event: &EventId) -> Result<()>;
-    async fn send(&self, msg: OutboundMessage) -> Result<MessageId>;
+    async fn send(&self, msg: OutboundMessage) -> Result<MessageId>; // always a whole message
+    /// Live output (section 6.9), only on `deltas` channels: one writer per assistant text block,
+    /// fed with the model's text deltas.
+    fn deltas(&self) -> Option<&dyn DeltaSink> { None }
 }
 
 #[async_trait]
