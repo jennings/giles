@@ -10,6 +10,7 @@
 - [Chat Commands](user/commands.md)
 - [Model Providers](user/providers.md)
 - [Skills and Memory Files](user/skills-and-memory.md)
+- [Writing a Plugin](user/writing-a-plugin.md)
 
 # Technical
 
