@@ -168,3 +168,37 @@ ruleset and then the seccomp filter, both inherited across `exec`), or returns a
 (macOS: `/usr/bin/sandbox-exec -p <profile> <program> <args>`). Backends add their platform's
 default read grants (the command, system libraries, TLS certificates, DNS config) themselves.
 Backend-specific failures become new `SandboxError` variants (the enum is `#[non_exhaustive]`).
+
+## Host Check
+
+`giles_core::sandbox::check_host() -> Result<HostReport, HostError>` (backed by
+`SandboxBackend::check_host`) tells whether this host can apply the sandbox at all, so a broken
+host produces one clear error instead of every plugin failing (PLAN section 12.1). The probes are
+real now; they change nothing and cost a few syscalls.
+
+Linux, in order, stopping at the first failure:
+
+1. Landlock: `landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)` through
+   `libc::syscall` returns the newest ABI. `ENOSYS` means the kernel is older than 5.13 or built
+   without `CONFIG_SECURITY_LANDLOCK`, or that a container's seccomp profile blocks
+   `landlock_create_ruleset` (profiles that deny unlisted syscalls with `ENOSYS`, like Podman's
+   default, look exactly like a kernel without Landlock); `EOPNOTSUPP` means it's built in but
+   not enabled (add `landlock` to the `lsm=` boot parameter); anything else (e.g. `EPERM` from a
+   container's seccomp profile) is reported as a probe failure.
+2. seccomp, the way systemd checks it: `prctl(PR_GET_SECCOMP)` fails with `EINVAL` without
+   `CONFIG_SECCOMP` (mode 2, already filtered by a container runtime, is fine: filters stack); then
+   `prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, NULL)` fails with `EFAULT` when filters are supported
+   and `EINVAL` when not, without installing anything.
+
+The report is `HostReport::Linux { landlock_abi }`. It doesn't apply `min_abi`: that's per launch,
+in the backend (2.13).
+
+macOS: `/usr/bin/sandbox-exec` must be an executable file; the report is
+`HostReport::Macos { sandbox_exec }`.
+
+`giles serve` runs the check at startup, before `giles started`, and logs `plugin sandbox
+available` with the report, or a warning `plugin sandbox unavailable on this host; sandboxed
+plugins will not start` with the error. It's only a warning because no plugin is launched yet. The
+plugin host (2.16) should call `check_host` once at startup and, when any configured instance is
+sandboxed, refuse to launch those instances with this one error rather than letting each launch
+fail in the trampoline.

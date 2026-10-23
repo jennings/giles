@@ -39,9 +39,11 @@ to stderr, with ANSI colors only when stderr is a terminal. The filter is `GILES
 3. Install the SIGINT and SIGTERM handlers (`shutdown::cancel_on_signal`). This happens before
    anything is logged, so a signal sent after the `giles started` line always takes the graceful
    path instead of killing the process.
-4. Log `giles started` with the root and admin socket path, plus a warning if the sockets use the
+4. Check that the host can sandbox plugins (`giles_core::sandbox::check_host`, see
+   [Plugin Sandbox](sandbox.md#host-check)) and log the result; a failure is a warning for now.
+5. Log `giles started` with the root and admin socket path, plus a warning if the sockets use the
    `$TMPDIR` fallback.
-5. Wait until the shutdown token is cancelled, log `giles stopped`, and exit with status 0.
+6. Wait until the shutdown token is cancelled, log `giles stopped`, and exit with status 0.
 
 The shutdown signal is a `tokio_util::sync::CancellationToken`. The first SIGINT or SIGTERM cancels
 it. Subsystems added later take a clone (or a `child_token()`), stop when it is cancelled, and are

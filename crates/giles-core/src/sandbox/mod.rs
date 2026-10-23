@@ -11,9 +11,13 @@
 //! (Seatbelt, TASKS.md 2.14) land, applying either fails with [`SandboxError::NotImplemented`],
 //! so the trampoline refuses to run anything unless the spec opts out with
 //! [`Spec::unsandboxed`].
+//!
+//! [`check_host`] is the startup check that the host can sandbox at all. Its probes are real on
+//! both platforms.
 
 mod backend;
 mod env;
+mod host;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
@@ -32,6 +36,7 @@ use tracing::warn;
 
 use self::backend::{Launch, Platform, SandboxBackend};
 pub use self::env::scrubbed_env;
+pub use self::host::{HostError, HostReport};
 pub use self::spec::{DEFAULT_PATH, Network, PLUGIN_DATA_ENV, Spec, SpecError, TMP_DIR_NAME};
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -115,6 +120,15 @@ impl SandboxError {
             _ => EXIT_TRAMPOLINE_FAILED,
         }
     }
+}
+
+/// Checks that this host can apply the sandbox (PLAN section 12.1): on Linux, that Landlock is
+/// enabled and seccomp supports filters; on macOS, that `/usr/bin/sandbox-exec` is present.
+///
+/// Cheap and side-effect free. `serve` calls it at startup and logs the result; the plugin host
+/// should refuse to launch sandboxed instances (reporting this one error) when it fails.
+pub fn check_host() -> Result<HostReport, HostError> {
+    Platform::check_host()
 }
 
 /// Runs `command` (program and arguments) under `spec`, replacing the current process.

@@ -4,6 +4,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use giles_core::paths::DataRoot;
+use giles_core::sandbox;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -32,6 +33,7 @@ async fn serve(root: DataRoot) -> anyhow::Result<()> {
              directory instead",
         );
     }
+    check_sandbox();
     info!(
         version = env!("CARGO_PKG_VERSION"),
         root = %root.root().display(),
@@ -42,4 +44,17 @@ async fn serve(root: DataRoot) -> anyhow::Result<()> {
     shutdown.cancelled().await;
     info!("giles stopped");
     Ok(())
+}
+
+/// Logs whether this host can sandbox plugins (PLAN section 12.1). Only a warning for now: no
+/// plugin is launched yet. The plugin host (TASKS.md 2.16) turns a failure into one clear error
+/// when a configured instance needs the sandbox.
+fn check_sandbox() {
+    match sandbox::check_host() {
+        Ok(report) => info!(%report, "plugin sandbox available"),
+        Err(err) => warn!(
+            error = %err,
+            "plugin sandbox unavailable on this host; sandboxed plugins will not start",
+        ),
+    }
 }

@@ -90,7 +90,7 @@ All parallel. Each task needs only Phase 0.
   one pre-connected stream (`serve_with_incoming` with a one-item stream) and a client over a
   one-shot connector, with 16 MiB message limits and bearer-token metadata. Record the result in
   the technical docs; revise §7.4 if it fails.
-- [ ] **1.6 Sandbox trampoline** (§12.1, §12.4). `giles sandbox-exec <spec> -- <cmd>`: spec format
+- [x] **1.6 Sandbox trampoline** (§12.1, §12.4). `giles sandbox-exec <spec> -- <cmd>`: spec format
   (grants, data dir, network, Unix-socket grant, `min_abi`), scrubbed environment with the §12.4
   defaults, fds passed through, then `exec`. Platform backends behind an internal trait
   (implemented in 2.13 and 2.14). Startup host check that reports one clear error.

@@ -162,6 +162,11 @@ fn sigterm_stops_cleanly_and_home_flag_beats_giles_home() {
         "{log}"
     );
     assert!(log.contains("giles stopped"), "{log}");
+    // The startup sandbox check logs one line either way (PLAN section 12.1).
+    assert!(
+        log.contains("plugin sandbox available") || log.contains("plugin sandbox unavailable"),
+        "{log}"
+    );
     assert_layout(&home);
     assert!(!env.path("env-home").exists());
     assert!(!env.home().join(".giles").exists());

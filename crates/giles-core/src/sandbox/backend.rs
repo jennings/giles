@@ -4,6 +4,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use super::host::{HostError, HostReport};
 use super::{SandboxError, Spec};
 
 /// The program the trampoline `exec`s and its arguments (without `argv[0]`).
@@ -17,6 +18,10 @@ pub(crate) struct Launch {
 
 /// A platform's sandbox.
 pub(crate) trait SandboxBackend {
+    /// Probes whether this host can apply the sandbox at all, without changing anything. Cheap;
+    /// [`super::check_host`] calls it at `serve` startup. Returns the first missing piece.
+    fn check_host() -> Result<HostReport, HostError>;
+
     /// Applies the sandbox for `spec` and returns what to `exec`.
     ///
     /// Runs in the single-threaded trampoline, after the spec is validated, the data directory is

@@ -78,3 +78,20 @@ GILES_LOG=info,giles=debug giles serve
 The filter syntax is that of `tracing-subscriber`'s
 [`EnvFilter`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html).
 An invalid filter is an error at startup.
+
+## Plugin Sandbox Check
+
+Giles runs the plugins it launches in a sandbox, and a plugin that can't be sandboxed doesn't
+start. At startup, `giles serve` checks that this machine can sandbox at all and logs the result:
+
+- Linux: Landlock must be enabled (kernel 5.13 or later, with `landlock` in the kernel's `lsm=`
+  list) and seccomp must be available. In a container, it's the host kernel that matters.
+- macOS: `/usr/bin/sandbox-exec` must be present.
+
+If the check fails, Giles logs one warning naming the cause, for example:
+
+```text
+WARN giles::serve: plugin sandbox unavailable on this host; sandboxed plugins will not start
+error=Landlock is built into the kernel but not enabled: add `landlock` to the `lsm=` kernel boot
+parameter
+```
