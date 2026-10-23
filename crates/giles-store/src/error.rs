@@ -59,6 +59,10 @@ impl Error {
         Self::NotFound(what.into())
     }
 
+    pub(crate) fn conflict(what: impl Into<String>) -> Self {
+        Self::Conflict(what.into())
+    }
+
     pub(crate) fn invalid(what: impl Into<String>) -> Self {
         Self::InvalidRequest(what.into())
     }

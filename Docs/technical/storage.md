@@ -100,3 +100,50 @@ instance, conversation id). Isolated job runs get keyless `job` sessions.
 | `open_sessions`       | Every open session, oldest first.                                     |
 
 `Session::last_message_at` is the `created_at` of the session's last message, for `idle_reset`.
+
+## Messages and Tool-Result Slots
+
+Each message is one `messages` row: its `seq` (1, 2, ... per session), role, `content` as the JSON
+array of `giles_types::Block`, `meta` as JSON `MessageMeta`, and `created_at = meta.at`. Message
+ids in the API are `StoredMessageId`.
+
+The transcript invariant (every `ToolUse` has a `ToolResult`, PLAN 6.3) is kept with **slots**: a
+slot is a `User` message row reserved for one `ToolUse` result, with `tool_use_id` set and `content`
+null until it's filled. `append_messages` stores an assistant message and one slot per `ToolUse`
+block (in block order, numbered right after it) in the same transaction. Filling a slot writes a
+`User` message with one `ToolResult` block, so a loaded transcript is exactly what a provider needs;
+adapters merge consecutive `User` messages where an API requires alternating roles (PLAN 5).
+
+| Method                 | Contract                                                             |
+| ---------------------- | -------------------------------------------------------------------- |
+| `append_messages`      | Appends messages in one transaction, numbering them after the last; returns each one's id, seq, and slots. `NotFound` for a missing session; ended sessions still accept messages. |
+| `fill_slot`            | Fills an empty slot with `ToolResult { content, is_error }`. `NotFound` if the id isn't a slot, `Conflict` if it's filled. |
+| `fill_empty_slots`     | Fills a session's empty slots with an error result (`cancelled`, `denied`, `iteration limit`, ...). |
+| `fill_all_empty_slots` | Startup recovery: the same for every session (`interrupted`); returns the sessions affected, so the core can tell each requester. |
+| `load_history`         | The newest summary (highest `through_seq`) and every message after it. Empty slots come back as `Entry::EmptySlot`. |
+| `recent_messages`      | The last N messages in order (a job's `dm_excerpt`).                 |
+| `insert_summary`       | Stores a compaction summary of `from_seq..=through_seq`; rejects empty ranges, ranges past the last message, and a cut between a `ToolUse` and its slots. |
+
+The store doesn't decide when to compact or what a synthetic result says; the agent loop does
+(tasks 2.3 to 2.10).
+
+## Search
+
+`search` is an FTS5 table over messages for `memory_search` (PLAN 6.7). It holds the top-level
+`Text` blocks of each message, joined by newlines; tool inputs and results, reasoning, and media are
+left out. Three triggers on `messages` maintain it on insert, on update of `content` (so a
+tombstone from `giles user forget` replaces the old text), and on delete (including deletes that
+cascade from a session). The extraction runs in SQL (`json_each` over `content`), so no code path
+can forget to update the index. The tokenizer is `porter unicode61 remove_diacritics 2`: English
+stemming, case and accent folding.
+
+`Store::search(scope, query, limit)`:
+
+- `SearchScope` always names the agent and can narrow by session kind, user, channel, and
+  conversation. `SearchScope::direct(agent, user)` is a DM's scope (that user's direct sessions with
+  the agent on every channel); `SearchScope::conversation` is a group's.
+- The query is free text. Each word with a letter or digit becomes a quoted FTS5 string, and the
+  words are OR-ed, so the model can't write a malformed query and BM25 ranks messages matching more
+  and rarer words first.
+- Each hit has the message's ids, seq, role, time, the session's channel and conversation, and a
+  snippet with matches wrapped in `**`.

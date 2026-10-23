@@ -12,13 +12,19 @@
 
 mod db;
 mod error;
+mod messages;
 mod migrate;
+mod search;
 mod sessions;
 mod time;
 
 pub use db::{OpenOptions, Store};
 pub use error::{BoxError, Error, Result};
+pub use messages::{
+    Appended, Entry, History, Slot, StoredMessage, StoredMessageId, Summary, SummaryId,
+};
 pub use migrate::{MigrationPlan, SCHEMA_VERSION};
+pub use search::{SNIPPET_ELLIPSIS, SNIPPET_END, SNIPPET_START, SearchHit, SearchScope};
 pub use sessions::{Session, SessionId, SessionKey, SessionKind};
 
 use giles_types::Timestamp;
