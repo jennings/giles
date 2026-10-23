@@ -224,9 +224,10 @@ job, keyed by agent and `JobKey`: `Config(id)` is stored as `config:<id>` and `R
 
 `record_usage` stores one row per provider request (PLAN 11.7): time, provider instance, model,
 agent, user, session, the four token counts of `giles_types::Usage`, and the fallback flag.
-`usage_by_agent(since)` sums requests, fallbacks, and tokens per agent. `AgentUsage::cache_hit_rate`
-is cache-read tokens over all input tokens (uncached input + cache reads + cache writes), since
-`input_tokens` excludes cached tokens. Token counts above `i64::MAX` are rejected, not truncated.
+`usage_by_agent(since)` sums requests, fallbacks, and tokens per agent. The prompt cache hit rate,
+`giles_types::Usage::cache_hit_rate`, is cache-read tokens over all input tokens (uncached input +
+cache reads + cache writes), since `input_tokens` excludes cached tokens. Token counts above
+`i64::MAX` are rejected, not truncated.
 
 ## Web Sessions
 

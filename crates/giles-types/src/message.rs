@@ -221,6 +221,16 @@ pub struct Usage {
     pub cache_write_tokens: u64,
 }
 
+impl Usage {
+    /// The prompt cache hit rate: cache-read tokens over all input tokens (uncached input plus
+    /// cache reads plus cache writes). `None` without input tokens.
+    pub fn cache_hit_rate(&self) -> Option<f64> {
+        let input = self.input_tokens + self.cache_read_tokens + self.cache_write_tokens;
+        // Token totals stay far below 2^53, where f64 starts losing integers.
+        (input > 0).then(|| self.cache_read_tokens as f64 / input as f64)
+    }
+}
+
 /// Why the model stopped generating.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -262,6 +272,22 @@ mod tests {
         assert_eq!(json, expected);
         let back: T = serde_json::from_value(json).unwrap();
         assert_eq!(&back, value);
+    }
+
+    #[test]
+    fn cache_hit_rate_is_reads_over_all_input() {
+        let usage = Usage {
+            input_tokens: 110,
+            output_tokens: 90,
+            cache_read_tokens: 900,
+            cache_write_tokens: 900,
+        };
+        assert_eq!(usage.cache_hit_rate(), Some(900.0 / 1910.0));
+        let no_input = Usage {
+            output_tokens: 10,
+            ..Usage::default()
+        };
+        assert_eq!(no_input.cache_hit_rate(), None);
     }
 
     #[test]

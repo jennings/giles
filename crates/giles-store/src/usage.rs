@@ -37,19 +37,8 @@ pub struct AgentUsage {
     pub requests: u64,
     /// Requests that went to a fallback model.
     pub fallbacks: u64,
-    /// Summed token counts.
+    /// Summed token counts. `Usage::cache_hit_rate` gives the prompt cache hit rate.
     pub tokens: Usage,
-}
-
-impl AgentUsage {
-    /// The prompt cache hit rate: cache-read tokens over all input tokens (uncached input plus
-    /// cache reads plus cache writes). `None` without input tokens.
-    pub fn cache_hit_rate(&self) -> Option<f64> {
-        let t = &self.tokens;
-        let input = t.input_tokens + t.cache_read_tokens + t.cache_write_tokens;
-        // Token totals stay far below 2^53, where f64 starts losing integers.
-        (input > 0).then(|| t.cache_read_tokens as f64 / input as f64)
-    }
 }
 
 fn to_i64(value: u64, what: &str) -> Result<i64> {
@@ -172,24 +161,12 @@ mod tests {
         let jeeves = &all[1];
         assert_eq!((jeeves.requests, jeeves.fallbacks), (2, 1));
         assert_eq!(jeeves.tokens, tokens(110, 90, 900, 900));
-        assert_eq!(jeeves.cache_hit_rate(), Some(900.0 / 1910.0));
 
         // `since` is inclusive.
         let recent = store.usage_by_agent(Some(at(10))).await.unwrap();
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].requests, 2);
         assert!(store.usage_by_agent(Some(at(21))).await.unwrap().is_empty());
-    }
-
-    #[test]
-    fn hit_rate_needs_input_tokens() {
-        let usage = AgentUsage {
-            agent: AgentId::new("a").unwrap(),
-            requests: 1,
-            fallbacks: 0,
-            tokens: tokens(0, 10, 0, 0),
-        };
-        assert_eq!(usage.cache_hit_rate(), None);
     }
 
     #[tokio::test]
