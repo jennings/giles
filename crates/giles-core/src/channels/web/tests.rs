@@ -1160,6 +1160,39 @@ fn proxy_config(proxy: serde_json::Value) -> WebConfig {
 }
 
 #[tokio::test]
+async fn login_links_use_the_bound_address_unless_a_public_url_is_set() {
+    let env = env().await;
+    // `http_listen = "...:0"`: `serve` passes the address the listener actually bound.
+    env.channel
+        .set_listen_addr("0.0.0.0:41234".parse().unwrap());
+    let link = env
+        .channel
+        .create_login_link(&identity::owner(), Timestamp::now())
+        .unwrap();
+    assert!(
+        link.url.starts_with("http://127.0.0.1:41234/login/"),
+        "{}",
+        link.url
+    );
+
+    let config =
+        WebConfig::from_json(&serde_json::json!({"public_url": "https://giles.example.com"}))
+            .unwrap();
+    let env = env_with(config, &["web:owner"]).await;
+    env.channel
+        .set_listen_addr("127.0.0.1:41234".parse().unwrap());
+    let link = env
+        .channel
+        .create_login_link(&identity::owner(), Timestamp::now())
+        .unwrap();
+    assert!(
+        link.url.starts_with("https://giles.example.com/login/"),
+        "{}",
+        link.url
+    );
+}
+
+#[tokio::test]
 async fn a_login_link_logs_in_once_with_a_30_day_cookie() {
     let env = env().await;
     let link = env

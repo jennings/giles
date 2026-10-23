@@ -176,8 +176,9 @@ pub struct WebChannel {
     info: ChannelInfo,
     config: WebConfig,
     owner: OwnerIdentities,
-    /// Where login links point: the public URL, else the HTTP listener.
-    link_base: String,
+    /// Where login links point: the public URL, else the HTTP listener (its bound address once
+    /// [`WebChannel::set_listen_addr`] has been called).
+    link_base: Mutex<String>,
     /// Keys proxy logins' CSRF tokens; random per run.
     proxy_key: [u8; 32],
     inbound: Mutex<Inbound>,
@@ -189,7 +190,7 @@ impl fmt::Debug for WebChannel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WebChannel")
             .field("instance", &self.instance)
-            .field("link_base", &self.link_base)
+            .field("link_base", &*lock(&self.link_base))
             .field("pending", &lock(&self.inbound).pending.len())
             .finish_non_exhaustive()
     }
@@ -252,10 +253,12 @@ impl WebChannel {
                 output: OutputMode::Deltas,
                 can_initiate: false,
             },
-            link_base: config
-                .public_url
-                .clone()
-                .unwrap_or_else(|| listener_url(http_listen)),
+            link_base: Mutex::new(
+                config
+                    .public_url
+                    .clone()
+                    .unwrap_or_else(|| listener_url(http_listen)),
+            ),
             config,
             owner: OwnerIdentities::new(owner),
             proxy_key,
@@ -300,6 +303,15 @@ impl WebChannel {
         &self.config
     }
 
+    /// Points login links at `addr`, the address the HTTP listener actually bound, unless
+    /// `public_url` is set. `serve` calls it after binding, so `http_listen` with port 0 (or an
+    /// unspecified address) still gives a link that works.
+    pub fn set_listen_addr(&self, addr: SocketAddr) {
+        if self.config.public_url.is_none() {
+            *lock(&self.link_base) = listener_url(addr);
+        }
+    }
+
     /// Creates a one-time login link for `user`: it logs in whoever opens it first, within
     /// [`LOGIN_LINK_TTL`] (10 minutes), with a 30-day session cookie. This is what
     /// `giles admin login-link --user <user>` calls over the admin service (TASKS.md 2.24). Links
@@ -323,7 +335,7 @@ impl WebChannel {
         }
         let (token, expires_at) = self.links.create(user.clone(), now);
         Ok(LoginLink {
-            url: format!("{}/login/{token}", self.link_base),
+            url: format!("{}/login/{token}", lock(&self.link_base)),
             expires_at,
         })
     }

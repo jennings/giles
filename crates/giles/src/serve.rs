@@ -58,6 +58,11 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     let http_addr = listener
         .local_addr()
         .context("cannot read the HTTP listener's address")?;
+    // Login links point at the address actually bound (`http_listen` may say port 0).
+    #[cfg(feature = "channel-web")]
+    if let Some(web) = runtime.registry.web_channel() {
+        web.set_listen_addr(http_addr);
+    }
     // The web channel's pages and its trusted-proxy listener, if `giles.toml` configures them.
     #[cfg(feature = "channel-web")]
     let web = giles_core::channels::web::WebApp::from_runtime(&runtime, shutdown.clone());

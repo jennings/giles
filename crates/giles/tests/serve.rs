@@ -540,19 +540,8 @@ fn admin_login_link_prints_a_url_that_logs_in_once() {
     let env = Env::new();
     let home = env.path("home");
     let home_arg = home.to_str().unwrap();
-    // Links start with `http_listen` as configured, so give it a real port rather than 0.
-    let port = TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    write_config(
-        &home,
-        &format!(
-            "[core]\nhttp_listen = \"127.0.0.1:{port}\"\n\n[owner]\n\
-             identities = [\"web:owner\"]\n\n[channel.web]\n"
-        ),
-    );
+    // Port 0: links use the address the listener actually bound.
+    write_config(&home, &format!("{MINIMAL_CONFIG}\n[channel.web]\n"));
     let daemon = Daemon::start(env.command(&["serve", "--home", home_arg]));
     let addr = http_addr(&daemon.log);
 

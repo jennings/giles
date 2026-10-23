@@ -82,8 +82,9 @@ key and are scrubbed of secrets):
 
 - `public_url`: an `http`/`https` origin, normalized (lowercase host, no trailing slash); a path,
   query, fragment, or user info is an error. Login links start with it; `https` makes the cookie
-  `Secure` on every listener. Unset: `http://<core.http_listen>` with an unspecified address shown
-  as loopback.
+  `Secure` on every listener. Unset: `http://<listener>`, the address `serve` bound for
+  `core.http_listen` (`WebChannel::set_listen_addr` after the bind, so port 0 shows the real port),
+  with an unspecified address shown as loopback.
 - `proxy.identity_header` (required in `proxy`): the header naming the user. `proxy.listen`
   (optional TCP address) requires `proxy.secret` (at least 16 bytes; held as a `config::Secret`, so
   `Debug` output of `WebConfig` redacts it) and takes `proxy.secret_header` (default

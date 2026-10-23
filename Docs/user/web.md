@@ -69,8 +69,9 @@ fetches a link to preview it can't spend it.) **Log out** on the chat list ends 
 `[owner] identities` must list `web:owner`: messages you send after logging in with a link come
 from that identity. If you remove it later, existing logins stop working.
 
-The link starts with the address Giles listens on (`core.http_listen`, with `0.0.0.0` shown as
-`127.0.0.1`). If people reach Giles at another address, such as through a reverse proxy, set it:
+The link starts with the address Giles listens on (`core.http_listen` as bound, so port `0` shows
+the port it picked, with `0.0.0.0` shown as `127.0.0.1`). If people reach Giles at another address,
+such as through a reverse proxy, set it:
 
 ```toml
 [channel.web.config]
