@@ -26,8 +26,8 @@ base64 = { version = "0.22.1", optional = true }
 bytes.workspace = true
 croner = { version = "4.0.2", default-features = false, features = ["jiff"] }
 futures.workspace = true
-# The proto <-> domain conversions the admin service shares with plugins, and the web channel's
-# renderer.
+# The proto <-> domain conversions the admin service and the `RemoteChannel` adapter share with
+# plugins, and the web channel's renderer.
 giles-plugin-sdk = { workspace = true, default-features = false }
 giles-proto.workspace = true
 giles-store.workspace = true

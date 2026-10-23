@@ -50,8 +50,9 @@ afterwards.
 
 Components built outside the registry are added with:
 
-- `register_channel(&InstanceName, Arc<dyn Channel>)`: plugin channels (the plugin host, 2.16,
-  wrapping a `RemoteChannel`, 2.18), remote channels (2.18), or a built-in constructed elsewhere.
+- `register_channel(&InstanceName, Arc<dyn Channel>)`: plugin channels (the plugin host's
+  `RemoteChannel`, see [Plugin Host](plugin-host.md#remotechannel)), remote channels (3.7), or a
+  built-in constructed elsewhere.
 - `register_toolset(&InstanceName, Arc<dyn Toolset>).await`: MCP toolsets (2.20).
 - `register_provider(&InstanceName, Arc<dyn Provider>)`: future provider plugins and fakes in
   tests.
@@ -62,8 +63,9 @@ take over. The maps sit behind `RwLock`s and lookups (`provider`, `channel`, `to
 `providers()`/`channels()`/`toolsets()` lists) clone an `Arc`, so nothing holds a lock across an
 `await`. Consuming a channel's events is the caller's job.
 
-`pending()` lists configured channels and toolsets with nothing registered, with the task that
-will start them; until those land, startup logs each as `instance not started`.
+`pending()` lists configured channels and toolsets with nothing registered, with what will start
+them (the plugin host once the plugin is up, or a task still to land); startup logs each as
+`instance not started`.
 
 `Registry::new(root, config)` makes an empty registry for tests, which register fakes.
 

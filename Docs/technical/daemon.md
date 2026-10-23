@@ -64,8 +64,9 @@ to stderr, with ANSI colors only when stderr is a terminal. The filter is `GILES
    on its own task ([HTTP Server](http.md#lifecycle)) and the admin service on another
    ([Admin Service](admin.md)), and launch every plugin channel concurrently
    (`PluginHost::launch_all`, abandoned if a shutdown signal arrives first,
-   [Plugin Host](plugin-host.md#startup-and-shutdown)); a plugin that fails to launch is logged and
-   its instance stays pending.
+   [Plugin Host](plugin-host.md#startup-and-shutdown)), registering each with the registry and
+   attaching it to the sessions as it comes up; a plugin that fails to launch is logged and its
+   instance stays pending.
 9. Log `giles started` with the root, admin socket path, HTTP URL, and instance and agent counts,
    plus a warning if the sockets use the `$TMPDIR` fallback.
 10. Wait until the shutdown token is cancelled, then await the HTTP server (it drains open requests

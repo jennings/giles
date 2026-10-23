@@ -1,14 +1,14 @@
 # Plugin Host
 
-Code: `crates/giles-core/src/plugin_host/` (`giles_core::plugin_host`). Design: PLAN sections 7.3,
-7.4, 7.7, 7.8, 11.6, 12.1, 12.4, and 13.4. The plugin side of the same steps is the
+Code: `crates/giles-core/src/plugin_host/` (`giles_core::plugin_host`). Design: PLAN sections 4.3,
+7.3, 7.4, 7.7, 7.8, 8.3, 8.5, 11.6, 12.1, 12.4, and 13.4. The plugin side of the same steps is the
 [Plugin SDK](plugin-sdk.md); the wire setup is [Plugin Transport](plugin-transport.md); the
 trampoline is the [Plugin Sandbox](sandbox.md).
 
 The plugin host launches gRPC channel plugins (provider plugins aren't supported in v1). It takes a
-configured `[channel.<instance>]` without `address` from its binary to a configured plugin, and
-hands back a `LaunchedPlugin` that supervision (TASKS.md 2.17) and the `RemoteChannel` adapter
-(2.18) build on. It doesn't restart plugins or register channels yet.
+configured `[channel.<instance>]` without `address` from its binary to a configured plugin, wraps
+the result in a `RemoteChannel`, and registers that with the registry and the session manager. It
+doesn't restart plugins yet (TASKS.md 2.17).
 
 ## Launch
 
@@ -30,9 +30,10 @@ span. Any failure after the spawn kills the plugin's whole process group before 
    `giles_proto::handshake::HandshakeLine::parse`; the protocol it names must be one the core
    offered. After the line, a task drains stdout and ignores it.
 9. The gRPC connection over the core's end of the socket pair (below).
-10. `Describe` (10 s): `core_protocol_minor` 0 and no `core_features` yet (2.18 adds the ones its
-    adapter understands). The kind must be `PLUGIN_KIND_CHANNEL`, the name must be the binary's
-    `<name>`, and the channel capabilities must be present.
+10. `Describe` (10 s): `core_protocol_minor` 0 and no `core_features` (v1 has no optional features
+    yet; they announce additions within `v1`). The kind must be `PLUGIN_KIND_CHANNEL`, the name
+    must be the binary's `<name>`, and the channel capabilities must be present with an output mode
+    the core knows.
 11. `Configure` (60 s, since plugins connect to their service in it) with the instance name and
     `PluginConfig::to_json()`, secrets resolved.
 12. The returned identity namespace must pass `identity::validate_namespace(component, namespace)`.
@@ -59,7 +60,7 @@ namespace, stderr) has the instance's secret values and the token replaced by `<
 | The connection can't be set up | `Connect` | yes |
 | `Describe` fails or times out | `Rpc` | yes |
 | `Configure` fails | `Rpc` | no for `INVALID_ARGUMENT`, `FAILED_PRECONDITION`, `INTERNAL`, `UNIMPLEMENTED`; else yes |
-| Wrong kind or name, no channel capabilities | `Mismatch` | no |
+| Wrong kind or name, no channel capabilities, unknown output mode | `Mismatch` | no |
 | A namespace that isn't the plugin's own | `Namespace` | no |
 
 The failures before the handshake completes carry the plugin's last stderr lines (`stderr()`), and
@@ -172,6 +173,7 @@ pub struct LaunchedPlugin {
     pub identity_namespace: String,   // from Configure, checked
     pub connection: PluginConnection,
     pub process: PluginProcess,
+    pub secrets: Arc<[Secret]>,       // the instance's secrets and the token, for `scrub`
     pub span: tracing::Span,          // plugin{instance=...}
 }
 ```
@@ -180,14 +182,84 @@ pub struct LaunchedPlugin {
 stdin, up to `grace` (`STOP_GRACE`, 10 s: the SDK drains for up to 5 s) for the plugin to exit, then
 `terminate(TERM_GRACE)` (5 s), which also kills what's left of the group and removes the pid file.
 
+## RemoteChannel
+
+`RemoteChannel::new(&LaunchedPlugin, BlobStore, max_blob)` implements `giles_types::Channel` over
+the plugin's `ChannelService` (PLAN sections 4.3, 8.3, 8.5). One is built per launch. Conversions
+are `giles_plugin_sdk::convert`, the SDK's own rules, so the two sides can't disagree (`giles-core`
+depends on `giles-plugin-sdk` without its `tls` feature); they move fields rather than clone.
+
+- `info()`: the identity namespace from `Configure`, `output` and `can_initiate` from the
+  `Describe` capabilities.
+- `events()` opens `Events`. Its request half carries the acks: `ack(id)` sends `EventAck` on the
+  newest stream, which the session manager calls only after storing the event (see
+  [Sessions](sessions.md)). Status events pass through as `ChannelEvent::Status`, which the
+  session manager records for `giles status`.
+- An event that fails conversion, including one with an unknown variant (a newer protocol's
+  `oneof` decodes as none), is logged, acked by its `event_id`, and skipped (PLAN section 7.8), and
+  its attachments are released unfetched. A response with no event at all has no id to ack and is
+  skipped. Plugin text in logs and errors is scrubbed with the instance's secrets and the token.
+- A failed `Events` stream (the plugin died, a transient attachment failure) ends the stream
+  after one error; the session manager reopens it with backoff and the plugin resends what wasn't
+  acked.
+- `send` uploads each attachment with `PutBlob` (the header carries the core's id, the content's
+  SHA-256, so the plugin can check the bytes; chunks of at most 1 MiB, read through the blob
+  store's hash-checking reader) and then calls `Send` with the returned handles. The handles are
+  the plugin's until that `Send` ends; the core doesn't release them. Errors keep their meaning:
+  `UNAVAILABLE` is `Error::Unavailable` (the outbox retries it), `INVALID_ARGUMENT` is
+  `InvalidRequest`, `NOT_FOUND` is `NotFound`, anything else `Other`. An attachment missing from the
+  blob store fails before anything is sent.
+
+### Inbound Attachments
+
+The attachments are taken out of a message event before conversion, so a plugin may use any
+handle. The core never trusts a handle as a claim about the content, not even one that looks like
+a SHA-256: each attachment is fetched with `GetBlob` and streamed into the blob store, which hashes
+it, so the stored `MediaRef` names what actually arrived. The media type and name come from the
+event's `BlobRef` (the header's media type if the event's is empty); the size is what arrived.
+
+Limits (PLAN section 8.3), checked before and during the transfer:
+
+- The event's `size` over the instance's `max_blob`: refused without calling `GetBlob`.
+- The header's `size` over `max_blob`: refused before reading data; dropping the stream cancels
+  the transfer.
+- More data than the header's `size`, a stream that ends short of it, no header first, a second
+  header, or a chunk over 1 MiB: refused at that chunk, and nothing is stored (the store's temp
+  file is deleted).
+
+A refused attachment (those, or `GetBlob` answering `NOT_FOUND`, `INVALID_ARGUMENT`,
+`FAILED_PRECONDITION`, `OUT_OF_RANGE`, `PERMISSION_DENIED`, or `UNIMPLEMENTED`, all of which a
+retry would get again) is left out, logged with the details, and the message goes on with a note
+appended to its text (after a blank line), so the agent can tell the sender. The note is
+`[attachment "<name>" (<media type>, <size> bytes) not received: <reason>]`, the reason one of
+`it is larger than this channel's limit of <max_blob> bytes`, `the channel sent it incorrectly`,
+`the channel no longer has it`, or `the channel couldn't send it`.
+
+Any other failure (the connection, another status, no answer to the `GetBlob` call or no chunk
+for 30 s (`BLOB_CHUNK_TIMEOUT`), the blob store) may pass: the stream yields an error, the event
+stays unacked, and it comes again on the reopened stream.
+
+An event's handles are released with `ReleaseBlob` right after the core has stored the event and
+acked it, as PLAN section 8.3 orders (a background task per `RemoteChannel` sends them in order,
+batching what is queued; failures are only logged). The SDK stores identical bytes once, so two
+pending events can share a handle; it keeps a blob as long as an unacked event refers to it, so
+releasing at the first ack doesn't take the blob from the second, however long the second waits.
+The SDK also deletes a blob itself when the last event using it is acked, and sweeps blobs no
+unacked event refers to at startup, so a release lost to a crash or a restart leaks nothing (see
+[Plugin SDK](plugin-sdk.md#blobs)).
+
 ## Startup and Shutdown
 
-`PluginHost::new(launcher)` and then `launch_all(&config)` launch every plugin channel concurrently
-after the sessions start and before `giles started` (see [The `giles` Binary](daemon.md)). A failure
+`PluginHost::new(launcher, ChannelWiring { registry, sessions, blobs })` and then
+`launch_all(&config)` launch every plugin channel concurrently after the sessions start and before
+`giles started` (see [The `giles` Binary](daemon.md)). Each launched plugin is wired at once by
+`ChannelWiring::attach(&plugin, max_blob)`: its `RemoteChannel` is registered with
+`Registry::register_channel` (so replies and `Registry::pending` see it) and attached with
+`Sessions::attach_channel(instance, component, channel)` (so its events flow). A failure to launch
 is logged as `cannot launch the plugin; the instance stays pending` with the error and whether it's
-retryable; nothing retries it yet (2.17). Each plugin is kept as soon as it's up; a shutdown signal
-during startup drops the launches still running, which kills their process groups. At shutdown,
-after the sessions have stopped, `stop_all(STOP_GRACE)` stops every launched plugin concurrently.
+retryable; nothing retries it yet (2.17). A shutdown signal during startup drops the launches still
+running, which kills their process groups. At shutdown, after the sessions have stopped,
+`stop_all(STOP_GRACE)` stops every launched plugin concurrently.
 
 ## Tests
 
@@ -195,6 +267,13 @@ after the sessions have stopped, `stop_all(STOP_GRACE)` stops every launched plu
   pid file parsing, executable lookup, `traceparent`, and the process (fd 3, token, own group,
   stdin end-of-file, group kill on `terminate`, on drop, and when the plugin exits by itself,
   `SIGTERM` ignored, stderr tail).
+- `plugin_host/remote_channel/tests.rs`: `RemoteChannel` against a fake plugin served in-process
+  over a socket pair, for what the SDK can't produce: unknown and invalid events acked and
+  skipped, attachments hashed whatever the handle claims and each event's handles released right
+  after its ack (also when two events share a handle), `max_blob` on the event's and the header's
+  size, lying and malformed transfers refused and nothing stored, `NOT_FOUND` notes, a transient
+  `GetBlob` failure leaving the event unacked, `PutBlob` before `Send`, and `Send` errors mapped
+  and scrubbed.
 - `crates/giles-core/tests/plugin_host.rs`: shell scripts as plugins (and as a fake trampoline):
   handshake timeout, malformed line, unoffered protocol, exit 76, an early exit with scrubbed
   stderr under the instance span and exactly the scrubbed environment, a trampoline exiting 125
@@ -202,8 +281,14 @@ after the sessions have stopped, `stop_all(STOP_GRACE)` stops every launched plu
   group kill after a failed `Describe`, and orphan cleanup that spares an unrelated process.
 - `plugins/giles-channel-echo/tests/host.rs`: the echo plugin end to end, unsandboxed: `Describe`,
   `Configure` with a resolved secret, the data directory and pid file, health over the
-  connection, `stop`, a rejected config (scrubbed), a binary installed under another name, stdin
-  end-of-file, and `PluginHost` start and stop.
+  connection, `stop`, a rejected config (scrubbed), a binary installed under another name, and
+  stdin end-of-file.
+- `plugins/giles-channel-echo/tests/remote_channel.rs`: the echo plugin as a channel of a running
+  core (runtime, sessions with a recording turn runner, `PluginHost`): an injected message becomes
+  a turn, is acked (the SDK's spool empties), and the reply reaches `Send`; a status event is
+  recorded; attachments both ways (two events sharing bytes, released afterwards; `PutBlob` read
+  back by the plugin); an attachment over `max_blob` left out with a note; registration clears
+  `pending()`, and `stop_all` stops everything.
 - `plugins/giles-channel-echo/tests/host_sandbox.rs`: the echo plugin through the trampoline (the
   test binary acting as `giles sandbox-exec`, since Cargo gives that package no path to `giles`):
   a working sandboxed launch where the host can sandbox (macOS, Linux with Landlock); on a Linux

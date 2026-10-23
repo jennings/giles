@@ -407,7 +407,7 @@ fn plugin_instances_stay_pending_until_registered() {
     assert_eq!(pending[0].1, "libera");
     assert!(pending[0].2.contains("plugin host"), "{pending:?}");
     assert_eq!(pending[1].1, "mail");
-    assert!(pending[1].2.contains("2.18"), "{pending:?}");
+    assert!(pending[1].2.contains("3.7"), "{pending:?}");
     assert_eq!(pending[2].0, Kind::Toolset);
     assert!(pending[2].2.contains("2.20"), "{pending:?}");
 

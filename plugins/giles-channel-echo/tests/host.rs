@@ -1,6 +1,7 @@
 //! The core's plugin host launching the echo plugin end to end (unsandboxed): discovery, the
 //! handshake, `Describe` and `Configure` with resolved secrets, the namespace, the stop sequence,
-//! and stdin end-of-file. The sandboxed launch is in `host_sandbox.rs`.
+//! and stdin end-of-file. The sandboxed launch is in `host_sandbox.rs`; the plugin as a
+//! registered channel of a running core is in `remote_channel.rs`.
 
 mod support;
 
@@ -8,7 +9,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::PathBuf;
 
-use giles_core::plugin_host::{LaunchError, PluginHost, STOP_GRACE};
+use giles_core::plugin_host::{LaunchError, STOP_GRACE};
 use giles_proto::plugin::v1::PluginKind;
 use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::health_check_response::ServingStatus;
@@ -164,37 +165,4 @@ async fn closing_stdin_makes_the_plugin_exit() {
         .expect("the plugin exits on stdin end-of-file")
         .unwrap();
     assert!(status.success(), "{status}");
-}
-
-#[tokio::test]
-async fn the_host_launches_what_it_can_and_stops_everything() {
-    let home = Home::new(
-        "[channel.echo]\nunsandboxed = true\n\n[channel.missing]\nunsandboxed = true\n",
-        &[],
-    );
-    home.install_echo_as("echo");
-    let host = PluginHost::new(home.launcher(no_trampoline()));
-    host.launch_all(&home.config()).await;
-    let launched = host.launched().await;
-    assert_eq!(
-        launched.iter().map(|n| n.as_str()).collect::<Vec<_>>(),
-        ["echo"]
-    );
-    let pid_file = home.root.pid_file("echo").unwrap();
-    let pid: i32 = fs::read_to_string(&pid_file)
-        .unwrap()
-        .lines()
-        .next()
-        .unwrap()
-        .parse()
-        .unwrap();
-    tokio::time::timeout(WAIT, host.stop_all(STOP_GRACE))
-        .await
-        .unwrap();
-    assert!(host.launched().await.is_empty());
-    assert!(!pid_file.exists());
-    // SAFETY: signal 0 only checks whether the process exists.
-    #[allow(unsafe_code)]
-    let alive = unsafe { libc::kill(pid, 0) } == 0;
-    assert!(!alive, "the plugin still runs");
 }

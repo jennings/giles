@@ -19,13 +19,16 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
-# The core's plugin host, which these tests launch the plugin through.
-giles-core.workspace = true
+# The core's plugin host, which these tests launch the plugin through, and a runtime around it
+# (a configured agent needs a provider).
+giles-core = { workspace = true, features = ["provider-anthropic"] }
 giles-proto.workspace = true
 hyper-util.workspace = true
 libc.workspace = true
+sha2.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["net", "process"] }
+tokio-util.workspace = true
 tonic.workspace = true
 tonic-health.workspace = true
 tower.workspace = true

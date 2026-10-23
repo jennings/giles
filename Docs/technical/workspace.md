@@ -29,7 +29,8 @@ flowchart TD
   core --> types[giles-types]
   core --> store[giles-store]
   core --> proto[giles-proto]
-  sdk[giles-plugin-sdk] --> types
+  core --> sdk[giles-plugin-sdk]
+  sdk --> types
   sdk --> proto
   store --> types
   echo[giles-channel-echo] --> sdk
@@ -37,7 +38,9 @@ flowchart TD
 
 `giles-types` is the contract shared by the core and plugins, so it depends on no other Giles
 crate. Plugins depend on `giles-plugin-sdk` (and through it `giles-types` and `giles-proto`), never
-on `giles-core` or `giles-store`.
+on `giles-core` or `giles-store`. The core depends on `giles-plugin-sdk` (default features off, so
+without its `tls` module) for `convert`, the proto-to-domain conversions its `RemoteChannel` and
+admin service share with plugins, and for `render`, which the web channel uses.
 
 The three crates a third-party plugin author needs (`giles-types`, `giles-proto`,
 `giles-plugin-sdk`) are publishable to crates.io; each carries symlinks to the repository's

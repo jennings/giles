@@ -10,7 +10,7 @@ use giles_core::commands::NoPendingApprovals;
 use giles_core::config::Config;
 use giles_core::http;
 use giles_core::paths::DataRoot;
-use giles_core::plugin_host::{Launcher, PluginHost, STOP_GRACE};
+use giles_core::plugin_host::{ChannelWiring, Launcher, PluginHost, STOP_GRACE};
 use giles_core::runtime::Runtime;
 use giles_core::sandbox::{self, HostReport};
 use giles_core::sessions::SystemClock;
@@ -138,9 +138,18 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
         clock: Arc::new(SystemClock),
     });
     let admin_server = tokio::spawn(admin_listener.serve(admin, shutdown.clone()));
-    // Every configured plugin channel; one that fails to launch is logged and stays pending. A
-    // shutdown during startup abandons the launches still running (killing their plugins).
-    let plugins = PluginHost::new(Launcher::new(root.clone(), giles_exe, sandbox.map(drop)));
+    // Every configured plugin channel, registered and attached to the sessions as it comes up;
+    // one that fails to launch is logged and stays pending. A shutdown during startup abandons
+    // the launches still running (killing their plugins).
+    let wiring = ChannelWiring {
+        registry: runtime.registry.clone(),
+        sessions: sessions.clone(),
+        blobs: runtime.blobs.clone(),
+    };
+    let plugins = PluginHost::new(
+        Launcher::new(root.clone(), giles_exe, sandbox.map(drop)),
+        wiring,
+    );
     tokio::select! {
         () = plugins.launch_all(&config) => {}
         () = shutdown.cancelled() => {}

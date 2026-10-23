@@ -220,7 +220,7 @@ The five tracks run in parallel.
   from 1 s to 5 min, reset after 10 min healthy; no retry after a protocol mismatch until the
   binary's hash changes; stop with `Shutdown`, then SIGTERM, then SIGKILL; `Describe` cache.
   **Needs:** 2.16.
-- [ ] **2.18 `RemoteChannel` adapter** (§4.3, §8.3, §8.5). `Channel` over `ChannelService`:
+- [x] **2.18 `RemoteChannel` adapter** (§4.3, §8.3, §8.5). `Channel` over `ChannelService`:
   bidirectional `Events` with acks, unknown event variants acked and ignored, `ChannelStatus`
   recorded for `giles status`, `Send` by `conversation_id` or `recipient`; blob transfer
   (`GetBlob`, store, `ReleaseBlob`; `PutBlob` for outbound) with `max_blob` and header-size limits;

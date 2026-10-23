@@ -24,10 +24,10 @@ The agent loop plugs in as a `TurnRunner`; the decision before anything is store
 and binding the HTTP listener: it's the last startup step that can fail, since recovery changes
 state and resumed turns start running. It builds the `Router` from `[owner]` and `[[routes]]` and
 the `AgentPolicy` map (`busy_mode`, `idle_reset`) from the agents, runs `Sessions::start` (recovery,
-then resume, then the prune task), and attaches every channel registered so far. Once plugin
-channels are registered (2.18), each is attached with
-`Sessions::attach_channel(instance, component, channel)` after registering it; attaching an instance
-again (a restarted plugin) stops the earlier pump after its current event.
+then resume, then the prune task), and attaches every channel registered so far. The plugin host
+then registers each plugin channel as it comes up and attaches it with
+`Sessions::attach_channel(instance, component, channel)` ([Plugin Host](plugin-host.md)); attaching
+an instance again (a restarted plugin) stops the earlier pump after its current event.
 
 After the HTTP server has drained at shutdown, `serve` awaits `Sessions::closed()`, which waits for
 every task the manager spawned (pumps, drivers, turns, pruning) to stop.

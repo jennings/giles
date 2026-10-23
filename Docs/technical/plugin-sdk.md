@@ -72,8 +72,8 @@ answers at once and then starts the bounded shutdown described under [Lifecycle]
 Blob handles are the SHA-256 of the content, as 64 lowercase hex digits, the same form as the
 core's blob ids (PLAN section 8.3). That's this SDK's choice of plugin-local handle, not a protocol
 guarantee: the protocol allows any handle, and an id a plugin sends is only its claim about the
-content. Whether the core trusts it or hashes what `GetBlob` returns is the `RemoteChannel`
-adapter's decision (2.18).
+content. The core's `RemoteChannel` never trusts it: it always fetches with `GetBlob` and hashes
+what arrives ([Plugin Host](plugin-host.md#inbound-attachments)).
 
 - Inbound: the plugin calls `Blobs::put` (or `put_reader`) and puts the returned `MediaRef` in
   `InboundMessage::attachments`. The blob and its `.json` sidecar (media type and name) are synced
@@ -97,7 +97,8 @@ adapter's decision (2.18).
   releasing one an unacked event still carries (a second event with the same bytes, or the event
   whose ack hasn't arrived yet) does nothing, and the ack deletes it later. It never touches
   `outbound/`. Unknown ids are fine (releasing is idempotent); a malformed id fails the whole call
-  before anything is deleted.
+  before anything is deleted. The core's `RemoteChannel` releases an event's handles right after
+  acking it (PLAN section 8.3), so the release usually finds them gone already.
 - Outbound: `PutBlob` must send the header first, then data chunks of at most 1 MiB, exactly the
   header's `size` in total; anything else is `INVALID_ARGUMENT` and leaves nothing behind. A
   non-empty header id must equal the SHA-256 of the data. The blob lands in `outbound/` (not
@@ -220,8 +221,9 @@ keep nanoseconds in `0..1e9`, so a time before 1970 has negative seconds and pos
 The blob conversions assume this SDK's handles: a wire `BlobRef` id must parse as a SHA-256
 `MediaId`. The protocol allows any plugin-local handle (see [gRPC Protocols](protocols.md)), so
 the helpers refuse plugins with other handles, and a parsed id is only the plugin's claim about the
-content. Whether the core trusts it or hashes what `GetBlob` returns is the `RemoteChannel`
-adapter's decision (2.18), not something `convert` settles.
+content. The core's `RemoteChannel` uses these helpers but takes a message's attachments out
+before converting it, so it accepts any handle, and it never trusts one: it fetches the bytes with
+`GetBlob` and hashes them.
 
 | `giles_types::Error`          | gRPC status        | Back to `Error` (`error_from_status`) |
 | ----------------------------- | ------------------ | ------------------------------------- |

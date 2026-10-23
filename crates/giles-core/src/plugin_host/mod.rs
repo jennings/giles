@@ -1,4 +1,5 @@
-//! The plugin host (PLAN sections 7.3 and 7.4): launching gRPC channel plugins.
+//! The plugin host (PLAN sections 7.3 to 7.5): launching gRPC channel plugins and connecting
+//! them to the core.
 //!
 //! [`Launcher::launch_channel`] takes one configured plugin channel from discovery to a configured
 //! plugin: it finds the binary ([`discover_plugin`]), kills an orphan an earlier core left running
@@ -8,13 +9,15 @@
 //! and calls `Describe` and `Configure`. The result is a [`LaunchedPlugin`]: the connection, the
 //! `Describe` and `Configure` results, and the [`PluginProcess`].
 //!
-//! [`PluginHost`] launches every configured plugin channel at startup and stops them at shutdown.
-//! Supervision (health checks, restarts) and the `RemoteChannel` adapter build on the handle.
-//! See `Docs/technical/plugin-host.md`.
+//! [`RemoteChannel`] is a launched plugin's `ChannelService` as a `giles_types::Channel`.
+//! [`PluginHost`] launches every configured plugin channel at startup, registers its
+//! `RemoteChannel` with the registry and the session manager ([`ChannelWiring`]), and stops them
+//! at shutdown. See `Docs/technical/plugin-host.md`.
 
 mod grpc;
 mod orphans;
 mod process;
+mod remote_channel;
 mod spec;
 
 use std::collections::BTreeMap;
@@ -27,11 +30,14 @@ use std::process::ExitStatus;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use giles_plugin_sdk::convert::output_mode_from_proto;
 use giles_proto::handshake::{EXIT_NO_SHARED_PROTOCOL, HandshakeError, HandshakeLine};
 use giles_proto::plugin::v1::{
     ConfigureRequest, DescribeRequest, DescribeResponse, PluginKind, ShutdownRequest,
     describe_response,
 };
+use giles_store::BlobStore;
+use giles_types::Channel;
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, BufReader};
 use tokio::process::ChildStdout;
 use tokio::sync::Mutex;
@@ -39,6 +45,7 @@ use tracing::{Instrument as _, info, warn};
 
 pub use self::grpc::{CallMetadata, PluginConnection, PluginTransport};
 pub use self::process::{PluginProcess, STDERR_TARGET};
+pub use self::remote_channel::{BLOB_CHUNK_TIMEOUT, RemoteChannel};
 use self::spec::{OFFERED_PROTOCOLS, launch_spec};
 use crate::config::{
     ChannelInstance, ChannelRuntime, Config, InstanceName, Kind, Secret, discover_plugin,
@@ -46,7 +53,9 @@ use crate::config::{
 };
 use crate::identity::{NamespaceError, validate_namespace};
 use crate::paths::{DataRoot, PathsError};
+use crate::registry::Registry;
 use crate::sandbox::{self, EXIT_TRAMPOLINE_FAILED, SpecError, TMP_DIR_NAME};
+use crate::sessions::Sessions;
 
 /// How long a plugin has to print its handshake line (PLAN section 7.4).
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -460,6 +469,7 @@ impl Launcher {
                     identity_namespace,
                     connection,
                     process,
+                    secrets,
                     span,
                 })
             }
@@ -638,11 +648,15 @@ fn check_describe(describe: &DescribeResponse, component: &str) -> Result<(), St
             describe.name
         ));
     }
-    if !matches!(
-        describe.capabilities,
-        Some(describe_response::Capabilities::Channel(_))
-    ) {
+    let Some(describe_response::Capabilities::Channel(capabilities)) = &describe.capabilities
+    else {
         return Err("it describes no channel capabilities".to_owned());
+    };
+    if output_mode_from_proto(capabilities.output).is_err() {
+        return Err(format!(
+            "its output mode {} is unspecified or unknown",
+            capabilities.output
+        ));
     }
     Ok(())
 }
@@ -726,6 +740,9 @@ pub struct LaunchedPlugin {
     pub connection: PluginConnection,
     /// The process (its stderr is being logged).
     pub process: PluginProcess,
+    /// The instance's secret values and the launch token: scrub plugin-provided text with them
+    /// ([`scrub`]) before logging it.
+    pub secrets: Arc<[Secret]>,
     /// The `plugin{instance=...}` span its logs belong under.
     pub span: tracing::Span,
 }
@@ -763,24 +780,61 @@ impl LaunchedPlugin {
     }
 }
 
-/// The launched plugins of a running core: launched at startup, stopped at shutdown.
+/// Where launched channels go: the registry (lookups, replies) and the session manager (their
+/// events), with the blob store for their attachments.
+#[derive(Debug, Clone)]
+pub struct ChannelWiring {
+    /// The registry the channel is registered with.
+    pub registry: Arc<Registry>,
+    /// The session manager that consumes the channel's events.
+    pub sessions: Sessions,
+    /// Where inbound attachments are stored and outbound ones read from.
+    pub blobs: BlobStore,
+}
+
+impl ChannelWiring {
+    /// Builds `plugin`'s [`RemoteChannel`] (attachments up to `max_blob` bytes), registers it,
+    /// and attaches it to the session manager, replacing the channel of an earlier launch.
+    ///
+    /// # Errors
+    ///
+    /// The reason the channel can't be registered: its `Describe` capabilities are invalid, or
+    /// the instance isn't configured.
+    pub fn attach(&self, plugin: &LaunchedPlugin, max_blob: u64) -> Result<(), String> {
+        let channel = RemoteChannel::new(plugin, self.blobs.clone(), max_blob)
+            .map_err(|error| error.to_string())?;
+        let channel: Arc<dyn Channel> = Arc::new(channel);
+        self.registry
+            .register_channel(&plugin.instance, channel.clone())
+            .map_err(|error| error.to_string())?;
+        self.sessions
+            .attach_channel(plugin.instance.clone(), plugin.component.clone(), channel);
+        Ok(())
+    }
+}
+
+/// The launched plugins of a running core: launched at startup, registered as channels, stopped
+/// at shutdown.
 #[derive(Debug)]
 pub struct PluginHost {
     launcher: Launcher,
+    wiring: ChannelWiring,
     plugins: Mutex<BTreeMap<InstanceName, LaunchedPlugin>>,
 }
 
 impl PluginHost {
-    /// A host with nothing launched yet.
-    pub fn new(launcher: Launcher) -> Self {
+    /// A host with nothing launched yet that hands launched channels to `wiring`.
+    pub fn new(launcher: Launcher, wiring: ChannelWiring) -> Self {
         Self {
             launcher,
+            wiring,
             plugins: Mutex::new(BTreeMap::new()),
         }
     }
 
-    /// Launches every plugin channel in `config`, concurrently, and keeps each as soon as it's
-    /// up. A failure is logged, and that instance stays pending.
+    /// Launches every plugin channel in `config`, concurrently, and registers and attaches each
+    /// as soon as it's up ([`ChannelWiring::attach`]). A failure is logged, and that instance
+    /// stays pending.
     ///
     /// Cancel-safe: dropping the future (a shutdown during startup) keeps the plugins launched
     /// so far for [`PluginHost::stop_all`] and kills the process group of each launch in progress.
@@ -790,20 +844,33 @@ impl PluginHost {
             .values()
             .filter(|instance| matches!(instance.runtime, ChannelRuntime::Plugin(_)))
             .map(|instance| async {
-                match self.launcher.launch_channel(instance).await {
-                    Ok(plugin) => {
-                        self.plugins
-                            .lock()
-                            .await
-                            .insert(instance.name.clone(), plugin);
+                let plugin = match self.launcher.launch_channel(instance).await {
+                    Ok(plugin) => plugin,
+                    Err(error) => {
+                        tracing::error!(
+                            instance = %instance.name,
+                            %error,
+                            retryable = error.is_retryable(),
+                            "cannot launch the plugin; the instance stays pending",
+                        );
+                        return;
                     }
-                    Err(error) => tracing::error!(
+                };
+                if let Err(error) = self.wiring.attach(&plugin, instance.max_blob) {
+                    tracing::error!(
                         instance = %instance.name,
                         %error,
-                        retryable = error.is_retryable(),
-                        "cannot launch the plugin; the instance stays pending",
-                    ),
+                        "cannot register the plugin's channel; stopping it",
+                    );
+                    if let Err(error) = plugin.stop(STOP_GRACE).await {
+                        warn!(instance = %instance.name, %error, "cannot stop the plugin");
+                    }
+                    return;
                 }
+                self.plugins
+                    .lock()
+                    .await
+                    .insert(instance.name.clone(), plugin);
             });
         futures::future::join_all(launches).await;
     }
@@ -870,7 +937,10 @@ mod tests {
             version: "1.0".to_owned(),
             requested_grants: None,
             capabilities: Some(if channel {
-                describe_response::Capabilities::Channel(ChannelCapabilities::default())
+                describe_response::Capabilities::Channel(ChannelCapabilities {
+                    output: giles_proto::channel::v1::OutputMode::Blocks.into(),
+                    can_initiate: false,
+                })
             } else {
                 describe_response::Capabilities::Provider(ProviderCapabilities::default())
             }),
@@ -892,6 +962,12 @@ mod tests {
         let mut unknown = describe(PluginKind::Channel, "irc", true);
         unknown.kind = 7;
         assert!(check_describe(&unknown, "irc").is_err());
+        let mut no_output = describe(PluginKind::Channel, "irc", true);
+        no_output.capabilities = Some(describe_response::Capabilities::Channel(
+            ChannelCapabilities::default(),
+        ));
+        let err = check_describe(&no_output, "irc").unwrap_err();
+        assert!(err.contains("output mode 0"), "{err}");
     }
 
     #[test]

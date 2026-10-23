@@ -150,6 +150,11 @@ or, with `address`, connects to where someone else runs it.
 | `auth`        | remote plugins    | none       | `{ bearer = <credential> }` or `{ oauth = { ... } }`, below |
 | `insecure`    | remote plugins    | `false`    | Allow plain `http://` to a host other than this machine  |
 
+An attachment larger than `max_blob` (or one the plugin fails to hand over) doesn't stop the
+message: the agent gets the message without it, plus a line such as
+`[attachment "clip.mov" (video/quicktime, 73400320 bytes) not received: it is larger than this
+channel's limit of 52428800 bytes]`, so it can tell the sender.
+
 Plain `http://` is accepted without `insecure` only for `localhost`, `127.0.0.0/8`, and `::1`:
 without TLS, anyone on the network path could inject messages. Addresses can't contain a user name
 or password; use `auth`:
