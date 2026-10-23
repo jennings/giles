@@ -32,6 +32,7 @@ futures = "0.3.34"
 jiff = { version = "0.2.38", default-features = false, features = ["std"] }
 libc = "0.2.191"
 prost = "0.14.4"
+prost-types = "0.14.4"
 # Outbound HTTP client (`giles_core::net`). TLS is rustls; `net::tls_client_builder` trusts only the
 # bundled `webpki-root-certs`, so the platform verifier this feature compiles in is never used.
 reqwest = { version = "0.13.5", default-features = false, features = ["http2", "rustls", "stream"] }
@@ -45,6 +46,7 @@ tokio = "1.54.1"
 tokio-util = "0.7.20"
 toml = "1.1.8"
 tonic = "0.14.6"
+tonic-health = "0.14.6"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 

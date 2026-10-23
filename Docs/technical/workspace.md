@@ -76,9 +76,10 @@ Consequences for code:
 - A third-party dependency used by two or more crates is declared once in
   `[workspace.dependencies]`, and each crate opts in with `<dep>.workspace = true`, adding the
   features it needs. The shared stack: `anyhow`, `async-trait`, `bytes`, `futures`, `jiff` (only
-  `std`; crates add `serde` or time zone database features), `libc`, `prost`, `reqwest` (rustls,
-  `http2`, `stream`; no default features), `serde` (with `derive`), `serde_json`, `sha2`,
-  `thiserror`, `tokio` (no features enabled), `toml`, `tonic`, `tracing`, `tracing-subscriber`.
+  `std`; crates add `serde` or time zone database features), `libc`, `prost`, `prost-types`,
+  `reqwest` (rustls, `http2`, `stream`; no default features), `serde` (with `derive`),
+  `serde_json`, `sha2`, `thiserror`, `tokio` (no features enabled), `toml`, `tonic`,
+  `tonic-health`, `tracing`, `tracing-subscriber`.
   Shared test-only dependencies: `hyper-util` and `tower` (a one-shot connector to a plugin over a
   socket pair) and `tempfile`.
 - A dependency used by a single crate goes in that crate's own manifest.

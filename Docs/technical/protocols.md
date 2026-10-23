@@ -71,7 +71,7 @@ sides take them from `giles_proto::handshake`, so they can't drift apart:
 `HandshakeLine` formats and parses the line the plugin prints on stdout once it serves,
 `1|<protocol>|fd|3|grpc`. The parser accepts one trailing `\n` or `\r\n` and nothing else: no
 spaces, no leading zeros or signs in the protocol, no other transport. Protocol majors are plain
-decimal (`parse_major`).
+decimal (`parse_major`). [Plugin SDK](plugin-sdk.md) describes the plugin side.
 
 ## Mapping to `giles-types`
 

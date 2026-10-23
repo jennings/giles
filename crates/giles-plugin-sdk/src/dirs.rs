@@ -5,6 +5,7 @@
 //!   blobs/<sha256>       blobs the plugin put, until the core releases them
 //!   blobs/<sha256>.json  their media type and file name
 //!   outbound/<sha256>    blobs the core put, until the Send that uses them ends
+//!   events/<seq>.pb      events the core hasn't acked yet
 //!   tmp/                 partial writes
 //! ```
 
@@ -20,6 +21,7 @@ pub(crate) const SDK_DIR: &str = "giles-sdk";
 pub(crate) struct SdkDirs {
     pub(crate) blobs: PathBuf,
     pub(crate) outbound: PathBuf,
+    pub(crate) events: PathBuf,
     tmp: PathBuf,
     next_tmp: AtomicU64,
 }
@@ -33,6 +35,7 @@ impl SdkDirs {
         let dirs = Self {
             blobs: root.join("blobs"),
             outbound: root.join("outbound"),
+            events: root.join("events"),
             tmp: root.join("tmp"),
             next_tmp: AtomicU64::new(0),
         };
@@ -42,7 +45,7 @@ impl SdkDirs {
                 _ => {}
             }
         }
-        for dir in [&dirs.blobs, &dirs.outbound, &dirs.tmp] {
+        for dir in [&dirs.blobs, &dirs.outbound, &dirs.events, &dirs.tmp] {
             std::fs::create_dir_all(dir)?;
         }
         Ok(dirs)

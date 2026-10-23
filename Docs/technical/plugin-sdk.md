@@ -51,6 +51,7 @@ giles-sdk/
   blobs/<sha256>       blobs the plugin put, until the core releases them
   blobs/<sha256>.json  their media type and file name
   outbound/<sha256>    blobs the core put, until the Send that uses them ends
+  events/<seq>.pb      events the core hasn't acked yet
   tmp/                 partial writes
 ```
 
@@ -61,9 +62,9 @@ one.
 
 ## Base service
 
-`PluginService` delegates `Describe` and `Configure` to the kind. `Configure` parses `config_json`
-first and answers `INVALID_ARGUMENT` if it isn't JSON. `Shutdown` answers at once and signals the
-server to shut down.
+`PluginService` delegates `Describe` and `Configure` to the kind (see [Channels](#channels)).
+`Configure` parses `config_json` first and answers `INVALID_ARGUMENT` if it isn't JSON. `Shutdown`
+answers at once and then starts the bounded shutdown described under [Lifecycle](#lifecycle).
 
 ### Blobs
 
@@ -96,3 +97,127 @@ adapter's decision (2.18).
   with the same attachment don't break each other. The channel's `send` reads it with
   `Blobs::open`, `read`, or `path`. `ReleaseBlob` of the id drops every reference at once, and the
   next start empties `outbound/`.
+
+## Public API
+
+```rust
+#[tokio::main]
+async fn main() -> ExitCode {
+    ChannelPlugin::new("irc", env!("CARGO_PKG_VERSION"))
+        .output(OutputMode::Blocks)
+        .can_initiate(true)
+        .requested_grants(Grants::default())
+        .serve(|ctx: Configure| async move {
+            let config: IrcConfig = ctx.parse_config()?;
+            IrcChannel::connect(config, ctx.data_dir(), ctx.blobs().clone()).await
+        })
+        .await
+}
+```
+
+- `ChannelPlugin::new(name, version)` with builder methods `output`, `can_initiate`, and
+  `requested_grants` (a `Grants { network_all, network_ports, read, write }`, mirroring
+  `SandboxGrants`). These answer `Describe` before the channel exists.
+- `serve(configure)` takes `Fn(Configure) -> impl Future<Output = Result<impl Channel>>` and
+  returns the process's `ExitCode`. It uses the ambient tokio runtime; `#[tokio::main]` is enough.
+  Fd 3 is adopted after the runtime started, which is why step 4 above checks it's a socket before
+  taking ownership.
+- `Configure` gives `instance()`, `config()` (the JSON `Value`), `parse_config::<T>()` (serde,
+  errors as `Error::InvalidRequest("invalid config: ...")` naming the key), `data_dir()`, and
+  `blobs()`.
+- `Blobs`: `put`, `put_reader`, `open`, `read`, `path`.
+- `convert`: the `giles-types` and wire conversions in both directions, plus the `Error` and
+  `Status` mapping (below), public so the core's adapters and tests can share them.
+- Re-exports `giles_types` and `async_trait`, so a plugin uses the same versions as the SDK.
+
+## Lifecycle
+
+`serve` runs the server on its own task, prints the handshake line, and then waits for one of:
+
+- stdin end-of-file: the core is gone;
+- `Shutdown`: the core asks the plugin to stop (PLAN section 7.5's drain hint).
+
+Either way it cancels the shutdown token (ending every `Events` stream and the event pump), marks
+the server `NOT_SERVING` in health, and starts `tonic`'s graceful shutdown. Calls in flight get
+`DRAIN_TIMEOUT` (5 s) to finish; open streams that the core doesn't end (a health `Watch`) are cut
+after that, and `serve` returns. The SDK never exits for any other reason, and it installs no
+signal handlers: the core's SIGTERM and SIGKILL keep their default effect, which is safe because
+unacked events are already on disk.
+
+Health (`grpc.health.v1`): the overall service `""` and `giles.plugin.v1.PluginService` are
+`SERVING` from the start; `giles.channel.v1.ChannelService` is `NOT_SERVING` until `Configure`
+succeeds. At shutdown `""` becomes `NOT_SERVING`.
+
+## Channels
+
+### Configure
+
+`Configure` calls the plugin's `configure` closure with the parsed config, under a lock so calls
+don't overlap. On success the SDK checks the channel against what `Describe` promised: its
+`Channel::info()` must have the same `output` and `can_initiate`, and its `identity_namespace` must
+follow the core's rule (`giles_core::identity::validate_namespace`): the plugin name itself or
+`<name>:...` (so plugin `echo` may report `echo` or `echo:test`, but not `echoer`), with every
+`:`-separated part non-empty and free of whitespace and control characters. A mismatch is a plugin
+bug and fails with `INTERNAL`, naming the namespace. It returns the namespace and marks
+`ChannelService` serving. A failed `Configure` can be retried; a second successful one is refused
+with `FAILED_PRECONDITION`, as are `Events` and `Send` before the first.
+
+`Configure::parse_config` deserializes through `serde_path_to_error`, so every error names the key
+path, e.g. `invalid config: tls.verify: invalid type: string "yes", expected a boolean`.
+
+### Events and persistence
+
+Delivery is at least once (PLAN section 8.5), and the SDK makes it durable for every channel:
+
+1. The first `Events` call starts the pump: it calls `Channel::events()` once and moves each event
+   into the spool. An event the wire can't carry (a newer `giles-types` variant) is logged and
+   dropped. A stream error item is logged, and the pump waits before polling again (100 ms,
+   doubling to 10 s while errors continue, reset by the next event), so a broken source doesn't
+   spin. If the channel's stream ends, the pump stops and the next `Events` call calls
+   `Channel::events()` again.
+2. The spool writes each event, encoded as the wire `ChannelEvent`, to `events/<seq>.pb` (via
+   `tmp/`, synced, renamed, directory synced) before offering it to any stream. The pump persists
+   an event before it polls the channel's stream for the next one, so a channel whose stream is
+   polled again knows the previous event is on disk: a push source can drop its own copy then.
+   Persisting retries with backoff (100 ms to 10 s) rather than losing the event.
+3. An event whose id is already pending is not stored again (a channel resending after its stream
+   restarted). Once acked, the same id would be stored and sent again; the core deduplicates.
+4. Each `Events` stream first sends every pending event in order, including those left by earlier
+   streams and earlier processes, then new ones as they're persisted. A newer `Events` call ends
+   the older stream, so there's one at a time.
+5. An ack deletes the event's file and then calls `Channel::ack`. Acks for unknown ids are
+   ignored. `Channel::ack` may therefore name an event emitted by an earlier run of the plugin.
+
+At startup the spool loads `events/`. A file that doesn't decode is renamed to `<name>.corrupt` and
+logged rather than deleted; a second file with an id already loaded is deleted; numbering continues
+after the highest file seen.
+
+### Send
+
+`Send` converts the request (`INVALID_ARGUMENT` for a missing target or a bad id), checks that every
+attachment handle exists (`INVALID_ARGUMENT` otherwise), refuses a `recipient` if the plugin didn't
+declare `can_initiate`, and calls `Channel::send`. The returned message id goes back in
+`SendResponse`. When the RPC ends, however it ends, it releases its reference to each distinct
+blob the core put for it (see [Blobs](#blobs)).
+
+### Conversions and errors
+
+`convert` moves fields between `giles-types` and `giles.channel.v1` following the tables in
+[gRPC Protocols](protocols.md#mapping-to-giles-types). Wire to domain validates ids, requires
+"Always set" fields, and refuses unspecified enum values and unknown `oneof` variants. Timestamps
+keep nanoseconds in `0..1e9`, so a time before 1970 has negative seconds and positive nanoseconds.
+
+The blob conversions assume this SDK's handles: a wire `BlobRef` id must parse as a SHA-256
+`MediaId`. The protocol allows any plugin-local handle (see [gRPC Protocols](protocols.md)), so
+the helpers refuse plugins with other handles, and a parsed id is only the plugin's claim about the
+content. Whether the core trusts it or hashes what `GetBlob` returns is the `RemoteChannel`
+adapter's decision (2.18), not something `convert` settles.
+
+| `giles_types::Error`          | gRPC status        | Back to `Error` (`error_from_status`) |
+| ----------------------------- | ------------------ | ------------------------------------- |
+| `InvalidId`, `InvalidRequest` | `INVALID_ARGUMENT` | `InvalidRequest`                      |
+| `NotFound`                    | `NOT_FOUND`        | `NotFound`                            |
+| `Unavailable`                 | `UNAVAILABLE`      | `Unavailable` (no `retry_after`)      |
+| anything else                 | `UNKNOWN`          | `Other`, carrying the status          |
+
+`Unavailable`'s `retry_after` doesn't cross the wire in v1; the outbox retries with its own backoff.

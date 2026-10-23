@@ -45,12 +45,21 @@ pub(crate) enum StartupError {
     /// [`DATA_ENV`] is missing or isn't an absolute path to a directory.
     #[error("{DATA_ENV} must name the plugin's data directory, got {0:?}")]
     DataDir(OsString),
+    /// Fd 3 isn't an open Unix socket.
+    #[error("fd 3 is not the plugin's socket: {0}")]
+    PluginFd(io::Error),
     /// Stdin didn't start with a valid token line.
     #[error("reading the token from stdin: {0}")]
     Token(String),
+    /// The SDK's state in the data directory couldn't be opened.
+    #[error("opening the plugin's state in its data directory: {0}")]
+    State(io::Error),
     /// Writing the handshake line failed.
     #[error("writing the handshake line: {0}")]
     Handshake(io::Error),
+    /// The gRPC server failed.
+    #[error("serving gRPC on fd 3: {0}")]
+    Serve(String),
 }
 
 impl StartupError {

@@ -9,7 +9,7 @@ use giles_proto::plugin::v1::plugin_service_server::PluginService;
 use giles_proto::plugin::v1::{
     BlobChunk, ConfigureRequest, ConfigureResponse, DescribeRequest, DescribeResponse,
     GetBlobRequest, GetBlobResponse, PutBlobRequest, PutBlobResponse, ReleaseBlobRequest,
-    ReleaseBlobResponse, ShutdownRequest, ShutdownResponse, blob_chunk,
+    ReleaseBlobResponse, SandboxGrants, ShutdownRequest, ShutdownResponse, blob_chunk,
 };
 use giles_proto::types::v1::BlobRef;
 use giles_types::MediaId;
@@ -19,9 +19,40 @@ use tonic::{Request, Response, Status, Streaming};
 
 use crate::blobs::Blobs;
 
+/// Sandbox grants a plugin asks the operator for, reported in `Describe` (PLAN section 12.4).
+///
+/// Advisory only: `giles status` shows them to help the operator write the instance's `sandbox`
+/// table, and the core never applies them. Channels and providers have network access by default,
+/// so most plugins request nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Grants {
+    /// All IP traffic, like `network = true`.
+    pub network_all: bool,
+    /// Specific ports, like `network = ["tcp:443"]`. Ignored with `network_all`.
+    pub network_ports: Vec<String>,
+    /// Paths to read, outside the plugin's own data directory.
+    pub read: Vec<String>,
+    /// Paths to write, outside the plugin's own data directory.
+    pub write: Vec<String>,
+}
+
+impl From<Grants> for SandboxGrants {
+    fn from(grants: Grants) -> Self {
+        Self {
+            network_all: grants.network_all,
+            network_ports: grants.network_ports,
+            read: grants.read,
+            write: grants.write,
+        }
+    }
+}
+
 /// The kind-specific half of `Describe` and `Configure`.
 #[async_trait]
 pub(crate) trait Kind: Send + Sync + 'static {
+    /// The full name of the kind service, for health checks.
+    fn service_name(&self) -> &'static str;
+
     /// The whole `Describe` answer.
     fn describe(&self) -> DescribeResponse;
 
@@ -225,9 +256,9 @@ pub(crate) fn internal(error: impl std::fmt::Display) -> Status {
 
 #[cfg(test)]
 mod tests {
+    use giles_proto::plugin::v1::PluginKind;
     use giles_proto::plugin::v1::plugin_service_client::PluginServiceClient;
     use giles_proto::plugin::v1::plugin_service_server::PluginServiceServer;
-    use giles_proto::plugin::v1::{PluginKind, SandboxGrants};
     use tonic::Code;
     use tonic::transport::Channel;
 
@@ -241,6 +272,10 @@ mod tests {
 
     #[async_trait]
     impl Kind for FakeKind {
+        fn service_name(&self) -> &'static str {
+            "giles.test.Fake"
+        }
+
         fn describe(&self) -> DescribeResponse {
             DescribeResponse {
                 kind: PluginKind::Channel.into(),
