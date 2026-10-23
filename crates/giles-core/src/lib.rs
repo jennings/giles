@@ -18,3 +18,4 @@ pub mod runtime;
 pub mod sandbox;
 pub mod sessions;
 pub mod skills;
+mod stderr_lines;
