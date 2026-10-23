@@ -23,6 +23,7 @@
 - [Storage](technical/storage.md)
 - [Registry and Startup](technical/registry.md)
 - [Plugin Transport](technical/plugin-transport.md)
+- [Plugin SDK](technical/plugin-sdk.md)
 - [Plugin Sandbox](technical/sandbox.md)
 - [MCP Client](technical/mcp.md)
 - [Rendering Model Output](technical/rendering.md)

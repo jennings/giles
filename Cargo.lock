@@ -884,8 +884,14 @@ version = "0.1.0"
 dependencies = [
  "giles-proto",
  "giles-types",
+ "libc",
  "pulldown-cmark",
  "pulldown-cmark-escape",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tonic",
 ]
 
 [[package]]
