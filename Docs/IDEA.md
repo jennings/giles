@@ -23,6 +23,16 @@ This doc lists the features and explains roughly how each one works. The detaile
 - One source of truth. A plugin describes itself at runtime. There is no manifest to keep in sync
   by hand.
 - Don't trust plugins by default. The core sandboxes every plugin it launches.
+- Settings belong in the web UI, not in config files. `giles.toml` holds only what Giles needs to
+  start: the address the web interface listens on, the default time zone for users who don't set
+  one, and security-model requirements such as whether a plugin may be configured to run
+  unsandboxed. The operator writes it and Giles never edits it. Giles manages everything else so it
+  can be changed in the web UI: users (an admin adds them), agents and their files (`agent.toml`,
+  `SOUL.md`, per-user memories), routes from channel identities to users and agents, and, once
+  designed, provider, channel, and toolset instances. Whether each kind of data lives in SQLite or
+  in Markdown, JSONL, or other text files is decided as it's built. v1 still reads the owner,
+  instances, and routes from `giles.toml`; they move out as their web UI lands (`PLAN.md` section
+  11.2).
 
 ## v1 Scope
 
@@ -81,8 +91,8 @@ Providers are how the system calls an LLM.
 
 ## Feature: Agents
 
-An agent is the personality the user talks to. Agents are set up in the system's own config, not
-through plugins.
+An agent is the personality the user talks to. Agents are managed by Giles itself, not through
+plugins, and are meant to be edited in the web UI.
 
 Each agent has:
 
@@ -93,7 +103,8 @@ Each agent has:
   and the user's `USER.md` (who its user is)
 - Scheduled jobs
 
-Routing rules in config decide which agent handles which channel and conversation.
+Routing rules decide which agent handles which channel and conversation. Like agents, they're
+managed by Giles and meant to be edited in the web UI.
 
 ## Feature: Sessions (v1)
 
@@ -179,9 +190,10 @@ gRPC plugins:
 There are two layers:
 
 - Core level: The core sandboxes every plugin and stdio MCP server it launches. The sandbox is
-  mandatory: if it can't be applied, the plugin doesn't start, unless the operator opts out per
-  instance. Plugins get a scrubbed environment and a single writable data directory. Provider and
-  channel plugins have network access by default; stdio MCP servers get it only when granted.
+  mandatory: if it can't be applied, the plugin doesn't start, unless `giles.toml` allows opting out
+  and the instance opts out. Plugins get a scrubbed environment and a single writable data
+  directory. Provider and channel plugins have network access by default; stdio MCP servers get it
+  only when granted.
   - Linux: Landlock and seccomp, with no namespaces.
   - macOS: a generated deny-by-default Seatbelt profile.
 - Plugin level: Plugins that run risky things, like a shell or curl tool, can add their own
@@ -204,8 +216,8 @@ plugins.
 - Provider plugins.
 - More than one user, and group chats.
 - Model fallback.
-- Config reload, and editing `giles.toml` from the web UI. (Creating agents in the web UI was added
-  later as task 5.1.)
+- Config reload, and managing users, routes, and instances in the web UI. (Creating agents in the
+  web UI was added later as task 5.1.)
 - MCP servers that only speak the deprecated HTTP+SSE transport.
 
 ## Decisions
@@ -218,6 +230,7 @@ The questions this doc used to leave open are settled in `PLAN.md`:
 | Plugin interface shape    | A shared base service plus one service per kind                                         | 8.2       |
 | Tool discovery            | Query at every start; cache keyed on the binary's hash, the reported version, and the instance config | 7.9 |
 | Identity mapping          | v1 declares the owner's identities in `giles.toml`; the multi-user design is deferred  | 1.1, 3    |
+| Config ownership          | `giles.toml` holds only startup settings and Giles never edits it; Giles manages the rest, edited in the web UI | 11.2 |
 | Core sandboxing           | Landlock and seccomp on Linux, Seatbelt on macOS, mandatory by default                  | 12        |
 | Windows support           | Not in v1                                                                               | 12        |
 | Email receiving           | IMAP with IDLE                                                                          | 10        |

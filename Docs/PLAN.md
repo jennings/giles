@@ -46,7 +46,8 @@ several users and group chats are the design for later; v1 builds this subset of
 - Web login: only the `giles admin login-link` one-time URL and the trusted-proxy header.
 - Tool approvals: answered by the owner.
 - Models: each agent uses the first model in `models`, with no fallback.
-- Config: read at startup; changes need a restart. Agent Markdown files are read per turn.
+- Config: read at startup; changes need a restart. Agent Markdown files are read per turn. v1 keeps
+  the owner, instances, and routes in `giles.toml`; they move to the web UI later (section 11.2).
 
 Deferred decisions, each with what v1 does meanwhile and when to revisit it, are in
 `Docs/decisions/`: D28, D49, D57, D58, D63, D65, D66.
@@ -69,9 +70,11 @@ many tools from one process.
 
 ### 3.1 Users and Roles
 
-- One operator owns the configuration: agents, providers, channels, plugins, credentials.
-- Every person who talks to an agent is a user, with exactly one role. A user is a
-  `users/<user>/user.toml` file (section 11.3).
+- The operator writes the startup settings in `giles.toml` and the credentials in `secrets.toml`.
+  Users, agents, routes, and the rest are managed by Giles and changed by admins in the web UI
+  (section 11.2).
+- Every person who talks to an agent is a user, with exactly one role. An admin adds users in the
+  web UI. In the current layout a user is a `users/<user>/user.toml` file (section 11.3).
 - Roles are defined in config. Each role lists the agents its users may talk to and tool globs they
   may trigger. Giles ships three defaults, which config can change or extend:
 
@@ -100,8 +103,9 @@ reports both the phone number and the LID, since group participants usually appe
 ([Baileys JIDs](https://baileys.wiki/concepts/jids)). The core keys on the canonical id (`sender`)
 and treats a message as from a known identity if the sender or any alias matches.
 
-Identity links map identities to users and live in SQLite. User records and roles live in TOML.
-(Multi-user identity storage is deferred: D49.)
+Identity links map identities to users and live in SQLite. User records and roles live in TOML in
+the current layout; where Giles stores them is decided with their web UI (section 11.2). (Multi-user
+identity storage is deferred: D49.)
 
 Messages from identities with no link never reach an agent. What happens instead is a per-instance
 `unknown_senders` policy:
@@ -389,9 +393,10 @@ Media:
 
 ### 6.1 Routing
 
-Ordered rules in config, first match wins. A rule matches any of channel instance, conversation
-kind (`direct`/`group`), user, and conversation id, and names an agent. Most setups are one rule per
-channel instance.
+Ordered rules, first match wins. A rule matches any of channel instance, conversation kind
+(`direct`/`group`), user, and conversation id, and names an agent. Most setups are one rule per
+channel instance. Routes are managed by Giles and meant to be edited in the web UI; in the current
+layout they're `[[routes]]` in `giles.toml` (section 11.2).
 
 ```toml
 [[routes]]
@@ -469,8 +474,8 @@ A tool may run only if both of these allow it:
 
 - The agent's allowlist: globs over prefixed tool names, e.g. `["github__*", "memory*"]`.
 - The requester's role (section 3.1). Runtime jobs run with their creator's role, so `schedule`
-  can't be used to reach tools the creator may not call. Config jobs, written by the operator, use
-  the agent's allowlist alone.
+  can't be used to reach tools the creator may not call. Config jobs, set up by an admin with the
+  agent rather than by a requester, use the agent's allowlist alone.
 
 The tools offered to the model are fixed for the session, so the cached prompt prefix stays valid
 (section 6.7): in a DM, the allowlist filtered by that user's role at session start; in a group, the
@@ -581,12 +586,12 @@ Memory is Markdown, one file per scope. The scopes are `agent`, `user` (DMs only
   search is not in v1.
 
 Writes to agent-wide `MEMORY.md` are accepted only in turns whose requester is the agent's `owner`
-or an admin, and in config job turns, since the operator wrote those jobs. Agent-wide memory is
+or an admin, and in config job turns, since an admin set those jobs up. Agent-wide memory is
 loaded into every prompt, including the owner's tool-enabled DMs, so a guest or a group must not be
 able to plant instructions there.
 
-`USER.md` is written by people only and loaded only in that user's DMs. What an agent learns about a
-user goes into that agent's per-user memory.
+`USER.md` is written only by people, by hand or in the web UI, never by an agent, and is loaded only
+in that user's DMs. What an agent learns about a user goes into that agent's per-user memory.
 
 ### 6.8 Context Overflow
 
@@ -656,7 +661,8 @@ ask_to = "deliver_to"         # optional; without it, `ask` tools are denied (se
   reply to it has context.
 - Each job's last run time is kept in the `job_runs` table, keyed by the job's `id`. Missed runs
   while the core was down are coalesced into one run at startup.
-- Timezone: the job's user, else the agent's `timezone`, else the system timezone.
+- Timezone: the job's user, else the agent's `timezone`, else the default time zone in
+  `giles.toml` (section 11.2), else the system timezone.
 
 Every proactive send (job output, approval prompts, login codes) goes through the `outbox` table
 (section 11.4). It's retried with backoff until the channel accepts it, so output from a job that
@@ -687,11 +693,12 @@ with its own config and sandbox grants. RPCs carry no instance id. Instance conf
 section 11.2.
 
 Instance names are permanent ids: sessions, the inbox, memory paths, and the plugin's data directory
-are keyed by them. Renaming one in `giles.toml` alone would orphan all of that, so
+are keyed by them. Renaming one in its config alone would orphan all of that, so
 `giles instance rename <old> <new>` does it, with the core stopped: it migrates the database rows,
-renames the directories, and renames the `[<kind>.<old>]` table in `giles.toml`. At startup, the
-core refuses to start a new instance whose name doesn't match any known data while an unused old
-name has data, and points to the rename command.
+renames the directories, and renames the instance's config (in the current layout, the
+`[<kind>.<old>]` table in `giles.toml`, section 11.2). At startup, the core refuses to start a new
+instance whose name doesn't match any known data while an unused old name has data, and points to
+the rename command.
 
 ### 7.3 Discovery and Enablement
 
@@ -1180,7 +1187,7 @@ Everything lives under `GILES_HOME`, default `~/.giles`.
 
 ```text
 ~/.giles/
-  giles.toml                    # core, instances, routes, roles (human-written)
+  giles.toml                    # startup settings (operator-written; section 11.2)
   secrets.toml                  # mode 0600 (human-written)
   agents/<agent>/               # section 11.3
   users/<user>/                 # section 11.3
@@ -1206,12 +1213,39 @@ No plugin is ever granted read or write access to any part of `GILES_HOME` excep
 
 ### 11.2 Configuration
 
-Three kinds of TOML file: `giles.toml`, `agents/<agent>/agent.toml`, and `users/<user>/user.toml`.
-The core never edits `giles.toml`; people write it. The core may create and edit `agent.toml` and
-`user.toml` files, for example for an agent created in the web UI or a user created at runtime
-(section 3.2), so both people and the core write those.
+`giles.toml` holds only the settings Giles needs to start. The operator writes them and Giles never
+edits them:
 
-`giles.toml`:
+- The address the web interface listens on (`[core] http_listen`).
+- The default time zone for users who don't set one.
+- Security-model requirements, such as whether the sandbox is always enforced or a plugin instance
+  may be configured to run unsandboxed (section 12).
+
+Most other settings are managed by Giles and meant to be changed in the web UI, not in files, so
+Giles creates and edits them:
+
+- Users: an admin adds users in the web UI.
+- Agents and their files: `agent.toml`, `SOUL.md`, and per-user memories (section 11.3).
+- Routes from channel identities to users and agents: identity links (section 3.2) and routing
+  rules (section 6.1).
+- Component instances (providers, channels, toolsets) are headed for the web UI too, within the
+  limits `giles.toml` sets; how they're managed there is not designed yet.
+
+Where each kind of data is stored, in SQLite or in Markdown, JSONL, or other text files under
+`GILES_HOME`, is decided as each is built. `secrets.toml` stays operator-written; where secrets for
+settings managed in the web UI live is open.
+
+Transition: the current implementation still reads the owner (section 1.1), instances, and routes
+from `giles.toml`, and the multi-user design below keeps roles there and users in `user.toml`. Each
+moves to storage Giles manages as its web UI lands; the migration isn't designed. Open: the first
+login (section 3.4) needs the owner's identity, so whether some bootstrap identity stays in
+`giles.toml` is undecided.
+
+The current layout has three kinds of TOML file: `giles.toml`, `agents/<agent>/agent.toml`, and
+`users/<user>/user.toml`. Giles may create and edit `agent.toml` and `user.toml` files, for example
+for an agent created in the web UI or a user created at runtime (section 3.2).
+
+`giles.toml`, current layout:
 
 ```toml
 [core]
@@ -1391,8 +1425,9 @@ Linux and macOS in v1. Transport and sandbox sit behind internal traits so Windo
 without changing plugin contracts.
 
 The sandbox is mandatory for plugins the core launches. If it can't be applied, the plugin doesn't
-start. A per-instance `unsandboxed = true` overrides this, with a warning at every launch. Built-ins
-run in the core and remote plugins run elsewhere, so neither is sandboxed by the core.
+start. A per-instance `unsandboxed = true` overrides this, with a warning at every launch, if the
+security settings in `giles.toml` allow instances to opt out (section 11.2). Built-ins run in the
+core and remote plugins run elsewhere, so neither is sandboxed by the core.
 
 ### 12.1 Applying It
 
@@ -1463,7 +1498,7 @@ still shipped and used by other agent CLIs). If the command disappears, the tram
 
 ### 12.4 Grants
 
-Per instance in `giles.toml`:
+Per instance (in the current layout, in `giles.toml`; section 11.2):
 
 ```toml
 sandbox = { network = ["tcp:443"], read = ["/opt/homebrew"], write = [] }
