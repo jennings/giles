@@ -11,7 +11,8 @@ use std::process::ExitStatus;
 pub enum HostReport {
     /// Linux with Landlock and seccomp filters.
     Linux {
-        /// The newest Landlock ABI the kernel offers (PLAN section 12.2's table).
+        /// The effective Landlock ABI (PLAN section 12.2's table): the newest the kernel offers,
+        /// capped at the newest the sandbox knows.
         landlock_abi: u32,
     },
     /// macOS with `sandbox-exec`.

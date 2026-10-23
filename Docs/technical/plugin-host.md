@@ -206,8 +206,9 @@ after the sessions have stopped, `stop_all(STOP_GRACE)` stops every launched plu
   end-of-file, and `PluginHost` start and stop.
 - `plugins/giles-channel-echo/tests/host_sandbox.rs`: the echo plugin through the trampoline (the
   test binary acting as `giles sandbox-exec`, since Cargo gives that package no path to `giles`):
-  a working sandboxed launch on macOS; on Linux, until 2.13, a clean non-retryable failure with the
-  trampoline's message.
+  a working sandboxed launch where the host can sandbox (macOS, Linux with Landlock); on a Linux
+  kernel without Landlock, a clean non-retryable failure with the trampoline's message.
 - `crates/giles/tests/serve.rs`: `giles serve` with plugins that fail to launch (one through the
-  real trampoline) keeps running, logs them as pending, and stops cleanly; a shutdown signal while
-  a plugin launches exits at once and kills the plugin.
+  real trampoline, refused by `min_abi = 1000` on Linux and by its missing `/bin/sh` grant on
+  macOS) keeps running, logs them as pending, and stops cleanly; a shutdown signal while a plugin
+  launches exits at once and kills the plugin.

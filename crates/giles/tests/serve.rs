@@ -406,15 +406,19 @@ fn plugins_that_fail_to_launch_stay_pending_and_giles_runs() {
     let home = env.path("home");
     write_config(
         &home,
-        &format!("{MINIMAL_CONFIG}\n[channel.flaky]\nunsandboxed = true\n\n[channel.boxed]\n"),
+        &format!(
+            "{MINIMAL_CONFIG}\n[channel.flaky]\nunsandboxed = true\n\n[channel.boxed]\n\
+             sandbox = {{ min_abi = 1000 }}\n"
+        ),
     );
     install_script_plugin(
         &home,
         "flaky",
         "echo 'flaky: cannot reach the network' >&2; exit 1",
     );
-    // Sandboxed, through the real trampoline: the sandbox has no `execute` grant for `/bin/sh`
-    // (macOS), isn't implemented (Linux until TASKS.md 2.13), or is unavailable on this host.
+    // Sandboxed, through the real trampoline, which refuses: on Linux no kernel has Landlock
+    // ABI 1000 (or Landlock is missing), and on macOS (which ignores `min_abi`) the sandbox has
+    // no `execute` grant for `/bin/sh`.
     install_script_plugin(&home, "boxed", "exit 0");
     let daemon = Daemon::start(env.command(&["serve", "--home", home.to_str().unwrap()]));
     let (status, log) = daemon.stop("TERM");

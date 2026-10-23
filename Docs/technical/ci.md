@@ -22,6 +22,13 @@ cargo test --workspace --locked
 `--locked` fails the build if `Cargo.lock` is out of date instead of silently updating it, and `-D
 warnings` turns the workspace lints (see [Cargo Workspace](workspace.md)) into errors.
 
+On Ubuntu the tests run with `GILES_REQUIRE_LANDLOCK=1`: the Linux sandbox tests skip on kernels
+without Landlock (like the Apple `container` kernel used locally), and this makes them fail
+instead, so CI always runs them (see [Plugin Sandbox](sandbox.md#testing-without-landlock)). A step
+before the tests runs `host_probes_run` with `--nocapture`, so the log shows the Landlock ABI the
+runner's kernel offers (`host check: Ok(Linux { landlock_abi: N })`), which decides which
+ABI-dependent branches the sandbox tests exercise.
+
 **Protobuf** runs on `ubuntu-latest`. It installs a pinned `buf` (`BUF_VERSION`, set in the
 workflow's `env` block, with the `bufbuild/buf-action` action in setup-only mode) and runs, from the
 repository root:

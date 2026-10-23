@@ -1,6 +1,6 @@
-//! End-to-end tests of `giles sandbox-exec`: the scrubbed environment, fds 0 to 3 passing through
-//! `exec`, and failing closed while the Linux backend is staged. The macOS sandbox itself is
-//! tested in `sandbox_macos.rs`.
+//! End-to-end tests of `giles sandbox-exec` without a sandbox: the scrubbed environment, fds 0
+//! to 3 passing through `exec`, and the exit statuses. The sandboxes themselves are tested in
+//! `sandbox_linux.rs` and `sandbox_macos.rs`.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -170,23 +170,6 @@ fn unsandboxed_command_inherits_fds_0_to_3_and_its_exit_status() {
         fs::read_to_string(&fd3_path).unwrap(),
         format!("token=tok123\nargs=one --two\ncwd={}\n", data_dir.display())
     );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn sandboxed_spec_fails_closed_until_the_backend_lands() {
-    let env = Env::new();
-    let marker = env.dir.path().join("ran");
-    let script = format!("touch '{}'", marker.display());
-    let (output, stderr) =
-        run(env.command(&Spec::new(env.data_dir()), &["/bin/sh", "-c", &script]));
-    assert_eq!(output.status.code(), Some(125), "{stderr}");
-    assert!(
-        stderr.contains("sandbox is not implemented yet"),
-        "{stderr}"
-    );
-    assert!(stderr.contains("refusing to run"), "{stderr}");
-    assert!(!marker.exists(), "the command ran");
 }
 
 #[test]

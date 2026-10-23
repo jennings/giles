@@ -12,21 +12,16 @@ plugin in place:
 giles sandbox-exec <spec> -- <command> [args...]
 ```
 
-## Status
+## Backends
 
-The trampoline, its spec, the environment scrubbing, and the macOS backend are complete. The Linux
-backend is staged on purpose:
+| Platform | Backend                       | Implemented by | Section                                     |
+| -------- | ----------------------------- | -------------- | ------------------------------------------- |
+| Linux    | Landlock and seccomp          | TASKS.md 2.13  | [Linux](#linux-landlock-and-seccomp)        |
+| macOS    | Seatbelt through sandbox-exec | TASKS.md 2.14  | [macOS](#macos-seatbelt)                    |
 
-| Platform | Backend                       | Implemented by          |
-| -------- | ----------------------------- | ----------------------- |
-| Linux    | Landlock and seccomp          | TASKS.md 2.13 (pending) |
-| macOS    | Seatbelt through sandbox-exec | TASKS.md 2.14 (done)    |
-
-Until the Linux backend lands, its `apply` returns `SandboxError::NotImplemented`, and the
-trampoline exits with status 125 and an error naming the missing sandbox and the task, without
-running the command. It never pretends to sandbox. The only way to run a command on Linux today is
-a spec with `"unsandboxed": true`, which is PLAN section 12's per-instance opt-out and logs a
-warning.
+A backend that can't apply its sandbox makes the trampoline exit with status 125 without running
+the command; it never pretends to sandbox. The only way to run a command without one is a spec
+with `"unsandboxed": true`, PLAN section 12's per-instance opt-out, which logs a warning.
 
 ## Steps
 
@@ -60,7 +55,7 @@ constants in `giles_core::sandbox`, and `SandboxError::exit_code` maps an error 
 
 | Status | Constant                 | Meaning                                                      |
 | ------ | ------------------------ | ------------------------------------------------------------ |
-| 125    | `EXIT_TRAMPOLINE_FAILED` | The trampoline failed before `exec`: unreadable or invalid spec, relative command, unusable data directory (including one that is a symbolic link), sandbox not applied (including `NotImplemented`, writable grants whose links keep changing, and, from 2.13, `min_abi`), or an invalid `GILES_LOG`/`RUST_LOG` filter |
+| 125    | `EXIT_TRAMPOLINE_FAILED` | The trampoline failed before `exec`: unreadable or invalid spec, relative command, unusable data directory (including one that is a symbolic link), sandbox not applied (`SandboxError::Host` when Landlock is missing, `LandlockAbi` below `min_abi`, `Landlock`, `Seccomp`, and writable grants whose links keep changing), or an invalid `GILES_LOG`/`RUST_LOG` filter |
 | 126    | `EXIT_CANNOT_EXECUTE`    | `exec` found the command but couldn't run it (e.g. not executable) |
 | 127    | `EXIT_NOT_FOUND`         | `exec` didn't find the command                               |
 | 2      |                          | Command-line usage error (from `clap`); a core bug           |
@@ -118,9 +113,9 @@ plugin's grants, and passes its path ([Plugin Host](plugin-host.md#the-sandbox-s
 | `read`         | `[]`               | Extra paths readable recursively.                                   |
 | `write`        | `[]`               | Extra writable paths.                                               |
 | `execute`      | `[]`               | Extra paths under which programs may run. The command always may.   |
-| `network`      | `false`            | `false`: no IP sockets. `true`: all IP traffic. `["tcp:<port>"]`: TCP connects to those remote ports only. |
+| `network`      | `false`            | `false`: no IP sockets. `true`: all IP traffic. `["tcp:<port>"]`: TCP connects to those remote ports only (on Linux from Landlock ABI 4, and UDP stays open; [below](#network-and-sockets)). |
 | `unix`         | `[]`               | Unix sockets the plugin may connect to. Non-empty also allows `socket(AF_UNIX, ...)` on Linux (below). `socketpair` is always allowed. |
-| `min_abi`      | unset              | Lowest Landlock ABI to accept (Linux; ignored on macOS).            |
+| `min_abi`      | unset              | Lowest Landlock ABI to accept (Linux; ignored on macOS). Below it the trampoline exits 125. |
 | `unsandboxed`  | `false`            | Skip the backend, with a warning. The environment is still scrubbed. |
 | `env`          | `{}`               | Variables to pass: `GILES_*` names and `LANG`.                      |
 | `path`         | `/usr/bin:/bin`    | The command's `PATH`.                                               |
@@ -143,10 +138,11 @@ adds a toolset's install prefix to `read` and `execute`. The spec's own defaults
 restrictive values, so a field the core forgets denies rather than allows. The config's
 `sandbox.unix` list goes to `unix` unchanged.
 
-`unix` is enforced differently per platform. Linux (2.13): the seccomp filter allows the `AF_UNIX`
-family iff the list is non-empty; Landlock can only restrict connecting to a named socket by path
-from ABI 9, so below that a plugin with any `unix` grant can connect to every socket it can reach.
-macOS (2.14): the Seatbelt profile allows connecting to exactly the listed paths.
+`unix` is enforced differently per platform. Linux: the seccomp filter allows the `AF_UNIX`
+family iff the list is non-empty, and from Landlock ABI 9 the ruleset allows connecting to exactly
+the listed sockets (which must exist at launch); below ABI 9 a plugin with any `unix` grant can
+connect to every socket it can reach. macOS: the Seatbelt profile allows connecting to exactly the
+listed paths.
 
 ## Environment
 
@@ -165,7 +161,7 @@ Nothing else from the trampoline's environment reaches the plugin. In particular
 `GILES_HOME`, `GILES_LOG`, and any secrets in its environment don't. The token travels on stdin,
 never in the environment.
 
-## Backends
+## Backend Trait
 
 An internal trait in `sandbox/backend.rs`, one implementation per platform selected with `cfg`
 (`sandbox/linux.rs`, `sandbox/macos.rs`; other platforms fail to compile):
@@ -267,14 +263,8 @@ Links outside the writable roots (`/tmp`, `/opt/homebrew/bin/node`, a link the o
 followed. A grant changed later by someone other than the plugin is the operator's business, as
 the user guide says.
 
-Note for 2.13: Landlock's `path_beneath` rules have the same class of bug, because opening each
-grant's file descriptor follows links at launch, and the same race. Linux needs the same design:
-refuse a data directory that is a link (shared, already in `prepare_data_dir`); resolve each path
-once, opening components with `openat(O_PATH | O_NOFOLLOW)` and following no link at or below a
-writable root, and build the rule from that descriptor (not from a path resolved again); and stop
-the plugin from replacing the roots themselves. A Landlock grant on a directory doesn't cover the
-directory's own entry in its parent (removing or renaming it needs rights on the parent), so that
-last part may hold already; verify it with a test like `data_dir_cannot_be_swapped_for_a_link`.
+Linux has the same class of bug with Landlock, whose rules attach to whatever inode a descriptor
+opened at launch, and the same design closes it; see [Linux: Paths and Links](#paths-and-links).
 
 Note for 2.17: a plugin's children can outlive it, which is what makes the race above
 reachable. Stopping or restarting a plugin must kill its whole process tree, not just the plugin's
@@ -350,6 +340,205 @@ the local time zone, `os.cpu_count`, name resolution through mDNSResponder (`<ho
 `/etc/hosts` (`localhost`), a TCP connection to a local listener, SQLite and `tempfile` in the
 data directory, and a subprocess all worked, and reading a file in the home directory was denied.
 
+## Linux: Landlock and seccomp
+
+Code: `sandbox/linux.rs` (backend, ABI handling, host check), `sandbox/linux/ruleset.rs` (the
+Landlock rules), `sandbox/linux/paths.rs` (opening grants), `sandbox/linux/seccomp.rs` (the
+filter), `sandbox/linux/syscalls.rs` (Docker's allowlist, generated), and `sandbox/roots.rs` (the
+writable roots, shared with macOS). Tests: unit tests there, and
+`crates/giles/tests/sandbox_linux.rs`, which runs probes (`/bin/sh` and coreutils, `perl`, and the
+test binary itself as a Rust program) under the real `giles sandbox-exec` and checks each grant
+from both sides.
+
+Done natively in the trampoline with the `landlock` and `seccompiler` crates: no namespaces, no
+helper binary. `apply`, right before `exec`:
+
+1. Probes Landlock like the [host check](#host-check). Missing or disabled is
+   `SandboxError::Host` (exit 125): per PLAN section 12, the plugin doesn't start.
+2. Takes the effective ABI (below) and fails with `SandboxError::LandlockAbi` (exit 125) when
+   it's below the spec's `min_abi`.
+3. Logs the effective ABI: `sandboxing with Landlock and seccomp landlock_abi=<n>` at info level,
+   or a warning that also lists what this ABI lacks that the launch would use (the `lacking`
+   field). The trampoline's stderr goes to the core's log under the instance's span.
+4. Builds the seccomp filters, then builds and applies the Landlock ruleset
+   (`landlock_restrict_self`, after `PR_SET_NO_NEW_PRIVS`), then installs the filters. Both
+   restrict only the calling thread, which is why the trampoline must stay single-threaded, and
+   both are inherited across `exec` and by every child.
+
+### Landlock ABI
+
+The backend asks for everything Landlock ABI 9 has, and the `landlock` crate drops (best effort)
+whatever the kernel's ABI lacks. The effective ABI is the kernel's, capped at 9, the newest the
+backend and the crate know; a newer kernel is used as ABI 9. What a lower ABI means for a plugin:
+
+| ABI | Kernel | Without it                                                                         |
+| --- | ------ | ---------------------------------------------------------------------------------- |
+| 1   | 5.13   | No sandbox: the plugin doesn't start                                               |
+| 2   | 5.19   | Moving or linking files between directories fails (`EXDEV`), even inside writable grants; `mv` falls back to copying |
+| 3   | 6.2    | Landlock doesn't restrict truncation; seccomp denies path-based `truncate` instead (`ftruncate` needs a descriptor opened for writing, which Landlock checks) |
+| 4   | 6.7    | No TCP port rules: a port list allows all IP traffic, and binding isn't restricted |
+| 5   | 6.10   | No device `ioctl` rule (`IoctlDev`)                                                |
+| 6   | 6.12   | No scoping: the plugin can signal any process of the same user, Giles included, and (with a `unix` grant) connect to abstract Unix sockets |
+| 7-8 | 6.15, 7.0 | Audit logging flags and applying to all threads; nothing the trampoline needs   |
+| 9   | 7.1    | No Unix socket rules: a `unix` grant allows connecting to every reachable socket   |
+
+The log's `lacking` list names the rows for 3, 4 (with a port list), 6, and 9 (with `unix`
+grants), which are PLAN section 12.2's table. An operator who needs them sets `min_abi`.
+
+### Rules
+
+The ruleset handles every filesystem right (the plugin may do nothing to any file it isn't
+granted), TCP rights as described in [Network and Sockets](#network-and-sockets), and, from ABI
+6, scoping of signals and abstract Unix sockets to the plugin's own processes. A rule on anything
+but a directory carries only the rights that apply to files.
+
+| Paths | Rights | Why |
+| ----- | ------ | --- |
+| The data directory and `write` grants | Everything but executing and creating device nodes: read, write, create files, directories, links, FIFOs, and sockets, remove, move within (`Refer`), truncate, device `ioctl`, connect to sockets there | The writable roots. No `MakeChar`/`MakeBlock`: a plugin with `CAP_MKNOD` (Giles run as root) could otherwise create a node for a disk and bypass every file rule |
+| The command | Read and execute | Running it |
+| `execute` grants | Read and execute | Programs the plugin may run |
+| `read` grants | Read files, list directories | |
+| `unix` grants | Connect (ABI 9) | Exactly these sockets |
+| `/lib`, `/lib64`, `/usr/lib`, `/usr/lib64`, `/etc/ld.so.cache`, `/etc/ld.so.preload` | Read | Shared libraries and the loader's cache (a PLAN default) |
+| The dynamic loaders: x86-64 `/lib64/ld-linux-x86-64.so.2`, `/lib/ld-musl-x86_64.so.1`; AArch64 `/lib/ld-linux-aarch64.so.1`, `/lib/ld-musl-aarch64.so.1` | Read and execute | The kernel opens a dynamically linked program's loader for execution; these are the fixed `PT_INTERP` paths of the ABIs (links to them are followed) |
+| `/usr/share` | Read | Time zones, locales, and Debian's CA certificates, which `/etc/ssl/certs` links into |
+| `/etc/ssl`, `/etc/pki`, `/etc/ca-certificates`, `/etc/crypto-policies` | Read | TLS certificates and OpenSSL configuration (a PLAN default) |
+| `/etc/hosts`, `/etc/resolv.conf`, `/etc/nsswitch.conf`, `/etc/host.conf`, `/etc/gai.conf`, `/etc/services`, `/etc/protocols` | Read | DNS configuration (a PLAN default) and the service and protocol databases |
+| `/etc/localtime` | Read | The local time zone |
+| `/dev/random`, `/dev/urandom`, `/dev/zero` | Read | |
+| `/dev/null` | Read, write, truncate, `ioctl` | Redirects |
+| `/sys/devices/system/cpu` | Read | `sysconf(_SC_NPROCESSORS_ONLN)` and runtimes' CPU counts |
+
+Each path is opened once and the rule attaches to what was opened, so a link among the system
+paths (`/etc/resolv.conf` pointing into `/run/systemd/resolve`, `/lib64` into `/usr/lib64`) grants
+its target. A path that doesn't exist gets no rule: system paths that a distribution lacks are
+skipped quietly, and a missing spec grant is logged as a warning (`not granting a sandbox path
+that can't be opened`). Unlike macOS, a grant that doesn't exist yet doesn't start working when
+it's created; it has to exist when the plugin starts.
+
+Not granted, notably: `/proc` (glibc's `pthread_getattr_np` for the main thread and some runtimes'
+cgroup lookups read it and fall back without it; Rust's `std` does), `/tmp`, `/etc/passwd`
+(`getpwuid` fails; `HOME` is set), `/run`, `/dev/shm` (with System V IPC denied below, Python's
+`multiprocessing` locks don't work, as on macOS), and home directories. Landlock doesn't restrict
+looking up paths, `stat`, `readlink`, or `chdir`, so a plugin can see which files exist and their
+metadata, not their contents. It does keep the plugin from `ptrace` and from reading
+`/proc/<pid>/mem` or `environ` of any process outside its sandbox.
+
+Executing is a weak boundary on Linux: the loader is executable, and `ld.so <program>` runs any
+readable ELF file without execute rights on it. Execute rules keep scripts and well-behaved
+plugins to their grants (and a planted binary in the data directory doesn't run by `exec`); they
+don't stop a plugin that wants to run a program it can read.
+
+### Paths and Links
+
+The same design as macOS's [Writable Roots and Links](#writable-roots-and-links), for the same
+reason: a Landlock rule attaches to whatever inode the trampoline opened at launch, so a link the
+plugin planted inside a writable root on an earlier run (or flips right now, from a child that
+outlived it) would decide what the next launch grants.
+
+- The data directory can't be a link: `prepare_data_dir` refuses one, before the backend runs.
+- `paths::resolve` opens each path in one walk: `openat(O_PATH | O_NOFOLLOW)` component by
+  component, `fstat` to recognize a link, `readlinkat(fd, "")` to read it, and the rule is built
+  from the final descriptor (`PathBeneath::new(fd, ...)`), never from a path resolved again.
+  `O_PATH` needs no read permission and opens nothing, so a FIFO on the way can't block.
+- No link at or below a writable root is followed. The roots are found first by the shared
+  `roots::writable_roots` (repeated rounds, refusing roots that don't settle with
+  `SandboxError::WritableLink`), and every other path is then walked with the roots as stops. A
+  link below a stop ends the walk without a descriptor, and the grant gives nothing, with the
+  warning `not granting a sandbox path that goes through a symbolic link inside a writable grant`:
+  the kernel follows the link at access time and lands on an inode nothing grants.
+- The roots themselves can't be removed or replaced: a Landlock rule on a directory covers what's
+  inside it, but removing or renaming the directory needs rights on its parent, which isn't granted.
+  `data_dir_cannot_be_swapped_for_a_link` checks it; `a_racing_link_never_redirects_a_grant` runs
+  the macOS race against Landlock.
+
+### Network and Sockets
+
+`socket()` is allowed by seccomp only for granted families: `AF_INET` and `AF_INET6` with any
+network grant, `AF_UNIX` with any `unix` grant, nothing else (no `AF_NETLINK`, `AF_PACKET`,
+`AF_VSOCK`, ...); others fail with `EPERM`. `socketpair` is always allowed (async runtimes use
+it), and the inherited fd 3 needs nothing.
+
+Landlock's TCP rights (ABI 4) are handled by network grant:
+
+| `network`        | Handled              | Allowed by rule           | Effect                                |
+| ---------------- | -------------------- | ------------------------- | ------------------------------------- |
+| `false`          | bind and connect     | nothing                   | A second layer under seccomp          |
+| `true`           | bind                 | nothing                   | Any outbound TCP, no listening        |
+| `["tcp:<port>"]` | bind and connect     | connecting to each port   | Outbound TCP to those ports only      |
+
+Landlock has no UDP rights, so any network grant allows UDP everywhere; name resolution needs it
+(queries go to the `resolv.conf` server over UDP). Under a port list, DNS over TCP (port 53,
+used for large answers) fails unless granted. NSS modules that talk over Unix sockets (systemd's
+`resolve`, `mdns`) fail without a `unix` grant and glibc moves on to the next source in
+`nsswitch.conf`.
+
+With `unix` grants, ABI 9 allows connecting to exactly the granted sockets (`ResolveUnix` on each
+socket's inode, so the socket must exist when the plugin starts) and to sockets in the writable
+roots; ABI 6 keeps abstract sockets of processes outside the sandbox out of reach.
+
+### seccomp
+
+The filter is an allowlist built from Docker's default profile, `seccomp/default.json` in
+[moby/profiles](https://github.com/moby/profiles), at commit
+`6fe7deb1b9fb7c0397a4593480d7d22b9ee8caef` (2026-09-17), so glibc, Go, Node, and Python work
+unchanged. `sandbox/linux/syscalls.rs` is generated from it with these rules, as for an
+unprivileged container: the names of every `SCMP_ACT_ALLOW` entry without `args`, without
+`includes.caps` or `includes.minKernel`, and whose `includes.arches` (if any) names the
+architecture (`amd64`, `arm64`); then only names that are syscalls there (the kernel's table:
+`libc`'s `SYS_*` constants, else the 6.12 table in `seccompiler`'s source, else the 6.13
+`*xattrat` numbers). To update it, apply the same rules to a newer commit and record it in the
+file's header. The table stays Docker's list; the `EPERM` rows below override it.
+
+| Syscalls | Result |
+| -------- | ------ |
+| Docker's allowlist, except the `EPERM` rows | Allowed |
+| `io_uring_setup`, `io_uring_enter`, `io_uring_register` (they create and connect sockets without `socket`), `ptrace`, `process_vm_readv`, `process_vm_writev`, `bpf`, `perf_event_open`, `userfaultfd`, `keyctl`, `add_key`, `request_key` | `EPERM` |
+| System V IPC (`shmget`, `shmat`, `shmdt`, `shmctl`, `msgget`, `msgsnd`, `msgrcv`, `msgctl`, `semget`, `semop`, `semtimedop`, `semctl`) and POSIX message queues (`mq_open`, `mq_unlink`, `mq_timedsend`, `mq_timedreceive`, `mq_notify`, `mq_getsetattr`) | `EPERM`. Docker allows them because every container has its own IPC namespace; the sandbox has none, and Landlock doesn't cover IPC keys or queue names, so they would reach the shared memory, queues, and semaphores of every process of the same user (X11's MIT-SHM buffers, for one). POSIX shared memory and semaphores are files in `/dev/shm`, which isn't granted |
+| `truncate`, below Landlock ABI 3 | `EPERM` |
+| `socket` with a family not granted | `EPERM` |
+| `clone` with a namespace flag (Docker's mask `0x7E020000`) | `EPERM` |
+| `personality` other than Docker's values (`0`, `0x8`, `0x20000`, `0x20008`, `0xffffffff`) | `EPERM` |
+| Anything else, e.g. `clone3`, `mount`, `unshare` | `ENOSYS`: runtimes that probe newer syscalls fall back (glibc creates threads with `clone3` and falls back to `clone`) |
+| Another architecture (32-bit `int 0x80` on x86-64, AArch32) | The process is killed, so `socketcall` and the compat tables can't get around the rules |
+
+x32 syscalls (x86-64's ABI with `__X32_SYSCALL_BIT`) pass the architecture check but match no
+listed number, so every one fails with `ENOSYS`.
+
+The filter is built with `seccompiler` (rust-vmm, used by Firecracker) rather than by hand: it
+handles the architecture check, argument comparisons, and BPF jump offsets, which are where a
+hand-written filter goes wrong silently. Its one limitation is a single action for matching
+syscalls and one for the rest, so a launch installs two filters:
+
+1. The allowlist: Docker's list plus every syscall the second filter decides on is allowed,
+   everything else gets `ENOSYS`.
+2. The denials: the `EPERM` rows above are matched and get `EPERM`; everything else is allowed.
+
+The kernel runs both and takes the most severe result. Because the first filter allows every
+syscall the second may deny, at most one of them returns an errno, and the result doesn't depend
+on how the kernel breaks ties between equal results. The argument conditions compare the low 32
+bits (the arguments are `int`s or flags in the low bits). The kernel's seccomp action cache (Linux
+5.11) skips both filters for syscalls whose result doesn't depend on arguments, so the long
+allowlist costs nothing on hot paths.
+
+The unit tests run the generated BPF in a small interpreter (every listed syscall, the denials,
+socket families, `clone` flags, `personality`, other architectures, `truncate` per ABI) and on the
+real kernel: the filters are installed between `fork` and `exec` of `/bin/sh` and of the test
+binary itself, whose probe checks each answer.
+
+### Testing Without Landlock
+
+The sandbox tests in `crates/giles/tests/sandbox_linux.rs` need Landlock. On a kernel without it
+each test prints `skipping: the Linux sandbox can't run on this kernel (...)` and passes, except
+`without_landlock_nothing_runs`, which runs only there and checks the launch fails with 125. With
+`GILES_REQUIRE_LANDLOCK=1`, set in CI's Ubuntu job, a missing Landlock fails them instead, as it
+does `host_probes_run`. The seccomp unit tests don't need Landlock.
+
+The Apple `container` kernel used for local Linux checks has no Landlock. To run the sandbox tests
+locally, build the same kernel version with it: take its configuration from `/proc/config.gz`,
+`scripts/config --enable SECURITY_LANDLOCK`, `make olddefconfig Image`, and pass the resulting
+`arch/arm64/boot/Image` to `container run -k`. That kernel offers ABI 6.
+
 ## Host Check
 
 `giles_core::sandbox::check_host() -> Result<HostReport, HostError>` (backed by
@@ -371,8 +560,9 @@ Linux, in order, stopping at the first failure:
    `prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, NULL)` fails with `EFAULT` when filters are supported
    and `EINVAL` when not, without installing anything.
 
-The report is `HostReport::Linux { landlock_abi }`. It doesn't apply `min_abi`: that's per launch,
-in the backend (2.13).
+The report is `HostReport::Linux { landlock_abi }` with the effective ABI: the kernel's, capped at
+the newest the backend knows (see [Landlock ABI](#landlock-abi)). It doesn't apply `min_abi`:
+that's per launch, in the backend.
 
 macOS: `/usr/bin/sandbox-exec` must be an executable file, and
 `sandbox-exec -p '(version 1)(allow default)' /usr/bin/true` must succeed (it fails, for example,

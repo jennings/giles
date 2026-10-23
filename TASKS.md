@@ -194,7 +194,7 @@ The five tracks run in parallel.
 
 ### Track C: Plugin Plumbing
 
-- [ ] **2.13 Sandbox: Linux** (§12.2). Landlock with the newest ABI the kernel offers, effective ABI
+- [x] **2.13 Sandbox: Linux** (§12.2). Landlock with the newest ABI the kernel offers, effective ABI
   logged, `min_abi` enforced; seccomp allowlist based on Docker's default profile (`ENOSYS` for
   unlisted syscalls, `EPERM` for the denied list and ungranted socket families, native arch only,
   `socketpair(AF_UNIX)` allowed). **Needs:** 1.6.

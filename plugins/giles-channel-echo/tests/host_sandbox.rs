@@ -5,9 +5,9 @@
 //! runtime starts), because Cargo gives tests here the echo binary's path but not the `giles`
 //! binary's. Hence no libtest harness.
 //!
-//! On macOS (Seatbelt, TASKS.md 2.14) the launch succeeds. On Linux, until the Landlock and seccomp
-//! backend lands (TASKS.md 2.13), it fails cleanly: a non-retryable sandbox error carrying the
-//! trampoline's own message, and nothing runs.
+//! Where the host can sandbox (macOS; Linux with Landlock) the launch succeeds. On a Linux kernel
+//! without Landlock it fails cleanly: a non-retryable sandbox error carrying the trampoline's own
+//! message, and nothing runs.
 
 mod support;
 
@@ -54,7 +54,7 @@ async fn sandboxed_echo_launch() {
     let launcher = home.launcher(std::env::current_exe().unwrap());
     let result = launcher.launch_channel(&home.channel("echo")).await;
 
-    if cfg!(target_os = "macos") {
+    if sandbox::check_host().is_ok() {
         let plugin = result.unwrap_or_else(|e| panic!("{e}\nstderr: {:#?}", e.stderr()));
         assert!(plugin.sandboxed);
         assert_eq!(plugin.identity_namespace, "echo");
@@ -79,15 +79,14 @@ async fn sandboxed_echo_launch() {
         assert!(status.success(), "{status}");
     } else {
         let error = match result {
-            Ok(plugin) => panic!("launched {} without a sandbox backend", plugin.instance),
+            Ok(plugin) => panic!("launched {} without a usable sandbox", plugin.instance),
             Err(error) => error,
         };
         assert!(matches!(error, LaunchError::Sandbox { .. }), "{error}");
         assert!(!error.is_retryable());
         let message = error.to_string();
         assert!(
-            message
-                .contains("Error: the Linux (Landlock and seccomp) sandbox is not implemented yet"),
+            message.contains("Error: cannot sandbox the command on this host, so it was not run"),
             "{message}"
         );
         assert!(!home.root.pid_file("echo").unwrap().exists());

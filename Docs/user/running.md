@@ -123,7 +123,9 @@ Giles runs the plugins it launches in a sandbox, and a plugin that can't be sand
 start. At startup, `giles serve` checks that this machine can sandbox at all and logs the result:
 
 - Linux: Landlock must be enabled (kernel 5.13 or later, with `landlock` in the kernel's `lsm=`
-  list) and seccomp must be available. In a container, it's the host kernel that matters.
+  list) and seccomp must be available. In a container, it's the host kernel that matters. The log
+  line names the Landlock ABI; newer kernels enforce more (see
+  [`min_abi`](configuration.md#sandbox)).
 - macOS: `/usr/bin/sandbox-exec` must be present and able to apply a sandbox profile. It can't
   when Giles itself runs inside another sandbox that forbids it.
 

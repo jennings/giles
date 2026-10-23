@@ -38,8 +38,18 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # Shows which Landlock ABI the Linux sandbox tests run against (`host check: ...`).
+      - name: Sandbox host check
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo test -p giles-core --locked host_probes_run -- --nocapture
+        env:
+          GILES_REQUIRE_LANDLOCK: "1"
       - name: Test
         run: cargo test --workspace --locked
+        env:
+          # GitHub's Ubuntu runners have Landlock, so the Linux sandbox tests must run there
+          # rather than skip (they skip on kernels without it, like Apple's `container` VMs).
+          GILES_REQUIRE_LANDLOCK: ${{ matrix.os == 'ubuntu-latest' && '1' || '' }}
 
   protobuf:
     name: Protobuf

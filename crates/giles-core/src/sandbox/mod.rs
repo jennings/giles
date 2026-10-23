@@ -6,14 +6,12 @@
 //! the command in place, so stdin, stdout, stderr, and fd 3 (the plugin's end of the socket pair)
 //! pass through unchanged. See `Docs/technical/sandbox.md`.
 //!
-//! The platform backends sit behind the internal [`backend::SandboxBackend`] trait. The macOS
-//! backend (Seatbelt, TASKS.md 2.14) is done. The Linux backend (Landlock and seccomp, TASKS.md
-//! 2.13) is staged: until it lands, applying it fails with [`SandboxError::NotImplemented`], so
-//! on Linux the trampoline refuses to run anything unless the spec opts out with
+//! The platform backends sit behind the internal [`backend::SandboxBackend`] trait: Landlock and
+//! seccomp on Linux (TASKS.md 2.13), Seatbelt on macOS (TASKS.md 2.14). A backend that can't
+//! apply its sandbox fails, and the trampoline runs nothing, unless the spec opts out with
 //! [`Spec::unsandboxed`].
 //!
-//! [`check_host`] is the startup check that the host can sandbox at all. Its probes are real on
-//! both platforms.
+//! [`check_host`] is the startup check that the host can sandbox at all.
 
 mod backend;
 mod env;
@@ -22,7 +20,6 @@ mod host;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(target_os = "macos")]
 mod roots;
 mod spec;
 
@@ -112,18 +109,31 @@ pub enum SandboxError {
         #[source]
         source: io::Error,
     },
-    /// This platform's sandbox backend is not built yet (a staged implementation; see the
-    /// module docs). The trampoline fails closed instead of running the command unsandboxed.
+    /// The host can't apply the sandbox (on Linux: Landlock is missing or disabled). The
+    /// trampoline fails closed instead of running the command unsandboxed.
     #[error(
-        "the {sandbox} sandbox is not implemented yet (TASKS.md {task}); refusing to run the \
-         command without it (an instance can opt out with `unsandboxed = true`)"
+        "cannot sandbox the command on this host, so it was not run (an instance can opt out \
+         with `unsandboxed = true`)"
     )]
-    NotImplemented {
-        /// The sandbox that's missing, e.g. "Linux (Landlock and seccomp)".
-        sandbox: &'static str,
-        /// The task that implements it.
-        task: &'static str,
+    Host(#[source] HostError),
+    /// The kernel's Landlock ABI (capped at the newest Giles knows) is below the spec's
+    /// `min_abi`.
+    #[error(
+        "the spec requires Landlock ABI {required} (`min_abi`), but this kernel provides ABI \
+         {available}; refusing to run the command"
+    )]
+    LandlockAbi {
+        /// The spec's `min_abi`.
+        required: u32,
+        /// The effective ABI.
+        available: u32,
     },
+    /// Building or applying the Landlock ruleset failed.
+    #[error("cannot apply the Landlock ruleset")]
+    Landlock(#[source] Box<dyn std::error::Error + Send + Sync>),
+    /// Building or installing the seccomp filter failed.
+    #[error("cannot apply the seccomp filter")]
+    Seccomp(#[source] Box<dyn std::error::Error + Send + Sync>),
     /// `exec` failed.
     #[error("cannot run {}", .program.display())]
     Exec {
@@ -336,13 +346,27 @@ mod tests {
         );
     }
 
+    /// Without Landlock, or below `min_abi`, nothing is restricted and nothing runs. (A launch
+    /// that succeeds would restrict this test process; `crates/giles/tests/sandbox_linux.rs`
+    /// runs those through the real trampoline.)
     #[cfg(target_os = "linux")]
     #[test]
-    fn sandboxed_launch_fails_closed_until_the_backend_lands() {
+    fn sandboxed_launch_fails_closed_before_restricting_anything() {
         let dir = tempfile::tempdir().unwrap();
-        let err = prepare(&Spec::new(dir.path()), &command(&["/bin/sh"])).unwrap_err();
-        assert!(matches!(err, SandboxError::NotImplemented { .. }), "{err}");
-        assert!(err.to_string().contains("refusing to run"), "{err}");
+        let spec = Spec {
+            min_abi: Some(1000),
+            ..Spec::new(dir.path())
+        };
+        let err = prepare(&spec, &command(&["/bin/sh"])).unwrap_err();
+        match check_host() {
+            Ok(HostReport::Linux { landlock_abi }) => assert!(
+                matches!(err, SandboxError::LandlockAbi { required: 1000, available }
+                    if available == landlock_abi),
+                "{err}"
+            ),
+            Ok(other) => panic!("{other:?}"),
+            Err(_) => assert!(matches!(err, SandboxError::Host(_)), "{err}"),
+        }
         assert_eq!(err.exit_code(), EXIT_TRAMPOLINE_FAILED);
     }
 

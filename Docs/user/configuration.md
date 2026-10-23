@@ -222,11 +222,28 @@ sandbox = { network = ["tcp:443"], read = ["/opt/homebrew"], write = ["/Users/me
 
 | Key       | Meaning                                                                          |
 | --------- | -------------------------------------------------------------------------------- |
-| `network` | `true` for all IP traffic, `false` for none, or TCP ports as `["tcp:443"]` (enforced on macOS, and on Linux with Landlock ABI 4, kernel 6.7 or later; on older Linux kernels all ports are open). Name lookups work with any network grant |
+| `network` | `true` for all IP traffic, `false` for none, or TCP ports as `["tcp:443"]` (enforced on macOS, and on Linux with Landlock ABI 4, kernel 6.7 or later; on older Linux kernels all ports are open, and on Linux UDP is always open with any network grant). Name lookups work with any network grant |
 | `read`    | Absolute paths the plugin may read                                               |
 | `write`   | Absolute paths the plugin may read and write                                     |
 | `unix`    | Absolute paths of Unix sockets the plugin may connect to (on Linux before Landlock ABI 9, kernel 7.1, any entry allows connecting to every socket) |
-| `min_abi` | Linux only: refuse to start the plugin unless the kernel's Landlock ABI is at least this |
+| `min_abi` | Linux only: refuse to start the plugin unless the kernel's Landlock ABI is at least this (table below) |
+
+On Linux the sandbox is Landlock plus a system call filter, and what Landlock can enforce depends
+on the kernel. Giles uses the newest Landlock ABI the kernel offers and logs it at every launch
+(`sandboxing with Landlock and seccomp landlock_abi=6`), with a warning that lists what's missing
+when the kernel lacks something the plugin's grants rely on. To refuse older kernels instead, set
+`min_abi`; a plugin whose kernel is below it doesn't start (the log says why):
+
+| `min_abi` | Kernel | Guarantees                                                                       |
+| --------- | ------ | -------------------------------------------------------------------------------- |
+| 1         | 5.13   | Files: read, write, and execute grants (the minimum; Giles needs Landlock)       |
+| 3         | 6.2    | Files can't be truncated outside write grants by Landlock itself                 |
+| 4         | 6.7    | `network` port lists are enforced, and plugins can't listen on TCP ports         |
+| 6         | 6.12   | The plugin can't signal processes outside its sandbox, Giles included            |
+| 9         | 7.1    | `unix` grants allow exactly the listed sockets (they must exist when the plugin starts) |
+
+On Linux, grants must exist when the plugin starts: Landlock grants files, not names, so a path
+created later isn't covered.
 
 No grant may touch the data root, except the instance's own data directory: a path inside the
 data root, or one containing it (such as your home directory when the data root is `~/.giles`), is

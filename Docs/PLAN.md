@@ -1427,7 +1427,10 @@ unchanged:
   runtimes use it).
 - Denied: `io_uring_setup`, `io_uring_enter`, `io_uring_register` (io_uring can create and connect
   sockets without the `socket` syscall), `ptrace`, `process_vm_readv`/`writev`, `bpf`,
-  `perf_event_open`, `userfaultfd`, `keyctl`, `add_key`, `request_key`, and path-based `truncate`.
+  `perf_event_open`, `userfaultfd`, `keyctl`, `add_key`, `request_key`, path-based `truncate`
+  (below Landlock ABI 3), and System V IPC (`shm*`, `msg*`, `sem*`) and POSIX message queues
+  (`mq_*`): Docker allows those because each container has its own IPC namespace, and the sandbox
+  has none, so they would reach every same-user process's segments and queues.
 
 ### 12.3 macOS
 
@@ -1455,8 +1458,8 @@ Per instance in `giles.toml`:
 sandbox = { network = ["tcp:443"], read = ["/opt/homebrew"], write = [] }
 ```
 
-- `network = true` allows all IP traffic; a list of ports restricts it where the kernel has Landlock
-  ABI 4 or later.
+- `network = true` allows all outbound IP traffic (no listening on TCP); a list of ports restricts
+  it where the kernel has Landlock ABI 4 or later.
 - Config validation rejects any `read` or `write` grant that overlaps `GILES_HOME` (other than the
   instance's own data directory) or the plugin directories. Otherwise a file-writing tool could
   edit `giles.toml` (e.g. set `unsandboxed = true`) or read `secrets.toml`.
