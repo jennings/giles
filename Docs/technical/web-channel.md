@@ -288,13 +288,12 @@ ended: every open page replaces it with the outcome (`Allowed`, `AllowedForSessi
 `Expired`), and page loads no longer show it. `false` if the chat doesn't show it (resolved
 already, or forgotten by a restart or with an idle hub); it never makes a hub.
 
-How 2.7 uses it: approval prompts for a conversation on the web instance go to
-`registry.web_channel()` (when `reply.instance()` is its `instance()`) with `send_approval` instead
-of `Reply::send`, which shows the typed-reply version of the prompt on other channels; when the
-approval ends (answer, typed reply, timeout, or denial by a new message, PLAN section 6.4), 2.7
-calls `resolve_approval`. 2.7 may instead mark prompts in `OutboundMessage` (or a `Channel` hook
-like `deltas`) and have `send` call `send_approval`; either way the template, the endpoint, the
-answer path, and the retirement are here.
+How the approvals code uses it: `approvals::ChannelPresenter` sends prompts for a conversation on
+the web instance (`registry.web_channel()` whose `instance()` is `reply.instance()`) with
+`send_approval` instead of `Reply::send`, which carries the typed-reply version of the prompt on
+other channels, and calls `resolve_approval` however the approval ends (answer, typed reply,
+timeout, `/stop`, or denial by a new message, PLAN section 6.4). `ApprovalOutcome` is
+`approvals::ApprovalOutcome`, re-exported here ([Approvals](approvals.md)).
 
 ## Blobs
 

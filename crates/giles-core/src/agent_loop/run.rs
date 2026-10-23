@@ -1,7 +1,9 @@
 //! One turn, start to end (PLAN section 6.3).
 
+use std::sync::Arc;
+
 use futures::StreamExt;
-use giles_store::{SessionKind, Slot, UsageRecord};
+use giles_store::{InboxId, SessionKind, Slot, UsageRecord};
 use giles_types::{
     Block, CacheRetention, CallContext, ChannelConversation, CompletionEvent, CompletionRequest,
     GenerationParams, Message, MessageMeta, Role, StopReason, Usage,
@@ -17,6 +19,7 @@ use super::{
     AgentLoop, CANCELLED_RESULT, ITERATION_LIMIT_RESULT, NOTICE_TIMEOUT, SKIPPED_RESULT,
     TRUNCATED_RESULT,
 };
+use crate::approvals::TurnApprovals;
 use crate::config::{AgentConfig, BusyMode};
 use crate::registry::{RegistryError, ResolvedModel};
 use crate::sessions::{INTERRUPTED_RESULT, Turn, TurnMessage, TurnOutcome};
@@ -164,6 +167,11 @@ async fn drive(agent_loop: &AgentLoop, turn: &Turn) -> Result<TurnOutcome, TurnE
     let prompt = agent_loop.session_prompt(session, agent).await?;
     let model = agent_loop.registry.agent_model(agent)?;
     let context = call_context(turn);
+    let approvals = Arc::new(TurnApprovals::for_turn(
+        agent_loop.approvals.clone(),
+        agent,
+        turn,
+    ));
     let mut output = agent_loop.output_for(turn);
     let params = GenerationParams {
         cache_retention: match session.kind {
@@ -261,12 +269,19 @@ async fn drive(agent_loop: &AgentLoop, turn: &Turn) -> Result<TurnOutcome, TurnE
             continue;
         }
 
-        if !run_tools(agent_loop, turn, &prompt, &context, calls, &slots).await? {
-            fill_empty_slots(agent_loop, turn, CANCELLED_RESULT).await;
-            return Ok(TurnOutcome::Cancelled);
-        }
+        let denied = match run_tools(
+            agent_loop, turn, &prompt, &context, &approvals, calls, &slots,
+        )
+        .await?
+        {
+            BatchEnd::Cancelled => {
+                fill_empty_slots(agent_loop, turn, CANCELLED_RESULT).await;
+                return Ok(TurnOutcome::Cancelled);
+            }
+            BatchEnd::Done { denied } => denied,
+        };
 
-        let steered = agent_loop.at_batch_boundary(turn).await;
+        let steered = agent_loop.at_batch_boundary(turn, denied).await;
         if !steered.is_empty() {
             let messages = steered
                 .iter()
@@ -364,21 +379,35 @@ async fn record_usage(agent_loop: &AgentLoop, turn: &Turn, model: &ResolvedModel
     }
 }
 
-/// Runs the calls of one assistant message, filling each slot as its result arrives. With
-/// `busy_mode = "steer"`, once the requester has a new message queued the calls that haven't
-/// started yet are skipped (the dispatcher's `skip` signal); running calls finish. The message
-/// is only looked at here ([`Steering::peek`](crate::sessions::Steering::peek)): it joins the
-/// turn at the boundary, so a turn stopped before then leaves it queued for the next one.
-/// Returns `false` if the turn was cancelled first: the calls still running are cancelled (the
-/// dispatcher's stream is dropped) and their slots are left for the caller.
+/// How a batch of calls ended.
+enum BatchEnd {
+    /// [`Turn::cancel`] fired: the calls still running were cancelled (the dispatcher's stream
+    /// was dropped, which also cancels their approvals) and their slots are left for the caller.
+    Cancelled,
+    /// Every call was answered. `denied`: a message from the requester denied a waiting
+    /// approval, so it joins the turn at the boundary in either busy mode.
+    Done { denied: bool },
+}
+
+/// Runs the calls of one assistant message, filling each slot as its result arrives. The
+/// requester's new messages are only looked at here
+/// ([`Steering::peek`](crate::sessions::Steering::peek)); they join the turn at the boundary, so
+/// a turn stopped before then leaves them queued for the next one.
+///
+/// - With `busy_mode = "steer"`, once the requester has a message queued the calls that haven't
+///   started yet are skipped (the dispatcher's `skip` signal); running calls finish.
+/// - In either mode, a message that arrives while an approval of the turn waits denies every
+///   waiting approval ("Not approved. The user said: ..."). Messages already queued when the
+///   batch started, or seen while no approval waited, don't.
 async fn run_tools(
     agent_loop: &AgentLoop,
     turn: &Turn,
     prompt: &SessionPrompt,
     context: &CallContext,
+    approvals: &Arc<TurnApprovals>,
     calls: Vec<ToolRequest>,
     slots: &[Slot],
-) -> Result<bool, TurnError> {
+) -> Result<BatchEnd, TurnError> {
     debug_assert!(
         calls
             .iter()
@@ -387,26 +416,44 @@ async fn run_tools(
     );
     let steer = turn.busy_mode == BusyMode::Steer;
     let skip = CancellationToken::new();
+    // The newest queued requester row looked at so far: later ones are new.
+    let mut seen = newest(&peek_steering(turn).await);
+    let mut denied = false;
     let mut filled = vec![false; calls.len()];
     let mut outputs = agent_loop.dispatcher.dispatch(ToolBatch {
         calls,
         tools: prompt.tools.clone(),
         context: context.clone(),
         skip: skip.clone(),
+        approvals: approvals.clone(),
     });
     loop {
         // `biased`: a message that arrived while the model was answering skips every call
         // before one starts.
         let next = tokio::select! {
             biased;
-            () = turn.cancel.cancelled() => return Ok(false),
-            () = turn.steering.changed(), if steer && !skip.is_cancelled() => {
-                // A wake-up may be spurious: skip only for a message actually queued.
+            () = turn.cancel.cancelled() => return Ok(BatchEnd::Cancelled),
+            () = turn.steering.changed() => {
+                // A wake-up may be spurious: act only on messages actually queued.
                 let queued = peek_steering(turn).await;
-                if !queued.is_empty() {
+                if steer && !queued.is_empty() && !skip.is_cancelled() {
                     debug!(session = %turn.session.id, messages = queued.len(), "skipping unstarted calls to read a new message");
                     skip.cancel();
                 }
+                let new: Vec<&TurnMessage> = queued
+                    .iter()
+                    .filter(|m| seen.is_none_or(|seen| m.inbox > seen))
+                    .collect();
+                if !new.is_empty() && approvals.has_pending() {
+                    let said: Vec<&str> = new
+                        .iter()
+                        .map(|m| m.message.text.trim())
+                        .filter(|text| !text.is_empty())
+                        .collect();
+                    approvals.deny_pending(&said.join("\n"));
+                    denied = true;
+                }
+                seen = seen.max(newest(&queued));
                 continue;
             }
             next = outputs.next() => next,
@@ -440,7 +487,7 @@ async fn run_tools(
             .fill_empty_slots(turn.session.id, SKIPPED_RESULT, agent_loop.clock.now())
             .await?;
     }
-    Ok(true)
+    Ok(BatchEnd::Done { denied })
 }
 
 /// The `ToolUse` blocks of `message`, in order.
@@ -510,6 +557,11 @@ async fn peek_steering(turn: &Turn) -> Vec<TurnMessage> {
             Vec::new()
         }
     }
+}
+
+/// The newest inbox row among `messages`.
+fn newest(messages: &[TurnMessage]) -> Option<InboxId> {
+    messages.iter().map(|m| m.inbox).max()
 }
 
 /// Tells the requester `text`, waiting at most [`NOTICE_TIMEOUT`].

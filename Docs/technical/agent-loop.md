@@ -8,7 +8,7 @@ model stops asking for tools. The session code that hands it turns is in
 
 | Item                          | What it is                                                         |
 | ----------------------------- | ------------------------------------------------------------------ |
-| `AgentLoop`                   | The `TurnRunner`: `new(registry, store, clock, dispatcher)`, `from_runtime` |
+| `AgentLoop`                   | The `TurnRunner`: `new(registry, store, clock, dispatcher, approvals)`, `from_runtime(runtime, approvals)` |
 | `AgentLoop::session_prompt`   | The session's cached prefix, assembled at its first turn           |
 | `AgentLoop::rebuild_prompt`   | A fresh `system` for the session, same tools (compaction)          |
 | `ToolDispatcher`              | Runs one message's calls: `dispatch(ToolBatch) -> stream of (index, ToolOutput)` |
@@ -172,7 +172,14 @@ an error ends mid-batch leaves them queued, and they start the next turn.
   next request not built yet) `at_batch_boundary` takes every queued requester message, and they
   are stored as separate `User` messages, with their time prefixes, after the tool results. A
   response without tool calls ends the turn; messages that arrived during it start the next one.
-- **`queue`**: no message joins a running turn; each starts the next one.
+- **`queue`**: no message joins a running turn; each starts the next one, unless it denied an
+  approval (below).
+- **While an approval waits** (either mode): a requester message that arrives then (newer than
+  the queued rows the batch had already seen) denies the turn's waiting approvals
+  (`TurnApprovals::deny_pending`: `Not approved. The user said: ...`, quoting only those
+  messages), and at the boundary every queued requester message joins the turn, in order, after
+  the results ([Approvals](approvals.md)). A message already queued before the prompt denies
+  nothing.
 
 ### Iteration Caps
 
@@ -191,10 +198,11 @@ session, so the scheduler has to mark such turns for the jobs cap to apply to th
 
 ## Tool Dispatch
 
-`ToolDispatcher::dispatch(ToolBatch { calls, tools, context, skip })` returns a stream of `(index,
-ToolOutput { content, is_error })`, one per call, in any order. Dropping it must cancel the calls
-still running. `context` is the `CallContext`: agent, requester, and the session's channel
-conversation. `skip` is the steering signal above.
+`ToolDispatcher::dispatch(ToolBatch { calls, tools, context, skip, approvals })` returns a stream
+of `(index, ToolOutput { content, is_error })`, one per call, in any order. Dropping it must
+cancel the calls still running. `context` is the `CallContext`: agent, requester, and the
+session's channel conversation. `skip` is the steering signal above; `approvals` the turn's
+`TurnApprovals`, built once per turn by `TurnApprovals::for_turn`.
 
 `PolicyDispatcher` is the daemon's (§6.3, §6.4). It doesn't spawn: the stream drives the calls, so
 a call starts only while the agent loop polls it, and dropping the stream drops every running
@@ -229,16 +237,23 @@ registered. The session's tool list is the agent's allowlist (§6.4); v1 has no 
 no second check by the requester's role. With roles, a forbidden call would get `not permitted for
 <user>` here, before it runs.
 
-Otherwise it calls the toolset with the bare name, the input, and no media, and the first
+Then a call to a tool matching the agent's `ask` globs waits for approval
+(`TurnApprovals::approve_call`, [Approvals](approvals.md)); a denial is its error result. The wait
+doesn't count against the deadline, and the checks run again once it's approved.
+
+Once allowed, it calls the toolset with the bare name, the input, and no media, and the first
 `ToolCallEvent::Result` is the output; a `call` error, an `Err` event, or a stream that ends
-without a result becomes an error result with the error's text. Progress is logged. The handle's
-`answers` sender is dropped at once, which denies any approval request (2.7 answers them).
+without a result becomes an error result with the error's text. Progress is logged. A
+`ToolCallEvent::ApprovalRequest` (MCP elicitation) is asked through
+`TurnApprovals::answer_question` and answered on the handle's `answers`; that wait is part of the
+call.
 
 ### Deadlines
 
-The deadline covers the whole call, from `Toolset::call` to its result. A call still running at
-its deadline is dropped (cancelled at the toolset, as above) and gets the error result `timed out
-after <deadline>`, e.g. `timed out after 5m`; the batch goes on.
+The deadline covers the whole call, from `Toolset::call` to its result (not the wait for an `ask`
+approval before it). A call still running at its deadline is dropped (cancelled at the toolset,
+as above) and gets the error result `timed out after <deadline>`, e.g. `timed out after 5m`; the
+batch goes on.
 
 ## Output
 
@@ -291,11 +306,6 @@ the channel shows as cut off.
 
 ## Seams for Later Tasks
 
-- **2.7, approvals**: the gate goes in the per-call future built in `PolicyDispatcher::dispatch`,
-  after the call-time checks and before `tokio::time::timeout`, so waiting for an answer doesn't
-  use up the call's deadline; a denial is that call's output. A barrier call waiting for approval
-  holds up the calls after it, as it would while running. Mid-call elicitation arrives as
-  `ToolCallEvent::ApprovalRequest` in `run_call`, answered on the handle's `answers` sender.
 - **2.9, media**: inbound attachments into `history::user_message`, `ModelInfo::accepts` filtering,
   `ToolCall::media`.
 - **2.10, compaction**: `AgentLoop::rebuild_prompt`, and the summary rendering in

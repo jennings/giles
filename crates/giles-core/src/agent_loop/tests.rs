@@ -22,6 +22,7 @@ use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use super::*;
+use crate::approvals::ApprovalBoard;
 use crate::config::{BusyMode, Config, InstanceName, LoadOptions};
 use crate::paths::DataRoot;
 use crate::sessions::{Reply, Steering};
@@ -370,6 +371,7 @@ impl Harness {
             self.store.clone(),
             Arc::new(FixedClock),
             dispatcher,
+            Arc::new(ApprovalBoard::default()),
         )
     }
 
@@ -1075,6 +1077,31 @@ async fn a_job_turn_uses_short_retention_sends_nothing_and_is_not_cached() {
         _ => panic!("not text"),
     };
     assert!(system(&requests[1]).contains("Tea at five."));
+}
+
+#[tokio::test]
+async fn a_job_turn_denies_ask_tools_as_unattended() {
+    let mut h = Harness::with_agent(
+        "models = [\"anthropic/test-model\"]\ntools = [\"github__*\"]\n\
+         ask = [\"github__list_issues\"]\n",
+    )
+    .await;
+    h.session = h
+        .store
+        .create_job_session(AgentId::new(AGENT).unwrap(), Some(owner()), now())
+        .await
+        .unwrap();
+    h.provider.push(one_call(1));
+    h.provider.push(text("I wasn't allowed to look."));
+    let (turn, _) = h.turn(&["Check the issues"]);
+    assert_eq!(h.agent_loop().run_turn(turn).await, TurnOutcome::Completed);
+
+    assert_eq!(
+        h.transcript().await[2],
+        result("t1", crate::approvals::UNATTENDED_RESULT, true)
+    );
+    assert!(toolset_calls(&h).is_empty());
+    assert!(h.sent().is_empty());
 }
 
 /// A response asking for one `list_issues` call, `t<n>`.

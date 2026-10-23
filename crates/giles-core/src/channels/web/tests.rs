@@ -1878,10 +1878,14 @@ async fn the_agent_loop_streams_a_reply_live_to_the_page() {
         .register_provider(&InstanceName::new("fake").unwrap(), Arc::new(SlowProvider))
         .unwrap();
     let shutdown = CancellationToken::new();
+    let approvals = Arc::new(crate::approvals::ApprovalBoard::default());
     let sessions = runtime
         .start_sessions(
-            Arc::new(crate::agent_loop::AgentLoop::from_runtime(&runtime)),
-            Arc::new(NoPendingApprovals),
+            Arc::new(crate::agent_loop::AgentLoop::from_runtime(
+                &runtime,
+                approvals.clone(),
+            )),
+            approvals,
             shutdown.clone(),
         )
         .await

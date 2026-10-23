@@ -5,9 +5,9 @@
 //! the calls still running (dropping a [`giles_types::ToolCallHandle`]'s events cancels the
 //! call). [`PolicyDispatcher`] is the daemon's: it checks each call against the session's tools
 //! and the registry when the call starts, runs consecutive parallel-safe calls together (at most
-//! [`MAX_PARALLEL_CALLS`] at once) and every other call alone, drops a call at its toolset's
-//! deadline, and stops starting calls once the batch's `skip` signal fires (`busy_mode =
-//! "steer"`). 2.11 and 2.12 add the core tools.
+//! [`MAX_PARALLEL_CALLS`] at once) and every other call alone, gates calls to `ask` tools on the
+//! requester's approval, drops a call at its toolset's deadline, and stops starting calls once
+//! the batch's `skip` signal fires (`busy_mode = "steer"`). 2.11 and 2.12 add the core tools.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -16,12 +16,13 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use futures::stream::{self, BoxStream, FuturesUnordered};
 use futures::{FutureExt, StreamExt};
-use giles_types::{Block, CallContext, ToolCall, ToolCallEvent};
+use giles_types::{ApprovalAnswer, Block, CallContext, ToolCall, ToolCallEvent, Toolset};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use super::prompt::SessionTools;
+use crate::approvals::TurnApprovals;
 use crate::config::{Config, DEFAULT_TOOL_DEADLINE};
 use crate::registry::{Registry, ToolTarget};
 
@@ -70,6 +71,9 @@ pub struct ToolBatch {
     /// "steer"`): calls not started by then get [`SKIPPED_FOR_MESSAGE_RESULT`] and none starts
     /// any more; running calls finish.
     pub skip: CancellationToken,
+    /// The turn's approvals: asked before a call to an `ask` tool runs and when a running call
+    /// asks a question.
+    pub approvals: Arc<TurnApprovals>,
 }
 
 /// A tool's result, for its slot.
@@ -149,12 +153,17 @@ impl CallPolicy {
 ///   [`ToolCallEvent::Result`] is the output. In v1 there are no roles, so the session's tools
 ///   (the agent's allowlist) are the whole policy; with roles, "not permitted for <user>" goes
 ///   here.
+/// - A call to a tool matching the agent's `ask` globs then waits for approval
+///   ([`TurnApprovals::approve_call`]); a denial is its error result. The wait doesn't count
+///   against the deadline, and the checks above run again once it's approved, since the tool
+///   may have gone meanwhile. A barrier waiting for approval holds up the calls after it.
 /// - A call still running at its deadline is dropped, which cancels it at the toolset, and gets
 ///   `timed out after <deadline>`.
 /// - Once [`ToolBatch::skip`] fires, no call starts any more: each one still waiting gets
 ///   [`SKIPPED_FOR_MESSAGE_RESULT`] at once, and the running ones finish.
-/// - Progress events are logged. Approval requests are denied, since nothing answers them before
-///   TASKS.md 2.7 (the handle's `answers` sender is dropped, which denies them).
+/// - Progress events are logged. A question the call asks ([`ToolCallEvent::ApprovalRequest`],
+///   MCP elicitation) goes to [`TurnApprovals::answer_question`], and the answer back on the
+///   handle's `answers`; that wait is part of the call and its deadline.
 pub struct PolicyDispatcher {
     registry: Arc<Registry>,
 }
@@ -180,6 +189,7 @@ impl ToolDispatcher for PolicyDispatcher {
             tools,
             context,
             skip,
+            approvals,
         } = batch;
         let config = self.registry.config();
         let calls = calls
@@ -190,16 +200,36 @@ impl ToolDispatcher for PolicyDispatcher {
                 let registry = self.registry.clone();
                 let tools = tools.clone();
                 let context = context.clone();
+                let approvals = approvals.clone();
                 Scheduled {
                     index,
                     parallel: policy.parallel,
                     call: async move {
-                        let name = call.name.clone();
-                        let running = run_call(&registry, &tools, call, context);
+                        let mut target = match resolve_call(&registry, &tools, &call.name) {
+                            Ok(target) => target,
+                            Err(output) => return output,
+                        };
+                        match approvals.approve_call(&call.name, &call.input).await {
+                            Err(denied) => return ToolOutput::error(denied),
+                            // The tool may have gone while the call waited.
+                            Ok(true) => match resolve_call(&registry, &tools, &call.name) {
+                                Ok(again) => target = again,
+                                Err(output) => return output,
+                            },
+                            Ok(false) => {}
+                        }
+                        let (toolset, bare) = target;
+                        let request = ToolCall {
+                            id: call.id,
+                            name: bare,
+                            input: call.input,
+                            media: Vec::new(),
+                        };
+                        let running = run_call(toolset, request, &call.name, context, &approvals);
                         match tokio::time::timeout(policy.deadline, running).await {
                             Ok(output) => output,
                             Err(_) => {
-                                debug!(tool = %name, deadline = ?policy.deadline, "tool call timed out");
+                                debug!(tool = %call.name, deadline = ?policy.deadline, "tool call timed out");
                                 ToolOutput::error(timed_out(policy.deadline))
                             }
                         }
@@ -312,47 +342,48 @@ impl Scheduler {
     }
 }
 
-/// Runs one call to its result.
-async fn run_call(
+/// The call-time checks for a call to `name`: the toolset to call and the tool's bare name, or
+/// the call's output ([`TOOL_UNAVAILABLE`]) if it can't run.
+fn resolve_call(
     registry: &Registry,
     tools: &SessionTools,
-    call: ToolRequest,
-    context: CallContext,
-) -> ToolOutput {
-    let Some(tool) = tools.get(&call.name) else {
-        debug!(tool = %call.name, "call to a tool the session doesn't offer");
-        return ToolOutput::error(TOOL_UNAVAILABLE);
+    name: &str,
+) -> Result<(Arc<dyn Toolset>, String), ToolOutput> {
+    let Some(tool) = tools.get(name) else {
+        debug!(tool = %name, "call to a tool the session doesn't offer");
+        return Err(ToolOutput::error(TOOL_UNAVAILABLE));
     };
     // The session keeps its list when a toolset drops a tool; calls to it fail here.
     let served = registry.tools().snapshot();
-    if served
-        .get(&call.name)
-        .is_none_or(|now| now.target != tool.target)
-    {
-        debug!(tool = %call.name, "call to a tool that is no longer served");
-        return ToolOutput::error(TOOL_UNAVAILABLE);
+    if served.get(name).is_none_or(|now| now.target != tool.target) {
+        debug!(tool = %name, "call to a tool that is no longer served");
+        return Err(ToolOutput::error(TOOL_UNAVAILABLE));
     }
     let (instance, bare) = match &tool.target {
         ToolTarget::Toolset { instance, tool } => (instance, tool),
         // Core tools have no implementation yet (TASKS.md 2.11, 2.12).
-        _ => return ToolOutput::error(TOOL_UNAVAILABLE),
+        _ => return Err(ToolOutput::error(TOOL_UNAVAILABLE)),
     };
     let Some(toolset) = registry.toolset(instance.as_str()) else {
-        debug!(tool = %call.name, "the tool's toolset is not registered");
-        return ToolOutput::error(TOOL_UNAVAILABLE);
+        debug!(tool = %name, "the tool's toolset is not registered");
+        return Err(ToolOutput::error(TOOL_UNAVAILABLE));
     };
-    let request = ToolCall {
-        id: call.id,
-        name: bare.clone(),
-        input: call.input,
-        media: Vec::new(),
-    };
+    Ok((toolset, bare.clone()))
+}
+
+/// Runs one call of `tool` (its offered name) to its result.
+async fn run_call(
+    toolset: Arc<dyn Toolset>,
+    request: ToolCall,
+    tool: &str,
+    context: CallContext,
+    approvals: &TurnApprovals,
+) -> ToolOutput {
     let handle = match toolset.call(request, context).await {
         Ok(handle) => handle,
         Err(error) => return ToolOutput::error(error.to_string()),
     };
-    // Nothing answers approval requests yet: dropping the sender denies them.
-    drop(handle.answers);
+    let answers = handle.answers;
     let mut events = handle.events;
     while let Some(event) = events.next().await {
         match event {
@@ -363,11 +394,21 @@ async fn run_call(
                 progress,
                 total,
                 message,
-            }) => debug!(tool = %call.name, progress, ?total, ?message, "tool progress"),
-            Ok(ToolCallEvent::ApprovalRequest { id, .. }) => {
-                debug!(tool = %call.name, %id, "approval request denied: approvals are not built yet");
+            }) => debug!(tool, progress, ?total, ?message, "tool progress"),
+            Ok(ToolCallEvent::ApprovalRequest {
+                id,
+                message,
+                schema,
+            }) => {
+                if schema.is_some() {
+                    debug!(tool, %id, "the question asks for data; it can only be approved or denied");
+                }
+                let decision = approvals.answer_question(tool, &message).await;
+                if answers.send(ApprovalAnswer { id, decision }).await.is_err() {
+                    debug!(tool, "the call takes no more answers");
+                }
             }
-            Ok(other) => debug!(tool = %call.name, ?other, "unexpected tool event ignored"),
+            Ok(other) => debug!(tool, ?other, "unexpected tool event ignored"),
             Err(error) => return ToolOutput::error(error.to_string()),
         }
     }

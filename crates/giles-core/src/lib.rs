@@ -2,6 +2,7 @@
 
 pub mod admin;
 pub mod agent_loop;
+pub mod approvals;
 pub mod blobs;
 pub mod channels;
 pub mod commands;

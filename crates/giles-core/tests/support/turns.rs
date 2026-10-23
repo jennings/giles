@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use futures::channel::mpsc as fmpsc;
 use futures::stream::{self, BoxStream, StreamExt};
 use giles_core::agent_loop::AgentLoop;
-use giles_core::commands::NoPendingApprovals;
+use giles_core::approvals::ApprovalBoard;
 use giles_core::config::{Config, InstanceName, LoadOptions};
 use giles_core::paths::DataRoot;
 use giles_core::runtime::Runtime;
@@ -267,6 +267,10 @@ pub struct Daemon {
     pub met: Arc<FakeToolset>,
     /// The parallel toolset `par` (`parallel = true`).
     pub par: Arc<FakeToolset>,
+    /// The serial toolset `slow`, with a 1 s deadline.
+    pub slow: Arc<FakeToolset>,
+    /// The approvals the agent loop asks and the session manager answers.
+    pub approvals: Arc<ApprovalBoard>,
     tool_log: mpsc::UnboundedReceiver<String>,
     events: fmpsc::UnboundedSender<Result<ChannelEvent>>,
     sent: mpsc::UnboundedReceiver<String>,
@@ -294,12 +298,14 @@ impl Daemon {
              [channel.fake]\n\
              [toolset.met]\nurl = \"https://example.com/mcp\"\n\
              [toolset.par]\nurl = \"https://example.com/mcp\"\nparallel = true\n\
+             [toolset.slow]\nurl = \"https://example.com/mcp\"\ndeadline = \"1s\"\n\
              [[routes]]\nagent = \"jeeves\"\n",
         );
         write(
             "agents/jeeves/agent.toml",
             &format!(
-                "models = [\"anthropic/test-model\"]\ntools = [\"met__*\", \"par__*\"]\n{agent_toml}"
+                "models = [\"anthropic/test-model\"]\n\
+                 tools = [\"met__*\", \"par__*\", \"slow__*\"]\n{agent_toml}"
             ),
         );
         let config = Config::load_with(
@@ -326,8 +332,8 @@ impl Daemon {
                 releases: Mutex::default(),
             })
         };
-        let (met, par) = (toolset(), toolset());
-        for (instance, toolset) in [("met", &met), ("par", &par)] {
+        let (met, par, slow) = (toolset(), toolset(), toolset());
+        for (instance, toolset) in [("met", &met), ("par", &par), ("slow", &slow)] {
             runtime
                 .registry
                 .register_toolset(&name(instance), toolset.clone())
@@ -353,10 +359,11 @@ impl Daemon {
             .unwrap();
 
         let shutdown = CancellationToken::new();
+        let approvals = Arc::new(ApprovalBoard::default());
         let sessions = runtime
             .start_sessions(
-                Arc::new(AgentLoop::from_runtime(&runtime)),
-                Arc::new(NoPendingApprovals),
+                Arc::new(AgentLoop::from_runtime(&runtime, approvals.clone())),
+                approvals.clone(),
                 shutdown.clone(),
             )
             .await
@@ -367,6 +374,8 @@ impl Daemon {
             provider,
             met,
             par,
+            slow,
+            approvals,
             tool_log,
             events,
             sent,

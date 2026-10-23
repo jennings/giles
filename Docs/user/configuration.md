@@ -363,6 +363,12 @@ as the tools already running finish: tool calls it asked for but hadn't started 
 (the model is told "Skipped to read a new message") so it can read your message first. With
 `"queue"`, the agent finishes what it's doing and answers your message in a new turn.
 
+`ask` uses the same globs as `tools`: a call to a matching tool waits until you answer the prompt
+Giles sends with `yes <code>`, `yes! <code>` (also allow that tool for the rest of the
+conversation's session), or `no <code>` (see [Chat Commands](commands.md)). Nobody answering
+within `approval_timeout` denies it, and so does any other message from you. The wait doesn't
+count against the toolset's `deadline`.
+
 ### `[[jobs]]`
 
 Scheduled prompts. Each job's output is sent to the owner's default identity, unless the reply is

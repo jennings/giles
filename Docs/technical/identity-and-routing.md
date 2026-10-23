@@ -112,16 +112,17 @@ trimming whitespace, with words compared ASCII case-insensitively (phones capita
 | `yes 4821`, `yes! 4821`, `no 4821`         | `Approval { code: Some("4821") }`, if that code is pending |
 
 Anything else is ordinary text, including `/new please`, `/new@giles`, `/link` (no self-linking in
-v1), unknown `/words`, `yes please`, and a reply whose code isn't pending. Codes are a single token
-of ASCII letters and digits, passed to the lookup as typed. A message with attachments is never a
-command, so an attachment can't be silently lost.
+v1), unknown `/words`, `yes please`, and a `yes`/`no` the lookup doesn't claim. Codes are a single
+token of ASCII letters and digits, passed to the lookup as typed. A message with attachments is
+never a command, so an attachment can't be silently lost.
 
 Whether `yes` is an approval reply depends on state the approvals code owns, so it's an input: the
-`PendingApprovals` trait, `is_pending(to: &Routed, code: Option<&str>) -> bool`, asks whether
-`to.user` has an approval pending in session `to.session` (any, for `None`; that code, for `Some`).
-It's implemented for closures of that shape and by `NoPendingApprovals`. With nothing pending,
-`yes` and `no` are ordinary messages, so they can answer the agent's own questions. Which pending
-approval a bare reply answers when several wait is the approvals code's decision.
+`PendingApprovals` trait, `is_pending(to: &Routed, code: Option<&str>) -> bool`. It's implemented
+for closures of that shape, by `NoPendingApprovals`, and (through `sessions::Approvals`) by
+`approvals::ApprovalBoard`, which claims every reply while an approval waits for `to.user` in
+`to.session`, and a reply naming one of theirs that closed recently ([Approvals](approvals.md)).
+With nothing pending, `yes` and `no` are ordinary messages, so they can answer the agent's own
+questions.
 
 The commands' effects belong to the inbox and sessions code (`/new`), turn control (`/stop`), and
 approvals (replies); [Sessions and Turns](sessions.md) records each command's event id as a dedupe

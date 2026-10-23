@@ -6,7 +6,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use giles_core::admin::{AdminListener, AdminOptions, AdminService, InstanceLock, PluginControl};
 use giles_core::agent_loop::AgentLoop;
-use giles_core::commands::NoPendingApprovals;
+use giles_core::approvals::{ApprovalBoard, ChannelPresenter};
 use giles_core::config::Config;
 use giles_core::http;
 use giles_core::paths::DataRoot;
@@ -81,10 +81,14 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     let admin_listener = AdminListener::bind(&root, &lock)?;
     // Startup recovery, then every registered channel's events. The last step that can fail:
     // recovery changes state and resumed turns run, so nothing may abort startup after it.
+    // Approval prompts get buttons in web chats and are sent as text everywhere else.
+    let approvals = Arc::new(ApprovalBoard::new(Arc::new(ChannelPresenter::new(
+        runtime.registry.clone(),
+    ))));
     let sessions = runtime
         .start_sessions(
-            Arc::new(AgentLoop::from_runtime(&runtime)),
-            Arc::new(NoPendingApprovals),
+            Arc::new(AgentLoop::from_runtime(&runtime, approvals.clone())),
+            approvals,
             shutdown.clone(),
         )
         .await?;

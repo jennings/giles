@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use futures::channel::mpsc as fmpsc;
 use futures::stream::{self, BoxStream, StreamExt};
 use giles_core::agent_loop::AgentLoop;
-use giles_core::commands::NoPendingApprovals;
+use giles_core::approvals::ApprovalBoard;
 use giles_core::config::{Config, InstanceName, LoadOptions};
 use giles_core::paths::DataRoot;
 use giles_core::runtime::Runtime;
@@ -242,10 +242,11 @@ async fn messages_are_answered_through_the_serve_wiring() {
         .unwrap();
 
     let shutdown = CancellationToken::new();
+    let approvals = Arc::new(ApprovalBoard::default());
     let sessions = runtime
         .start_sessions(
-            Arc::new(AgentLoop::from_runtime(&runtime)),
-            Arc::new(NoPendingApprovals),
+            Arc::new(AgentLoop::from_runtime(&runtime, approvals.clone())),
+            approvals,
             shutdown.clone(),
         )
         .await

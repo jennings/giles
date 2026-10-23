@@ -131,18 +131,7 @@ impl ApprovalAnswer {
 }
 
 /// How an approval prompt ended ([`WebChannel::resolve_approval`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ApprovalOutcome {
-    /// Allowed once.
-    Allowed,
-    /// Allowed for the rest of the session.
-    AllowedForSession,
-    /// Denied (by an answer, or by a new message while it was pending, PLAN section 6.4).
-    Denied,
-    /// Not answered in time.
-    Expired,
-}
+pub use crate::approvals::ApprovalOutcome;
 
 impl ApprovalOutcome {
     /// What the page shows.

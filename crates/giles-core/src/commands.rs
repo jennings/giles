@@ -39,7 +39,7 @@ pub enum Answer {
     No,
 }
 
-/// The approvals waiting for an answer, as the approval code (TASKS 2.7) tracks them. A `yes` or
+/// The approvals waiting for an answer, as [`crate::approvals`] tracks them. A `yes` or
 /// `no` is an approval reply only if this reports a matching pending approval; otherwise it's an
 /// ordinary message.
 pub trait PendingApprovals {

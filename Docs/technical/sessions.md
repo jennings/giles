@@ -14,7 +14,7 @@ The agent loop plugs in as a `TurnRunner`; the decision before anything is store
 | `Turn`                   | `session`, `requester`, `messages: Vec<TurnMessage>`, `busy_mode`, `cancel`, `steering`, `reply` |
 | `Steering`               | The requester's messages during a turn: `changed`, `take` (`detached` for tests) |
 | `Reply`                  | The session's conversation: `instance`, `conversation`, `channel`, `send` |
-| `Approvals`              | `is_pending` (for `classify`) and `answer`; `NoPendingApprovals` until approvals land |
+| `Approvals`              | `is_pending` (for `classify`) and `answer`; `approvals::ApprovalBoard` in the daemon, `NoPendingApprovals` for tests |
 | `ChannelLookup`          | Instance name to the registered channel; implemented by `Registry`      |
 | `ChannelStatusRecord`    | A channel's latest `ChannelStatus` and when it arrived                  |
 
@@ -32,7 +32,8 @@ an instance again (a restarted plugin) stops the earlier pump after its current 
 After the HTTP server has drained at shutdown, `serve` awaits `Sessions::closed()`, which waits for
 every task the manager spawned (pumps, drivers, turns, pruning) to stop.
 
-`serve` passes `AgentLoop::from_runtime(&runtime)` as the runner ([Agent Loop](agent-loop.md)).
+`serve` passes `AgentLoop::from_runtime(&runtime, board)` as the runner and the same
+`approvals::ApprovalBoard` as `approvals` ([Agent Loop](agent-loop.md), [Approvals](approvals.md)).
 
 ## The Inbound Pipeline
 
@@ -66,7 +67,7 @@ Commands act after their ack, so a crash between the two loses the command but n
   nothing running it's logged and ignored. Making the cancellation reach toolsets, and filling
   unanswered tool calls with `cancelled`, is the agent loop's job.
 - An approval reply goes to `Approvals::answer`. `classify` only returns one while `is_pending`
-  says an approval matches, so with `NoPendingApprovals` `yes` and `no` stay ordinary messages.
+  says it's an approval reply, so with nothing waiting `yes` and `no` stay ordinary messages.
 
 ## Sessions and idle reset
 

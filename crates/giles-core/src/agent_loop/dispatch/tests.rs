@@ -7,11 +7,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use giles_store::SessionId;
 use giles_types::{AgentId, Error, Result, Skill, SkillSummary, ToolCallHandle, ToolSpec, Toolset};
 use serde_json::json;
 use tempfile::TempDir;
 
 use super::*;
+use crate::approvals::{ApprovalBoard, UNATTENDED_RESULT};
 use crate::config::{InstanceName, LoadOptions};
 use crate::paths::DataRoot;
 
@@ -186,6 +188,17 @@ impl Setup {
         calls: &[(&str, &str, Value)],
         skip: CancellationToken,
     ) -> BoxStream<'static, (usize, ToolOutput)> {
+        self.dispatch_unattended(allow, &[], calls, skip)
+    }
+
+    /// Dispatches `calls` in a turn nobody attends, with `ask` globs.
+    fn dispatch_unattended(
+        &self,
+        allow: &[&str],
+        ask: &[&str],
+        calls: &[(&str, &str, Value)],
+        skip: CancellationToken,
+    ) -> BoxStream<'static, (usize, ToolOutput)> {
         let calls = calls
             .iter()
             .map(|(id, name, input)| ToolRequest {
@@ -194,6 +207,13 @@ impl Setup {
                 input: input.clone(),
             })
             .collect();
+        let approvals = TurnApprovals::new(
+            Arc::new(ApprovalBoard::default()),
+            SessionId::new(1),
+            ask.iter().map(|glob| (*glob).to_owned()).collect(),
+            Duration::from_secs(600),
+            None,
+        );
         PolicyDispatcher::new(self.registry.clone()).dispatch(ToolBatch {
             calls,
             tools: self.tools(allow),
@@ -203,6 +223,7 @@ impl Setup {
                 conversation: None,
             },
             skip,
+            approvals: Arc::new(approvals),
         })
     }
 }
@@ -432,6 +453,29 @@ async fn a_skip_before_the_first_poll_starts_nothing() {
     let skipped = ToolOutput::error(SKIPPED_FOR_MESSAGE_RESULT);
     assert_eq!(results, [skipped.clone(), skipped]);
     assert!(s.probe.log().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn in_an_unattended_turn_ask_tools_are_denied_before_they_start() {
+    let s = Setup::new().await;
+    let calls = [
+        ("a", "serial__run", json!({"ms": 1})),
+        ("b", "par__run", json!({"ms": 1})),
+        // Unavailable tools are reported as such, not as denied.
+        ("c", "serial__gone2", json!({})),
+    ];
+    let stream = s.dispatch_unattended(&["*"], &["serial__*"], &calls, CancellationToken::new());
+    let results = outputs(stream, calls.len()).await;
+
+    assert_eq!(
+        results,
+        [
+            ToolOutput::error(UNATTENDED_RESULT),
+            ok("b done"),
+            ToolOutput::error(TOOL_UNAVAILABLE),
+        ]
+    );
+    assert_eq!(s.probe.log(), ["start b", "end b"]);
 }
 
 #[tokio::test]

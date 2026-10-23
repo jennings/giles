@@ -14,9 +14,12 @@
 //! messages join the turn after the current tool batch, and calls of the batch that haven't
 //! started are skipped.
 //!
-//! Seams for later tasks: [`ToolDispatcher`] (the [`PolicyDispatcher`] runs calls; 2.7 gates
-//! calls on approval, 2.11/2.12 add core tools) and [`AgentLoop::rebuild_prompt`] (2.10
-//! compaction).
+//! Approvals (PLAN section 6.4): each turn gets a [`TurnApprovals`](crate::approvals::TurnApprovals)
+//! from the [`ApprovalBoard`] the session manager answers; the dispatcher gates `ask` calls and
+//! questions on it, and a requester message during a wait denies it.
+//!
+//! Seams for later tasks: [`ToolDispatcher`] (the [`PolicyDispatcher`] runs calls; 2.11/2.12 add
+//! core tools) and [`AgentLoop::rebuild_prompt`] (2.10 compaction).
 
 pub mod dispatch;
 pub mod glob;
@@ -46,6 +49,7 @@ pub use dispatch::{
 pub use output::{ChannelOutput, OutputSink};
 pub use prompt::{PromptError, SessionPrompt, SessionTools};
 
+use crate::approvals::ApprovalBoard;
 use crate::config::{AgentConfig, BusyMode};
 use crate::registry::Registry;
 use crate::runtime::Runtime;
@@ -79,6 +83,7 @@ pub struct AgentLoop {
     store: Store,
     clock: Arc<dyn Clock>,
     dispatcher: Arc<dyn ToolDispatcher>,
+    approvals: Arc<ApprovalBoard>,
     prompts: Mutex<HashMap<SessionKey, (SessionId, Arc<SessionPrompt>)>>,
 }
 
@@ -97,31 +102,35 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl AgentLoop {
     /// An agent loop resolving agents, models, tools, and skills through `registry` (and its
-    /// configuration and data root), storing transcripts and usage in `store`, and running tools
-    /// through `dispatcher`.
+    /// configuration and data root), storing transcripts and usage in `store`, running tools
+    /// through `dispatcher`, and asking for approvals on `approvals` (which must be the board
+    /// the session manager hands approval replies to).
     pub fn new(
         registry: Arc<Registry>,
         store: Store,
         clock: Arc<dyn Clock>,
         dispatcher: Arc<dyn ToolDispatcher>,
+        approvals: Arc<ApprovalBoard>,
     ) -> Self {
         Self {
             registry,
             store,
             clock,
             dispatcher,
+            approvals,
             prompts: Mutex::default(),
         }
     }
 
-    /// The daemon's agent loop: the runtime's registry and store, the system clock, and the
-    /// [`PolicyDispatcher`].
-    pub fn from_runtime(runtime: &Runtime) -> Self {
+    /// The daemon's agent loop: the runtime's registry and store, the system clock, the
+    /// [`PolicyDispatcher`], and `approvals`.
+    pub fn from_runtime(runtime: &Runtime, approvals: Arc<ApprovalBoard>) -> Self {
         Self::new(
             runtime.registry.clone(),
             runtime.store.clone(),
             Arc::new(SystemClock),
             Arc::new(PolicyDispatcher::new(runtime.registry.clone())),
+            approvals,
         )
     }
 
@@ -192,12 +201,14 @@ impl AgentLoop {
 
     /// The tool-batch boundary (PLAN section 6.3): every slot of the last batch is filled and
     /// the next request isn't built yet. The messages returned are stored after the tool
-    /// results, so the model sees them. With `busy_mode = "steer"` these are the requester's
-    /// queued messages; with `"queue"` none join the running turn: they stay queued and start
-    /// the next turn.
-    async fn at_batch_boundary(&self, turn: &Turn) -> Vec<TurnMessage> {
+    /// results, so the model sees them: the requester's queued messages with `busy_mode =
+    /// "steer"`, or in either mode when one of them denied an approval during the batch
+    /// (`denied`; every queued one joins, in order). Otherwise, with `"queue"`, none join the
+    /// running turn: they stay queued and start the next turn.
+    async fn at_batch_boundary(&self, turn: &Turn, denied: bool) -> Vec<TurnMessage> {
         match turn.busy_mode {
             BusyMode::Steer => run::take_steering(turn).await,
+            BusyMode::Queue if denied => run::take_steering(turn).await,
             BusyMode::Queue => Vec::new(),
         }
     }

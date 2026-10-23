@@ -78,8 +78,9 @@ impl ChannelLookup for Registry {
     }
 }
 
-/// The approvals code (TASKS.md 2.7), as the inbound pipeline sees it: whether a `yes`/`no` is an
-/// approval reply, and where a reply goes. [`NoPendingApprovals`] until 2.7 lands.
+/// The approvals code, as the inbound pipeline sees it: whether a `yes`/`no` is an approval
+/// reply, and where a reply goes. The daemon's is [`ApprovalBoard`](crate::approvals::ApprovalBoard);
+/// [`NoPendingApprovals`] has nothing pending, ever.
 #[async_trait]
 pub trait Approvals: Send + Sync {
     /// Whether `to.user` has an approval pending in session `to.session`; with `code`, one with
