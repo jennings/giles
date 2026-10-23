@@ -554,54 +554,65 @@ impl Launcher {
         let connection = PluginConnection::connect(core_end, token)
             .await
             .map_err(|e| LaunchError::Connect(e.to_string()))?;
-        let secrets: Vec<&Secret> = secrets.iter().collect();
-        let rpc_error = |call, status: tonic::Status| LaunchError::Rpc {
-            call,
-            code: status.code(),
-            message: scrub(status.message(), &secrets),
-        };
-
-        let request = DescribeRequest {
-            core_protocol_minor: CORE_PROTOCOL_MINOR,
-            core_features: Vec::new(),
-        };
-        let describe =
-            tokio::time::timeout(DESCRIBE_TIMEOUT, connection.plugin().describe(request))
-                .await
-                .unwrap_or_else(|_| Err(timed_out(DESCRIBE_TIMEOUT)))
-                .map_err(|status| rpc_error("Describe", status))?
-                .into_inner();
-        check_describe(&describe, &instance.component).map_err(|reason| LaunchError::Mismatch {
-            binary: plugin_binary(Kind::Channel, &instance.component),
-            reason: scrub(&reason, &secrets),
-        })?;
-
-        let request = ConfigureRequest {
-            instance: instance.name.as_str().to_owned(),
-            config_json: instance.config.to_json().to_string(),
-        };
-        let configured =
-            tokio::time::timeout(CONFIGURE_TIMEOUT, connection.plugin().configure(request))
-                .await
-                .unwrap_or_else(|_| Err(timed_out(CONFIGURE_TIMEOUT)))
-                .map_err(|status| rpc_error("Configure", status))?
-                .into_inner();
-        let namespace = configured.identity_namespace;
-        validate_namespace(&instance.component, &namespace).map_err(|error| match error {
-            // The namespace is plugin text built from config; scrub it like any other.
-            NamespaceError::WrongComponent {
-                component,
-                namespace,
-            } => NamespaceError::WrongComponent {
-                component,
-                namespace: scrub(&namespace, &secrets),
-            },
-            NamespaceError::Malformed { namespace } => NamespaceError::Malformed {
-                namespace: scrub(&namespace, &secrets),
-            },
-        })?;
+        let (describe, namespace) = describe_and_configure(&connection, instance, secrets).await?;
         Ok((connection, describe, namespace))
     }
+}
+
+/// `Describe` (checked against the component), `Configure` with the instance config, and the
+/// namespace check, over a new connection to `instance`'s plugin. Plugin text in errors is
+/// scrubbed with `secrets`.
+async fn describe_and_configure(
+    connection: &PluginConnection,
+    instance: &ChannelInstance,
+    secrets: &[Secret],
+) -> Result<(DescribeResponse, String), LaunchError> {
+    let secrets: Vec<&Secret> = secrets.iter().collect();
+    let rpc_error = |call, status: tonic::Status| LaunchError::Rpc {
+        call,
+        code: status.code(),
+        message: scrub(status.message(), &secrets),
+    };
+
+    let request = DescribeRequest {
+        core_protocol_minor: CORE_PROTOCOL_MINOR,
+        core_features: Vec::new(),
+    };
+    let describe = tokio::time::timeout(DESCRIBE_TIMEOUT, connection.plugin().describe(request))
+        .await
+        .unwrap_or_else(|_| Err(timed_out(DESCRIBE_TIMEOUT)))
+        .map_err(|status| rpc_error("Describe", status))?
+        .into_inner();
+    check_describe(&describe, &instance.component).map_err(|reason| LaunchError::Mismatch {
+        binary: plugin_binary(Kind::Channel, &instance.component),
+        reason: scrub(&reason, &secrets),
+    })?;
+
+    let request = ConfigureRequest {
+        instance: instance.name.as_str().to_owned(),
+        config_json: instance.config.to_json().to_string(),
+    };
+    let configured =
+        tokio::time::timeout(CONFIGURE_TIMEOUT, connection.plugin().configure(request))
+            .await
+            .unwrap_or_else(|_| Err(timed_out(CONFIGURE_TIMEOUT)))
+            .map_err(|status| rpc_error("Configure", status))?
+            .into_inner();
+    let namespace = configured.identity_namespace;
+    validate_namespace(&instance.component, &namespace).map_err(|error| match error {
+        // The namespace is plugin text built from config; scrub it like any other.
+        NamespaceError::WrongComponent {
+            component,
+            namespace,
+        } => NamespaceError::WrongComponent {
+            component,
+            namespace: scrub(&namespace, &secrets),
+        },
+        NamespaceError::Malformed { namespace } => NamespaceError::Malformed {
+            namespace: scrub(&namespace, &secrets),
+        },
+    })?;
+    Ok((describe, namespace))
 }
 
 /// The plugin's stderr tail once it has ended (bounded).
@@ -1013,30 +1024,36 @@ impl Running for Live {
     }
 
     async fn check_health(&self) -> Result<(), String> {
-        let request = HealthCheckRequest {
-            service: CHANNEL_SERVICE.to_owned(),
-        };
-        let mut client = self.0.connection.health();
-        match tokio::time::timeout(HEALTH_TIMEOUT, client.check(request)).await {
-            Err(_) => Err(format!("no answer within {HEALTH_TIMEOUT:?}")),
-            Ok(Err(status)) => {
-                let secrets: Vec<&Secret> = self.0.secrets.iter().collect();
-                Err(scrub(
-                    &format!("{:?}: {}", status.code(), status.message()),
-                    &secrets,
-                ))
-            }
-            Ok(Ok(response)) => match response.into_inner().status() {
-                ServingStatus::Serving => Ok(()),
-                other => Err(format!("{CHANNEL_SERVICE} is {}", other.as_str_name())),
-            },
-        }
+        check_health(&self.0.connection, &self.0.secrets).await
     }
 
     async fn stop(self: Box<Self>) {
         if let Err(error) = self.0.stop(STOP_GRACE).await {
             warn!(%error, "cannot stop the plugin");
         }
+    }
+}
+
+/// One `grpc.health.v1` check of the plugin's channel service; the error (scrubbed with
+/// `secrets`) says why it failed.
+async fn check_health(connection: &PluginConnection, secrets: &[Secret]) -> Result<(), String> {
+    let request = HealthCheckRequest {
+        service: CHANNEL_SERVICE.to_owned(),
+    };
+    let mut client = connection.health();
+    match tokio::time::timeout(HEALTH_TIMEOUT, client.check(request)).await {
+        Err(_) => Err(format!("no answer within {HEALTH_TIMEOUT:?}")),
+        Ok(Err(status)) => {
+            let secrets: Vec<&Secret> = secrets.iter().collect();
+            Err(scrub(
+                &format!("{:?}: {}", status.code(), status.message()),
+                &secrets,
+            ))
+        }
+        Ok(Ok(response)) => match response.into_inner().status() {
+            ServingStatus::Serving => Ok(()),
+            other => Err(format!("{CHANNEL_SERVICE} is {}", other.as_str_name())),
+        },
     }
 }
 

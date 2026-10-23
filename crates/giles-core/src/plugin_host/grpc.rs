@@ -9,6 +9,7 @@ use giles_proto::MAX_MESSAGE_SIZE;
 use giles_proto::channel::v1::channel_service_client::ChannelServiceClient;
 use giles_proto::plugin::v1::plugin_service_client::PluginServiceClient;
 use hyper_util::rt::TokioIo;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixStream;
 use tonic::metadata::{Ascii, MetadataValue};
 use tonic::service::Interceptor;
@@ -44,23 +45,40 @@ impl PluginConnection {
         token: &Secret,
     ) -> Result<Self, ConnectError> {
         core_end.set_nonblocking(true).map_err(ConnectError::Io)?;
-        let mut io = Some(UnixStream::from_std(core_end).map_err(ConnectError::Io)?);
+        let io = UnixStream::from_std(core_end).map_err(ConnectError::Io)?;
+        let metadata = CallMetadata::new(token).map_err(ConnectError::Token)?;
         // The URI is never resolved; it only sets `:authority`.
-        let channel = Endpoint::from_static("http://plugin")
+        Self::over(
+            Endpoint::from_static("http://plugin"),
+            io,
+            "the plugin connection is closed; the plugin must be relaunched",
+            metadata,
+        )
+        .await
+    }
+
+    /// The one HTTP/2 connection over `io`, made with `endpoint`'s settings. There is no
+    /// reconnect: tonic's later connection attempts fail with `closed`.
+    pub(crate) async fn over<IO>(
+        endpoint: Endpoint,
+        io: IO,
+        closed: &'static str,
+        metadata: CallMetadata,
+    ) -> Result<Self, ConnectError>
+    where
+        IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    {
+        let mut io = Some(io);
+        let channel = endpoint
             .connect_with_connector(tower::service_fn(move |_: Uri| {
                 let io = io.take();
                 async move {
-                    io.map(TokioIo::new).ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::NotConnected,
-                            "the plugin connection is closed; the plugin must be relaunched",
-                        )
-                    })
+                    io.map(TokioIo::new)
+                        .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, closed))
                 }
             }))
             .await
             .map_err(ConnectError::Transport)?;
-        let metadata = CallMetadata::new(token).map_err(ConnectError::Token)?;
         Ok(Self { channel, metadata })
     }
 
