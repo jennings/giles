@@ -8,6 +8,7 @@
 - [Installing and Running](user/running.md)
 - [Configuration](user/configuration.md)
 - [Model Providers](user/providers.md)
+- [Skills and Memory Files](user/skills-and-memory.md)
 
 # Technical
 
@@ -24,6 +25,7 @@
 - [Rendering Model Output](technical/rendering.md)
 - [gRPC Protocols](technical/protocols.md)
 - [Configuration](technical/config.md)
+- [Skills and Memory Files](technical/skills-and-memory.md)
 
 # Design Background
 

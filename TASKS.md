@@ -108,7 +108,7 @@ All parallel. Each task needs only Phase 0.
   into a following `user` message, `Opaque` of other API families not sent, usage including
   cached tokens where reported, declared media types, config validation, `list_models`. Tests
   against recorded responses.
-- [ ] **1.10 Skills** (§6.6). Parse Agent Skills `SKILL.md` (front-matter `name` and
+- [x] **1.10 Skills** (§6.6). Parse Agent Skills `SKILL.md` (front-matter `name` and
   `description`, body); discover from `<root>/skills/` and `agents/<agent>/skills/`, agent skills
   overriding global ones; sorted listing. (Toolset skill dirs come in 2.21.)
 - [ ] **1.11 Memory files** (§6.7, §11.3). Optional front-matter preserved on rewrite;

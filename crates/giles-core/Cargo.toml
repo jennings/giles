@@ -26,6 +26,7 @@ giles-types.workspace = true
 jiff = { workspace = true, features = ["tz-system", "tzdb-zoneinfo", "tzdb-bundle-always"] }
 reqwest = { workspace = true, optional = true }
 serde.workspace = true
+serde-saphyr = { version = "2.0.0", default-features = false, features = ["deserialize"] }
 serde_json.workspace = true
 serde_path_to_error = "0.1.20"
 sha2.workspace = true
