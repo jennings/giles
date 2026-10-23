@@ -1,5 +1,6 @@
 //! End-to-end tests of `giles sandbox-exec`: the scrubbed environment, fds 0 to 3 passing through
-//! `exec`, and failing closed while the platform backends are staged.
+//! `exec`, and failing closed while the Linux backend is staged. The macOS sandbox itself is
+//! tested in `sandbox_macos.rs`.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -171,6 +172,7 @@ fn unsandboxed_command_inherits_fds_0_to_3_and_its_exit_status() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn sandboxed_spec_fails_closed_until_the_backend_lands() {
     let env = Env::new();

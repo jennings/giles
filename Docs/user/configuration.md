@@ -222,10 +222,10 @@ sandbox = { network = ["tcp:443"], read = ["/opt/homebrew"], write = ["/Users/me
 
 | Key       | Meaning                                                                          |
 | --------- | -------------------------------------------------------------------------------- |
-| `network` | `true` for all IP traffic, `false` for none, or TCP ports as `["tcp:443"]` (enforced where Linux Landlock ABI 4 is available, kernel 6.7 or later; elsewhere all ports are open) |
+| `network` | `true` for all IP traffic, `false` for none, or TCP ports as `["tcp:443"]` (enforced on macOS, and on Linux with Landlock ABI 4, kernel 6.7 or later; on older Linux kernels all ports are open). Name lookups work with any network grant |
 | `read`    | Absolute paths the plugin may read                                               |
 | `write`   | Absolute paths the plugin may read and write                                     |
-| `unix`    | Absolute paths of Unix sockets the plugin may connect to                         |
+| `unix`    | Absolute paths of Unix sockets the plugin may connect to (on Linux before Landlock ABI 9, kernel 7.1, any entry allows connecting to every socket) |
 | `min_abi` | Linux only: refuse to start the plugin unless the kernel's Landlock ABI is at least this |
 
 No grant may touch the data root, except the instance's own data directory: a path inside the
@@ -239,6 +239,11 @@ created or changed later isn't, so don't grant directories that other programs c
 `giles` binary itself, and each plugin or toolset command, wherever Giles finds it
 (`<data root>/plugins/`, then `$PATH`). Granting `write = ["/opt/homebrew"]` would let a plugin
 replace `giles` or another plugin. Reading those directories is fine.
+
+A plugin can create symbolic links wherever it may write, so Giles never follows links there: a
+plugin won't start if its data directory is a symbolic link, and a grant inside its data directory
+or a `write` grant means exactly the path written, even if the plugin later puts a link there.
+Write such grants with the real path, in the same upper and lower case as on disk.
 
 `unsandboxed = true` turns the sandbox off for one instance, and can't be combined with `sandbox`.
 Built-in components run inside Giles and remote plugins run elsewhere, so neither takes these keys.

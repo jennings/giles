@@ -6,10 +6,10 @@
 //! the command in place, so stdin, stdout, stderr, and fd 3 (the plugin's end of the socket pair)
 //! pass through unchanged. See `Docs/technical/sandbox.md`.
 //!
-//! The platform backends sit behind the internal [`backend::SandboxBackend`] trait. They are
-//! staged: until the Linux backend (Landlock and seccomp, TASKS.md 2.13) and the macOS backend
-//! (Seatbelt, TASKS.md 2.14) land, applying either fails with [`SandboxError::NotImplemented`],
-//! so the trampoline refuses to run anything unless the spec opts out with
+//! The platform backends sit behind the internal [`backend::SandboxBackend`] trait. The macOS
+//! backend (Seatbelt, TASKS.md 2.14) is done. The Linux backend (Landlock and seccomp, TASKS.md
+//! 2.13) is staged: until it lands, applying it fails with [`SandboxError::NotImplemented`], so
+//! on Linux the trampoline refuses to run anything unless the spec opts out with
 //! [`Spec::unsandboxed`].
 //!
 //! [`check_host`] is the startup check that the host can sandbox at all. Its probes are real on
@@ -77,6 +77,29 @@ pub enum SandboxError {
         /// The underlying error.
         #[source]
         source: io::Error,
+    },
+    /// The data directory is a symbolic link. The command can write its data directory, so a
+    /// link there may be one it planted to point its next launch somewhere else.
+    #[error(
+        "the data directory {} is a symbolic link; refusing to follow it (the plugin could have \
+         replaced its data directory with a link to gain access elsewhere)",
+        .0.display()
+    )]
+    DataDirLink(PathBuf),
+    /// The writable grants (the data directory and `write` grants) keep resolving through a
+    /// symbolic link inside one of them: links there are changing while the trampoline resolves
+    /// them, which only the plugin (or a child it left behind) should be able to do.
+    #[error(
+        "the writable sandbox grant {} keeps resolving through the symbolic link {}, which is \
+         inside a writable grant; refusing to launch (the plugin may be changing it)",
+        .path.display(),
+        .link.display()
+    )]
+    WritableLink {
+        /// The path as the spec spells it.
+        path: PathBuf,
+        /// Where the link is.
+        link: PathBuf,
     },
     /// The temporary directory inside the data directory can't be created.
     #[error("cannot create the temporary directory {}", .path.display())]
@@ -184,13 +207,23 @@ fn prepare(spec: &Spec, command: &[OsString]) -> Result<(Command, PathBuf), Sand
     Ok((cmd, launch.program))
 }
 
-/// Checks that the data directory exists and creates the temporary directory in it.
+/// Checks that the data directory is a directory, not a symbolic link, and creates the temporary
+/// directory in it.
+///
+/// The command can write its data directory, including replacing it with a link, so following a
+/// link there would let it choose what its next launch may write (on macOS the backend also
+/// forbids removing the directory).
 fn prepare_data_dir(spec: &Spec) -> Result<(), SandboxError> {
     let data_dir_error = |source| SandboxError::DataDir {
         path: spec.data_dir.clone(),
         source,
     };
-    let meta = fs::metadata(&spec.data_dir).map_err(data_dir_error)?;
+    // Without a trailing `/`, which would make `lstat` follow a final link.
+    let data_dir: PathBuf = spec.data_dir.components().collect();
+    let meta = fs::symlink_metadata(&data_dir).map_err(data_dir_error)?;
+    if meta.file_type().is_symlink() {
+        return Err(SandboxError::DataDirLink(spec.data_dir.clone()));
+    }
     if !meta.is_dir() {
         return Err(data_dir_error(io::ErrorKind::NotADirectory.into()));
     }
@@ -241,6 +274,22 @@ mod tests {
     }
 
     #[test]
+    fn data_dir_must_not_be_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        fs::create_dir(&victim).unwrap();
+        let link = dir.path().join("data");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        for spelled in [link.clone(), link.join("")] {
+            let err = prepare_data_dir(&Spec::new(&spelled)).unwrap_err();
+            assert!(matches!(err, SandboxError::DataDirLink(_)), "{err}");
+            assert_eq!(err.exit_code(), EXIT_TRAMPOLINE_FAILED);
+        }
+        // Nothing was created where the link points.
+        assert!(!victim.join(TMP_DIR_NAME).exists());
+    }
+
+    #[test]
     fn data_dir_must_exist_and_tmp_is_created_private() {
         let dir = tempfile::tempdir().unwrap();
         let missing = Spec::new(dir.path().join("missing"));
@@ -285,6 +334,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn sandboxed_launch_fails_closed_until_the_backend_lands() {
         let dir = tempfile::tempdir().unwrap();
@@ -292,6 +342,27 @@ mod tests {
         assert!(matches!(err, SandboxError::NotImplemented { .. }), "{err}");
         assert!(err.to_string().contains("refusing to run"), "{err}");
         assert_eq!(err.exit_code(), EXIT_TRAMPOLINE_FAILED);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sandboxed_launch_runs_through_sandbox_exec() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = Spec::new(dir.path());
+        let (cmd, program) = prepare(&spec, &command(&["/bin/sh", "-c", "true"])).unwrap();
+        assert_eq!(program, Path::new("/usr/bin/sandbox-exec"));
+        let args: Vec<_> = cmd.get_args().collect();
+        assert_eq!(args[0], "-p");
+        assert_eq!(args[2..], ["/bin/sh", "-c", "true"]);
+        assert_eq!(cmd.get_current_dir(), Some(dir.path()));
+        let envs: BTreeMap<_, _> = cmd
+            .get_envs()
+            .map(|(k, v)| (k.to_owned(), v.unwrap().to_owned()))
+            .collect();
+        assert_eq!(
+            envs,
+            scrubbed_env(&spec, std::env::var_os("LANG").as_deref())
+        );
     }
 
     #[test]

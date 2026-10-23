@@ -1437,10 +1437,15 @@ still shipped and used by other agent CLIs). If the command disappears, the tram
 
 - Deny by default. An allow-default profile leaves Mach services open: LaunchServices could open a
   URL in a browser outside the sandbox, making network-off meaningless.
-- An explicit Mach allowlist for what plugins need, e.g. DNS through mDNSResponder. The SDK uses
-  `rustls` with bundled roots, so plugins don't need the system trust daemon.
-- Paths are written as real paths (`/private/var/folders/...`, `/private/tmp`).
-- `network` grants allow IP sockets only, never Unix sockets.
+- No Mach services at all: the allowlist is empty, because nothing plugins need requires one. DNS
+  goes through mDNSResponder's Unix socket, and the SDK uses `rustls` with bundled roots, so plugins
+  don't need the system trust daemon.
+- Paths are written as real paths (`/private/var/folders/...`, `/private/tmp`). The writable roots
+  (the data directory, `write` grants) can't be removed or replaced, and a launch whose grants
+  resolve through a symbolic link inside a writable root is refused, so a plugin can't plant a link
+  that redirects its next launch.
+- `network` grants allow IP sockets, plus mDNSResponder's socket for name resolution, and no other
+  Unix sockets; `unix` grants allow connecting to exactly the listed sockets.
 
 ### 12.4 Grants
 

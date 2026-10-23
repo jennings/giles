@@ -3,6 +3,7 @@
 use std::fmt;
 use std::io;
 use std::path::PathBuf;
+use std::process::ExitStatus;
 
 /// What the host offers, when the sandbox can be applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,5 +81,16 @@ pub enum HostError {
         path: PathBuf,
         /// What went wrong.
         error: io::Error,
+    },
+    /// `sandbox-exec` can't apply even an allow-all profile, e.g. because Giles itself runs in a
+    /// sandbox that forbids it.
+    #[error("{} cannot apply a sandbox profile ({status}): {stderr}", .path.display())]
+    SandboxExecFailed {
+        /// The `sandbox-exec` path.
+        path: PathBuf,
+        /// Its exit status.
+        status: ExitStatus,
+        /// What it printed on stderr.
+        stderr: String,
     },
 }
