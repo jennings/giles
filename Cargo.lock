@@ -882,16 +882,24 @@ dependencies = [
 name = "giles-plugin-sdk"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "futures",
  "giles-proto",
  "giles-types",
+ "hyper-util",
  "libc",
  "pulldown-cmark",
  "pulldown-cmark-escape",
+ "serde",
+ "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
  "tokio",
  "tokio-util",
  "tonic",
+ "tower",
+ "tracing",
 ]
 
 [[package]]

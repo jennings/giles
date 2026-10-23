@@ -79,6 +79,8 @@ Consequences for code:
   `std`; crates add `serde` or time zone database features), `libc`, `prost`, `reqwest` (rustls,
   `http2`, `stream`; no default features), `serde` (with `derive`), `serde_json`, `sha2`,
   `thiserror`, `tokio` (no features enabled), `toml`, `tonic`, `tracing`, `tracing-subscriber`.
+  Shared test-only dependencies: `hyper-util` and `tower` (a one-shot connector to a plugin over a
+  socket pair) and `tempfile`.
 - A dependency used by a single crate goes in that crate's own manifest.
 - Internal crates are also listed in `[workspace.dependencies]` with both `path` and `version`, so
   the publishable crates resolve on crates.io. `giles-core` is listed with `default-features =

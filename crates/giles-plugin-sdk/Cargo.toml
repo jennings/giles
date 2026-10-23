@@ -11,19 +11,27 @@ keywords = ["giles", "plugin", "grpc", "agent", "llm"]
 categories = ["api-bindings", "network-programming"]
 
 [dependencies]
+async-trait.workspace = true
+futures.workspace = true
 giles-proto.workspace = true
 giles-types.workspace = true
 libc.workspace = true
 pulldown-cmark = { version = "0.13.5", default-features = false, features = ["html"] }
 pulldown-cmark-escape = "0.11.0"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["fs", "io-util", "rt", "sync"] }
 tokio-util.workspace = true
 tonic.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
+hyper-util.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "time"] }
+tower.workspace = true
 
 [lints]
 workspace = true
