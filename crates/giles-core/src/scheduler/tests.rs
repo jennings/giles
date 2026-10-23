@@ -279,7 +279,10 @@ impl Harness {
         }
     }
 
-    fn start(&mut self) {
+    /// Starts the scheduler and lets each job's task read its last run and compute its first
+    /// time. Until then a manual advance (which, unlike auto-advance, doesn't wait for the
+    /// store's blocking reads) could move the clock past a job's first time before it's computed.
+    async fn start(&mut self) {
         self.scheduler = Some(Scheduler::start(
             SchedulerOptions {
                 store: self.store.clone(),
@@ -292,6 +295,7 @@ impl Harness {
             },
             self.shutdown.clone(),
         ));
+        self.settle().await;
     }
 
     fn reply_with(&self, reply: &'static str) {
@@ -436,7 +440,7 @@ async fn a_cron_job_fires_in_the_owners_time_zone_in_a_session_of_its_own() {
         &[],
     )
     .await;
-    h.start();
+    h.start().await;
     h.assert_nothing_ran().await;
 
     // 08:00 in Los Angeles.
@@ -484,12 +488,13 @@ async fn active_hours_skip_the_times_outside_them() {
         &[],
     )
     .await;
-    h.start();
+    h.start().await;
     // 07:30 is skipped; 08:00 and 08:30 run; 09:00 to 07:30 the next day are skipped.
     assert_eq!(h.ran().await.at, ts("2026-10-22T15:00:00Z"));
     assert_eq!(h.ran().await.at, ts("2026-10-22T15:30:00Z"));
+    // Each run's reply is delivered after its turn, so wait for the second before the next day.
+    assert_eq!(h.delivered(2).await.len(), 2);
     assert_eq!(h.ran().await.at, ts("2026-10-23T15:00:00Z"));
-    assert_eq!(h.deliveries().len(), 2);
     h.stop().await;
 }
 
@@ -510,7 +515,7 @@ async fn runs_missed_while_down_are_coalesced_into_one_at_startup() {
         )
         .await
         .unwrap();
-    h.start();
+    h.start().await;
     let first = h.ran().await;
     assert_eq!(first.at, base());
     assert!(first.prompt.contains("Tick."));
@@ -537,7 +542,7 @@ async fn no_reply_sends_and_keeps_nothing() {
     let dm = h.dm(&["Hi", "Hello."]).await;
     h.reply_with(" NO_REPLY\n");
     h.reply_with("NO_REPLY");
-    h.start();
+    h.start().await;
 
     // Isolated: no delivery, no DM message, and the run's session is gone.
     let ran = h.ran().await;
@@ -567,7 +572,7 @@ async fn an_isolated_reply_is_delivered_and_appended_to_the_dm_with_an_excerpt_i
         .dm(&["Book the dentist", "Booked for Friday.", "Thanks"])
         .await;
     h.reply_with("Your digest.");
-    h.start();
+    h.start().await;
 
     let ran = h.ran().await;
     assert_eq!(ran.session.kind, SessionKind::Job);
@@ -613,7 +618,7 @@ async fn a_dm_job_runs_as_its_own_turn_in_the_dm_after_the_turn_ahead() {
     )
     .await;
     let dm = h.dm(&["Hi", "Hello."]).await;
-    h.start();
+    h.start().await;
     // A turn is running in the DM when the job fires.
     let busy = h.sessions.hold(dm.id).await.unwrap();
     h.advance_to(ts("2026-10-22T15:00:00Z")).await;
@@ -639,7 +644,7 @@ async fn a_dm_job_without_a_dm_runs_in_a_session_of_its_own() {
         &[],
     )
     .await;
-    h.start();
+    h.start().await;
     let ran = h.ran().await;
     assert_eq!(ran.session.kind, SessionKind::Job);
     assert_eq!(h.delivered(1).await.len(), 1);
@@ -654,7 +659,7 @@ async fn idle_only_waits_while_the_dm_is_busy() {
     )
     .await;
     let dm = h.dm(&["Hi"]).await;
-    h.start();
+    h.start().await;
     let busy = h.sessions.hold(dm.id).await.unwrap();
     h.advance_to(ts("2026-10-22T15:00:00Z")).await;
     // Busy for ten more minutes: the isolated run waits too.
@@ -681,7 +686,7 @@ async fn ask_to_routes_approval_prompts_through_the_delivery_and_answers_through
         &[],
     )
     .await;
-    h.start();
+    h.start().await;
     // Without a DM to take the answer, ask tools are denied.
     let ran = h.ran().await;
     assert!(ran.approvals.is_none());
@@ -725,7 +730,7 @@ async fn ask_to_routes_approval_prompts_through_the_delivery_and_answers_through
 #[tokio::test(start_paused = true)]
 async fn runtime_jobs_run_as_their_creator_and_one_shots_are_deleted() {
     let mut h = Harness::new("", &[]).await;
-    h.start();
+    h.start().await;
     let agent = AgentId::new(AGENT).unwrap();
     let once = h
         .store
@@ -778,7 +783,7 @@ async fn a_one_shot_missed_while_down_runs_at_startup() {
         )
         .await
         .unwrap();
-    h.start();
+    h.start().await;
     assert_eq!(h.ran().await.at, base());
     h.settle().await;
     assert_eq!(h.store.job(job.id).await.unwrap(), None);
@@ -794,7 +799,7 @@ async fn an_idle_only_run_waiting_past_its_active_hours_is_skipped() {
     )
     .await;
     let dm = h.dm(&["Hi"]).await;
-    h.start();
+    h.start().await;
     let busy = h.sessions.hold(dm.id).await.unwrap();
     // Fires at 08:55, waits; the DM goes quiet at 09:10, outside the hours.
     h.advance_to(ts("2026-10-22T16:10:00Z")).await;
@@ -810,7 +815,7 @@ async fn an_idle_only_run_waiting_past_its_active_hours_is_skipped() {
 async fn cancelling_a_job_stops_its_run_waiting_for_the_dm() {
     let mut h = Harness::new("", &[]).await;
     let dm = h.dm(&["Hi"]).await;
-    h.start();
+    h.start().await;
     let job = h
         .store
         .job_create(
@@ -822,6 +827,7 @@ async fn cancelling_a_job_stops_its_run_waiting_for_the_dm() {
         .await
         .unwrap();
     h.changes.notify();
+    h.settle().await;
     let busy = h.sessions.hold(dm.id).await.unwrap();
     h.advance_to(ts("2026-10-22T15:01:00Z")).await;
     // Waiting behind the busy DM; cancelled meanwhile.
@@ -841,7 +847,7 @@ async fn cancelling_a_job_stops_its_run_waiting_for_the_dm() {
 async fn a_job_that_cancels_itself_still_delivers_and_appends_its_reply() {
     let mut h = Harness::new("", &[]).await;
     let dm = h.dm(&["Has it shipped?"]).await;
-    h.start();
+    h.start().await;
     let job = h
         .store
         .job_create(
