@@ -82,8 +82,8 @@ The layout also sets `htmx`'s configuration through a `<meta name="htmx-config">
 - `allowScriptTags: false`: `htmx` doesn't execute `<script>` tags found in swapped-in content.
   Giles never sends any, so this only matters if something slips through the renderer.
 
-The home page (`index.html`) shows the version, and `not_found.html` is the 404 page. Both exist to
-prove the layout works until the web channel (2.22) brings real pages.
+The home page (`index.html`) shows the version; it's `/` only when no web channel is configured
+(with one, `/` is the chat list: [Web Channel](web-channel.md)). `not_found.html` is the 404 page.
 
 ## Static Assets
 

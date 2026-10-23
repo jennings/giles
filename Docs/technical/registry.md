@@ -30,10 +30,14 @@ built-in, so adding one is one arm:
   `AnthropicProvider::new` (feature `provider-anthropic`; without it, an error naming the feature).
 - provider `openai`: `OpenAiConfig::from_json(config.to_json())`, then `OpenAiProvider::new`
   (feature `provider-openai`; without it, an error naming the feature).
-- channel `web`: an error saying it isn't implemented yet (TASKS.md 2.22).
+- channel `web`: `WebConfig::from_json(config.to_json())`, then `WebChannel` (feature
+  `channel-web`; without it, an error naming the feature). At most one instance may use it: a
+  second is an error at its `component` key. The channel is also kept typed,
+  `Registry::web_channel() -> Option<Arc<WebChannel>>`, for its pages and approval prompts (see
+  [Web Channel](web-channel.md)).
 
 Every failure is a `ConfigError` on `giles.toml` at `<kind>.<name>.component` (missing component)
-or `provider.<name>.config` (rejected config). On that error path only, `giles.toml` is read again
+or `<kind>.<name>.config` (rejected config). On that error path only, `giles.toml` is read again
 to find the key's line and column, so it prints as `file:line:col: key: reason` like any other
 configuration error. Messages from the component pass through `PluginConfig::scrub`, so they never
 show a secret.

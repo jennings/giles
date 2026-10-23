@@ -131,6 +131,9 @@ pub struct Registry {
     channels: Map<dyn Channel>,
     toolsets: Map<dyn Toolset>,
     tools: ToolIndex,
+    /// The built-in web channel, typed (it's in `channels` too).
+    #[cfg(feature = "channel-web")]
+    web: std::sync::OnceLock<Arc<crate::channels::web::WebChannel>>,
 }
 
 impl fmt::Debug for Registry {
@@ -159,6 +162,8 @@ impl Registry {
             channels: RwLock::default(),
             toolsets: RwLock::default(),
             tools: ToolIndex::new(),
+            #[cfg(feature = "channel-web")]
+            web: std::sync::OnceLock::new(),
         }
     }
 
@@ -189,11 +194,11 @@ impl Registry {
         }
         for instance in registry.config.channels.values() {
             if let ChannelRuntime::BuiltIn = instance.runtime {
-                let channel = build_channel(instance).map_err(|reason| {
+                let channel = build_channel(&registry, instance).map_err(|(key, reason)| {
                     let path = KeyPath::root()
                         .key("channel")
                         .key(instance.name.as_str())
-                        .key("component");
+                        .key(key);
                     registry.giles_toml_error(path, reason)
                 })?;
                 insert(&registry.channels, &instance.name, channel);
@@ -317,6 +322,14 @@ impl Registry {
     /// The channel registered for instance `name`.
     pub fn channel(&self, name: &str) -> Option<Arc<dyn Channel>> {
         get(&self.channels, name)
+    }
+
+    /// The built-in web channel, typed, if `giles.toml` configures one: its pages
+    /// ([`WebApp`](crate::channels::web::WebApp)), approval prompts (TASKS.md 2.7), and login links
+    /// (2.24) need more than [`Channel`].
+    #[cfg(feature = "channel-web")]
+    pub fn web_channel(&self) -> Option<Arc<crate::channels::web::WebChannel>> {
+        self.web.get().cloned()
     }
 
     /// The toolset registered for instance `name`.
@@ -476,12 +489,36 @@ fn build_provider(
     }
 }
 
-/// Builds a built-in channel. One arm per built-in component name.
-fn build_channel(instance: &ChannelInstance) -> Result<Arc<dyn Channel>, String> {
+/// Builds a built-in channel; the error is the key under `[channel.<instance>]` and the reason.
+/// One arm per built-in component name.
+#[cfg_attr(not(feature = "channel-web"), allow(unused_variables))]
+fn build_channel(
+    registry: &Registry,
+    instance: &ChannelInstance,
+) -> Result<Arc<dyn Channel>, (&'static str, String)> {
     match instance.component.as_str() {
+        #[cfg(feature = "channel-web")]
         "web" => {
-            Err("the built-in `web` channel is not implemented yet (TASKS.md 2.22)".to_owned())
+            use crate::channels::web::WebChannel;
+            // One at most: two would both serve `/` and the trusted-proxy socket.
+            if let Some(first) = registry.web.get() {
+                return Err((
+                    "component",
+                    format!(
+                        "only one web channel instance is allowed, and `[channel.{}]` is one",
+                        first.instance()
+                    ),
+                ));
+            }
+            let web = Arc::new(WebChannel::from_instance(instance)?);
+            registry.web.get_or_init(|| web.clone());
+            Ok(web)
         }
-        other => Err(format!("no built-in channel {other:?}")),
+        #[cfg(not(feature = "channel-web"))]
+        "web" => Err((
+            "component",
+            "this giles was built without the `channel-web` feature".to_owned(),
+        )),
+        other => Err(("component", format!("no built-in channel {other:?}"))),
     }
 }

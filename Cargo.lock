@@ -889,6 +889,7 @@ dependencies = [
  "croner",
  "futures",
  "getrandom 0.4.3",
+ "giles-plugin-sdk",
  "giles-proto",
  "giles-store",
  "giles-types",

@@ -1,0 +1,19 @@
+{% extends "layout.html" %}
+
+{% block title %}Chats - Giles{% endblock %}
+
+{% block content %}
+<div class="page-head">
+<h1>Chats</h1>
+<a class="button" href="/chats/new">New chat</a>
+</div>
+{%- if chats.is_empty() %}
+<p>No chats yet. Start one with <a href="/chats/new">New chat</a>.</p>
+{%- else %}
+<ul class="chats">
+{%- for chat in chats %}
+<li><a href="/chats/{{ chat.id }}">{{ chat.title }}</a> <time datetime="{{ chat.active_at }}">{{ chat.active }}</time></li>
+{%- endfor %}
+</ul>
+{%- endif %}
+{% endblock %}

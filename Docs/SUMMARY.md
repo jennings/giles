@@ -9,6 +9,7 @@
 - [Configuration](user/configuration.md)
 - [Chat Commands](user/commands.md)
 - [Model Providers](user/providers.md)
+- [Web Chat](user/web.md)
 - [Skills and Memory Files](user/skills-and-memory.md)
 - [Writing a Plugin](user/writing-a-plugin.md)
 
@@ -30,6 +31,7 @@
 - [MCP Client](technical/mcp.md)
 - [Rendering Model Output](technical/rendering.md)
 - [HTTP Server](technical/http.md)
+- [Web Channel](technical/web-channel.md)
 - [gRPC Protocols](technical/protocols.md)
 - [Configuration](technical/config.md)
 - [Identity and Routing](technical/identity-and-routing.md)

@@ -62,7 +62,15 @@ async fn serve(root: DataRoot, config: Config) -> anyhow::Result<()> {
             shutdown.clone(),
         )
         .await?;
-    let app = http::RouterBuilder::new().build();
+    let builder = http::RouterBuilder::new();
+    // The web channel's pages, if `giles.toml` configures it.
+    #[cfg(feature = "channel-web")]
+    let builder = match giles_core::channels::web::WebApp::from_runtime(&runtime, shutdown.clone())
+    {
+        Some(web) => web.install(builder),
+        None => builder,
+    };
+    let app = builder.build();
     let mut http_server = tokio::spawn(http::serve(listener, app, shutdown.clone()));
     // Every configured plugin channel; one that fails to launch is logged and stays pending. A
     // shutdown during startup abandons the launches still running (killing their plugins).

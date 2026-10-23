@@ -36,3 +36,128 @@ header a {
   visibility: visible;
   transition: opacity 200ms ease-in;
 }
+
+/* Buttons and links styled as buttons. */
+button,
+.button {
+  font: inherit;
+  padding: 0.3rem 0.8rem;
+  border: 1px solid color-mix(in srgb, currentColor 40%, transparent);
+  border-radius: 0.4rem;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+/* The chat list. */
+.chats {
+  list-style: none;
+  padding: 0;
+}
+
+.chats li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.chats time {
+  opacity: 0.7;
+  white-space: nowrap;
+}
+
+/* A chat: its messages, then the form. */
+.messages {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin: 1rem 0;
+}
+
+.msg {
+  max-width: 85%;
+  padding: 0.2rem 0.8rem;
+  border-radius: 0.6rem;
+  overflow-wrap: anywhere;
+}
+
+.msg.user {
+  align-self: flex-end;
+  background: color-mix(in srgb, #3b82f6 18%, transparent);
+}
+
+.msg.assistant {
+  align-self: flex-start;
+  background: color-mix(in srgb, currentColor 7%, transparent);
+}
+
+.msg pre {
+  overflow-x: auto;
+}
+
+.msg img {
+  max-width: 100%;
+}
+
+.msg-status,
+.session-break,
+.notice {
+  font-size: 0.9em;
+  opacity: 0.7;
+}
+
+.msg.live .msg-status {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.session-break {
+  align-self: center;
+}
+
+.approval {
+  align-self: flex-start;
+  max-width: 85%;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid color-mix(in srgb, #f59e0b 60%, transparent);
+  border-radius: 0.6rem;
+}
+
+.approval-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.compose {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: flex-end;
+}
+
+.compose textarea {
+  flex: 1 1 20rem;
+  font: inherit;
+}
+
+.error {
+  flex-basis: 100%;
+  color: #dc2626;
+}

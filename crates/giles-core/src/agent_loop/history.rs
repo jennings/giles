@@ -33,6 +33,41 @@ pub fn time_prefix(at: Timestamp, tz: &TimeZone) -> String {
     format!("[{}]", zoned.strftime(PREFIX_FORMAT))
 }
 
+/// `text` without a leading [`time_prefix`] and the space after it: what the user wrote, for
+/// showing a stored user message (the web chat's transcript and chat titles). Text that doesn't
+/// start with a prefix is returned unchanged.
+pub fn strip_time_prefix(text: &str) -> &str {
+    /// Whether `part` matches `pattern`, where `A` is an ASCII letter, `9` an ASCII digit, and
+    /// any other byte itself.
+    fn shaped(part: &[u8], pattern: &[u8]) -> bool {
+        part.len() == pattern.len()
+            && part.iter().zip(pattern).all(|(&b, &p)| match p {
+                b'A' => b.is_ascii_alphabetic(),
+                b'9' => b.is_ascii_digit(),
+                _ => b == p,
+            })
+    }
+    // `[Thu 2026-10-22 14:03 ` then the zone (`PDT`, `UTC`, `+0530`, ...) and `]`.
+    const HEAD: &[u8] = b"[AAA 9999-99-99 99:99 ";
+    let bytes = text.as_bytes();
+    let Some(head) = bytes.get(..HEAD.len()) else {
+        return text;
+    };
+    if !shaped(head, HEAD) {
+        return text;
+    }
+    let rest = &text[HEAD.len()..];
+    let Some(end) = rest.find(']') else {
+        return text;
+    };
+    let zone = &rest[..end];
+    if zone.is_empty() || zone.contains(char::is_whitespace) {
+        return text;
+    }
+    let after = &rest[end + 1..];
+    after.strip_prefix(' ').unwrap_or(after)
+}
+
 /// The stored form of an inbound message: a `User` message whose text starts with the time it
 /// was sent (`sent_at`, else when the core received it). The prefix is part of the stored text,
 /// so the transcript renders the same on every later request and the cache prefix holds.
@@ -159,6 +194,30 @@ mod tests {
         let message = user_message(&turn_message("", None), None, &TimeZone::UTC);
         assert_eq!(message.content, [Block::text("[Thu 2026-10-22 21:03 UTC]")]);
         assert_eq!(message.meta.sender, None);
+    }
+
+    #[test]
+    fn stripping_the_prefix_leaves_what_the_user_wrote() {
+        let at: Timestamp = "2026-10-22T21:03:59Z".parse().unwrap();
+        for tz in [la(), TimeZone::UTC, TimeZone::fixed(jiff::tz::offset(-3))] {
+            let prefix = time_prefix(at, &tz);
+            assert_eq!(strip_time_prefix(&format!("{prefix} hello")), "hello");
+            assert_eq!(strip_time_prefix(&prefix), "");
+            // Only the one prefix the core added.
+            let twice = format!("{prefix} {prefix} hi");
+            assert_eq!(strip_time_prefix(&twice), format!("{prefix} hi"));
+        }
+        for unchanged in [
+            "hello",
+            "",
+            "[Thu 2026-10-22 14:03 PDT",
+            "[Thu 2026-10-22 14:03 ] x",
+            "[note] hello",
+            "[Thu 2026-10-22] hello",
+            " [Thu 2026-10-22 14:03 PDT] hello",
+        ] {
+            assert_eq!(strip_time_prefix(unchanged), unchanged);
+        }
     }
 
     #[test]

@@ -1,0 +1,7 @@
+{%- for item in items -%}
+{%- if item.image -%}
+<p class="attachment"><img src="/blobs/{{ item.id }}" alt="{{ item.name }}"></p>
+{%- else -%}
+<p class="attachment"><a href="/blobs/{{ item.id }}">{{ item.name }}</a></p>
+{%- endif -%}
+{%- endfor -%}

@@ -243,7 +243,7 @@ The five tracks run in parallel.
 
 ### Track E: Web and Admin
 
-- [ ] **2.22 Web channel** (§9, §10). Built-in `channel-web` on the 1.14 server: chat pages, posted
+- [x] **2.22 Web channel** (§9, §10). Built-in `channel-web` on the 1.14 server: chat pages, posted
   messages as `ChannelEvent`s, live output over SSE (`deltas`), HTML from 1.7, approval buttons.
   **Needs:** 1.14, 1.7.
 - [ ] **2.23 Web login** (§3.4). Session cookie (`HttpOnly`, `SameSite=Lax`, `Secure` over HTTPS)

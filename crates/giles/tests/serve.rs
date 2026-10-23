@@ -500,3 +500,34 @@ fn a_shutdown_during_plugin_launch_kills_the_plugin_and_exits_promptly() {
     }
     assert!(!home.join("run/pids/mute.pid").exists());
 }
+
+/// `GET <path>` over `stream`, with `headers`; the whole response.
+#[cfg(feature = "channel-web")]
+fn http_request(mut stream: impl Read + Write, path: &str, headers: &str) -> String {
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: giles\r\n{headers}Connection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response
+}
+
+#[cfg(feature = "channel-web")]
+#[test]
+fn the_web_channel_replaces_the_home_page() {
+    let env = Env::new();
+    let home = env.path("home");
+    write_config(&home, &format!("{MINIMAL_CONFIG}[channel.web]\n"));
+    let daemon = Daemon::start(env.command(&["serve", "--home", home.to_str().unwrap()]));
+    let addr = http_addr(&daemon.log);
+
+    // The chat list needs a login.
+    let response = http_request(TcpStream::connect(addr).unwrap(), "/", "");
+    assert!(response.starts_with("HTTP/1.1 401 "), "{response}");
+    assert!(response.contains("giles admin login-link"), "{response}");
+
+    let (status, log) = daemon.stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+}

@@ -10,7 +10,9 @@ license.workspace = true
 publish = false
 
 [features]
-default = ["provider-anthropic", "provider-openai"]
+default = ["channel-web", "provider-anthropic", "provider-openai"]
+# The built-in web channel.
+channel-web = ["giles-core/channel-web"]
 # The built-in Anthropic provider.
 provider-anthropic = ["giles-core/provider-anthropic"]
 # The built-in OpenAI-compatible provider.

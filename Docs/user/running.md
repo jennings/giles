@@ -32,10 +32,9 @@ identities = ["web:owner"]
 ```
 
 Next it opens its database (`data/giles.db`, created on first start) and builds the components the
-configuration names. A provider whose `config` it rejects, or a built-in component that isn't
-available yet (the `web` channel is still to come), stops startup with an error naming the file,
-line, and key. Channel plugins and toolsets can't be started yet: each one is logged as
-`instance not started`.
+configuration names. A provider or channel whose `config` it rejects stops startup with an error
+naming the file, line, and key. Channel plugins and toolsets can't be started yet: each one is
+logged as `instance not started`.
 
 It runs until it receives SIGINT (Ctrl-C) or SIGTERM, then shuts down and exits with status 0. If
 shutdown takes too long, a second Ctrl-C or SIGTERM makes it exit at once with status 130. Any other
@@ -63,6 +62,9 @@ Giles, or any other server on that port), `giles serve` fails at startup with
 
 Giles speaks plain HTTP. To reach it from another machine, put a reverse proxy that terminates TLS
 (Caddy, nginx, Tailscale Serve) in front of it rather than exposing the port directly.
+
+With a `[channel.web]` instance configured, the web server's home page is your list of chats
+([Web Chat](web.md)); without one it only shows that Giles is running.
 
 ## The Data Root
 

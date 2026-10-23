@@ -1,0 +1,5 @@
+<article id="{{ id }}" class="msg {{ role }}{% if live %} live{% endif %}{% if cut_off %} cut-off{% endif %}">
+{{- body|safe -}}
+{%- if live %}<p class="msg-status">Writing…</p>{% endif -%}
+{%- if cut_off %}<p class="msg-status">Stopped before the end.</p>{% endif -%}
+</article>

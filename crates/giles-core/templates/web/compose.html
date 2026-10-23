@@ -1,0 +1,8 @@
+<form id="compose" class="compose" method="post" action="/chats/{{ chat }}/messages" hx-post="/chats/{{ chat }}/messages" hx-target="this" hx-swap="outerHTML">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<textarea name="text" rows="3" required aria-label="Message">{{ text }}</textarea>
+<button type="submit">Send</button>
+{%- if let Some(error) = error %}
+<p class="error" role="alert">{{ error }}</p>
+{%- endif %}
+</form>

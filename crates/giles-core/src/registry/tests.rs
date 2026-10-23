@@ -341,8 +341,9 @@ fn builds_the_openai_provider() {
     assert!(!err.to_string().contains("sk-secret-value"), "{err}");
 }
 
+#[cfg(not(feature = "channel-web"))]
 #[test]
-fn unimplemented_built_ins_are_config_errors() {
+fn the_web_channel_needs_its_feature() {
     let home = Home::new("[channel.web]\n");
     let err = home.build().unwrap_err();
     assert_config_error(
@@ -351,8 +352,41 @@ fn unimplemented_built_ins_are_config_errors() {
         // No `component` key: the position of the instance's table name.
         (3, 10),
         "channel.web.component",
-        "`web` channel is not implemented yet (TASKS.md 2.22)",
+        "built without the `channel-web` feature",
     );
+}
+
+#[cfg(feature = "channel-web")]
+#[test]
+fn builds_the_web_channel_once() {
+    let home = Home::new("[channel.chat]\ncomponent = \"web\"\n");
+    let registry = home.build().unwrap();
+    let channel = registry.channel("chat").unwrap();
+    assert_eq!(channel.info().identity_namespace, "web");
+    assert_eq!(channel.info().output, OutputMode::Deltas);
+    assert!(!channel.info().can_initiate);
+    assert!(channel.deltas().is_some());
+    assert_eq!(registry.web_channel().unwrap().instance().as_str(), "chat");
+    assert!(registry.pending().is_empty());
+
+    let home = Home::new("[channel.web]\nconfig = { bogus = 1 }\n");
+    let err = home.build().unwrap_err();
+    assert_config_error(
+        &err,
+        &home.path("giles.toml"),
+        (4, 1),
+        "channel.web.config",
+        "unknown field `bogus`",
+    );
+
+    let home = Home::new("[channel.web]\n[channel.chat]\ncomponent = \"web\"\n");
+    let err = home.build().unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("only one web channel instance is allowed"),
+        "{err}"
+    );
+    assert!(Home::new("").build().unwrap().web_channel().is_none());
 }
 
 #[test]

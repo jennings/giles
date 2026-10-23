@@ -1,0 +1,20 @@
+{%- match answer -%}
+{%- when Some with (answer) -%}
+<div id="a-{{ code }}" class="approval answered">
+<div class="approval-prompt">{{ prompt|safe }}</div>
+<p class="approval-answer">{{ answer }}</p>
+</div>
+{%- when None -%}
+<form id="a-{{ code }}" class="approval" method="post" action="/chats/{{ chat }}/approvals" hx-post="/chats/{{ chat }}/approvals" hx-swap="none">
+{%- if let Some(csrf) = csrf %}
+<input type="hidden" name="csrf" value="{{ csrf }}">
+{%- endif %}
+<input type="hidden" name="code" value="{{ code }}">
+<div class="approval-prompt">{{ prompt|safe }}</div>
+<div class="approval-buttons">
+<button type="submit" name="answer" value="yes">Allow</button>
+<button type="submit" name="answer" value="yes!">Allow for this session</button>
+<button type="submit" name="answer" value="no">Deny</button>
+</div>
+</form>
+{%- endmatch -%}
