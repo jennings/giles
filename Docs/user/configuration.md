@@ -238,7 +238,10 @@ server answers. The remembered list is used only for the same program (by conten
 changes while it runs reaches conversations that start afterwards.
 
 Images, audio, and files a tool returns are kept like attachments (up to 50 MiB each): the model
-sees them if its provider takes that type, and can send them on with `send_attachment`.
+sees them if its provider takes that type, and can send them on with `send_attachment`. The other
+way, the model can give an attachment to a stdio toolset's tool: Giles copies it into the server's
+`TMPDIR` for the length of the call and passes the file's path. Remote toolsets don't get
+attachments.
 
 ```toml
 [toolset.files]

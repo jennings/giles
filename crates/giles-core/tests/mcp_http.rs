@@ -17,7 +17,8 @@ use futures::StreamExt;
 use giles_core::config::Secret;
 use giles_core::mcp::{HttpServer, McpToolset};
 use giles_types::{
-    AgentId, Block, CallContext, Error, ToolCall, ToolCallEvent, ToolCallHandle, Toolset,
+    AgentId, Block, CallContext, Error, MediaId, MediaRef, ToolCall, ToolCallEvent, ToolCallHandle,
+    Toolset,
 };
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::{StreamableHttpServerConfig, StreamableHttpService};
@@ -147,6 +148,39 @@ async fn the_right_token_lists_calls_and_cancels() {
     })
     .await
     .expect("the server never saw the cancellation");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_remote_server_takes_no_media_inputs() {
+    let (url, _shared) = serve().await;
+    let (_dir, blobs) = blob_store().await;
+    let toolset = McpToolset::connect_http("remote", &server(&url, Some(TOKEN)), blobs)
+        .await
+        .unwrap();
+    let media = MediaRef {
+        id: MediaId::from_digest([1; 32]),
+        media_type: "image/png".to_owned(),
+        size: 5,
+        name: None,
+    };
+    let call = ToolCall {
+        id: "toolu_1".to_owned(),
+        name: "echo".to_owned(),
+        input: json!({"text": {"$media": media.id.as_str()}}),
+        media: vec![media],
+    };
+    let ctx = CallContext {
+        agent: AgentId::new("agent").unwrap(),
+        requester: None,
+        conversation: None,
+    };
+    match toolset.call(call, ctx).await {
+        Err(Error::InvalidRequest(message)) => assert_eq!(
+            message,
+            "MCP server remote: remote toolsets take no media inputs ({\"$media\": ...})"
+        ),
+        other => panic!("expected InvalidRequest, got {other:?}"),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

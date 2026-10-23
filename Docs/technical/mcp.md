@@ -153,8 +153,32 @@ the client doesn't declare elicitation, and a server that asks anyway is decline
 **Skills.** `list_skills` is empty and `get_skill` is `NotFound`: toolset skill directories are
 task 2.21.
 
-**Media inputs.** `ToolCall::media` isn't handed to the server yet and `{"$media": ...}` values
-are sent unchanged; copying blobs into a stdio server's `TMPDIR` is task 2.21.
+**Media inputs** (PLAN sections 5 and 7.10). The dispatcher resolves each `{"$media": "<id>"}` in
+a tool input against the session's media and puts the media in `ToolCall::media`
+([Agent Loop](agent-loop.md)). For a connection made with `McpMedia::files_in(dir)` (the toolset
+launcher passes the stdio server's `TMPDIR`, `data/plugins/<instance>/tmp/`), `call` copies each
+blob into `dir` and replaces every reference object with the copy's absolute path, as a string,
+before sending `tools/call`; an id missing from `ToolCall::media` is `InvalidRequest` (`unknown
+media <id>`), and so is an input that is a reference itself. The copies (`mcp/files.rs`):
+
+- are named `giles-media-<16 random hex>-<name>`: the media's name reduced to its last path
+  component and ASCII letters, digits, `.`, `-`, `_` (others become `_`), at most 100 bytes
+  keeping a short extension, `media` without a name, and the media type's usual extension added
+  when the name has none (servers often go by it);
+- are created mode 0600 with `openat(O_CREAT | O_EXCL | O_NOFOLLOW)` through one descriptor of the
+  directory, itself opened with `O_NOFOLLOW`. The server can write its `TMPDIR` and the data
+  directory around it, so it could put a link where the core is about to write; this way a link
+  (in place of the directory or of a file) only makes the copy fail, and nothing is written
+  outside the directory;
+- are removed (`unlinkat` through the same descriptor, which never follows a link) when the call's
+  task ends: with the result, an error, or cancellation. A failed copy removes the ones already
+  made. Copies a crash left behind are removed when the server next starts (`connect_stdio` sweeps
+  `giles-media-*` entries before spawning it), since the core keeps no list across restarts.
+
+The blob reader checks the content's hash as it copies, so a damaged blob fails the call instead of
+reaching the server. Other connections (remote servers, and `McpMedia::new` alone) take no media:
+a call with `ToolCall::media` is `InvalidRequest` (`remote toolsets take no media inputs`), as
+PLAN section 7.10 says for v1. Without media the input is sent unchanged.
 
 ## Errors
 
@@ -172,13 +196,13 @@ fails by its own account (`isError: true`) is a normal `Result` event, not an er
 
 ## Staged Work
 
-- 2.21: media inputs, toolset skill directories, elicitation as approval requests.
+- 2.21: toolset skill directories, elicitation as approval requests.
 
 ## Tests
 
 `crates/giles-core/tests/support/mcp_server.rs` is a small `rmcp` server (paginated tools,
-`list_changed`, gated progress, a tool that waits to be cancelled, elicitation, media results,
-exit). It runs:
+`list_changed`, gated progress, a tool that waits to be cancelled, elicitation, media results, a
+tool that reads the file at a path, exit). It runs:
 
 - in process over a duplex pipe (`tests/mcp.rs`), with a relay task in between whose abort stands
   in for a crash; it also checks that an image, audio, and a PDF resource come back as media blocks
@@ -195,4 +219,10 @@ exit). It runs:
 - over streamable HTTP (`tests/mcp_http.rs`): `rmcp`'s `StreamableHttpService` in `axum` on
   `127.0.0.1`, behind a middleware that requires the bearer token. It checks listing, progress, and
   cancellation with the right token; rejection of a wrong, missing, or forbidden one (the 403 body
-  echoes the token, which must come back scrubbed); and an unreachable server.
+  echoes the token, which must come back scrubbed); an unreachable server; and that a call with
+  media is refused.
+
+`mcp/files.rs` unit tests cover the copy (contents, mode 0600, gone on drop, nothing left after a
+missing blob), a link in place of the directory (refused, nothing written where it points), the
+sweep (only `giles-media-*` entries, a link removed rather than followed), and safe file names.
+The [toolsets tests](toolsets.md#tests) hand a file to a real server, sandboxed and not.

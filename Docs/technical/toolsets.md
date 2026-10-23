@@ -103,6 +103,9 @@ Like a plugin launch ([Plugin Host](plugin-host.md)), without the gRPC parts:
   connection kills the group, and the server exiting takes the rest of the group with it
   ([MCP Client](mcp.md#stdio)). A server also exits when its stdin closes, which covers a core
   that dies without stopping it.
+- The connection's media: results to the blob store, and `$media` inputs copied into the server's
+  `TMPDIR` (`McpMedia::new(blobs).files_in(spec.tmp_dir())`), which the sandbox lets it read
+  ([MCP Client](mcp.md#mapping-mcp-to-the-toolset-trait)).
 
 `env` may not set `HOME`, `TMPDIR`, `PATH`, or `GILES_PLUGIN_DATA`: the sandbox derives them
 (`sandbox::DERIVED_ENV`), and config loading refuses them.
@@ -214,6 +217,9 @@ miss; a failed write is logged.
   macOS, Landlock where the kernel has it; elsewhere the launch is refused with the host check's
   message): exactly the scrubbed variables plus the `env` names, the credential passed, the data
   directory as working directory, the network denied, and with a `tcp:<port>` grant connected; the
-  spec file is 0600 and holds the grants and the credential's name but not its value.
-  Unsandboxed: the same environment, network open. Remote: listing tools over streamable HTTP with
+  spec file is 0600 and holds the grants and the credential's name but not its value. An
+  attachment passed as `{"$media": "<id>"}` reaches the server as a path in its `TMPDIR` that it
+  can read inside the sandbox, and the copy is gone after the call. Unsandboxed: the same
+  environment, network open, the same media hand-over, and a copy a crash left behind removed at
+  the next start (the server's own files stay). Remote: listing tools over streamable HTTP with
   the bearer token, and a wrong token refused as `InvalidRequest`.

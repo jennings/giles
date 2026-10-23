@@ -241,7 +241,8 @@ impl ToolsetLauncher {
             sandboxed,
             "starting the toolset",
         );
-        let media = McpMedia::new(self.blobs.clone());
+        // `$media` inputs go to the server's `TMPDIR`, inside the data directory it may read.
+        let media = McpMedia::new(self.blobs.clone()).files_in(spec.tmp_dir());
         McpToolset::connect_stdio(name, command, secrets, sandboxed, media).await
     }
 }

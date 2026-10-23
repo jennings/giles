@@ -26,15 +26,19 @@ use axum::extract::Request;
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
+use futures::StreamExt as _;
 use giles_core::config::{Builtins, Config, LoadOptions};
 use giles_core::paths::DataRoot;
 use giles_core::sandbox::{self, SandboxError, Spec};
 use giles_core::toolsets::ToolsetLauncher;
-use giles_store::{BlobStore, Store};
-use giles_types::{Error, Toolset};
+use giles_store::{BlobMeta, BlobStore, Store};
+use giles_types::{
+    AgentId, Block, CallContext, Error, Timestamp, ToolCall, ToolCallEvent, Toolset,
+};
 use rmcp::ServiceExt;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::{StreamableHttpServerConfig, StreamableHttpService};
+use serde_json::json;
 
 use self::mcp_server::{TOOLS, TestServer};
 
@@ -257,6 +261,67 @@ async fn tool_names(toolset: &dyn Toolset) -> Vec<String> {
     names
 }
 
+/// Calls `read_file` on the server of `instance` with an attachment as `{"$media": "<id>"}`. The
+/// server gets the path of a copy in its `TMPDIR` and reads it; the copy is gone once the call
+/// ends.
+async fn media_reaches_the_server(
+    home: &Home,
+    instance: &str,
+    toolset: &dyn Toolset,
+    blobs: &BlobStore,
+) {
+    let meta = BlobMeta {
+        media_type: "text/plain".to_owned(),
+        name: Some("my notes.txt".to_owned()),
+    };
+    let media = blobs
+        .put(&b"attached notes"[..], 1024, meta, Timestamp::now())
+        .await
+        .unwrap();
+    let call = ToolCall {
+        id: "toolu_read".to_owned(),
+        name: "read_file".to_owned(),
+        input: json!({"path": {"$media": media.id.as_str()}}),
+        media: vec![media],
+    };
+    let ctx = CallContext {
+        agent: AgentId::new("agent").unwrap(),
+        requester: None,
+        conversation: None,
+    };
+    let mut handle = toolset.call(call, ctx).await.unwrap();
+    let event = tokio::time::timeout(WAIT, handle.events.next())
+        .await
+        .expect("a result")
+        .expect("an event")
+        .unwrap();
+    let ToolCallEvent::Result { content, is_error } = &event else {
+        panic!("not a result: {event:?}");
+    };
+    let [Block::Text { text }] = content.as_slice() else {
+        panic!("unexpected content {content:?}");
+    };
+    assert!(!is_error, "{text}");
+    let (path, contents) = text.split_once('\n').unwrap();
+    assert_eq!(contents, "attached notes");
+    let path = Path::new(path);
+    let tmp = home.root.plugin_data_dir(instance).unwrap().join("tmp");
+    assert_eq!(path.parent(), Some(tmp.as_path()));
+    let name = path.file_name().unwrap().to_str().unwrap();
+    assert!(
+        name.starts_with("giles-media-") && name.ends_with("-my_notes.txt"),
+        "{name}"
+    );
+    drop(handle);
+    tokio::time::timeout(WAIT, async {
+        while path.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the copy outlived the call");
+}
+
 async fn sandboxed_stdio_server(log: &Log) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -289,6 +354,7 @@ async fn sandboxed_stdio_server(log: &Log) {
         .await
         .unwrap_or_else(|e| panic!("{e}\nlog:\n{}", log.contents()));
     assert_eq!(tool_names(&toolset).await, TOOLS);
+    media_reaches_the_server(&home, "probe", &toolset, &blobs).await;
     assert_eq!(log.report("probe", "env").await, SERVER_ENV_NAMES);
     assert_eq!(log.report("probe", "token").await, "passed");
     assert_eq!(log.report("probe", "cwd").await, "data dir");
@@ -345,9 +411,11 @@ async fn unsandboxed_stdio_server(log: &Log) {
     let home = Home::new(&stdio_toolset("loose", port, "unsandboxed = true"));
     let config = home.config();
     // Even a host without a sandbox runs it.
-    let launcher = home.launcher(Err("no sandbox here".to_owned()), home.blobs().await);
+    let blobs = home.blobs().await;
+    let launcher = home.launcher(Err("no sandbox here".to_owned()), blobs.clone());
     let toolset = launcher.connect(&config.toolsets["loose"]).await.unwrap();
     assert_eq!(tool_names(&toolset).await, TOOLS);
+    media_reaches_the_server(&home, "loose", &toolset, &blobs).await;
     // The same scrubbed environment and working directory, without the sandbox.
     assert_eq!(log.report("loose", "env").await, SERVER_ENV_NAMES);
     assert_eq!(log.report("loose", "token").await, "passed");
@@ -356,6 +424,19 @@ async fn unsandboxed_stdio_server(log: &Log) {
     log.wait_for("running the toolset unsandboxed (`unsandboxed = true`) toolset=loose")
         .await;
     assert!(!home.root.sandbox_spec_file("loose").unwrap().exists());
+    drop(toolset);
+
+    // A copy a crash left behind is removed at the next start; the server's own files stay.
+    let tmp = home.root.plugin_data_dir("loose").unwrap().join("tmp");
+    fs::write(tmp.join("giles-media-0123-left.txt"), "left").unwrap();
+    fs::write(tmp.join("server.txt"), "mine").unwrap();
+    let toolset = launcher.connect(&config.toolsets["loose"]).await.unwrap();
+    let mut left: Vec<_> = fs::read_dir(&tmp)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    left.sort();
+    assert_eq!(left, ["server.txt"]);
     drop(toolset);
 }
 

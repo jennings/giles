@@ -122,6 +122,16 @@ pub fn media_type_for(name: &str, bytes: &[u8]) -> &'static str {
     }
 }
 
+/// The usual file extension for `media_type` (lowercase, without the dot), if Giles knows one: the
+/// first of [`media_type_for`]'s extensions for it.
+pub fn extension_for(media_type: &str) -> Option<&'static str> {
+    let media_type = media_type.trim().to_ascii_lowercase();
+    MEDIA_TYPES_BY_EXTENSION
+        .iter()
+        .find(|(_, known)| *known == media_type)
+        .map(|&(extension, _)| extension)
+}
+
 /// The media of a media block.
 fn media_of(block: &Block) -> Option<&MediaRef> {
     match block {
@@ -245,6 +255,16 @@ pub fn input_media(input: &Value, session: &SessionMedia) -> Result<Vec<MediaRef
     Ok(found)
 }
 
+/// The id of a `{"$media": "<id>"}` object: an object whose only key is [`MEDIA_INPUT_KEY`].
+/// `Some(Err(..))` when the value isn't a string.
+fn media_input_id(object: &serde_json::Map<String, Value>) -> Option<Result<&str, String>> {
+    let id = object.get(MEDIA_INPUT_KEY).filter(|_| object.len() == 1)?;
+    Some(
+        id.as_str()
+            .ok_or_else(|| format!("`{MEDIA_INPUT_KEY}` must be a media id string")),
+    )
+}
+
 fn collect_input_media(
     value: &Value,
     session: &SessionMedia,
@@ -252,12 +272,8 @@ fn collect_input_media(
 ) -> Result<(), String> {
     match value {
         Value::Object(object) => {
-            if let Some(id) = object.get(MEDIA_INPUT_KEY)
-                && object.len() == 1
-            {
-                let Some(id) = id.as_str() else {
-                    return Err(format!("`{MEDIA_INPUT_KEY}` must be a media id string"));
-                };
+            if let Some(id) = media_input_id(object) {
+                let id = id?;
                 let media = session
                     .get(id)
                     .ok_or_else(|| format!("unknown media `{id}`"))?;
@@ -273,6 +289,44 @@ fn collect_input_media(
         Value::Array(items) => {
             for item in items {
                 collect_input_media(item, session, found)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Replaces each `{"$media": "<id>"}` object in `input` (the ones [`input_media`] finds) with
+/// what `replace` gives for its id, e.g. the path of the file a toolset handed its server.
+///
+/// # Errors
+///
+/// The text of the call's error result when a `$media` value isn't a string, or `replace` has
+/// nothing for an id (`unknown media <id>`).
+pub fn replace_input_media(
+    input: &mut Value,
+    replace: &mut dyn FnMut(&MediaId) -> Option<Value>,
+) -> Result<(), String> {
+    match input {
+        Value::Object(object) => {
+            if let Some(id) = media_input_id(object) {
+                let id = id?;
+                let replacement = id
+                    .trim()
+                    .parse::<MediaId>()
+                    .ok()
+                    .and_then(|parsed| replace(&parsed))
+                    .ok_or_else(|| format!("unknown media `{id}`"))?;
+                *input = replacement;
+                return Ok(());
+            }
+            for item in object.values_mut() {
+                replace_input_media(item, replace)?;
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                replace_input_media(item, replace)?;
             }
         }
         _ => {}
@@ -504,5 +558,48 @@ mod tests {
             media_type_for("bad", b"\xff\xfe"),
             "application/octet-stream"
         );
+    }
+
+    #[test]
+    fn extensions_come_from_the_same_table() {
+        assert_eq!(extension_for("image/png"), Some("png"));
+        assert_eq!(extension_for(" IMAGE/JPEG "), Some("jpeg"));
+        assert_eq!(extension_for("audio/ogg"), Some("ogg"));
+        assert_eq!(extension_for("application/x-unknown"), None);
+    }
+
+    #[test]
+    fn media_inputs_are_replaced_where_input_media_finds_them() {
+        let png = MediaId::from_digest([1; 32]);
+        let mut input = json!({
+            "files": [{"$media": png.as_str()}, {"$media": format!(" {png} ")}],
+            "note": {"$media": "x", "why": "literal"},
+            "n": 1,
+        });
+        let mut replace = |id: &MediaId| (*id == png).then(|| json!("/tmp/png"));
+        assert_eq!(replace_input_media(&mut input, &mut replace), Ok(()));
+        assert_eq!(
+            input,
+            json!({
+                "files": ["/tmp/png", "/tmp/png"],
+                "note": {"$media": "x", "why": "literal"},
+                "n": 1,
+            })
+        );
+
+        let other = MediaId::from_digest([2; 32]);
+        for (mut bad, error) in [
+            (
+                json!([{"$media": other.as_str()}]),
+                format!("unknown media `{other}`"),
+            ),
+            (json!({"$media": "nope"}), "unknown media `nope`".to_owned()),
+            (
+                json!({"f": {"$media": 7}}),
+                "`$media` must be a media id string".to_owned(),
+            ),
+        ] {
+            assert_eq!(replace_input_media(&mut bad, &mut replace), Err(error));
+        }
     }
 }

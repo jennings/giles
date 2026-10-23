@@ -18,7 +18,7 @@ use tokio::sync::{Notify, Semaphore};
 pub const PAGE_SIZE: usize = 2;
 
 /// The tools every server starts with, sorted.
-pub const TOOLS: [&str; 10] = [
+pub const TOOLS: [&str; 11] = [
     "add_tool",
     "ask",
     "cancellations",
@@ -29,6 +29,7 @@ pub const TOOLS: [&str; 10] = [
     "media",
     "pid",
     "progress_steps",
+    "read_file",
 ];
 
 /// What the `media` tool's image, audio, and resource carry, base64: `hello`.
@@ -111,6 +112,11 @@ impl TestServer {
             ),
             tool("pid", "The server's process id", object()),
             tool("progress_steps", "Reports `steps` progress steps", object()),
+            tool(
+                "read_file",
+                "Reads the file at `path`: `<path>` and `<contents>` lines",
+                object(),
+            ),
         ];
         let extra = self.shared.extra_tools.lock().unwrap();
         tools.extend(
@@ -219,6 +225,15 @@ impl ServerHandler for TestServer {
             ])
             .into()),
             "pid" => Ok(text(std::process::id().to_string())),
+            "read_file" => {
+                let path = argument("path").as_str().unwrap_or_default().to_owned();
+                Ok(match std::fs::read_to_string(&path) {
+                    Ok(contents) => text(format!("{path}\n{contents}")),
+                    Err(error) => {
+                        CallToolResult::error(vec![ContentBlock::text(error.to_string())]).into()
+                    }
+                })
+            }
             "progress_steps" => {
                 let steps = argument("steps").as_u64().unwrap_or(2);
                 let gated = argument("gated").as_bool().unwrap_or(false);

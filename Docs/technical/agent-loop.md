@@ -147,9 +147,10 @@ or forge another. The id is how the model refers to the media later: `send_attac
 - **Media inputs**: `media::SessionMedia` is every media block of the request's history, by id.
   The dispatcher resolves each `{"$media": "<id>"}` object (exactly that one key) anywhere in a
   toolset call's input against it and puts the media in `ToolCall::media` (each once, in order of
-  appearance), for the toolset to hand over (2.21). An id the session doesn't have, or a
-  non-string value, is the call's error result (`unknown media <id>`) before any approval or
-  call, so a call can't reach a blob the session never saw.
+  appearance), for the toolset to hand over: a stdio MCP server gets copies in its `TMPDIR` and
+  the paths in place of the references ([MCP Client](mcp.md#mapping-mcp-to-the-toolset-trait)).
+  An id the session doesn't have, or a non-string value, is the call's error result (`unknown
+  media <id>`) before any approval or call, so a call can't reach a blob the session never saw.
 
 The web chat shows attachments themselves, so its transcript leaves out a text block that is the
 reference of the media block right after it.

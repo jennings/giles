@@ -1,5 +1,8 @@
 //! Media between Giles and MCP servers (PLAN sections 5 and 7.10): images, audio, and blob
-//! resources in tool results are stored in the blob store and become media blocks.
+//! resources in tool results are stored in the blob store and become media blocks, and a stdio
+//! server gets `{"$media": "<id>"}` inputs as files in its `TMPDIR` ([`super::files`]).
+
+use std::path::PathBuf;
 
 use base64::Engine as _;
 use base64::alphabet;
@@ -9,6 +12,7 @@ use giles_types::{Block, Timestamp, ToolCallEvent};
 use tracing::warn;
 
 use super::convert::{IncomingMedia, Part, ToolResult};
+use super::files::MediaDir;
 use crate::config::DEFAULT_MAX_BLOB;
 use crate::media;
 
@@ -22,16 +26,28 @@ const BASE64: GeneralPurpose = GeneralPurpose::new(
     GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
 );
 
-/// Where one MCP connection's media goes: the blob store that keeps the media its tools return.
+/// Where one MCP connection's media goes: the blob store that keeps the media its tools return,
+/// and for a stdio server, the directory `$media` inputs are copied into.
 #[derive(Debug, Clone)]
 pub struct McpMedia {
     pub(crate) blobs: BlobStore,
+    /// `None`: the server takes no media inputs (a remote server, PLAN section 7.10).
+    pub(crate) files: Option<MediaDir>,
 }
 
 impl McpMedia {
-    /// Media in tool results is stored in `blobs`.
+    /// Media in tool results is stored in `blobs`; media inputs are refused.
     pub fn new(blobs: BlobStore) -> Self {
-        Self { blobs }
+        Self { blobs, files: None }
+    }
+
+    /// The media a call's input refers to (`ToolCall::media`) is copied from the blob store into
+    /// `dir`, the stdio server's `TMPDIR`, for the length of the call, and each reference in the
+    /// input is replaced with its file's path. The server must be able to read `dir`.
+    #[must_use]
+    pub fn files_in(mut self, dir: PathBuf) -> Self {
+        self.files = Some(MediaDir::new(dir));
+        self
     }
 }
 

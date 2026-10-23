@@ -6,6 +6,7 @@
 
 mod client;
 mod convert;
+mod files;
 mod http;
 mod media;
 mod stdio;
@@ -23,8 +24,8 @@ use giles_types::{
     ToolCallHandle, ToolSpec, Toolset,
 };
 use rmcp::model::{
-    CallToolRequestParams, CancelledNotificationParam, ClientRequest, PaginatedRequestParams,
-    Request, ServerResult,
+    CallToolRequestParams, CancelledNotificationParam, ClientRequest, JsonObject,
+    PaginatedRequestParams, Request, ServerResult,
 };
 use rmcp::service::{
     Peer, PeerRequestOptions, RequestHandle, RoleClient, RunningService, RxJsonRpcMessage,
@@ -37,6 +38,7 @@ use tracing::Instrument;
 
 use self::client::{ClientState, ProgressSubscription};
 use self::convert::Origin;
+use self::files::HandedFiles;
 pub use self::http::HttpServer;
 pub use self::media::{MAX_RESULT_MEDIA_BYTES, McpMedia};
 pub use self::stdio::{DirectCommand, STDERR_TARGET};
@@ -97,7 +99,9 @@ impl McpToolset {
     /// [`sandbox::is_trampoline_failure`] recognizes is [`Error::InvalidRequest`] instead:
     /// retrying won't help.
     ///
-    /// `media` says where media in tool results goes.
+    /// `media` says where media in tool results goes and where `$media` inputs are copied
+    /// ([`McpMedia::files_in`]). Media files an earlier run of the server left there (a crash
+    /// in the middle of a call) are removed before it starts.
     pub async fn connect_stdio(
         instance: impl Into<String>,
         command: tokio::process::Command,
@@ -115,6 +119,20 @@ impl McpToolset {
             .get_program()
             .to_string_lossy()
             .into_owned();
+        if let Some(files) = media.files.clone() {
+            match tokio::task::spawn_blocking(move || files.sweep()).await {
+                Ok(Ok(0)) => {}
+                Ok(Ok(removed)) => {
+                    tracing::debug!(parent: &span, removed, "removed media files of an earlier run");
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(parent: &span, %error, "cannot remove media files of an earlier run");
+                }
+                Err(error) => {
+                    tracing::warn!(parent: &span, %error, "removing old media files failed")
+                }
+            }
+        }
         let spawned =
             stdio::spawn(command, &span, origin.secrets.clone().into()).map_err(|error| {
                 Error::unavailable(origin.message(format_args!("can't start {program}: {error}")))
@@ -421,9 +439,13 @@ impl Toolset for McpToolset {
     /// response or a lost connection is the stream's last item, as an error. Dropping `events`
     /// before the result sends `notifications/cancelled` for the request.
     ///
+    /// `call.media` (the media the input refers to with `{"$media": "<id>"}`) is copied into a
+    /// stdio server's `TMPDIR` ([`McpMedia::files_in`]) and each reference replaced with its
+    /// file's path; the files are removed once the call ends. Other servers take no media
+    /// inputs: a call with media is [`Error::InvalidRequest`] (PLAN section 7.10).
+    ///
     /// `answers` takes no answers yet: elicitation is task 2.21, and until then the server's
-    /// requests are declined. `call.media` isn't handed to the server yet either (2.21); the input
-    /// is sent as is.
+    /// requests are declined.
     async fn call(&self, call: ToolCall, _ctx: CallContext) -> Result<ToolCallHandle> {
         let parent = span(&self.origin.instance);
         let span = tracing::debug_span!(
@@ -433,14 +455,9 @@ impl Toolset for McpToolset {
             id = %call.id
         );
         let mut params = CallToolRequestParams::new(call.name);
-        match call.input {
-            serde_json::Value::Object(arguments) => params = params.with_arguments(arguments),
-            serde_json::Value::Null => {}
-            _ => {
-                return Err(Error::InvalidRequest(
-                    "tool input must be a JSON object".to_owned(),
-                ));
-            }
+        let (arguments, files) = self.hand_over(call.input, &call.media).await?;
+        if let Some(arguments) = arguments {
+            params = params.with_arguments(arguments);
         }
         let request = ClientRequest::CallToolRequest(Request::new(params));
         let handle = self
@@ -455,17 +472,15 @@ impl Toolset for McpToolset {
             .subscribe(handle.progress_token.clone());
         let (events, events_rx) = mpsc::channel(CALL_EVENT_BUFFER);
         let (answers, answers_rx) = mpsc::channel(1);
-        tokio::spawn(
-            run_call(
-                self.origin.clone(),
-                self.media.clone(),
-                handle,
-                progress,
-                events,
-                answers_rx,
-            )
-            .instrument(span),
-        );
+        let task = CallTask {
+            origin: self.origin.clone(),
+            media: self.media.clone(),
+            progress,
+            events,
+            _answers: answers_rx,
+            _files: files,
+        };
+        tokio::spawn(run_call(task, handle).instrument(span));
         let events = futures::stream::unfold(events_rx, |mut events| async move {
             events.recv().await.map(|event| (event, events))
         });
@@ -476,17 +491,67 @@ impl Toolset for McpToolset {
     }
 }
 
-/// Drives one call: forwards progress, then the result, and cancels the request if the consumer
-/// drops the events first.
-async fn run_call(
+impl McpToolset {
+    /// The call's arguments (`input` must be an object or null), with `media` handed over as
+    /// files and the `$media` references replaced with their paths, and the files.
+    async fn hand_over(
+        &self,
+        input: serde_json::Value,
+        media: &[giles_types::MediaRef],
+    ) -> Result<(Option<JsonObject>, Option<HandedFiles>)> {
+        let not_an_object = || Error::InvalidRequest("tool input must be a JSON object".to_owned());
+        let mut input = match input {
+            serde_json::Value::Object(_) => input,
+            serde_json::Value::Null => return Ok((None, None)),
+            _ => return Err(not_an_object()),
+        };
+        if media.is_empty() {
+            let serde_json::Value::Object(arguments) = input else {
+                return Err(not_an_object());
+            };
+            return Ok((Some(arguments), None));
+        }
+        let Some(dir) = &self.media.files else {
+            return Err(Error::InvalidRequest(self.origin.message(
+                "remote toolsets take no media inputs ({\"$media\": ...})",
+            )));
+        };
+        let files = dir
+            .hand_over(&self.media.blobs, media)
+            .await
+            .map_err(|error| match error {
+                Error::NotFound(message) => Error::NotFound(self.origin.message(message)),
+                other => Error::other(self.origin.message(other)),
+            })?;
+        let mut path = |id: &giles_types::MediaId| {
+            let path = files.path(id)?.to_str()?;
+            Some(serde_json::Value::String(path.to_owned()))
+        };
+        crate::media::replace_input_media(&mut input, &mut path).map_err(Error::InvalidRequest)?;
+        let serde_json::Value::Object(arguments) = input else {
+            // The input was a reference itself.
+            return Err(not_an_object());
+        };
+        Ok((Some(arguments), Some(files)))
+    }
+}
+
+/// What a call's task holds.
+struct CallTask {
     origin: Arc<Origin>,
     media: McpMedia,
-    handle: RequestHandle<RoleClient>,
-    mut progress: ProgressSubscription,
+    progress: ProgressSubscription,
     events: mpsc::Sender<Result<ToolCallEvent>>,
-    // Held so the caller's sends succeed while the call runs; nothing reads it until 2.21.
+    /// Held so the caller's sends succeed while the call runs; nothing reads it until 2.21.
     _answers: mpsc::Receiver<ApprovalAnswer>,
-) {
+    /// The media files handed to the server, removed when the call ends.
+    _files: Option<HandedFiles>,
+}
+
+/// Drives one call: forwards progress, then the result, and cancels the request if the consumer
+/// drops the events first.
+async fn run_call(mut task: CallTask, handle: RequestHandle<RoleClient>) {
+    let events = task.events.clone();
     let id = handle.id.clone();
     let peer = handle.peer.clone();
     let response = handle.await_response();
@@ -505,7 +570,7 @@ async fn run_call(
                 return;
             }
             response = &mut response => break response,
-            Some(params) = progress.receiver.recv() => {
+            Some(params) = task.progress.receiver.recv() => {
                 if let Some(event) = convert::progress_event(params, &mut last) {
                     // A closed channel is noticed on the next turn.
                     let _ = events.send(Ok(event)).await;
@@ -514,20 +579,22 @@ async fn run_call(
         }
     };
     // Progress already routed when the response came in still goes first.
-    while let Ok(params) = progress.receiver.try_recv() {
+    while let Ok(params) = task.progress.receiver.try_recv() {
         if let Some(event) = convert::progress_event(params, &mut last) {
             let _ = events.send(Ok(event)).await;
         }
     }
+    let origin = &task.origin;
     let event = match response {
         Ok(ServerResult::CallToolResult(result)) => {
             let result = convert::tool_result(result);
-            Ok(media::store_result(result, &media.blobs, MAX_RESULT_MEDIA_BYTES).await)
+            let blobs = &task.media.blobs;
+            Ok(media::store_result(result, blobs, MAX_RESULT_MEDIA_BYTES).await)
         }
         Ok(_) => Err(Error::other(
             origin.message("unexpected response to tools/call"),
         )),
-        Err(error) => Err(convert::service_error(&origin, error)),
+        Err(error) => Err(convert::service_error(origin, error)),
     };
     let _ = events.send(event).await;
 }
