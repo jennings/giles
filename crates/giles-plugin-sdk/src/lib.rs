@@ -15,6 +15,9 @@
 //! - blobs: attachments in both directions through [`Blobs`];
 //! - exiting when the core goes away (stdin closes) or asks it to (`Shutdown`).
 //!
+//! With the `tls` feature (on by default), the `tls` module gives the plugin's own connections
+//! `rustls` with the bundled Mozilla roots.
+//!
 //! See [`ChannelPlugin`] for a complete example. The user guide's "Writing a Plugin" page and
 //! `Docs/technical/plugin-sdk.md` in the repository describe the behavior in detail.
 //!
@@ -32,6 +35,8 @@ mod spool;
 mod startup;
 #[cfg(test)]
 mod test_support;
+#[cfg(feature = "tls")]
+pub mod tls;
 
 pub use async_trait::async_trait;
 pub use base::Grants;

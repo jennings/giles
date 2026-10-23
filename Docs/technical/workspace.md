@@ -79,7 +79,8 @@ Consequences for code:
   `std`; crates add `serde` or time zone database features), `libc`, `prost`, `prost-types`,
   `reqwest` (rustls, `http2`, `stream`; no default features), `serde` (with `derive`),
   `serde_json`, `sha2`, `thiserror`, `tokio` (no features enabled), `toml`, `tonic`,
-  `tonic-health`, `tracing`, `tracing-subscriber`.
+  `tonic-health`, `tracing`, `tracing-subscriber`, `webpki-root-certs` (the Mozilla roots every
+  Giles TLS client trusts).
   Shared test-only dependencies: `hyper-util` and `tower` (a one-shot connector to a plugin over a
   socket pair) and `tempfile`.
 - A dependency used by a single crate goes in that crate's own manifest.

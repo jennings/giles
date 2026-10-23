@@ -221,3 +221,13 @@ adapter's decision (2.18), not something `convert` settles.
 | anything else                 | `UNKNOWN`          | `Other`, carrying the status          |
 
 `Unavailable`'s `retry_after` doesn't cross the wire in v1; the outbox retries with its own backoff.
+
+## TLS
+
+The SDK makes no TLS connections of its own: the core reaches a plugin over a private socket pair.
+Channel plugins make their own (IRC, IMAP, SMTP, WhatsApp), so the default `tls` feature exposes
+`giles_plugin_sdk::tls`: `root_store()` (the Mozilla roots compiled in from `webpki-root-certs`)
+and `client_config()` (a `rustls::ClientConfig` with those roots, the safe default protocol
+versions, and the `aws-lc-rs` provider named explicitly), and re-exports `rustls`. This is the
+same trust store as the core's built-in providers, never the OS store, which a sandboxed plugin may
+not be able to read. A plugin that needs no TLS can turn the feature off.
