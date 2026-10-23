@@ -669,7 +669,10 @@ async fn shutdown_drains_and_exits() {
 async fn run_bare(env: &[(&str, String)], input: &[u8]) -> (ExitStatus, String, String) {
     let mut child = command(env).spawn().unwrap();
     let mut stdin = child.stdin.take().unwrap();
-    stdin.write_all(input).await.unwrap();
+    // The plugin may exit before it reads stdin (no shared protocol, say): a closed pipe is fine.
+    if let Err(error) = stdin.write_all(input).await {
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe, "{error}");
+    }
     drop(stdin);
     let output = tokio::time::timeout(WAIT, child.wait_with_output())
         .await
