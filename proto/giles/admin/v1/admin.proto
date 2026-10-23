@@ -41,10 +41,50 @@ message StatusResponse {
   string version = 1;
   // When the core started.
   google.protobuf.Timestamp started_at = 2;
-  // The last configuration error, if any.
+  // The last configuration error, if any. v1 reads the configuration only at startup, where an
+  // error stops the core, so this stays unset until configuration reload (PLAN D28).
   optional string config_error = 3;
   // Every configured plugin instance, as in ListPlugins.
   repeated PluginInstance plugins = 4;
+  // Whether this host can sandbox plugins, from the startup check (PLAN section 12.1).
+  SandboxHost sandbox_host = 5;
+  // Every configured channel instance, built-in or plugin, sorted by name.
+  repeated ChannelInstance channels = 6;
+}
+
+// Whether the host can sandbox plugins (PLAN section 12.1).
+message SandboxHost {
+  // True if sandboxed plugins can start.
+  bool available = 1;
+  // How the host sandboxes, e.g. "Landlock ABI 6 and seccomp filters", or why it can't.
+  string description = 2;
+  // Linux: the effective Landlock ABI.
+  optional uint32 landlock_abi = 3;
+}
+
+// A configured channel instance.
+message ChannelInstance {
+  // The instance name.
+  string instance = 1;
+  // The component, e.g. "web" or "irc".
+  string component = 2;
+  // Where it runs.
+  ChannelRuntime runtime = 3;
+  // The last status it reported since the core started. Unset before its first.
+  giles.channel.v1.ChannelStatus status = 4;
+  // When the core received that status.
+  google.protobuf.Timestamp status_at = 5;
+}
+
+// Where a channel runs.
+enum ChannelRuntime {
+  CHANNEL_RUNTIME_UNSPECIFIED = 0;
+  // Compiled into the core.
+  CHANNEL_RUNTIME_BUILT_IN = 1;
+  // A plugin the core launches.
+  CHANNEL_RUNTIME_PLUGIN = 2;
+  // A plugin someone else runs, reached over the network.
+  CHANNEL_RUNTIME_REMOTE = 3;
 }
 
 message ListPluginsRequest {}
@@ -54,17 +94,21 @@ message ListPluginsResponse {
 }
 
 // A configured instance that runs as a plugin: a gRPC plugin or an MCP toolset, local or remote.
-// Built-in components are part of the core and aren't listed.
+// Built-in components are part of the core and aren't listed. The lifecycle fields (state through
+// requested_grants) come from plugin supervision and stay unset while the core doesn't supervise
+// the instance.
 message PluginInstance {
   // The instance name, e.g. "libera".
   string instance = 1;
   // The kind of instance.
   InstanceKind kind = 2;
-  // The component, e.g. "irc" for giles-channel-irc.
+  // The component, e.g. "irc" for giles-channel-irc. Empty for an MCP toolset that runs a command
+  // or a URL.
   string component = 3;
-  // The executable's path, or the URL of a remote instance.
+  // The executable's path once found, else the program as configured (e.g. giles-channel-irc); or
+  // the URL of a remote instance.
   string location = 4;
-  // Where the instance is in its lifecycle (PLAN section 7.5).
+  // Where the instance is in its lifecycle (PLAN section 7.5). UNSPECIFIED: not known.
   PluginState state = 5;
   // The version the plugin reports (Describe or the MCP server info), once known.
   optional string version = 6;
@@ -74,7 +118,7 @@ message PluginInstance {
   uint32 restarts = 8;
   // The last launch, health check, or connection error.
   optional string last_error = 9;
-  // When the current process started or the current connection was made.
+  // When the current process started or the current connection was made. Set while RUNNING.
   google.protobuf.Timestamp started_at = 10;
   // The sandbox the plugin runs in. Unset for remote instances.
   SandboxStatus sandbox = 11;
@@ -82,6 +126,8 @@ message PluginInstance {
   giles.plugin.v1.SandboxGrants requested_grants = 12;
   // The last status a channel plugin reported.
   giles.channel.v1.ChannelStatus channel_status = 13;
+  // In BACKOFF: when the next launch or connection attempt starts.
+  google.protobuf.Timestamp retry_at = 14;
 }
 
 // The kind of a configured instance.
@@ -105,6 +151,8 @@ enum PluginState {
   PLUGIN_STATE_BACKOFF = 4;
   // Down and not retried, e.g. after a protocol version mismatch, until the binary changes.
   PLUGIN_STATE_FAILED = 5;
+  // Stopped because the core is shutting down.
+  PLUGIN_STATE_STOPPED = 6;
 }
 
 // The sandbox a local plugin runs in (PLAN section 12).
@@ -113,7 +161,9 @@ message SandboxStatus {
   bool enabled = 1;
   // Linux: the effective Landlock ABI.
   optional uint32 landlock_abi = 2;
-  // Guarantees the effective sandbox lacks on this host, for the operator.
+  // Guarantees the effective sandbox lacks on this host, for the operator, given the instance's
+  // grants. If the host can't sandbox plugins at all, the one entry says why (the plugin can't
+  // start).
   repeated string missing = 3;
 }
 
