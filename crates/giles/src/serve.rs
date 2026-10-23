@@ -88,6 +88,9 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     };
     // A fresh admin token and the admin socket (a stale one is safe to replace: we hold the lock).
     let admin_listener = AdminListener::bind(&root, &lock)?;
+    // The outbox's sender: drops the approval prompts the previous process left (their approvals
+    // died with it), then delivers proactive sends as their channels come up.
+    runtime.start_outbox(shutdown.clone()).await?;
     // Startup recovery, then every registered channel's events. The last step that can fail:
     // recovery changes state and resumed turns run, so nothing may abort startup after it.
     // Approval prompts get buttons in web chats and are sent as text everywhere else.
@@ -202,9 +205,10 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
         anyhow::bail!("the HTTP server stopped unexpectedly");
     }
     http_server.await.context("the HTTP server panicked")??;
-    // Running turns are cancelled with the token; wait for them and the channel pumps, then stop
-    // the plugins and their supervision, and the toolsets.
+    // Running turns are cancelled with the token; wait for them, the channel pumps, and the
+    // outbox's sender, then stop the plugins and their supervision, and the toolsets.
     sessions.closed().await;
+    runtime.outbox.closed().await;
     plugins.stop_all().await;
     toolsets.stop().await;
     stop_admin(admin_server).await;

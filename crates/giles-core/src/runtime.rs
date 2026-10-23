@@ -9,10 +9,13 @@ use tokio_util::sync::CancellationToken;
 use crate::blobs::BlobMedia;
 use crate::config::Config;
 use crate::core_tools;
+use crate::outbox::Outbox;
 use crate::paths::DataRoot;
 use crate::registry::{Registry, RegistryError};
 use crate::router::Router;
-use crate::sessions::{AgentPolicy, Approvals, Sessions, SessionsOptions, SystemClock, TurnRunner};
+use crate::sessions::{
+    AgentPolicy, Approvals, Clock, Sessions, SessionsOptions, SystemClock, TurnRunner,
+};
 
 /// Startup failed.
 #[derive(Debug, thiserror::Error)]
@@ -40,6 +43,9 @@ pub enum StartError {
     /// Startup recovery of the sessions failed (PLAN section 6.3).
     #[error("cannot recover the sessions: {0}")]
     Sessions(#[source] giles_store::Error),
+    /// The outbox couldn't drop the approval prompts left from the previous process.
+    #[error("cannot start the outbox: {0}")]
+    Outbox(#[source] giles_store::Error),
 }
 
 /// The running core's shared state.
@@ -55,6 +61,9 @@ pub struct Runtime {
     pub blobs: BlobStore,
     /// Configured instances and their objects, the tool index, and the skill index.
     pub registry: Arc<Registry>,
+    /// Proactive sends to identities (PLAN section 6.11): job replies, approval prompts of job
+    /// turns, login codes. Its sender starts with [`start_outbox`](Self::start_outbox).
+    pub outbox: Outbox,
 }
 
 impl Runtime {
@@ -76,16 +85,33 @@ impl Runtime {
             .await
             .map_err(|source| StartError::Blobs { path, source })?;
         let media = Arc::new(BlobMedia::new(blobs.clone()));
-        let registry = Registry::from_config(root.clone(), config.clone(), media)?;
+        let registry = Arc::new(Registry::from_config(root.clone(), config.clone(), media)?);
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let runtime = Self {
             root,
             config,
+            outbox: Outbox::new(store.clone(), registry.clone(), clock),
             store,
             blobs,
-            registry: Arc::new(registry),
+            registry,
         };
         core_tools::register(&runtime)?;
         Ok(runtime)
+    }
+
+    /// Starts the outbox's sender (PLAN section 6.11): drops the approval prompts left from the
+    /// previous process, then sends due rows through the registered channels until `shutdown` is
+    /// cancelled. Rows for channels that aren't up yet (plugins) wait and are retried. Wait for
+    /// it to stop with [`Outbox::closed`].
+    ///
+    /// # Errors
+    ///
+    /// [`StartError::Outbox`] on a database error.
+    pub async fn start_outbox(&self, shutdown: CancellationToken) -> Result<(), StartError> {
+        self.outbox
+            .start(shutdown)
+            .await
+            .map_err(StartError::Outbox)
     }
 
     /// Starts the session manager: runs startup recovery, resumes queued messages, and starts

@@ -15,6 +15,7 @@ pub mod mcp;
 pub mod media;
 pub mod memory;
 pub mod net;
+pub mod outbox;
 pub mod paths;
 pub mod plugin_host;
 mod process_group;

@@ -192,8 +192,8 @@ insert(done)                                     (dedupe key only: status events
 
 Proactive sends wait in `outbox` until the channel accepts them or they expire (PLAN 6.11). A row
 is due while `next_attempt_at <= now < expires_at`, and expired once `expires_at <= now`. The
-backoff schedule belongs to the sender (task 3.1); the store records attempts, the last error, and
-the next attempt time. Only one sender loop may run, since rows aren't leased.
+backoff schedule belongs to the sender ([Outbox](outbox.md)); the store records attempts, the last
+error, and the next attempt time. Only one sender loop may run, since rows aren't leased.
 
 | Method               | Contract                                                               |
 | -------------------- | ---------------------------------------------------------------------- |

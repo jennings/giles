@@ -264,7 +264,7 @@ The five tracks run in parallel.
 The channel plugins (3.4–3.6) open up as soon as 2.15 and 1.7 are done, and are parallel with each
 other and with the rest of this phase.
 
-- [ ] **3.1 Outbox** (§6.11, §8.5). Proactive sends addressed to an identity via `recipient`,
+- [x] **3.1 Outbox** (§6.11, §8.5). Proactive sends addressed to an identity via `recipient`,
   retried with backoff until accepted; rows expire (approval prompts with their approval, everything
   else after 24 h) and are logged with instance, recipient, and kind. **Needs:** 2.1, 1.2.
 - [ ] **3.2 Scheduler** (§6.4, §6.11). `croner`; config jobs from `agent.toml`;
