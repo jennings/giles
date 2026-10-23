@@ -1,10 +1,27 @@
 # Skills and Memory Files
 
-An agent's knowledge lives in Markdown files under `GILES_HOME` that you can read and edit: skills
-teach it how to do things, and memory files hold facts it should keep in mind.
+An agent's knowledge lives in Markdown files under `GILES_HOME` that you can read and edit:
+`SOUL.md` says who the agent is, skills teach it how to do things, and memory files hold facts it
+should keep in mind.
 
-The agent loop that puts these files in front of the model is not built yet; this page describes
-the file formats Giles reads.
+## What the Agent Sees
+
+When a conversation starts, Giles gives the model, in this order:
+
+1. `agents/<agent>/SOUL.md`: who the agent is and how it should behave, exactly as you wrote it.
+   It's optional; write it in plain Markdown.
+2. The name and description of each skill the agent can use (below), if its `tools` allow
+   `load_skill`, the tool it reads a skill with.
+3. Its memory: `agents/<agent>/MEMORY.md`, then, in your direct conversations, your profile
+   `users/owner/USER.md` and what the agent remembers about you,
+   `agents/<agent>/users/owner/MEMORY.md`. Each file the agent writes is shown with how full it
+   is.
+
+This stays the same for the whole conversation, which lets the model provider cache it and makes
+replies faster and cheaper. So edits to these files show up in conversations that start afterward:
+after `/new`, an idle reset, or a restart of Giles. The current time isn't part of it; instead,
+each of your messages reaches the agent with the time you sent it, in your `[owner] timezone`, for
+example `[Thu 2026-10-22 14:03 PDT] How was the weather?`.
 
 ## Skills
 

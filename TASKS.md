@@ -151,7 +151,7 @@ The five tracks run in parallel.
   messages from one person form one turn; `/new`; `idle_reset`; startup recovery (empty result
   slots get `interrupted`, running rows become `unknown`, the requester is told). **Needs:** 1.2,
   2.2.
-- [ ] **2.4 Agent loop** (§6.3, §6.7, §11.7, §14.1). Prompt assembly at session start: sorted tools;
+- [x] **2.4 Agent loop** (§6.3, §6.7, §11.7, §14.1). Prompt assembly at session start: sorted tools;
   `system` = `SOUL.md`, skill list, memory snapshot (agent `MEMORY.md`, the owner's `USER.md` and
   per-user `MEMORY.md`); per-message time prefix in the owner's timezone. Stream the provider;
   store each assistant message with its N result slots in one transaction; loop until no tool use;

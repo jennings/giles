@@ -32,7 +32,7 @@ instance again (a restarted plugin) stops the earlier pump after its current eve
 After the HTTP server has drained at shutdown, `serve` awaits `Sessions::closed()`, which waits for
 every task the manager spawned (pumps, drivers, turns, pruning) to stop.
 
-Until the agent loop exists, `serve` passes a runner that logs and fails every turn.
+`serve` passes `AgentLoop::from_runtime(&runtime)` as the runner ([Agent Loop](agent-loop.md)).
 
 ## The Inbound Pipeline
 

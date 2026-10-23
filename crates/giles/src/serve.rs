@@ -4,14 +4,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context;
-use async_trait::async_trait;
+use giles_core::agent_loop::AgentLoop;
 use giles_core::commands::NoPendingApprovals;
 use giles_core::config::Config;
 use giles_core::http;
 use giles_core::paths::DataRoot;
 use giles_core::runtime::Runtime;
 use giles_core::sandbox;
-use giles_core::sessions::{Turn, TurnOutcome, TurnRunner};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -55,7 +54,7 @@ async fn serve(root: DataRoot, config: Config) -> anyhow::Result<()> {
     // recovery changes state and resumed turns run, so nothing may abort startup after it.
     let sessions = runtime
         .start_sessions(
-            Arc::new(NoAgentLoop),
+            Arc::new(AgentLoop::from_runtime(&runtime)),
             Arc::new(NoPendingApprovals),
             shutdown.clone(),
         )
@@ -110,21 +109,5 @@ fn check_sandbox() {
             error = %err,
             "plugin sandbox unavailable on this host; sandboxed plugins will not start",
         ),
-    }
-}
-
-/// The turn runner until the agent loop exists (TASKS.md 2.4 replaces it): every turn is logged
-/// and fails, so inbound messages are stored and acked but not answered.
-struct NoAgentLoop;
-
-#[async_trait]
-impl TurnRunner for NoAgentLoop {
-    async fn run_turn(&self, turn: Turn) -> TurnOutcome {
-        warn!(
-            session = %turn.session.id,
-            agent = %turn.session.agent,
-            "no agent loop yet; the message is not answered"
-        );
-        TurnOutcome::Failed("the agent loop is not built yet".to_owned())
     }
 }

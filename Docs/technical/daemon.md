@@ -49,7 +49,8 @@ to stderr, with ANSI colors only when stderr is a terminal. The filter is `GILES
 7. Bind the HTTP listener on `core.http_listen` (a busy address fails startup here).
 8. Start the sessions (`Runtime::start_sessions`, [Sessions and Turns](sessions.md)): recover from
    an earlier crash or shutdown (interrupted turns), resume queued messages, and consume the events
-   of every registered channel. Until the agent loop exists, turns are logged and not answered.
+   of every registered channel. Turns run on the agent loop (`AgentLoop::from_runtime`,
+   [Agent Loop](agent-loop.md)).
    This is the last step that can fail: recovery changes state and resumed turns start running, so
    nothing after it may abort startup. Then start the HTTP server on its own task
    ([HTTP Server](http.md#lifecycle)).

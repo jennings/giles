@@ -826,7 +826,6 @@ name = "giles"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "clap",
  "giles-core",
  "libc",
