@@ -5,7 +5,8 @@ use std::sync::Mutex;
 use futures::stream::{self, BoxStream, StreamExt};
 use giles_store::{Session, SessionId, SessionKind};
 use giles_types::{
-    AgentId, ChannelEvent, ChannelInfo, EventId, MessageMeta, OutboundMessage, Role, Timestamp,
+    AgentId, ChannelEvent, ChannelInfo, EventId, MessageId, MessageMeta, OutboundMessage, Role,
+    Timestamp,
 };
 use serde_json::json;
 
@@ -189,6 +190,8 @@ impl Log {
 struct FakeChannel {
     info: ChannelInfo,
     log: Arc<Log>,
+    /// Its live-output hook (`Channel::deltas`), if any.
+    live: Option<FakeLive>,
 }
 
 #[async_trait]
@@ -208,6 +211,10 @@ impl Channel for FakeChannel {
     async fn send(&self, msg: OutboundMessage) -> Result<MessageId> {
         self.log.add(format!("send {}", msg.markdown));
         Ok(MessageId::new("sent").unwrap())
+    }
+
+    fn deltas(&self) -> Option<&dyn DeltaSink> {
+        self.live.as_ref().map(|live| live as &dyn DeltaSink)
     }
 }
 
@@ -272,6 +279,11 @@ struct Fixture {
 
 impl Fixture {
     fn new(output: OutputMode) -> Self {
+        Self::with_hook(output, false)
+    }
+
+    /// A channel declaring `output`, with a live-output hook if `hook`.
+    fn with_hook(output: OutputMode, hook: bool) -> Self {
         let log = Arc::new(Log::default());
         let channel = Arc::new(FakeChannel {
             info: ChannelInfo {
@@ -280,6 +292,10 @@ impl Fixture {
                 can_initiate: false,
             },
             log: log.clone(),
+            live: hook.then(|| FakeLive {
+                log: log.clone(),
+                refuse: false,
+            }),
         });
         let reply = Reply::for_session(&session(), Arc::new(Lookup(channel))).unwrap();
         Self {
@@ -580,6 +596,27 @@ fn turn(reply: Option<Reply>) -> Turn {
 #[tokio::test]
 async fn a_deltas_channel_without_a_live_hook_gets_blocks() {
     let f = Fixture::new(OutputMode::Deltas);
+    let mut output = output_for(&turn(Some(f.reply.clone())));
+    feed(output.as_mut(), &text_block(0, &["One.\n\n", "Two."])).await;
+    output.message_end(&message()).await;
+    assert_eq!(f.log.take(), ["send One.", "send Two."]);
+}
+
+#[tokio::test]
+async fn a_deltas_channel_with_a_live_hook_streams_through_it() {
+    let f = Fixture::with_hook(OutputMode::Deltas, true);
+    let mut output = output_for(&turn(Some(f.reply.clone())));
+    feed(output.as_mut(), &text_block(0, &["One.\n\n", "Two."])).await;
+    output.message_end(&message()).await;
+    assert_eq!(
+        f.log.take(),
+        ["start c1", "push One.\n\n", "push Two.", "finish"]
+    );
+}
+
+#[tokio::test]
+async fn a_blocks_channel_with_a_live_hook_gets_blocks() {
+    let f = Fixture::with_hook(OutputMode::Blocks, true);
     let mut output = output_for(&turn(Some(f.reply.clone())));
     feed(output.as_mut(), &text_block(0, &["One.\n\n", "Two."])).await;
     output.message_end(&message()).await;

@@ -8,17 +8,17 @@
 //!
 //! - `blocks` channels get whole chunks through [`Reply::send`], split at paragraph boundaries
 //!   outside code fences as the text streams, and the rest at the end of the message.
-//! - `deltas` channels with a live-output hook ([`DeltaSink`]) get one live message per text
-//!   block, fed with the model's text deltas. A `deltas` channel without the hook gets `blocks`
-//!   output.
+//! - `deltas` channels with a live-output hook ([`Channel::deltas`], a [`DeltaSink`]) get one live
+//!   message per text block, fed with the model's text deltas. A `deltas` channel without the
+//!   hook gets `blocks` output.
 
 use std::mem;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use giles_types::{
-    Block, BlockKind, Channel, CompletionEvent, ConversationId, Error, Message, MessageId,
-    OutputMode, Result,
+    Block, BlockKind, Channel, CompletionEvent, ConversationId, DeltaSink, DeltaWriter, Error,
+    Message, OutputMode, Result,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -42,36 +42,9 @@ pub trait OutputSink: Send {
     async fn message_aborted(&mut self) {}
 }
 
-/// A channel's live-output hook: where a `deltas` channel takes streamed assistant text.
-///
-/// Same shape as `giles_types::DeltaSink` from TASKS.md 2.22 (`Channel::deltas()`); when that
-/// lands, these two traits are replaced by its re-exports and [`delta_sink`] returns
-/// `channel.deltas()`.
-pub trait DeltaSink: Send + Sync {
-    /// Starts a live assistant message in `conversation` and returns the writer that fills it.
-    ///
-    /// # Errors
-    ///
-    /// The channel's error; that text block then goes out as `blocks` output.
-    fn start(&self, conversation: &ConversationId) -> Result<Box<dyn DeltaWriter>>;
-}
-
-/// One live assistant message, from [`DeltaSink::start`]: everything [`push`](Self::push)ed, in
-/// order. Dropping it without [`finish`](Self::finish) marks it cut off.
-#[async_trait]
-pub trait DeltaWriter: Send {
-    /// Appends `text` to the message.
-    fn push(&mut self, text: &str);
-
-    /// Ends the message and returns its id on the channel.
-    async fn finish(self: Box<Self>) -> Result<MessageId>;
-}
-
-/// The live-output hook of `channel`, if it has one. No channel has one until the web channel
-/// (TASKS.md 2.22) adds `Channel::deltas()`; this then returns `channel.deltas()`.
+/// The live-output hook of `channel`, if it has one.
 fn delta_sink(channel: &dyn Channel) -> Option<&dyn DeltaSink> {
-    let _ = channel;
-    None
+    channel.deltas()
 }
 
 /// A `deltas` channel's hook, kept for the turn: the channel registered when the turn started.

@@ -202,20 +202,10 @@ in use, not every chat since the start.
   always sent); `finish` replaces it with the final rendering. A writer dropped unfinished leaves
   its text, marked "Stopped before the end."
 
-The agent loop (2.8) streams like this, and sends blocks through `Reply::send` on any channel
-whose `deltas()` is `None`:
-
-```rust
-let channel = reply.channel();
-if let Some(sink) = channel.as_deref().and_then(|c| c.deltas()) {
-    let mut writer = sink.start(reply.conversation())?; // at a text block's BlockStart
-    writer.push(&delta);                                // each TextDelta
-    writer.finish().await?;                             // at its BlockStop
-}
-```
-
-Whole-message `send` keeps working on this channel either way (notices, restart notices, 2.4's
-replies).
+The agent loop's output delivery (`agent_loop::output`, see [Agent Loop](agent-loop.md)) streams
+every assistant text block of a turn in a web chat through this hook: `start` at the block's first
+non-whitespace delta, `push` for each delta, and `finish` once the response is stored. Whole-message
+`send` keeps working on this channel either way (notices, restart notices).
 
 ### Event Streams and Cursors
 
@@ -358,6 +348,10 @@ middleware), plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `c
 - End to end: a real `Sessions` with the web channel attached and a fake turn runner that stores
   the messages and replies through `Reply::send`: a post becomes a turn, the reply reaches the open
   page, the events are acked, and a reload shows both from the transcript.
+- Live output end to end: the daemon's wiring (`Runtime`, `AgentLoop`, sessions, `WebApp`) with a
+  fake provider that streams slowly: a post becomes a turn whose text reaches the open page as a
+  live message with out-of-band updates, then its final rendering, and a reload shows the stored
+  reply once.
 - Login: a link shows its button without being used, logs in once with the right cookie flags and
   a 30-day `web_sessions` row, then is 410; expired, unknown, and malformed links; link creation
   refusals; expired, unknown, and orphaned sessions logged out with the cookie deleted; the hourly

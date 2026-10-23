@@ -17,7 +17,6 @@ model stops asking for tools. The session code that hands it turns is in
 | `OutputSink`                  | Receives a turn's streamed events and finished messages            |
 | `output::output_for`          | Picks a turn's sink: `ChannelOutput`, or none for an isolated job  |
 | `ChannelOutput`               | Sends assistant text through `Turn::reply`: `blocks` or `deltas`   |
-| `DeltaSink`, `DeltaWriter`    | A `deltas` channel's live-output hook (2.22 replaces with its own) |
 | `history::user_message`       | An inbound message's stored form, with its time prefix             |
 | `history::request_messages`   | A request's messages from `Store::load_history`                    |
 | `prompt::SessionPrompt`       | A session's `system` blocks and its `Arc<SessionTools>`            |
@@ -252,11 +251,13 @@ Chunks lose their trailing whitespace and the blank lines between them; anything
 byte for byte. The splitter (`Paragraphs`) is pure and tested with a table fed whole and one
 character at a time.
 
-**`deltas`**: each text block gets one live message (`DeltaSink::start(conversation)`) at its
-first non-whitespace text, then every delta is `push`ed as it arrives. The writers are
-`finish`ed, in order, when the message is complete (`message_end`), so a live message is marked
-done only once the response is stored. If `start` fails, it's logged and that block goes out as
-`blocks`.
+**`deltas`**: a channel that declares `OutputMode::Deltas` and has a live-output hook
+(`Channel::deltas()` returns a `giles_types::DeltaSink`; in v1 the web channel) is streamed to;
+`output_for` keeps the channel registered when the turn starts. Each text block gets one live
+message (`DeltaSink::start(conversation)`) at its first non-whitespace text, then every delta is
+`push`ed as it arrives. The writers are `finish`ed, in order, when the message is complete
+(`message_end`), so a live message is marked done only once the response is stored. If `start`
+fails, it's logged and that block goes out as `blocks`.
 
 **Aborted responses** (`/stop`, shutdown, a provider error, or the sink dropped mid-response):
 nothing more goes out. In `blocks` mode the unsent text, even a complete paragraph still waiting
@@ -285,11 +286,3 @@ the channel shows as cut off.
 - **2.10, compaction**: `AgentLoop::rebuild_prompt`, and the summary rendering in
   `history::request_messages`.
 - **2.11, 2.12, core tools**: a core-tool arm in the dispatcher in place of `tool unavailable`.
-- **2.22, live output**: `output::DeltaSink`/`DeltaWriter` have the shape of 2.22's
-  `giles_types::{DeltaSink, DeltaWriter}` (`start(&ConversationId) -> Result<Box<dyn
-  DeltaWriter>>`, `push(&str)`, `async finish(self: Box<Self>) -> Result<MessageId>`, drop
-  unfinished = cut off). Whichever lands second deletes the two local traits in
-  `agent_loop/output.rs` (importing the `giles_types` ones, and dropping them from the
-  `agent_loop` re-exports) and makes `output::delta_sink(channel)` return `channel.deltas()`.
-  Nothing else changes: a channel is streamed to only if it declares `OutputMode::Deltas` and
-  `delta_sink` returns `Some`.

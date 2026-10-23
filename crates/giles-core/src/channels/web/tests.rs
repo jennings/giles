@@ -1744,3 +1744,178 @@ async fn a_live_message_already_stored_is_shown_once() {
     assert_eq!(page.matches("Hello there").count(), 1, "{page}");
     writer.finish().await.unwrap();
 }
+
+/// A provider that streams one text reply slowly enough for live updates.
+struct SlowProvider;
+
+#[async_trait]
+impl giles_types::Provider for SlowProvider {
+    async fn list_models(&self) -> giles_types::Result<Vec<giles_types::ModelInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn complete(
+        &self,
+        _req: giles_types::CompletionRequest,
+    ) -> giles_types::Result<BoxStream<'static, giles_types::Result<giles_types::CompletionEvent>>>
+    {
+        use giles_types::{BlockKind, CompletionEvent, StopReason, Usage};
+        let pause = || tokio::time::sleep(LIVE_UPDATE_INTERVAL + Duration::from_millis(20));
+        let events = futures::stream::iter([
+            CompletionEvent::BlockStart {
+                index: 0,
+                kind: BlockKind::Text,
+                tool: None,
+            },
+            CompletionEvent::TextDelta {
+                index: 0,
+                text: "Hel".into(),
+            },
+        ])
+        .chain(futures::stream::once(async move {
+            pause().await;
+            CompletionEvent::TextDelta {
+                index: 0,
+                text: "lo **world**".into(),
+            }
+        }))
+        .chain(futures::stream::once(async move {
+            pause().await;
+            CompletionEvent::TextDelta {
+                index: 0,
+                text: ", done.".into(),
+            }
+        }))
+        .chain(futures::stream::iter([
+            CompletionEvent::BlockStop {
+                index: 0,
+                block: Block::text("Hello **world**, done."),
+            },
+            CompletionEvent::Usage(Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+            }),
+            CompletionEvent::Stop(StopReason::EndTurn),
+        ]))
+        .map(Ok);
+        Ok(events.boxed())
+    }
+}
+
+/// The daemon's wiring (runtime, agent loop, sessions, web app) with a fake provider: a post
+/// becomes a turn whose streamed text reaches the open page live, then the transcript.
+#[tokio::test]
+async fn the_agent_loop_streams_a_reply_live_to_the_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = crate::paths::DataRoot::new(dir.path(), &dir.path().join("tmp")).unwrap();
+    root.create_layout().unwrap();
+    let write = |relative: &str, contents: &str| {
+        let path = dir.path().join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    };
+    write(
+        "giles.toml",
+        "[core]\nhttp_listen = \"127.0.0.1:0\"\n\
+         [owner]\nidentities = [\"web:owner\"]\n\
+         [provider.fake]\ncomponent = \"openai\"\nconfig = { base_url = \"http://127.0.0.1:9/v1\" }\n\
+         [channel.web]\n\
+         [[routes]]\nagent = \"jeeves\"\n",
+    );
+    write(
+        "agents/jeeves/agent.toml",
+        "models = [\"fake/test-model\"]\n",
+    );
+    let config = crate::config::Config::load_with(
+        &root,
+        &crate::config::LoadOptions {
+            env: &|_| None,
+            giles_exe: None,
+            ..crate::config::LoadOptions::default()
+        },
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let runtime = crate::runtime::Runtime::start(root, Arc::new(config))
+        .await
+        .unwrap();
+    runtime
+        .registry
+        .register_provider(&InstanceName::new("fake").unwrap(), Arc::new(SlowProvider))
+        .unwrap();
+    let shutdown = CancellationToken::new();
+    let sessions = runtime
+        .start_sessions(
+            Arc::new(crate::agent_loop::AgentLoop::from_runtime(&runtime)),
+            Arc::new(NoPendingApprovals),
+            shutdown.clone(),
+        )
+        .await
+        .unwrap();
+    let env = Env {
+        store: runtime.store.clone(),
+        blobs: runtime.blobs.clone(),
+        channel: runtime.registry.web_channel().unwrap(),
+        app: WebApp::from_runtime(&runtime, shutdown.clone()).unwrap(),
+        shutdown,
+        _dir: dir,
+    };
+
+    let mut sse = Sse::open(&env, &format!("/chats/{}/events", chat()), &[]).await;
+    let response = env
+        .htmx_post(&format!("/chats/{}/messages", chat()), "text=ping")
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(sse.next().await.data.contains("<p>ping</p>"));
+
+    // A live message: started, updated as the deltas arrive, then finished.
+    let started = tokio::time::timeout(WAIT, sse.next()).await.unwrap();
+    assert!(
+        started.data.contains("msg assistant live"),
+        "{}",
+        started.data
+    );
+    let mut updates = Vec::new();
+    loop {
+        let event = tokio::time::timeout(WAIT, sse.next()).await.unwrap();
+        let done = !event.data.contains("msg assistant live");
+        updates.push(event.data);
+        if done {
+            break;
+        }
+    }
+    let (last, live) = updates.split_last().unwrap();
+    assert!(
+        !live.is_empty(),
+        "no live update before the end: {updates:#?}"
+    );
+    assert!(
+        live.iter()
+            .all(|u| u.starts_with(r#"<article hx-swap-oob="true""#)),
+        "{live:#?}"
+    );
+    assert!(
+        live[0].contains("Hello <strong>world</strong>"),
+        "{}",
+        live[0]
+    );
+    assert!(
+        last.contains("Hello <strong>world</strong>, done.") && !last.contains("Writing"),
+        "{last}"
+    );
+
+    // The agent loop stores the reply before it ends the live message, so a reload now shows it
+    // once, from the transcript, and nothing live.
+    let page = body_text(env.get(&format!("/chats/{}", chat())).await).await;
+    assert!(page.contains(r#"<article id="m-h"#), "{page}");
+    assert_eq!(
+        page.matches("Hello <strong>world</strong>, done.").count(),
+        1,
+        "{page}"
+    );
+    assert!(!page.contains("msg assistant live"), "{page}");
+
+    env.shutdown.cancel();
+    sessions.closed().await;
+}
