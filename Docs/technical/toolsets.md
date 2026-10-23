@@ -133,7 +133,11 @@ them, dropping every connection (a stdio server's process group is killed).
 - `call` asks the supervisor for the connection over a channel and calls it. The lease it gets
   holds the connection and counts the call as in flight until the returned events are dropped, so
   idle stop never cuts a call short.
-- Skills are empty until 2.21.
+- `list_skills` and `get_skill` read the instance's `skills` directories (`skills::discover`
+  on a blocking thread, bare names, a later directory overriding an earlier one, broken skills
+  logged and skipped), whether or not the server runs. The agent's skill index reads the same
+  directories through `Registry::skill_sources` with the `<instance>__` prefix (PLAN sections 6.6
+  and 7.10), which is what the prompt lists and `load_skill` loads, files included.
 
 The supervisor is a loop over four states:
 
@@ -207,7 +211,8 @@ miss; a failed write is logged.
   unreachable remote server leaves the rest running, retries at 1, 2, and 4 s, and its tools come
   and go with it; rejected credentials aren't retried; a stdio server whose start fails for good
   withdraws its cached tools; `list_changed` reaches new snapshots and the cache, not running
-  sessions.
+  sessions; a `skills` directory is served by bare name and indexed for the agent with the
+  prefix, its skill's files listed for `load_skill`.
 - `crates/giles/tests/serve.rs`: a stdio toolset that exits and an unreachable remote one are
   logged and retried, with their tools registered (nothing pending) and `giles` running and
   stopping cleanly.

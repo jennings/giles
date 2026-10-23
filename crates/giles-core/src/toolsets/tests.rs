@@ -592,6 +592,51 @@ async fn rejected_credentials_are_not_retried() {
     host.stop().await;
 }
 
+#[tokio::test]
+async fn skill_directories_are_served_bare_and_indexed_with_the_prefix() {
+    let skills = tempfile::tempdir().unwrap();
+    let base = std::fs::canonicalize(skills.path()).unwrap();
+    let skill = base.join("review");
+    std::fs::create_dir_all(skill.join("scripts")).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: review\ndescription: Review a pull request.\n---\nRun `scripts/check.sh`.\n",
+    )
+    .unwrap();
+    std::fs::write(skill.join("scripts/check.sh"), "echo ok\n").unwrap();
+    let s = Setup::new(&format!("{REMOTE}skills = [\"{}\"]\n", base.display()));
+    let connector = FakeConnector::with([("remote", Script::new(&["fetch"]))]);
+    let host = s.host(&connector).await;
+
+    // The toolset serves its skills by bare name, whether or not the server is up.
+    let toolset = s.registry.toolset("remote").unwrap();
+    assert_eq!(
+        toolset.list_skills().await.unwrap(),
+        [SkillSummary {
+            name: "review".to_owned(),
+            description: "Review a pull request.".to_owned(),
+        }]
+    );
+    let review = toolset.get_skill("review").await.unwrap();
+    assert_eq!(review.body, "Run `scripts/check.sh`.");
+    assert_eq!(review.dir, skill);
+    assert!(matches!(
+        toolset.get_skill("remote__review").await,
+        Err(Error::NotFound(_))
+    ));
+
+    // The agent's skill index has it prefixed, with the directory `load_skill` reads files from.
+    let agent = AgentId::new("agent").unwrap();
+    let indexed = s.registry.agent_skills(&agent).await.unwrap();
+    let review = indexed
+        .get("remote__review")
+        .expect("indexed with the prefix");
+    assert_eq!(review.dir, skill);
+    let listed = crate::skills::list_resources(&review.dir).unwrap();
+    assert_eq!(listed.files, ["scripts/check.sh"]);
+    host.stop().await;
+}
+
 #[tokio::test(start_paused = true)]
 async fn list_changed_reaches_new_sessions_and_the_cache() {
     let s = Setup::new(FILES);

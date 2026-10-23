@@ -129,11 +129,32 @@ pub(crate) struct ManagedToolset {
     instance: InstanceName,
     tools: watch::Receiver<Vec<ToolSpec>>,
     requests: mpsc::Sender<Reply>,
+    /// The instance's `skills` directories.
+    skills: Vec<std::path::PathBuf>,
 }
 
 impl ManagedToolset {
     fn stopped(&self) -> Error {
         Error::unavailable(format!("toolset {}: Giles is stopping", self.instance))
+    }
+
+    /// The skills in the instance's `skills` directories, bare-named (a later directory
+    /// overrides an earlier one), read on a blocking thread. Skipped skills are logged. The
+    /// agent's skill index reads the same directories with the `<instance>__` prefix
+    /// ([`Registry::skill_sources`](crate::registry::Registry::skill_sources)).
+    async fn discover_skills(&self) -> Result<crate::skills::SkillSet> {
+        let sources: Vec<_> = self
+            .skills
+            .iter()
+            .map(crate::skills::SkillSource::local)
+            .collect();
+        let found = tokio::task::spawn_blocking(move || crate::skills::discover(&sources))
+            .await
+            .map_err(Error::other)?;
+        for warning in &found.warnings {
+            warn!(toolset = %self.instance, %warning, "skill skipped");
+        }
+        Ok(found.skills)
     }
 }
 
@@ -156,17 +177,25 @@ impl Toolset for ManagedToolset {
         Some(changes.boxed())
     }
 
-    /// Toolset skill directories are task 2.21; until then a toolset has no skills.
+    /// The skills of the instance's `skills` directories, with bare names; available whether or
+    /// not the server is running.
     async fn list_skills(&self) -> Result<Vec<SkillSummary>> {
-        Ok(Vec::new())
+        Ok(self.discover_skills().await?.summaries())
     }
 
-    /// Always [`Error::NotFound`] until task 2.21.
+    /// One skill of the instance's `skills` directories by bare name, else
+    /// [`Error::NotFound`].
     async fn get_skill(&self, name: &str) -> Result<Skill> {
-        Err(Error::NotFound(format!(
-            "skill {name}: toolset {} has no skills",
-            self.instance
-        )))
+        self.discover_skills()
+            .await?
+            .get(name)
+            .cloned()
+            .ok_or_else(|| {
+                Error::NotFound(format!(
+                    "skill {name}: toolset {} has no such skill",
+                    self.instance
+                ))
+            })
     }
 
     /// Gets the connection from the supervisor (relaunching an idle stdio server first) and
@@ -213,6 +242,7 @@ impl Managed {
             instance: instance.name.clone(),
             tools,
             requests: requests_tx,
+            skills: instance.skills.clone(),
         });
         let (stdio, idle_stop) = match &instance.transport {
             ToolsetTransport::Stdio(server) => (true, server.idle_stop),

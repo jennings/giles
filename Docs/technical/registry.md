@@ -116,7 +116,9 @@ the cached and fresh lists through `tool_changes` ([Toolsets](toolsets.md#lifecy
 `SkillSource { prefix: Some(instance) }`, so their skills are `<instance>__<skill>`), then
 `<root>/skills/`, then `agents/<agent>/skills/` (PLAN section 6.6). `agent_skills(agent).await` runs
 `skills::discover` over them on a blocking thread, logs each skipped skill, and returns the
-`SkillSet`. Serving skills through `Toolset::list_skills` is 2.21's job.
+`SkillSet`. A toolset also serves its own directories, bare-named, through `Toolset::list_skills`
+and `get_skill` ([Toolsets](toolsets.md#lifecycle)); the index reads the configuration directly,
+so a stopped server's skills are listed too.
 
 ## Models
 

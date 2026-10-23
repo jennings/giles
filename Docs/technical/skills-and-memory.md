@@ -72,7 +72,7 @@ prefix stays stable for caching (§6.5). Discovery reads every `SKILL.md` in ful
 so `load_skill(name)` can be answered from the set built at session start. All of this is blocking
 file I/O; async callers run it on a blocking thread.
 
-`SkillSource::prefix` is for toolset skill directories (§7.10, task 2.21): with `Some(instance)`,
+`SkillSource::prefix` is for toolset skill directories (§7.10): with `Some(instance)`,
 each skill from that source is named `<instance>__<skill>`. Name validation and the directory-name
 check apply to the bare name.
 

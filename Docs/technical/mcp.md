@@ -183,8 +183,10 @@ timeout of their own: the approval's `approval_timeout` denies an unanswered one
 deadline (which an elicitation wait counts against, unlike an `ask` approval) ends the call, which
 cancels the question.
 
-**Skills.** `list_skills` is empty and `get_skill` is `NotFound`: toolset skill directories are
-task 2.21.
+**Skills.** MCP has no skills, so a bare `McpToolset`'s `list_skills` is empty and `get_skill`
+is `NotFound`. A toolset's `skills = [...]` directories come from its configuration: the toolset
+host's `ManagedToolset` serves them ([Toolsets](toolsets.md#lifecycle)) and the registry indexes
+them as `<instance>__<skill>` for the agent.
 
 **Media inputs** (PLAN sections 5 and 7.10). The dispatcher resolves each `{"$media": "<id>"}` in
 a tool input against the session's media and puts the media in `ToolCall::media`
@@ -226,10 +228,6 @@ PLAN section 7.10 says for v1. Without media the input is sent unchanged.
 
 Messages start with `MCP server <instance>:` and have the instance's secrets scrubbed. A tool that
 fails by its own account (`isError: true`) is a normal `Result` event, not an error.
-
-## Staged Work
-
-- 2.21: toolset skill directories.
 
 ## Tests
 

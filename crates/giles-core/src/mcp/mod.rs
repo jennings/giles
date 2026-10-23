@@ -422,12 +422,13 @@ impl Toolset for McpToolset {
         Some(stream.boxed())
     }
 
-    /// Toolset skill directories are task 2.21; until then an MCP toolset has no skills.
+    /// MCP has no skills: a toolset's skill directories come from its configuration and are
+    /// served by the toolset host's `ManagedToolset`, so a bare connection has none.
     async fn list_skills(&self) -> Result<Vec<SkillSummary>> {
         Ok(Vec::new())
     }
 
-    /// Always [`Error::NotFound`] until task 2.21.
+    /// Always [`Error::NotFound`] (see [`McpToolset::list_skills`]).
     async fn get_skill(&self, name: &str) -> Result<Skill> {
         Err(Error::NotFound(format!(
             "skill {name}: MCP toolset {} has no skills",

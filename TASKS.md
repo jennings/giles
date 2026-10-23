@@ -236,7 +236,7 @@ The five tracks run in parallel.
   refresh on start and on `list_changed` (new sessions only); `idle_stop` with cached tools still
   offered and relaunch on the next call; an unreachable remote server leaves Giles degraded and
   retrying with backoff. **Needs:** 1.12, 2.1.
-- [ ] **2.21 MCP media, skills, elicitation** (§6.6, §7.10). `{"$media": "<id>"}` inputs copied
+- [x] **2.21 MCP media, skills, elicitation** (§6.6, §7.10). `{"$media": "<id>"}` inputs copied
   into a stdio server's `TMPDIR` and replaced by the path; image and audio results stored as blobs;
   toolset `skills = [...]` dirs, named `<instance>__<skill>`; `elicitation/create` surfaced as a
   `ToolCallEvent` approval request. **Needs:** 1.12, 1.3, 1.10.
