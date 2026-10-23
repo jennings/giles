@@ -14,7 +14,7 @@ use libc::{c_int, c_long};
 use tracing::{info, warn};
 
 use super::backend::{Launch, SandboxBackend};
-use super::host::{HostError, HostReport};
+use super::host::{HostError, HostReport, landlock_lacking};
 use super::{Network, SandboxError, Spec};
 
 /// `LANDLOCK_CREATE_RULESET_VERSION` from `<linux/landlock.h>` (not in `libc`): with a null
@@ -75,28 +75,11 @@ fn effective_abi(kernel: u32) -> u32 {
 
 /// What Landlock ABI `abi` can't enforce of `spec` (PLAN section 12.2's table), for the log.
 fn lacking(abi: u32, spec: &Spec) -> Vec<&'static str> {
-    let mut lacking = Vec::new();
-    if abi < seccomp::TRUNCATE_ABI {
-        lacking.push(
-            "truncation rules (ABI 3, Linux 6.2): seccomp denies path-based truncate instead",
-        );
-    }
-    if abi < 4 && matches!(spec.network, Network::Tcp(_)) {
-        lacking.push("TCP port rules (ABI 4, Linux 6.7): the port list allows all IP traffic");
-    }
-    if abi < 6 {
-        lacking.push(
-            "signal and abstract Unix socket scoping (ABI 6, Linux 6.12): the plugin can signal \
-             any process of the same user, including Giles",
-        );
-    }
-    if abi < 9 && !spec.unix.is_empty() {
-        lacking.push(
-            "Unix socket rules (ABI 9, Linux 7.1): the `unix` grants allow connecting to every \
-             socket the plugin can reach",
-        );
-    }
-    lacking
+    landlock_lacking(
+        abi,
+        matches!(spec.network, Network::Tcp(_)),
+        !spec.unix.is_empty(),
+    )
 }
 
 fn errno() -> i32 {
@@ -199,23 +182,15 @@ mod tests {
     }
 
     #[test]
-    fn lacking_follows_the_abi_table() {
+    fn lacking_reads_the_network_and_unix_grants_of_the_spec() {
         let plain = Spec::new("/d");
         let ports = Spec {
             network: Network::Tcp([443].into()),
             unix: vec!["/run/s".into()],
             ..Spec::new("/d")
         };
-        let count = |abi, spec: &Spec| lacking(abi, spec).len();
-        assert_eq!(count(1, &plain), 2);
-        assert_eq!(count(1, &ports), 4);
-        assert_eq!(count(3, &ports), 3);
-        assert_eq!(count(4, &ports), 2);
-        assert_eq!(count(4, &plain), 1);
-        assert_eq!(count(6, &plain), 0);
-        assert_eq!(count(6, &ports), 1);
-        assert_eq!(count(9, &ports), 0);
-        assert!(lacking(5, &plain)[0].contains("including Giles"));
+        assert_eq!(lacking(1, &plain), landlock_lacking(1, false, false));
+        assert_eq!(lacking(1, &ports), landlock_lacking(1, true, true));
     }
 
     /// Set in a child to turn [`seccomp_probe`] into the probe: `off` or `network`.

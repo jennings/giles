@@ -27,6 +27,7 @@ use seccompiler::{
 };
 
 use super::syscalls::DOCKER_DEFAULT;
+use crate::sandbox::host::TRUNCATE_ABI;
 use crate::sandbox::{Network, Spec};
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -74,10 +75,6 @@ pub(super) const DENIED: &[(&str, c_long)] = &[
     ("mq_notify", libc::SYS_mq_notify),
     ("mq_getsetattr", libc::SYS_mq_getsetattr),
 ];
-
-/// The first Landlock ABI that restricts `truncate` itself; below it seccomp denies path-based
-/// `truncate` (`ftruncate` needs a descriptor opened for writing, which Landlock checks).
-pub(super) const TRUNCATE_ABI: u32 = 3;
 
 /// `clone` flags that create namespaces, which Docker's profile denies without `CAP_SYS_ADMIN`
 /// (its mask `0x7E020000`).

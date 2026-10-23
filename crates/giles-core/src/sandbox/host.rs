@@ -33,6 +33,50 @@ impl fmt::Display for HostReport {
     }
 }
 
+impl HostReport {
+    /// The protections this host's sandbox can't give a plugin, for the operator: on Linux, what
+    /// the effective Landlock ABI lacks (PLAN section 12.2's table); nothing on macOS.
+    /// `tcp_ports`: the plugin's network grant is a TCP port list; `unix`: it has Unix socket
+    /// grants.
+    pub fn lacking(&self, tcp_ports: bool, unix: bool) -> Vec<&'static str> {
+        match self {
+            Self::Linux { landlock_abi } => landlock_lacking(*landlock_abi, tcp_ports, unix),
+            Self::Macos { .. } => Vec::new(),
+        }
+    }
+}
+
+/// The first Landlock ABI that restricts `truncate` itself; below it seccomp denies path-based
+/// `truncate` (`ftruncate` needs a descriptor opened for writing, which Landlock checks).
+pub(super) const TRUNCATE_ABI: u32 = 3;
+
+/// What Landlock ABI `abi` can't enforce for a plugin (PLAN section 12.2's table). `tcp_ports`:
+/// its network grant is a TCP port list; `unix`: it has Unix socket grants.
+pub(super) fn landlock_lacking(abi: u32, tcp_ports: bool, unix: bool) -> Vec<&'static str> {
+    let mut lacking = Vec::new();
+    if abi < TRUNCATE_ABI {
+        lacking.push(
+            "truncation rules (ABI 3, Linux 6.2): seccomp denies path-based truncate instead",
+        );
+    }
+    if abi < 4 && tcp_ports {
+        lacking.push("TCP port rules (ABI 4, Linux 6.7): the port list allows all IP traffic");
+    }
+    if abi < 6 {
+        lacking.push(
+            "signal and abstract Unix socket scoping (ABI 6, Linux 6.12): the plugin can signal \
+             any process of the same user, including Giles",
+        );
+    }
+    if abi < 9 && unix {
+        lacking.push(
+            "Unix socket rules (ABI 9, Linux 7.1): the `unix` grants allow connecting to every \
+             socket the plugin can reach",
+        );
+    }
+    lacking
+}
+
 /// The one reason the host can't apply the sandbox. The messages name the cause and, where there
 /// is one, the fix; the underlying error is part of the message so it logs as one line.
 #[derive(Debug, thiserror::Error)]
@@ -94,4 +138,38 @@ pub enum HostError {
         /// What it printed on stderr.
         stderr: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lacking_follows_the_abi_table() {
+        let count = |abi, ports| landlock_lacking(abi, ports, ports).len();
+        assert_eq!(count(1, false), 2);
+        assert_eq!(count(1, true), 4);
+        assert_eq!(count(3, true), 3);
+        assert_eq!(count(4, true), 2);
+        assert_eq!(count(4, false), 1);
+        assert_eq!(count(6, false), 0);
+        assert_eq!(count(6, true), 1);
+        assert_eq!(count(9, true), 0);
+        assert!(landlock_lacking(5, false, false)[0].contains("including Giles"));
+    }
+
+    #[test]
+    fn a_host_report_lists_what_its_sandbox_lacks() {
+        let linux = HostReport::Linux { landlock_abi: 5 };
+        assert_eq!(
+            linux.lacking(false, false),
+            landlock_lacking(5, false, false)
+        );
+        // Scoping (ABI 6) and Unix socket rules (ABI 9).
+        assert_eq!(linux.lacking(true, true).len(), 2);
+        let macos = HostReport::Macos {
+            sandbox_exec: "/usr/bin/sandbox-exec".into(),
+        };
+        assert!(macos.lacking(true, true).is_empty());
+    }
 }

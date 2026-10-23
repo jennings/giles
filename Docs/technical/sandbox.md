@@ -383,7 +383,9 @@ backend and the crate know; a newer kernel is used as ABI 9. What a lower ABI me
 | 9   | 7.1    | No Unix socket rules: a `unix` grant allows connecting to every reachable socket   |
 
 The log's `lacking` list names the rows for 3, 4 (with a port list), 6, and 9 (with `unix`
-grants), which are PLAN section 12.2's table. An operator who needs them sets `min_abi`.
+grants), which are PLAN section 12.2's table. An operator who needs them sets `min_abi`. The list
+itself is platform-independent (`HostReport::lacking`, empty on macOS), so it can be reported per
+instance without launching anything.
 
 ### Rules
 
