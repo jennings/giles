@@ -225,7 +225,7 @@ impl fmt::Debug for Reply {
 
 impl Reply {
     /// The conversation of `session`, or `None` if it has none (a job session).
-    pub(super) fn for_session(session: &Session, channels: Arc<dyn ChannelLookup>) -> Option<Self> {
+    pub(crate) fn for_session(session: &Session, channels: Arc<dyn ChannelLookup>) -> Option<Self> {
         Some(Self {
             channels,
             instance: session.channel.clone()?,
