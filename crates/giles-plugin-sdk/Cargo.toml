@@ -42,6 +42,7 @@ webpki-root-certs = { workspace = true, optional = true }
 hyper-util.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+toml.workspace = true
 tower.workspace = true
 
 [lints]

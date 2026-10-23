@@ -226,6 +226,9 @@ computed independently from this table, guard the algorithm; changing it needs a
 | Cron        | `croner`                   | five fields only (seconds and years disallowed)     |
 | Identities  | `Identity::new`            | `<namespace>:<id>`; the namespace may contain `:`, so matching compares the whole string |
 
+`parse_duration` and `parse_size` (and the serde types `HumanDuration` and `ByteSize`) live in
+`giles_plugin_sdk::config`, so plugins parse their own `config` tables the same way.
+
 ## v1 Choices
 
 - `[owner]` replaces users and roles (PLAN section 1.1): there is no `[roles]`, no `users/`, no

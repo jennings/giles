@@ -16,7 +16,8 @@
 //! - exiting when the core goes away (stdin closes) or asks it to (`Shutdown`).
 //!
 //! With the `tls` feature (on by default), the `tls` module gives the plugin's own connections
-//! `rustls` with the bundled Mozilla roots.
+//! `rustls` with the bundled Mozilla roots. The `config` module parses durations and sizes in a
+//! plugin's `config` table the way `giles.toml` writes them.
 //!
 //! See [`ChannelPlugin`] for a complete example. The user guide's "Writing a Plugin" page and
 //! `Docs/technical/plugin-sdk.md` in the repository describe the behavior in detail.
@@ -27,6 +28,7 @@ mod auth;
 mod base;
 mod blobs;
 mod channel;
+pub mod config;
 pub mod convert;
 mod dirs;
 pub mod render;

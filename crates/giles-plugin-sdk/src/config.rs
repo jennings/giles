@@ -1,4 +1,21 @@
-//! Durations (`"30s"`, `"10m"`, `"1h30m"`) and byte sizes (`52428800`, `"50 MiB"`).
+//! Durations (`"30s"`, `"10m"`, `"1h30m"`) and byte sizes (`52428800`, `"50 MiB"`), written the
+//! way `giles.toml` writes them, so a plugin's `config` table reads like the core's own.
+//!
+//! ```
+//! use giles_plugin_sdk::config::{ByteSize, HumanDuration};
+//!
+//! #[derive(serde::Deserialize)]
+//! struct Config {
+//!     poll_interval: HumanDuration,
+//!     max_size: ByteSize,
+//! }
+//!
+//! let config: Config =
+//!     serde_json::from_value(serde_json::json!({"poll_interval": "1m30s", "max_size": "5 MiB"}))
+//!         .unwrap();
+//! assert_eq!(config.poll_interval.0.as_secs(), 90);
+//! assert_eq!(config.max_size.0, 5 << 20);
+//! ```
 
 use std::fmt;
 use std::time::Duration;
@@ -53,9 +70,9 @@ pub fn parse_duration(text: &str) -> Result<Duration, String> {
     Ok(Duration::from_millis(millis))
 }
 
-/// A duration in config, written as a string ([`parse_duration`]).
+/// A duration in config, written as a string ([`parse_duration`]). The field is the duration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct HumanDuration(pub Duration);
+pub struct HumanDuration(pub Duration);
 
 impl<'de> Deserialize<'de> for HumanDuration {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -100,9 +117,10 @@ pub fn parse_size(text: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("size {text:?} is too large"))
 }
 
-/// A byte size in config: an integer number of bytes or a string ([`parse_size`]).
+/// A byte size in config: an integer number of bytes or a string ([`parse_size`]). The field is
+/// the number of bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ByteSize(pub u64);
+pub struct ByteSize(pub u64);
 
 impl<'de> Deserialize<'de> for ByteSize {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {

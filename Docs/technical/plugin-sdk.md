@@ -139,6 +139,10 @@ async fn main() -> ExitCode {
 - `Blobs`: `put`, `put_reader`, `open`, `read`, `path`.
 - `convert`: the `giles-types` and wire conversions in both directions, plus the `Error` and
   `Status` mapping (below), public so the core's adapters and tests can share them.
+- `config`: `parse_duration` and `parse_size`, and the serde field types `HumanDuration` and
+  `ByteSize` built on them, so a plugin's `config` table writes durations (`"10m"`) and sizes
+  (`"50 MiB"`) like `giles.toml` does. The core's own config uses the same functions
+  ([Configuration](config.md#values)).
 - Re-exports `giles_types` and `async_trait`, so a plugin uses the same versions as the SDK.
 
 ## Lifecycle

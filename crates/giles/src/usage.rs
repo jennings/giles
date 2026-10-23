@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, bail};
-use giles_core::config::parse_duration;
+use giles_plugin_sdk::config::parse_duration;
 use giles_plugin_sdk::convert::timestamp_to_proto;
 use giles_proto::admin::v1 as pb;
 use giles_types::Usage;

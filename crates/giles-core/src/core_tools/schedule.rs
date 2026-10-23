@@ -8,6 +8,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use giles_plugin_sdk::config::parse_duration;
 use giles_store::{RuntimeJobId, Store};
 use giles_types::{AgentId, Block, Timestamp, ToolSpec, UserId};
 use jiff::civil::DateTime;
@@ -19,7 +20,7 @@ use tracing::{info, warn};
 use super::{CoreCall, CoreTool};
 use crate::agent_loop::ToolOutput;
 use crate::agent_loop::history::message_timezone;
-use crate::config::{Config, JobPrompt, JobSession, parse_cron, parse_duration};
+use crate::config::{Config, JobPrompt, JobSession, parse_cron};
 use crate::scheduler::{JobChanges, RuntimeSpec, When};
 use crate::sessions::Clock;
 

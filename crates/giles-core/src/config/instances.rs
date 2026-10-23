@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use giles_plugin_sdk::config::{ByteSize, HumanDuration};
 use serde::Deserialize;
 use url::{Host, Url};
 
@@ -18,7 +19,6 @@ use super::names::{Builtins, Component, InstanceName, Kind, invalid_name_reason,
 use super::plugin_config::PluginConfig;
 use super::sandbox::{self, Grants, Protected, RawSandbox};
 use super::secrets::{Resolver, Secret};
-use super::units::{ByteSize, HumanDuration};
 use crate::paths::DataRoot;
 use crate::sandbox::DERIVED_ENV;
 

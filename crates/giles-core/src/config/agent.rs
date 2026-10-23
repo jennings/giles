@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use croner::Cron;
 use croner::parser::{CronParser, Seconds, Year};
+use giles_plugin_sdk::config::HumanDuration;
 use giles_types::AgentId;
 use jiff::civil::Time;
 use jiff::tz::TimeZone;
@@ -15,7 +16,6 @@ use super::error::{ConfigError, KeyPath};
 use super::giles::parse_timezone;
 use super::model::ModelRef;
 use super::names::{invalid_name_reason, is_valid_name};
-use super::units::HumanDuration;
 
 /// The iteration cap of job turns when the agent sets no `max_iterations_jobs` (PLAN section 6.3).
 pub const DEFAULT_MAX_ITERATIONS_JOBS: u32 = 25;

@@ -18,7 +18,6 @@ mod names;
 mod plugin_config;
 mod sandbox;
 mod secrets;
-mod units;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -49,7 +48,6 @@ pub use names::{Builtins, Component, InstanceName, Kind, is_valid_name, plugin_b
 pub use plugin_config::PluginConfig;
 pub use sandbox::{Grants, NetworkGrant, check_grant};
 pub use secrets::{MIN_SCRUB_LEN, REDACTED, Secret, scrub};
-pub use units::{parse_duration, parse_size};
 
 /// What [`Config::load_with`] needs besides the data root.
 #[derive(Clone)]
