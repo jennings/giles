@@ -1557,21 +1557,28 @@ plugins. (Bazel may be added later.)
 
 ### 14.2 Container Image
 
-A `Dockerfile` at the repository root builds a basic system: `giles` plus every first-party plugin.
+A `Dockerfile` at the repository root builds a basic system: `giles` plus the first-party plugins
+meant for real use (the test-only echo channel plugin is left out).
 
-- Runtime base: `debian:bookworm-slim` with `ca-certificates` and `tzdata`.
+- Runtime base: `debian:bookworm-slim` with `ca-certificates`, `tzdata`, and `tini`.
 - `giles` and the plugin binaries go in `/usr/local/bin/`, so plugin discovery finds them on
   `$PATH` (section 7.3) while `GILES_HOME` stays a pure data volume.
-- `GILES_HOME=/data`, declared as a volume. Runs as a non-root `giles` user.
+- `GILES_HOME=/data`, declared as a volume. Runs as a non-root `giles` user (uid and gid 10001).
 - Exposes port 8080. `giles.toml` must set `http_listen = "0.0.0.0:8080"` for the port to be
   reachable.
-- Entrypoint: `giles serve`.
+- Entrypoint: `tini -- giles`, with `CMD ["serve"]`, so the container runs `giles serve` and
+  arguments after the image name replace the subcommand. `tini` is PID 1: it forwards signals to
+  `giles` and reaps plugin descendants reparented to PID 1 when Giles kills a plugin's process
+  group, which `giles` as PID 1 wouldn't.
 - Multi-stage build. The build stage starts from the official `rust` image on Debian bookworm (the
-  same glibc as the runtime image) and runs `cargo build --release --workspace`. BuildKit cache
-  mounts for the Cargo registry and `target/` keep builds incremental. The runtime stage copies only
-  the binaries.
+  same glibc as the runtime image), installs the toolchain pinned in `rust-toolchain.toml`, and runs
+  one `cargo build --release --locked` naming the daemon and each shipped plugin package. BuildKit
+  cache mounts for the Cargo registry and `target/` keep builds incremental. The runtime stage
+  copies only the binaries.
 - `docker build .` works on any machine with Docker; nothing is built on the host first.
-- `.dockerignore` excludes `target/` and `.jj/`.
+- `.dockerignore` is an allowlist of what the build reads (the workspace manifests, lockfile,
+  toolchain file, `crates/`, `plugins/`, `proto/`, and the license files), so `target/`, `.jj/`,
+  `spikes/`, and the docs stay out.
 
 The plugin sandbox works inside the container: Docker's default seccomp profile allows the
 `landlock_*` and `seccomp` syscalls (checked in `moby/profiles` `seccomp/default.json`). The host

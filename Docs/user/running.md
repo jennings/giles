@@ -13,7 +13,8 @@ cd giles
 cargo install --locked --path crates/giles
 ```
 
-This puts the `giles` binary in `~/.cargo/bin/`.
+This puts the `giles` binary in `~/.cargo/bin/`. To run Giles in a Linux container instead, see
+[Running in a Container](container.md).
 
 ## Running the Daemon
 

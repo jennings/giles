@@ -1,0 +1,11 @@
+# The build context is only what the image build reads, so changes elsewhere (docs, CI, spikes) keep
+# the build cached. Everything else, including target/, .jj/, .git/, and spikes/, stays out.
+*
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!crates/
+!plugins/
+!proto/
+!LICENSE-MIT
+!LICENSE-APACHE

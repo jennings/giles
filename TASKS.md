@@ -290,7 +290,8 @@ other and with the rest of this phase.
 - [ ] **3.6 WhatsApp channel plugin** (§3.3, §10). `giles-channel-whatsapp` on the library chosen in
   1.13: linking reported as `ChannelStatus` `NeedsAuth` (QR or pair code); session store in the data
   dir; phone number identity with the LID as an alias; echoes of its own messages dropped; group
-  chats reported as group; WhatsApp markup; media as blobs. **Needs:** 2.15, 1.7, 1.13.
+  chats reported as group; WhatsApp markup; media as blobs; `giles-channel-whatsapp` added to the
+  container image's binaries (the `bins` list in the `Dockerfile`, 4.4). **Needs:** 2.15, 1.7, 1.13.
   End-to-end with the core needs 2.18.
 - [x] **3.7 Remote plugins** (§7.6). User-run gRPC plugins over TCP: optional TLS, plain TCP to a
   non-loopback address refused unless `insecure = true`; bearer token or OAuth client credentials;
@@ -311,10 +312,11 @@ other and with the rest of this phase.
 - [ ] **4.3 Instance rename** (§7.2). `giles instance rename <old> <new>` with the core stopped
   (database rows, directories, the `giles.toml` table); at startup, refuse a new instance name
   while an unused old name has data, pointing to the command. **Needs:** 1.1, 1.2.
-- [ ] **4.4 Container image** (§14.2). Multi-stage `Dockerfile` and `.dockerignore`: Debian
+- [x] **4.4 Container image** (§14.2). Multi-stage `Dockerfile` and `.dockerignore`: Debian
   bookworm, binaries in `/usr/local/bin/`, non-root `giles` user, `GILES_HOME=/data` volume, port
   8080, `giles serve` entrypoint, BuildKit cache mounts. Verify the sandbox startup check inside the
-  container. **Needs:** 3.4, 3.5, 3.6.
+  container. **Needs:** 3.4, 3.5, 3.6. Built before 3.6 with the IRC and email plugins; 3.6 adds the
+  WhatsApp plugin.
 - [ ] **4.5 End-to-end tests.** Scripted tests of the whole daemon with a fake provider and the echo
   channel plugin: message to reply, tool call with approval, `/stop`, restart recovery, job
   delivery through the outbox. **Needs:** Phases 2 and 3.

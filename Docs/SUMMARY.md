@@ -6,6 +6,7 @@
 
 - [Overview](user/README.md)
 - [Installing and Running](user/running.md)
+- [Running in a Container](user/container.md)
 - [Command Line](user/cli.md)
 - [Configuration](user/configuration.md)
 - [Chat Commands](user/commands.md)
@@ -21,6 +22,7 @@
 - [Overview](technical/README.md)
 - [Cargo Workspace](technical/workspace.md)
 - [Continuous Integration](technical/ci.md)
+- [Container Image](technical/container-image.md)
 - [Message Model and Traits](technical/message-model.md)
 - [Providers](technical/providers.md)
 - [The `giles` Binary](technical/daemon.md)
