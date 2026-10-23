@@ -1628,6 +1628,53 @@ fn grants_must_not_write_where_binaries_live() {
 }
 
 #[test]
+fn toolset_skill_directories_must_not_be_writable_by_plugins() {
+    let outside = tempfile::tempdir().unwrap();
+    let skills = outside.path().join("skills");
+    let home = Home::new(MINIMAL);
+    let write = |toml: &str| {
+        home.write("giles.toml", &format!("{MINIMAL}{toml}"));
+    };
+
+    // A write grant on the skills, or on a directory holding them.
+    for grant in [
+        skills.clone(),
+        outside.path().to_owned(),
+        skills.join("demo"),
+    ] {
+        write(&format!(
+            "[toolset.docs]\nurl = \"https://example.com/mcp\"\nskills = [{skills:?}]\n\
+             [channel.irc]\nsandbox = {{ write = [{grant:?}] }}\n"
+        ));
+        assert_error(
+            &home,
+            "giles.toml",
+            "channel.irc.sandbox.write[0]",
+            "toolset docs's skills",
+        );
+    }
+
+    // Skills inside the plugins' data directories.
+    let data = home.root.plugin_data_dir("irc").unwrap().join("skills");
+    write(&format!(
+        "[toolset.docs]\nurl = \"https://example.com/mcp\"\nskills = [{data:?}]\n"
+    ));
+    assert_error(
+        &home,
+        "giles.toml",
+        "toolset.docs.skills[0]",
+        "overlaps the plugins' data directories",
+    );
+
+    // Read grants are fine.
+    write(&format!(
+        "[toolset.docs]\nurl = \"https://example.com/mcp\"\nskills = [{skills:?}]\n\
+         [channel.irc]\nsandbox = {{ read = [{skills:?}] }}\n"
+    ));
+    home.load_ok();
+}
+
+#[test]
 fn config_hashes_follow_the_instance_table_as_written() {
     let hashes = |giles_toml: &str, secrets: &str| {
         let home = Home::new(&format!("{MINIMAL}{giles_toml}"));

@@ -200,7 +200,9 @@ A toolset is an MCP server. It runs one of three ways:
 | `parallel`    | all        | `false`   | The toolset's tools may run in parallel with each other and with read-only core tools, up to 8 at once |
 | `skills`      | all        | `[]`      | Absolute paths of skill directories the toolset offers        |
 
-Toolsets have no `config` table: a stdio server is configured through its `args`.
+Toolsets have no `config` table: a stdio server is configured through its `args`. No plugin may
+write to a `skills` directory: Giles refuses a `skills` path inside the plugins' data directories,
+and any `write` or `unix` sandbox grant that overlaps one.
 
 Giles looks a stdio server's `command` up on its own `$PATH` and runs it in the
 [sandbox](#sandbox), granting it read and execute access to the command's install prefix: the

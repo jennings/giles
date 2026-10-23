@@ -231,6 +231,28 @@ impl Config {
                 sandboxes.push((Kind::Toolset, &toolset.name, &stdio.sandbox));
             }
         }
+        // Toolset skill directories are read by the core for the model (PLAN section 6.6): no
+        // plugin may write there, so none can race those reads.
+        for toolset in toolsets.values() {
+            for (i, dir) in toolset.skills.iter().enumerate() {
+                if sandbox::overlaps(dir, &root.plugin_data_root()) {
+                    return Err(ConfigError::at(
+                        file,
+                        KeyPath::root()
+                            .key("toolset")
+                            .key(toolset.name.as_str())
+                            .key("skills")
+                            .index(i),
+                        format!(
+                            "{} overlaps the plugins' data directories, {}",
+                            dir.display(),
+                            root.plugin_data_root().display()
+                        ),
+                    ));
+                }
+                binary_dirs.add_dir(dir, format!("toolset {}'s skills", toolset.name));
+            }
+        }
         for (kind, name, sandbox) in sandboxes {
             let path = KeyPath::root()
                 .key(kind.as_str())

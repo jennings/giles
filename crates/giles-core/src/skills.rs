@@ -12,6 +12,8 @@
 //!
 //! Everything here does blocking file I/O; async callers run it on a blocking thread.
 
+mod resources;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
@@ -19,6 +21,11 @@ use std::path::{Path, PathBuf};
 
 use giles_types::{Skill, SkillSummary};
 use serde::Deserialize;
+
+pub use resources::{
+    MAX_RESOURCE_BYTES, MAX_RESOURCE_DEPTH, MAX_RESOURCE_FILES, Resource, ResourceError,
+    ResourceList, list_resources, read_resource,
+};
 
 use crate::front_matter;
 use crate::paths::{DataRoot, PathsError};

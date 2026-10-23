@@ -190,6 +190,14 @@ fn forms(path: &Path) -> Vec<PathBuf> {
     forms
 }
 
+/// Whether `a` and `b` overlap (one contains the other) in any spelling.
+pub(crate) fn overlaps(a: &Path, b: &Path) -> bool {
+    let b = forms(b);
+    forms(a)
+        .iter()
+        .any(|a| b.iter().any(|b| a.starts_with(b) || b.starts_with(a)))
+}
+
 /// A granted path: absolute, without `..`, made lexically normal (no `.`, repeated or trailing
 /// separators).
 fn grant_path(text: &str) -> Result<PathBuf, String> {
@@ -283,6 +291,17 @@ impl BinaryDirs {
                 && !self.dirs.iter().any(|(d, _)| d == dir)
             {
                 self.dirs.push((dir.to_path_buf(), what.clone()));
+            }
+        }
+    }
+
+    /// Adds directory `dir` itself, described as `what`, in each spelling: a toolset's skill
+    /// directory, which the core reads for the model (PLAN section 6.6), so no plugin may write
+    /// there and race those reads.
+    pub(crate) fn add_dir(&mut self, dir: &Path, what: String) {
+        for form in forms(dir) {
+            if !self.dirs.iter().any(|(d, _)| *d == form) {
+                self.dirs.push((form, what.clone()));
             }
         }
     }

@@ -76,6 +76,35 @@ file I/O; async callers run it on a blocking thread.
 each skill from that source is named `<instance>__<skill>`. Name validation and the directory-name
 check apply to the bare name.
 
+### Resource Files
+
+The files next to `SKILL.md` are a skill's resources; plugins never read `GILES_HOME`, so the core
+hands them over as media (§6.6). `list_resources(dir)` lists them and `read_resource(dir, path)`
+reads one, both blocking:
+
+- Listed: regular files under the skill's directory, as `/`-separated relative paths in sorted
+  order, except the top-level `SKILL.md`, hidden names (starting with `.`) at any level, non-UTF-8
+  names, and anything more than `MAX_RESOURCE_DEPTH` (8) directories down. A symbolic link is
+  listed when it resolves to a regular file inside the skill's directory; links to directories
+  aren't followed. At most `MAX_RESOURCE_FILES` (200), with `truncated` set past that.
+- Readable: only paths the listing could show. A path that is empty, absolute, or has an empty,
+  `..`, or hidden component (`.` included) is refused before touching the disk. The rest is
+  joined to the skill's canonical directory and canonicalized with every link followed; the result
+  must be a regular file strictly inside that directory, so neither `..` nor a link can reach
+  other files. Files over `MAX_RESOURCE_BYTES` (10 MiB) are refused.
+- The read can't be raced: anything but a regular file (a FIFO would block the open) is refused
+  before opening; the canonical path is opened with `O_NOFOLLOW | O_NONBLOCK`, so a link or FIFO
+  swapped in for the file since fails; and the path of the descriptor actually opened (Linux
+  `/proc/self/fd/N`, macOS `fcntl(F_GETPATH)`) must still be inside the skill's directory, which
+  catches a directory above it swapped for a link.
+- Errors (`ResourceError`) name the path as requested, never where the skill lives.
+
+Config loading also keeps plugins out of skill directories: a toolset's `skills` directory may
+not overlap the plugins' data directories, and no `write` or `unix` grant may overlap one (the
+same rule as for the directories of binaries Giles runs). Local skills live under `GILES_HOME`,
+which grants can't overlap anyway. `giles_core::media::media_type_for(name, bytes)` gives a file's
+media type from its extension, else `text/plain` for UTF-8 text, else `application/octet-stream`.
+
 ## Memory Files
 
 `giles_core::memory` reads and updates memory files: agent-wide `agents/<agent>/MEMORY.md`, per-user

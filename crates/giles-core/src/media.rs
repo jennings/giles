@@ -65,6 +65,63 @@ pub fn attachment(media: MediaRef) -> [Block; 2] {
     [Block::text(reference(&media)), block(media)]
 }
 
+/// Media types by lowercase file extension, for files the core stores itself (skill files).
+const MEDIA_TYPES_BY_EXTENSION: &[(&str, &str)] = &[
+    ("bmp", "image/bmp"),
+    ("c", "text/x-c"),
+    ("css", "text/css"),
+    ("csv", "text/csv"),
+    ("flac", "audio/flac"),
+    ("gif", "image/gif"),
+    ("go", "text/x-go"),
+    ("htm", "text/html"),
+    ("html", "text/html"),
+    ("jpeg", "image/jpeg"),
+    ("jpg", "image/jpeg"),
+    ("js", "text/javascript"),
+    ("json", "application/json"),
+    ("m4a", "audio/mp4"),
+    ("md", "text/markdown"),
+    ("mp3", "audio/mpeg"),
+    ("ogg", "audio/ogg"),
+    ("pdf", "application/pdf"),
+    ("png", "image/png"),
+    ("py", "text/x-python"),
+    ("rs", "text/x-rust"),
+    ("sh", "text/x-shellscript"),
+    ("svg", "image/svg+xml"),
+    ("tar", "application/x-tar"),
+    ("toml", "application/toml"),
+    ("ts", "text/x-typescript"),
+    ("tsv", "text/tab-separated-values"),
+    ("txt", "text/plain"),
+    ("wav", "audio/wav"),
+    ("webp", "image/webp"),
+    ("xml", "application/xml"),
+    ("yaml", "application/yaml"),
+    ("yml", "application/yaml"),
+    ("zip", "application/zip"),
+];
+
+/// The media type of a file named `name` with contents `bytes`: by its extension, else
+/// `text/plain` for UTF-8 text without NUL bytes, else `application/octet-stream`.
+pub fn media_type_for(name: &str, bytes: &[u8]) -> &'static str {
+    let extension = name
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase());
+    let known = extension.and_then(|extension| {
+        MEDIA_TYPES_BY_EXTENSION
+            .iter()
+            .find(|(known, _)| *known == extension)
+            .map(|&(_, media_type)| media_type)
+    });
+    match known {
+        Some(media_type) => media_type,
+        None if !bytes.contains(&0) && std::str::from_utf8(bytes).is_ok() => "text/plain",
+        None => "application/octet-stream",
+    }
+}
+
 /// The media of a media block.
 fn media_of(block: &Block) -> Option<&MediaRef> {
     match block {
@@ -418,6 +475,29 @@ mod tests {
         assert_eq!(
             input_media(&json!({"f": {"$media": 7}}), &session),
             Err("`$media` must be a media id string".to_owned())
+        );
+    }
+
+    #[test]
+    fn file_media_types_come_from_the_extension_else_the_contents() {
+        assert_eq!(media_type_for("chart.PNG", b"\x89PNG"), "image/png");
+        assert_eq!(
+            media_type_for("scripts/run.py", b"print()"),
+            "text/x-python"
+        );
+        assert_eq!(media_type_for("guide.md", b"# Guide"), "text/markdown");
+        assert_eq!(media_type_for("LICENSE", b"MIT"), "text/plain");
+        assert_eq!(
+            media_type_for("notes.weird", "héllo".as_bytes()),
+            "text/plain"
+        );
+        assert_eq!(
+            media_type_for("blob.bin", b"\x00\x01"),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            media_type_for("bad", b"\xff\xfe"),
+            "application/octet-stream"
         );
     }
 }
