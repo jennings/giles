@@ -6,8 +6,9 @@
 //! call). [`PolicyDispatcher`] is the daemon's: it checks each call against the session's tools
 //! and the registry when the call starts, runs consecutive parallel-safe calls together (at most
 //! [`MAX_PARALLEL_CALLS`] at once) and every other call alone, gates calls to `ask` tools on the
-//! requester's approval, drops a call at its toolset's deadline, and stops starting calls once
-//! the batch's `skip` signal fires (`busy_mode = "steer"`). 2.11 and 2.12 add the core tools.
+//! requester's approval, drops a call at its deadline, and stops starting calls once the batch's
+//! `skip` signal fires (`busy_mode = "steer"`). Core tools ([`crate::core_tools`]) run through
+//! the same path as toolset tools.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -24,6 +25,7 @@ use tracing::debug;
 use super::prompt::SessionTools;
 use crate::approvals::TurnApprovals;
 use crate::config::{Config, DEFAULT_TOOL_DEADLINE};
+use crate::core_tools::{CoreCall, CoreTool, TurnContext};
 use crate::media::{SessionMedia, input_media};
 use crate::registry::{Registry, ToolTarget};
 
@@ -31,7 +33,7 @@ use crate::registry::{Registry, ToolTarget};
 mod tests;
 
 /// The error result of a call to a tool the session doesn't offer, that no toolset serves any
-/// more, or (until 2.11/2.12) a core tool (PLAN section 6.4).
+/// more, or a core tool with no implementation registered (PLAN section 6.4).
 pub const TOOL_UNAVAILABLE: &str = "tool unavailable";
 
 /// How a call dropped at its deadline is answered: `timed out after <deadline>` (PLAN section
@@ -71,6 +73,8 @@ pub struct ToolBatch {
     /// The media the session can refer to: a call's `{"$media": "<id>"}` inputs must be among
     /// them.
     pub media: Arc<SessionMedia>,
+    /// The turn, for core tools.
+    pub turn: Arc<TurnContext>,
     /// Fired when the requester sent a new message the model should read first (`busy_mode =
     /// "steer"`): calls not started by then get [`SKIPPED_FOR_MESSAGE_RESULT`] and none starts
     /// any more; running calls finish.
@@ -152,11 +156,11 @@ impl CallPolicy {
 ///   at most [`MAX_PARALLEL_CALLS`] at once (the next starts as one finishes); any other call is
 ///   a barrier: it starts once everything before it has finished and runs alone.
 /// - When a call starts it gets [`TOOL_UNAVAILABLE`] unless the session offers the tool, the
-///   registry still serves it under the same target, and it's a toolset tool whose toolset is
-///   registered; then it's called on that toolset with its bare name, and the first
-///   [`ToolCallEvent::Result`] is the output. In v1 there are no roles, so the session's tools
-///   (the agent's allowlist) are the whole policy; with roles, "not permitted for <user>" goes
-///   here.
+///   registry still serves it under the same target, and its implementation is registered: a
+///   toolset tool is called on its toolset with its bare name, and the first
+///   [`ToolCallEvent::Result`] is the output; a core tool runs its [`CoreTool::call`]. In v1
+///   there are no roles, so the session's tools (the agent's allowlist) are the whole policy;
+///   with roles, "not permitted for <user>" goes here.
 /// - Each `{"$media": "<id>"}` in the input must name media of the session
 ///   ([`ToolBatch::media`]); the call's [`ToolCall::media`] lists them for the toolset to hand
 ///   over (PLAN section 5). An unknown id is the call's error result, and nothing runs.
@@ -196,6 +200,7 @@ impl ToolDispatcher for PolicyDispatcher {
             tools,
             context,
             media,
+            turn,
             skip,
             approvals,
         } = batch;
@@ -208,6 +213,7 @@ impl ToolDispatcher for PolicyDispatcher {
                 let registry = self.registry.clone();
                 let tools = tools.clone();
                 let context = context.clone();
+                let turn = turn.clone();
                 let approvals = approvals.clone();
                 let media = media.clone();
                 Scheduled {
@@ -231,14 +237,27 @@ impl ToolDispatcher for PolicyDispatcher {
                             },
                             Ok(false) => {}
                         }
-                        let (toolset, bare) = target;
-                        let request = ToolCall {
-                            id: call.id,
-                            name: bare,
-                            input: call.input,
-                            media: call_media,
+                        let running = match target {
+                            Target::Toolset(toolset, bare) => {
+                                let request = ToolCall {
+                                    id: call.id,
+                                    name: bare,
+                                    input: call.input,
+                                    media: call_media,
+                                };
+                                run_call(toolset, request, &call.name, context, &approvals)
+                                    .boxed()
+                            }
+                            Target::Core(tool) => {
+                                let request = CoreCall {
+                                    id: call.id,
+                                    input: call.input,
+                                    context,
+                                    turn,
+                                };
+                                async move { tool.call(request).await }.boxed()
+                            }
                         };
-                        let running = run_call(toolset, request, &call.name, context, &approvals);
                         match tokio::time::timeout(policy.deadline, running).await {
                             Ok(output) => output,
                             Err(_) => {
@@ -355,13 +374,21 @@ impl Scheduler {
     }
 }
 
-/// The call-time checks for a call to `name`: the toolset to call and the tool's bare name, or
-/// the call's output ([`TOOL_UNAVAILABLE`]) if it can't run.
+/// Where a call that passed the call-time checks goes.
+enum Target {
+    /// A toolset's tool: the toolset, and the tool's bare name.
+    Toolset(Arc<dyn Toolset>, String),
+    /// A core tool.
+    Core(Arc<dyn CoreTool>),
+}
+
+/// The call-time checks for a call to `name`: where the call goes, or the call's output
+/// ([`TOOL_UNAVAILABLE`]) if it can't run.
 fn resolve_call(
     registry: &Registry,
     tools: &SessionTools,
     name: &str,
-) -> Result<(Arc<dyn Toolset>, String), ToolOutput> {
+) -> Result<Target, ToolOutput> {
     let Some(tool) = tools.get(name) else {
         debug!(tool = %name, "call to a tool the session doesn't offer");
         return Err(ToolOutput::error(TOOL_UNAVAILABLE));
@@ -372,16 +399,22 @@ fn resolve_call(
         debug!(tool = %name, "call to a tool that is no longer served");
         return Err(ToolOutput::error(TOOL_UNAVAILABLE));
     }
-    let (instance, bare) = match &tool.target {
-        ToolTarget::Toolset { instance, tool } => (instance, tool),
-        // Core tools have no implementation yet (TASKS.md 2.11, 2.12).
-        _ => return Err(ToolOutput::error(TOOL_UNAVAILABLE)),
-    };
-    let Some(toolset) = registry.toolset(instance.as_str()) else {
-        debug!(tool = %name, "the tool's toolset is not registered");
-        return Err(ToolOutput::error(TOOL_UNAVAILABLE));
-    };
-    Ok((toolset, bare.clone()))
+    match &tool.target {
+        ToolTarget::Toolset { instance, tool } => match registry.toolset(instance.as_str()) {
+            Some(toolset) => Ok(Target::Toolset(toolset, tool.clone())),
+            None => {
+                debug!(tool = %name, "the tool's toolset is not registered");
+                Err(ToolOutput::error(TOOL_UNAVAILABLE))
+            }
+        },
+        ToolTarget::Core => match registry.core_tool(name) {
+            Some(core) => Ok(Target::Core(core)),
+            None => {
+                debug!(tool = %name, "the core tool has no implementation");
+                Err(ToolOutput::error(TOOL_UNAVAILABLE))
+            }
+        },
+    }
 }
 
 /// Runs one call of `tool` (its offered name) to its result.

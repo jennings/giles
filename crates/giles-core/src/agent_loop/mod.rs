@@ -18,8 +18,8 @@
 //! from the [`ApprovalBoard`] the session manager answers; the dispatcher gates `ask` calls and
 //! questions on it, and a requester message during a wait denies it.
 //!
-//! Seams for later tasks: [`ToolDispatcher`] (the [`PolicyDispatcher`] runs calls; 2.11/2.12 add
-//! core tools) and [`AgentLoop::rebuild_prompt`] (2.10 compaction).
+//! Seams for later tasks: [`ToolDispatcher`] (the [`PolicyDispatcher`] runs calls, core tools
+//! ([`crate::core_tools`]) included) and [`AgentLoop::rebuild_prompt`] (2.10 compaction).
 
 pub mod dispatch;
 pub mod glob;

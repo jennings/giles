@@ -83,8 +83,10 @@ registers them all before the summary.
   toolset lists the name twice (the first is kept). Instance names can't contain `_`, so a prefixed
   name never collides with another instance's or with a core tool.
 - Core tools use the bare, reserved `CORE_TOOLS`: `load_skill`, `memory`, `memory_search`,
-  `schedule`, `send_attachment`. Their implementations (2.11, 2.12, 3.3) add their `ToolSpec`s with
-  `set_core_tool`, which rejects any other name.
+  `schedule`, `send_attachment`. `Registry::register_core_tool(Arc<dyn CoreTool>)` keeps the
+  implementation (`Registry::core_tool(name)`) and adds its `ToolSpec` with
+  `ToolIndex::set_core_tool`, which rejects any other name. A spec added with `set_core_tool`
+  alone (tests) is offered, but calls to it get `tool unavailable`.
 - `snapshot()` returns an `Arc<ToolSnapshot>`: every tool sorted by name (so the prompt prefix is
   stable for caching), `get(name)` by binary search giving an `IndexedTool { spec, target }` where
   `target` is `ToolTarget::Core` or `ToolTarget::Toolset { instance, tool }` (the bare name to

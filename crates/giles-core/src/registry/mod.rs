@@ -24,6 +24,7 @@ use crate::config::{
     AgentConfig, ChannelInstance, ChannelRuntime, Config, ConfigError, InstanceName, KeyPath, Kind,
     ModelRef, ProviderInstance,
 };
+use crate::core_tools::CoreTool;
 use crate::paths::{DataRoot, PathsError};
 use crate::providers::MediaSource;
 
@@ -131,6 +132,8 @@ pub struct Registry {
     channels: Map<dyn Channel>,
     toolsets: Map<dyn Toolset>,
     tools: ToolIndex,
+    /// The core tools' implementations, by name.
+    core_tools: RwLock<BTreeMap<String, Arc<dyn CoreTool>>>,
     /// The built-in web channel, typed (it's in `channels` too).
     #[cfg(feature = "channel-web")]
     web: std::sync::OnceLock<Arc<crate::channels::web::WebChannel>>,
@@ -162,6 +165,7 @@ impl Registry {
             channels: RwLock::default(),
             toolsets: RwLock::default(),
             tools: ToolIndex::new(),
+            core_tools: RwLock::default(),
             #[cfg(feature = "channel-web")]
             web: std::sync::OnceLock::new(),
         }
@@ -231,6 +235,32 @@ impl Registry {
     /// The tool index.
     pub fn tools(&self) -> &ToolIndex {
         &self.tools
+    }
+
+    /// Registers a core tool: its implementation, and its spec in the tool index (replacing any
+    /// earlier tool of that name).
+    ///
+    /// # Errors
+    ///
+    /// [`ToolNameError::NotCoreTool`] if its name isn't one of [`CORE_TOOLS`].
+    pub fn register_core_tool(&self, tool: Arc<dyn CoreTool>) -> Result<(), ToolNameError> {
+        let spec = tool.spec();
+        let name = spec.name.clone();
+        self.tools.set_core_tool(spec)?;
+        self.core_tools
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(name, tool);
+        Ok(())
+    }
+
+    /// The implementation of the core tool `name`, if one is registered.
+    pub fn core_tool(&self, name: &str) -> Option<Arc<dyn CoreTool>> {
+        self.core_tools
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(name)
+            .cloned()
     }
 
     /// Registers the provider for the configured provider instance `name`, replacing (and

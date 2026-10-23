@@ -21,6 +21,7 @@ use super::{
 };
 use crate::approvals::TurnApprovals;
 use crate::config::{AgentConfig, BusyMode};
+use crate::core_tools::TurnContext;
 use crate::media::{self, SessionMedia};
 use crate::registry::{RegistryError, ResolvedModel};
 use crate::sessions::{INTERRUPTED_RESULT, Turn, TurnMessage, TurnOutcome};
@@ -169,7 +170,12 @@ async fn drive(agent_loop: &AgentLoop, turn: &Turn) -> Result<TurnOutcome, TurnE
     let model = agent_loop.registry.agent_model(agent)?;
     // The model's media types, looked up once the history holds media, then kept for the turn.
     let mut model_info: Option<Option<Arc<ModelInfo>>> = None;
-    let context = call_context(turn);
+    let context = CallContexts {
+        call: call_context(turn),
+        turn: Arc::new(TurnContext {
+            session: turn.session.clone(),
+        }),
+    };
     let approvals = Arc::new(TurnApprovals::for_turn(
         agent_loop.approvals.clone(),
         agent,
@@ -422,7 +428,7 @@ async fn run_tools(
     agent_loop: &AgentLoop,
     turn: &Turn,
     prompt: &SessionPrompt,
-    context: &CallContext,
+    context: &CallContexts,
     approvals: &Arc<TurnApprovals>,
     media: Arc<SessionMedia>,
     calls: Vec<ToolRequest>,
@@ -443,8 +449,9 @@ async fn run_tools(
     let mut outputs = agent_loop.dispatcher.dispatch(ToolBatch {
         calls,
         tools: prompt.tools.clone(),
-        context: context.clone(),
+        context: context.call.clone(),
         media,
+        turn: context.turn.clone(),
         skip: skip.clone(),
         approvals: approvals.clone(),
     });
@@ -525,6 +532,14 @@ fn tool_requests(message: &Message) -> Vec<ToolRequest> {
             _ => None,
         })
         .collect()
+}
+
+/// What a turn's tool calls see of it, built once per turn.
+struct CallContexts {
+    /// For toolsets and core tools.
+    call: CallContext,
+    /// For core tools.
+    turn: Arc<TurnContext>,
 }
 
 /// The turn as toolsets see it.

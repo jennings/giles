@@ -7,14 +7,19 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use giles_store::SessionId;
-use giles_types::{AgentId, Error, Result, Skill, SkillSummary, ToolCallHandle, ToolSpec, Toolset};
+use giles_store::{Session, SessionId, SessionKind};
+use giles_types::{
+    AgentId, ConversationId, Error, Result, Skill, SkillSummary, Timestamp, ToolCallHandle,
+    ToolSpec, Toolset,
+};
 use serde_json::json;
 use tempfile::TempDir;
 
 use super::*;
 use crate::approvals::{ApprovalBoard, UNATTENDED_RESULT};
 use crate::config::{InstanceName, LoadOptions};
+use crate::core_tools::{CoreCall, CoreTool};
+use crate::identity::owner;
 use crate::paths::DataRoot;
 
 /// What the fake toolsets saw: `start <id>`, `end <id>` (answered), `drop <id>` (dropped
@@ -106,6 +111,35 @@ impl Toolset for FakeToolset {
     }
 }
 
+/// The core tool `load_skill`: answers with what it got (`<id> <input> agent=<agent>
+/// requester=<requester> session=<id>`), or never with `{"wait": true}`.
+struct EchoCore;
+
+#[async_trait]
+impl CoreTool for EchoCore {
+    fn spec(&self) -> ToolSpec {
+        spec("load_skill")
+    }
+
+    async fn call(&self, call: CoreCall) -> ToolOutput {
+        if call.input["wait"] == true {
+            std::future::pending::<()>().await;
+        }
+        let requester = call.context.requester.as_ref().map(ToString::to_string);
+        ToolOutput {
+            content: vec![Block::text(format!(
+                "{} {} agent={} requester={} session={}",
+                call.id,
+                call.input,
+                call.context.agent,
+                requester.unwrap_or_default(),
+                call.turn.session.id.get()
+            ))],
+            is_error: false,
+        }
+    }
+}
+
 fn spec(name: &str) -> ToolSpec {
     ToolSpec {
         name: name.to_owned(),
@@ -159,6 +193,7 @@ impl Setup {
         for name in ["memory", "memory_search"] {
             registry.tools().set_core_tool(spec(name)).unwrap();
         }
+        registry.register_core_tool(Arc::new(EchoCore)).unwrap();
         Self {
             _dir: dir,
             registry,
@@ -219,10 +254,23 @@ impl Setup {
             tools: self.tools(allow),
             context: CallContext {
                 agent: AgentId::new("jeeves").unwrap(),
-                requester: None,
+                requester: Some(owner()),
                 conversation: None,
             },
             media: Arc::default(),
+            turn: Arc::new(TurnContext {
+                session: Session {
+                    id: SessionId::new(7),
+                    agent: AgentId::new("jeeves").unwrap(),
+                    kind: SessionKind::Direct,
+                    channel: Some("fake".to_owned()),
+                    conversation: Some(ConversationId::new("owner").unwrap()),
+                    user: Some(owner()),
+                    started_at: Timestamp::UNIX_EPOCH,
+                    ended_at: None,
+                    last_message_at: None,
+                },
+            }),
             skip,
             approvals: Arc::new(approvals),
         })
@@ -264,7 +312,7 @@ async fn parallel_safe_calls_run_together_up_to_eight_and_others_alone() {
         calls.push((id.as_str(), "par__run", json!({"ms": 100})));
     }
     calls.extend([
-        // A read-only core tool joins the parallel run (it has no implementation yet).
+        // A read-only core tool joins the parallel run (this one has no implementation).
         ("m", "memory_search", json!({})),
         ("s1", "serial__run", json!({"ms": 5})),
         ("s2", "serial__run", json!({"ms": 5})),
@@ -477,6 +525,42 @@ async fn in_an_unattended_turn_ask_tools_are_denied_before_they_start() {
         ]
     );
     assert_eq!(s.probe.log(), ["start b", "end b"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_core_tool_runs_with_the_turn_and_its_policy() {
+    let s = Setup::new().await;
+    assert!(s.registry.tools().snapshot().get("load_skill").is_some());
+    let calls = [
+        ("a", "load_skill", json!({"name": "x"})),
+        // Parallel-safe: runs next to `a` and doesn't hold up `c`.
+        ("b", "load_skill", json!({"wait": true})),
+        ("c", "par__run", json!({"ms": 1})),
+    ];
+    let started = tokio::time::Instant::now();
+    let results = outputs(s.dispatch(&["*"], &calls), calls.len()).await;
+
+    assert_eq!(
+        results,
+        [
+            ok(r#"a {"name":"x"} agent=jeeves requester=owner session=7"#),
+            // The default deadline applies.
+            ToolOutput::error("timed out after 5m"),
+            ok("c done"),
+        ]
+    );
+    assert_eq!(started.elapsed(), DEFAULT_TOOL_DEADLINE);
+    assert_eq!(s.probe.log(), ["start c", "end c"]);
+
+    // Outside the allowlist, or matching `ask` in an unattended turn, it doesn't run.
+    let calls = [("a", "load_skill", json!({}))];
+    let results = outputs(s.dispatch(&["par__*"], &calls), 1).await;
+    assert_eq!(results, [ToolOutput::error(TOOL_UNAVAILABLE)]);
+    let stream = s.dispatch_unattended(&["*"], &["load_*"], &calls, CancellationToken::new());
+    assert_eq!(
+        outputs(stream, 1).await,
+        [ToolOutput::error(UNATTENDED_RESULT)]
+    );
 }
 
 #[tokio::test]

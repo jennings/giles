@@ -7,6 +7,7 @@ pub mod blobs;
 pub mod channels;
 pub mod commands;
 pub mod config;
+pub mod core_tools;
 mod front_matter;
 pub mod http;
 pub mod identity;

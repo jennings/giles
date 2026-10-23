@@ -234,11 +234,12 @@ session, so the scheduler has to mark such turns for the jobs cap to apply to th
 
 ## Tool Dispatch
 
-`ToolDispatcher::dispatch(ToolBatch { calls, tools, context, media, skip, approvals })` returns a
-stream of `(index, ToolOutput { content, is_error })`, one per call, in any order. Dropping it must
-cancel the calls still running. `context` is the `CallContext`: agent, requester, and the
-session's channel conversation. `media` is the session's media (above). `skip` is the steering
-signal above; `approvals` the turn's `TurnApprovals`, built once per turn by
+`ToolDispatcher::dispatch(ToolBatch { calls, tools, context, media, turn, skip, approvals })`
+returns a stream of `(index, ToolOutput { content, is_error })`, one per call, in any order.
+Dropping it must cancel the calls still running. `context` is the `CallContext`: agent,
+requester, and the session's channel conversation. `media` is the session's media (above). `turn`
+is the `core_tools::TurnContext` core tools get (the turn's session), built once per turn. `skip`
+is the steering signal above; `approvals` the turn's `TurnApprovals`, built once per turn by
 `TurnApprovals::for_turn`.
 
 `PolicyDispatcher` is the daemon's (§6.3, §6.4). It doesn't spawn: the stream drives the calls, so
@@ -269,28 +270,40 @@ runs `p1` and `p2` together, then `s`, then `p3`.
 When a call starts (not when the batch arrives, so a tool dropped meanwhile is caught), it gets the
 error result `tool unavailable` when the session doesn't offer the tool (outside the allowlist,
 or no such tool), the registry no longer serves it under that name and target (a toolset dropped
-it), it's a core tool (no core tool is implemented yet: 2.11, 2.12), or its toolset isn't
-registered. The session's tool list is the agent's allowlist (§6.4); v1 has no roles, so there is
-no second check by the requester's role. With roles, a forbidden call would get `not permitted for
-<user>` here, before it runs.
+it), its toolset isn't registered, or it's a core tool with no implementation registered (a spec
+added with `ToolIndex::set_core_tool` alone). The session's tool list is the agent's allowlist
+(§6.4); v1 has no roles, so there is no second check by the requester's role. With roles, a
+forbidden call would get `not permitted for <user>` here, before it runs.
 
 Then a call to a tool matching the agent's `ask` globs waits for approval
 (`TurnApprovals::approve_call`, [Approvals](approvals.md)); a denial is its error result. The wait
 doesn't count against the deadline, and the checks run again once it's approved.
 
-Once allowed, it calls the toolset with the bare name, the input, and the media the input refers
-to, and the first `ToolCallEvent::Result` is the output; a `call` error, an `Err` event, or a stream
-that ends without a result becomes an error result with the error's text. Progress is logged. A
-`ToolCallEvent::ApprovalRequest` (MCP elicitation) is asked through
+Once allowed, a toolset tool is called with the bare name, the input, and the media the input
+refers to, and the first `ToolCallEvent::Result` is the output; a `call` error, an `Err` event, or
+a stream that ends without a result becomes an error result with the error's text. Progress is
+logged. A `ToolCallEvent::ApprovalRequest` (MCP elicitation) is asked through
 `TurnApprovals::answer_question` and answered on the handle's `answers`; that wait is part of the
-call.
+call. A core tool runs `CoreTool::call(CoreCall { id, input, context, turn })` (see
+[Core Tools](#core-tools)), and its `ToolOutput` is the output. Its `$media` inputs are checked
+against the session's media too.
 
 ### Deadlines
 
-The deadline covers the whole call, from `Toolset::call` to its result (not the wait for an `ask`
-approval before it). A call still running at its deadline is dropped (cancelled at the toolset,
-as above) and gets the error result `timed out after <deadline>`, e.g. `timed out after 5m`; the
-batch goes on.
+The deadline covers the whole call, from `Toolset::call` (or `CoreTool::call`) to its result (not
+the wait for an `ask` approval before it). A call still running at its deadline is dropped
+(cancelled at the toolset, as above) and gets the error result `timed out after <deadline>`, e.g.
+`timed out after 5m`; the batch goes on.
+
+### Core Tools
+
+The core tools (§6.5) live in `giles_core::core_tools`, one module per tool, each implementing
+`CoreTool { fn spec() -> ToolSpec; async fn call(CoreCall) -> ToolOutput }`. A tool keeps its
+long-lived dependencies (store, data root, configuration) in its own fields; per call it gets the
+`ToolUse` id, the input, the `CallContext`, and the shared `TurnContext`. Failures are error
+results, never panics. `Registry::register_core_tool(Arc<dyn CoreTool>)` stores the
+implementation and adds its spec to the tool index (`ToolIndex::set_core_tool`), and the dispatcher
+finds it with `Registry::core_tool(name)` when the call starts.
 
 ## Output
 
@@ -345,4 +358,3 @@ the channel shows as cut off.
 
 - **2.10, compaction**: `AgentLoop::rebuild_prompt`, and the summary rendering in
   `history::request_messages`.
-- **2.11, 2.12, core tools**: a core-tool arm in the dispatcher in place of `tool unavailable`.
