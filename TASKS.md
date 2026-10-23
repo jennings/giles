@@ -97,7 +97,7 @@ All parallel. Each task needs only Phase 0.
 - [x] **1.7 CommonMark renderers** (§9, §10). In `giles-plugin-sdk` on `pulldown-cmark`: sanitized
   HTML with remote images dropped (web, email), plain text (email), IRC formatting codes with
   line-limit splitting, WhatsApp markup. Table-driven tests.
-- [ ] **1.8 Anthropic provider** (§4.2, §5, §6.7). Feature `provider-anthropic`: streaming
+- [x] **1.8 Anthropic provider** (§4.2, §5, §6.7). Feature `provider-anthropic`: streaming
   Messages API to `CompletionEvent`s, tool use, thinking blocks and signatures kept as
   `Reasoning`/`Opaque` and sent back unchanged, server-side blocks as `Opaque`, automatic caching
   plus a breakpoint at the end of `system` (1 h TTL, 5 min for jobs), usage with cache tokens,

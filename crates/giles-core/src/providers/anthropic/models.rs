@@ -1,4 +1,8 @@
-//! What the provider knows about Claude models without asking the API.
+//! What the provider knows about Claude models without asking the API, and the `/v1/models`
+//! response.
+
+use giles_types::ModelInfo;
+use serde::Deserialize;
 
 /// Media types every current Claude model accepts as input blocks: images and PDFs.
 pub const MEDIA_TYPES: [&str; 5] = [
@@ -142,9 +146,135 @@ pub(crate) fn family_of(model: &str) -> Option<&'static Family> {
     })
 }
 
+/// One page of `GET /v1/models`.
+#[derive(Debug, Deserialize)]
+pub(crate) struct ModelsPage {
+    pub data: Vec<WireModel>,
+    #[serde(default)]
+    pub has_more: bool,
+    #[serde(default)]
+    pub last_id: Option<String>,
+}
+
+/// A model in the list. Fields other than `id` may be missing or null (older API versions,
+/// gateways), so each falls back to the family table.
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireModel {
+    id: String,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    max_input_tokens: Option<u64>,
+    #[serde(default)]
+    max_tokens: Option<u64>,
+    #[serde(default)]
+    capabilities: Option<Capabilities>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Capabilities {
+    #[serde(default)]
+    image_input: Option<Support>,
+    #[serde(default)]
+    pdf_input: Option<Support>,
+    #[serde(default)]
+    thinking: Option<Support>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Support {
+    supported: bool,
+}
+
+/// A listed model as [`ModelInfo`]. Limits come from the API, else the family table, else stay
+/// unknown. Media types come from the `image_input` and `pdf_input` capabilities, else all of
+/// [`MEDIA_TYPES`] (every Claude model since Claude 3 takes images and PDFs). `reasoning` comes
+/// from the `thinking` capability, else whether the family is known (all of them think).
+pub(crate) fn model_info(model: WireModel) -> ModelInfo {
+    let family = family_of(&model.id);
+    let limit = |value: Option<u64>| value.and_then(|n| u32::try_from(n).ok());
+    let capabilities = model.capabilities.as_ref();
+    let supports = |support: Option<&Support>| support.is_none_or(|s| s.supported);
+    let images = supports(capabilities.and_then(|c| c.image_input.as_ref()));
+    let pdfs = supports(capabilities.and_then(|c| c.pdf_input.as_ref()));
+    let media_types = MEDIA_TYPES
+        .iter()
+        .filter(|&&media_type| {
+            if media_type == "application/pdf" {
+                pdfs
+            } else {
+                images
+            }
+        })
+        .map(|&media_type| media_type.to_owned())
+        .collect();
+    let reasoning = match capabilities.and_then(|c| c.thinking.as_ref()) {
+        Some(thinking) => thinking.supported,
+        None => family.is_some(),
+    };
+    ModelInfo {
+        context_window: limit(model.max_input_tokens).or(family.map(|f| f.context_window)),
+        max_output_tokens: limit(model.max_tokens).or(family.map(|f| f.max_output_tokens)),
+        id: model.id,
+        display_name: model.display_name,
+        media_types,
+        reasoning,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
+
+    fn info(model: serde_json::Value) -> ModelInfo {
+        model_info(serde_json::from_value(model).unwrap())
+    }
+
+    #[test]
+    fn listed_limits_and_capabilities_win() {
+        let model = info(json!({
+            "type": "model", "id": "claude-haiku-4-5-20251001", "display_name": "Claude Haiku 4.5",
+            "created_at": "2025-10-01T00:00:00Z", "max_input_tokens": 200_000,
+            "max_tokens": 32_000,
+            "capabilities": {"image_input": {"supported": true}, "pdf_input": {"supported": false},
+                             "thinking": {"supported": true, "types": {}}},
+        }));
+        assert_eq!(
+            model,
+            ModelInfo {
+                id: "claude-haiku-4-5-20251001".into(),
+                display_name: Some("Claude Haiku 4.5".into()),
+                context_window: Some(200_000),
+                max_output_tokens: Some(32_000),
+                media_types: ["image/jpeg", "image/png", "image/gif", "image/webp"]
+                    .map(String::from)
+                    .to_vec(),
+                reasoning: true,
+            }
+        );
+        assert!(model.accepts("image/png"));
+        assert!(!model.accepts("application/pdf"));
+    }
+
+    #[test]
+    fn missing_fields_fall_back_to_the_family_table() {
+        let model = info(json!({
+            "id": "claude-opus-5-5", "max_input_tokens": null, "capabilities": null,
+        }));
+        assert_eq!(model.context_window, Some(1_000_000));
+        assert_eq!(model.max_output_tokens, Some(128_000));
+        assert_eq!(model.media_types, MEDIA_TYPES.map(String::from));
+        assert!(model.reasoning);
+        assert_eq!(model.display_name, None);
+
+        let unknown = info(json!({"id": "claude-next-1"}));
+        assert_eq!(unknown.context_window, None);
+        assert_eq!(unknown.max_output_tokens, None);
+        assert!(!unknown.reasoning);
+        assert!(unknown.accepts("application/pdf"));
+    }
 
     #[test]
     fn family_lookup_matches_whole_id_segments() {

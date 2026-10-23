@@ -42,6 +42,7 @@ libc.workspace = true
 workspace = true
 
 [dev-dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 prost.workspace = true
 tempfile.workspace = true

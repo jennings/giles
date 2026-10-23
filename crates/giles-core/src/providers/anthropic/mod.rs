@@ -1,29 +1,15 @@
 //! The Anthropic Messages API provider. The mapping between the message model and the wire
 //! format is described in `Docs/technical/providers.md`.
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by AnthropicProvider in the next commit")
-)]
 mod config;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by AnthropicProvider in the next commit")
-)]
 mod models;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by AnthropicProvider in the next commit")
-)]
+mod provider;
 mod request;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by AnthropicProvider in the next commit")
-)]
 mod stream;
 
 pub use config::{AnthropicConfig, ApiKey, DEFAULT_ANTHROPIC_VERSION, DEFAULT_BASE_URL};
 pub use models::MEDIA_TYPES;
+pub use provider::AnthropicProvider;
 
 /// The API family name in [`giles_types::Opaque::api`] for data this provider produces and
 /// accepts back.

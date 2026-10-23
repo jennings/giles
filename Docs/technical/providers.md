@@ -52,7 +52,17 @@ limit and be tested against every chunk boundary.
 ## Anthropic
 
 `providers::anthropic` speaks the [Messages API](https://platform.claude.com/docs/en/api/messages)
-(`POST /v1/messages` with `stream: true`). Its API family name, `Opaque::api`, is `anthropic`.
+(`POST /v1/messages` with `stream: true`). Its API family name, `Opaque::api`, is `anthropic`
+(`anthropic::API`).
+
+```rust
+let config = AnthropicConfig::from_json(&instance_config_json)?;
+let provider = AnthropicProvider::new(config, media_source)?; // impl giles_types::Provider
+```
+
+`AnthropicProvider::new(AnthropicConfig, Arc<dyn MediaSource>)` builds the HTTP client and sends
+nothing. Every request carries `x-api-key`, `anthropic-version`, and, when `beta` is set,
+`anthropic-beta` (comma-separated).
 
 ### Configuration
 
@@ -140,24 +150,24 @@ another is open, a delta or stop for a block that isn't open, a delta of the wro
 JSON, and `message_stop` with a block open or without a stop reason are all `Error::Other`. The
 API's block indexes are matched as given, and Giles' indexes are renumbered from 0.
 
-| Messages API event                                | `CompletionEvent`                                                           |
-| ------------------------------------------------- | --------------------------------------------------------------------------- |
-| `message_start`                                   | `Usage`                                                                     |
-| `content_block_start` `text`                      | `BlockStart { kind: Text }`                                                 |
-| `content_block_start` `tool_use`                  | `BlockStart { kind: ToolUse, tool: Some((id, name)) }`                      |
-| `content_block_start` `thinking`                  | `BlockStart { kind: Reasoning }`                                            |
-| `content_block_start` of any other type           | `BlockStart { kind: Opaque }`                                               |
-| `text_delta`                                      | `TextDelta` (empty deltas are dropped)                                      |
-| `input_json_delta` on `tool_use`                  | `ToolInputDelta`; the JSON is accumulated and parsed at the stop            |
-| `thinking_delta`                                  | `ReasoningDelta`                                                            |
-| `signature_delta`                                 | none; the signature goes into the block                                     |
-| `input_json_delta` on an opaque block             | none; parsed at the stop into the block's `input`                           |
-| `citations_delta`, unknown deltas                 | none                                                                        |
-| `content_block_stop`                              | `BlockStop` with the complete block                                         |
-| `message_delta`                                   | `Usage`; its `stop_reason` is kept                                          |
-| `message_stop`                                    | `Stop`; the stream ends                                                     |
-| `ping`, unknown event types                       | none                                                                        |
-| `error`                                           | an `Err` item, mapped by error type; the stream ends                        |
+| Messages API event                      | `CompletionEvent`                                                |
+| --------------------------------------- | ---------------------------------------------------------------- |
+| `message_start`                         | `Usage`                                                          |
+| `content_block_start` `text`            | `BlockStart { kind: Text }`                                      |
+| `content_block_start` `tool_use`        | `BlockStart { kind: ToolUse, tool: Some((id, name)) }`           |
+| `content_block_start` `thinking`        | `BlockStart { kind: Reasoning }`                                 |
+| `content_block_start` of any other type | `BlockStart { kind: Opaque }`                                    |
+| `text_delta`                            | `TextDelta` (empty deltas are dropped)                           |
+| `input_json_delta` on `tool_use`        | `ToolInputDelta`; the JSON is accumulated and parsed at the stop |
+| `thinking_delta`                        | `ReasoningDelta`                                                 |
+| `signature_delta`                       | none; the signature goes into the block                          |
+| `input_json_delta` on an opaque block   | none; parsed at the stop into the block's `input`                |
+| `citations_delta`, unknown deltas       | none                                                             |
+| `content_block_stop`                    | `BlockStop` with the complete block                              |
+| `message_delta`                         | `Usage`; its `stop_reason` is kept                               |
+| `message_stop`                          | `Stop`; the stream ends                                          |
+| `ping`, unknown event types             | none                                                             |
+| `error`                                 | an `Err` item, mapped by error type; the stream ends             |
 
 The blocks in `BlockStop`:
 
@@ -196,3 +206,52 @@ replayed block whose earlier history changed is rejected with a 400. Transcripts
 within a session, so this only matters where the core rewrites history: after compaction (PLAN
 section 6.8), the kept messages' `Reasoning` blocks follow a new system prompt and summary, so
 compaction has to drop them from the history it sends.
+
+### Errors
+
+`complete` returns an error before the stream starts when the request can't be built (a media read
+fails, a non-text system block), the connection fails, or the API answers with an error status. Once
+the response is an event stream, failures arrive as an `Err` item that ends the stream.
+
+| Failure                                  | Error                                            |
+| ---------------------------------------- | ------------------------------------------------ |
+| connect, TLS, timeout, reset             | `Unavailable`                                    |
+| HTTP 408, 429, 5xx (529 is "overloaded") | `Unavailable` with `retry_after` from the header |
+| HTTP 404                                 | `NotFound`                                       |
+| other HTTP 4xx                           | `InvalidRequest`                                 |
+| a success that isn't `text/event-stream` | `Other`                                          |
+| `error` event                            | by error type (see Stream mapping)               |
+| the body ends before `message_stop`      | `Unavailable`                                    |
+| a malformed or out-of-order event        | `Other`                                          |
+
+Error messages are `anthropic <status> <error type>: <message>` from the API's error body (or the
+first 64 KiB of a body that isn't the API's JSON). The core retries `Unavailable` on the next model
+(PLAN section 6.10).
+
+### Models
+
+`list_models` reads every page of `GET /v1/models?limit=1000`, following `after_id` while
+`has_more`. The API reports `max_input_tokens`, `max_tokens`, and `capabilities` per model; each
+becomes `ModelInfo`:
+
+- `context_window` and `max_output_tokens` from `max_input_tokens` and `max_tokens`, else from the
+  built-in family table, else unknown.
+- `media_types`: the image types if `capabilities.image_input` is supported, plus `application/pdf`
+  if `capabilities.pdf_input` is; without capabilities, all five.
+- `reasoning` from `capabilities.thinking`, else whether the family is in the table.
+
+The family table (`models.rs`) lists the current and legacy model families with their context
+window, maximum output, and whether they take thinking budgets or adaptive thinking. It's the
+fallback for gateways or API versions that leave fields out, and it chooses the default
+`max_tokens` and the `thinking` form for a request without calling `list_models`. Prefixes match
+whole id segments: `claude-opus-4-5` matches `claude-opus-4-5-20251101` but not
+`claude-opus-4-50`.
+
+### Tests
+
+Unit tests next to each module cover the pure parts: SSE parsing at every chunk boundary, config
+validation, request bodies, the stream state machine, and model mapping. `tests/anthropic.rs` runs
+the provider against a local HTTP server on 127.0.0.1 that replays hand-written responses in the
+documented wire format (`tests/fixtures/anthropic/*.sse`, `models_page*.json`) in 7-byte chunks. It
+checks exact request bodies and headers, exact event sequences, that the stored blocks of a response
+reproduce the API's blocks when sent back, and the error mapping. Nothing calls the real API.

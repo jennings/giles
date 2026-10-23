@@ -379,6 +379,12 @@ impl BlockState {
     }
 }
 
+/// The error for a response body that ended before `message_stop`: the connection was cut, so
+/// it's worth retrying.
+pub(crate) fn ended_early() -> Error {
+    Error::unavailable("anthropic: the response stream ended before message_stop")
+}
+
 /// Maps an Anthropic error type (from an `error` event or an error response) to an error: the
 /// transient ones are [`Error::Unavailable`].
 pub(crate) fn api_error(kind: &str, message: String) -> Error {
