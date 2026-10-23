@@ -23,7 +23,7 @@ askama = "0.16.1"
 async-trait.workspace = true
 axum = "0.8.9"
 # Media in provider requests and in MCP tool results.
-base64 = "0.22.1"
+base64.workspace = true
 bytes.workspace = true
 croner = { version = "4.0.2", default-features = false, features = ["jiff"] }
 futures.workspace = true

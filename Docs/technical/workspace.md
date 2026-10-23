@@ -11,15 +11,16 @@ so far is [the WhatsApp spike](whatsapp-spike.md).
 
 ## Crates
 
-| Crate                | Kind | Published | Contents                                                     |
-| -------------------- | ---- | --------- | ------------------------------------------------------------ |
-| `giles`              | bin  | no        | The daemon and its command-line interface                    |
-| `giles-core`         | lib  | no        | Orchestration: agent loop, routing, sessions, scheduling     |
-| `giles-types`        | lib  | yes       | Domain types and the `Provider`, `Channel`, `Toolset` traits |
-| `giles-proto`        | lib  | yes       | Generated gRPC code for the plugin and admin protocols       |
-| `giles-plugin-sdk`   | lib  | yes       | Serves a trait implementation as an out-of-process plugin    |
-| `giles-store`        | lib  | no        | SQLite and file storage under `GILES_HOME`                   |
-| `giles-channel-echo` | bin  | no        | Test-only channel plugin for host tests                      |
+| Crate                | Kind     | Published | Contents                                                     |
+| -------------------- | -------- | --------- | ------------------------------------------------------------ |
+| `giles`              | bin      | no        | The daemon and its command-line interface                    |
+| `giles-core`         | lib      | no        | Orchestration: agent loop, routing, sessions, scheduling     |
+| `giles-types`        | lib      | yes       | Domain types and the `Provider`, `Channel`, `Toolset` traits |
+| `giles-proto`        | lib      | yes       | Generated gRPC code for the plugin and admin protocols       |
+| `giles-plugin-sdk`   | lib      | yes       | Serves a trait implementation as an out-of-process plugin    |
+| `giles-store`        | lib      | no        | SQLite and file storage under `GILES_HOME`                   |
+| `giles-channel-echo` | bin      | no        | Test-only channel plugin for host tests                      |
+| `giles-channel-irc`  | lib, bin | no        | The IRC channel plugin ([IRC Channel](irc.md))               |
 
 Dependencies between them:
 
@@ -34,6 +35,7 @@ flowchart TD
   sdk --> proto
   store --> types
   echo[giles-channel-echo] --> sdk
+  irc[giles-channel-irc] --> sdk
 ```
 
 `giles-types` is the contract shared by the core and plugins, so it depends on no other Giles

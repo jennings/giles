@@ -25,6 +25,7 @@ giles-types = { path = "crates/giles-types", version = "0.1.0" }
 # add the features they need.
 anyhow = "1.0.104"
 async-trait = "0.1.92"
+base64 = "0.22.1"
 bytes = "1.12.1"
 futures = "0.3.34"
 # Default features off: each crate opts into the time zone database support it needs.

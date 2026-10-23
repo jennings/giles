@@ -275,7 +275,7 @@ other and with the rest of this phase.
   `ask_to = "deliver_to"`; `job_runs`, with missed runs coalesced at startup. **Needs:** 2.7, 3.1.
 - [x] **3.3 `schedule` core tool** (§6.11). Create, list, and cancel runtime jobs in `jobs` for the
   requester; config jobs listed read-only. **Needs:** 3.2.
-- [ ] **3.4 IRC channel plugin** (§3.3, §8.5, §10). `giles-channel-irc`: pick the library; TLS;
+- [x] **3.4 IRC channel plugin** (§3.3, §8.5, §10). `giles-channel-irc`: pick the library; TLS;
   IRCv3 `account-tag` identities (`account:<name>`) and opt-in `mask:` identities; queries as
   direct conversations, channels reported as group; IRC rendering and splitting; `recipient`
   resolves an account to its current nick, or `UNAVAILABLE`; namespace `irc:<network>`.

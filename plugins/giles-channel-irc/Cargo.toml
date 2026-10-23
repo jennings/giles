@@ -1,0 +1,42 @@
+[package]
+name = "giles-channel-irc"
+description = "The Giles IRC channel plugin: IRCv3 account identities, TLS, SASL."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+base64.workspace = true
+bytes.workspace = true
+futures.workspace = true
+giles-plugin-sdk.workspace = true
+# The protocol half of the `irc` crate: message parsing (tags, source, typed commands and
+# numerics) and serialization. Default features off: no tokio codec (the plugin frames lines itself,
+# decoding invalid UTF-8 lossily instead of failing the connection).
+irc-proto = { version = "1.1.0", default-features = false }
+serde.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+# rustls comes from `giles_plugin_sdk::tls` (bundled roots, aws-lc-rs); default features off so
+# this adds no crypto provider of its own.
+tokio-rustls = { version = "0.26.6", default-features = false }
+tokio-util = { workspace = true, features = ["codec"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+# The core's plugin host and a runtime around it, for the end-to-end test (a configured agent needs
+# a provider).
+giles-core = { workspace = true, features = ["provider-anthropic"] }
+serde_json.workspace = true
+tempfile.workspace = true
+tokio-util.workspace = true
+toml.workspace = true
+tonic.workspace = true
+
+[lints]
+workspace = true

@@ -1229,7 +1229,12 @@ config = { base_url = "https://openrouter.ai/api/v1", api_key = { env = "OPENROU
 component = "irc"
 unknown_senders = "pairing"
 sandbox = { network = ["tcp:6697"] }
-config = { server = "irc.libera.chat:6697", nick = "jeeves", channels = ["#giles"] }
+
+[channel.libera.config]
+server = "irc.libera.chat:6697"
+network = "libera.chat"
+nick = "jeeves"
+channels = ["#giles"]
 
 [toolset.github]                       # remote MCP server over streamable HTTP
 url = "https://api.githubcopilot.com/mcp/"
