@@ -10,7 +10,8 @@ use async_trait::async_trait;
 use axum::body::{Body, to_bytes};
 use axum::extract::Extension;
 use axum::http::header::{
-    CONTENT_DISPOSITION, CONTENT_SECURITY_POLICY, CONTENT_TYPE, LOCATION, X_CONTENT_TYPE_OPTIONS,
+    CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_SECURITY_POLICY, CONTENT_TYPE, LOCATION,
+    SET_COOKIE, X_CONTENT_TYPE_OPTIONS,
 };
 use axum::http::{Method, Request, StatusCode};
 use axum::response::Response;
@@ -50,12 +51,35 @@ struct Env {
 }
 
 async fn env() -> Env {
+    env_with(WebConfig::default(), &["web:owner"]).await
+}
+
+/// The owner, with `identities`.
+fn owner_config(identities: &[&str]) -> OwnerConfig {
+    let identities: Vec<Identity> = identities
+        .iter()
+        .map(|id| Identity::new(*id).unwrap())
+        .collect();
+    OwnerConfig {
+        default: identities[0].clone(),
+        identities,
+        timezone: None,
+    }
+}
+
+/// A web channel with `config`, for an owner with `identities`.
+async fn env_with(config: WebConfig, identities: &[&str]) -> Env {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().join("giles.db")).await.unwrap();
     let blobs = BlobStore::open(dir.path().join("blobs"), store.clone())
         .await
         .unwrap();
-    let channel = Arc::new(WebChannel::new(InstanceName::new(INSTANCE).unwrap()));
+    let channel = Arc::new(WebChannel::new(
+        InstanceName::new(INSTANCE).unwrap(),
+        config,
+        &owner_config(identities),
+        "0.0.0.0:8080".parse().unwrap(),
+    ));
     let shutdown = CancellationToken::new();
     let app = WebApp::new(
         channel.clone(),
@@ -78,6 +102,7 @@ fn owner() -> WebUser {
         user: identity::owner(),
         sender: NativeId::new("owner").unwrap(),
         csrf: CSRF.into(),
+        login: auth::Login::Test,
     }
 }
 
@@ -85,10 +110,42 @@ fn chat() -> ConversationId {
     ConversationId::new("0123456789abcdef0123456789abcdef").unwrap()
 }
 
+/// Sends a request to `app`; `form` is sent URL-encoded.
+async fn call(
+    app: axum::Router,
+    method: Method,
+    path: &str,
+    headers: &[(&str, &str)],
+    form: Option<&str>,
+) -> Response {
+    let mut request = Request::builder().method(method).uri(path);
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let body = match form {
+        Some(form) => {
+            request = request.header(CONTENT_TYPE, "application/x-www-form-urlencoded");
+            Body::from(form.to_owned())
+        }
+        None => Body::empty(),
+    };
+    app.oneshot(request.body(body).unwrap()).await.unwrap()
+}
+
 impl Env {
+    /// The whole application as the main listener serves it.
+    fn main_app(&self) -> axum::Router {
+        self.app.install(RouterBuilder::new()).build()
+    }
+
+    /// The whole application as the trusted-proxy listener serves it.
+    fn proxy_app(&self) -> axum::Router {
+        self.app.proxy_app(self.main_app())
+    }
+
     /// The whole application, as `user` (none: not logged in).
     fn router(&self, user: Option<WebUser>) -> axum::Router {
-        let app = self.app.install(RouterBuilder::new()).build();
+        let app = self.main_app();
         match user {
             Some(user) => app.layer(Extension(user)),
             None => app,
@@ -108,21 +165,7 @@ impl Env {
         headers: &[(&str, &str)],
         form: Option<&str>,
     ) -> Response {
-        let mut request = Request::builder().method(method).uri(path);
-        for (name, value) in headers {
-            request = request.header(*name, *value);
-        }
-        let body = match form {
-            Some(form) => {
-                request = request.header(CONTENT_TYPE, "application/x-www-form-urlencoded");
-                Body::from(form.to_owned())
-            }
-            None => Body::empty(),
-        };
-        self.router(user)
-            .oneshot(request.body(body).unwrap())
-            .await
-            .unwrap()
+        call(self.router(user), method, path, headers, form).await
     }
 
     /// Posts `form` to `path` as the owner through htmx.
@@ -287,6 +330,7 @@ async fn every_page_needs_a_login() {
         (Method::POST, format!("/chats/{chat}/messages")),
         (Method::POST, format!("/chats/{chat}/approvals")),
         (Method::GET, format!("/blobs/{blob}")),
+        (Method::POST, "/logout".to_owned()),
     ];
     for (method, path) in cases {
         let response = env
@@ -1069,6 +1113,512 @@ fn approval_answers_and_codes() {
     assert!(!is_approval_code(&"1".repeat(33)));
     assert!(is_chat_id(new_chat_id().as_str()));
     assert!(!is_chat_id("owner"));
+}
+
+// The web login (TASKS.md 2.23): requests go through the real authentication middleware.
+
+/// The session cookie as a request header.
+fn session(token: &str) -> String {
+    format!("{SESSION_COOKIE}={token}")
+}
+
+/// A response's `Set-Cookie`.
+fn set_cookie(response: &Response) -> &str {
+    response.headers()[SET_COOKIE].to_str().unwrap()
+}
+
+/// The token a `Set-Cookie` for the session cookie sets.
+fn cookie_token(set_cookie: &str) -> String {
+    let value = set_cookie.strip_prefix("giles_session=").unwrap();
+    value.split(';').next().unwrap().to_owned()
+}
+
+/// The token of a login link URL.
+fn link_token(link: &LoginLink) -> &str {
+    link.url.rsplit('/').next().unwrap()
+}
+
+/// Uses `link` on `app` with `headers`.
+async fn redeem(app: axum::Router, link: &LoginLink, headers: &[(&str, &str)]) -> Response {
+    let form = format!("token={}", link_token(link));
+    call(app, Method::POST, "/login", headers, Some(&form)).await
+}
+
+/// Logs the owner in with a fresh link on the main listener; the session token.
+async fn log_in(env: &Env) -> String {
+    let link = env
+        .channel
+        .create_login_link(&identity::owner(), Timestamp::now())
+        .unwrap();
+    let response = redeem(env.main_app(), &link, &[]).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    cookie_token(set_cookie(&response))
+}
+
+fn proxy_config(proxy: serde_json::Value) -> WebConfig {
+    WebConfig::from_json(&serde_json::json!({ "proxy": proxy })).unwrap()
+}
+
+#[tokio::test]
+async fn a_login_link_logs_in_once_with_a_30_day_cookie() {
+    let env = env().await;
+    let link = env
+        .channel
+        .create_login_link(&identity::owner(), Timestamp::now())
+        .unwrap();
+    // `0.0.0.0:8080` becomes loopback.
+    let path = link.url.strip_prefix("http://127.0.0.1:8080").unwrap();
+    assert!(path.starts_with("/login/"), "{path}");
+
+    // Opening it (twice: a link preview, then the person) only shows a button.
+    for _ in 0..2 {
+        let response = call(env.main_app(), Method::GET, path, &[], None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
+        let html = body_text(response).await;
+        assert!(
+            html.contains(r#"<form method="post" action="/login">"#),
+            "{html}"
+        );
+        assert!(html.contains(link_token(&link)), "{html}");
+    }
+
+    let response = redeem(env.main_app(), &link, &[]).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.headers()[LOCATION], "/");
+    let cookie = set_cookie(&response);
+    assert!(
+        cookie.ends_with("; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax"),
+        "{cookie}"
+    );
+    let token = cookie_token(cookie);
+    assert_eq!(token.len(), 64);
+    let stored = env
+        .store
+        .web_session(&token, Timestamp::now())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.user, identity::owner());
+    assert_eq!(
+        stored.expires_at.as_millisecond() - stored.created_at.as_millisecond(),
+        30 * 24 * 60 * 60 * 1000
+    );
+
+    // The cookie logs in, and the chat list offers to log out.
+    let response = call(
+        env.main_app(),
+        Method::GET,
+        "/",
+        &[("cookie", &session(&token))],
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_text(response).await;
+    assert!(html.contains(r#"action="/logout""#), "{html}");
+
+    // Single use.
+    let response = redeem(env.main_app(), &link, &[]).await;
+    assert_eq!(response.status(), StatusCode::GONE);
+    assert!(!response.headers().contains_key(SET_COOKIE));
+    let response = call(env.main_app(), Method::GET, path, &[], None).await;
+    assert_eq!(response.status(), StatusCode::GONE);
+}
+
+#[tokio::test]
+async fn expired_unknown_and_refused_links_log_nobody_in() {
+    let env = env().await;
+    let created = Timestamp::now().checked_sub(LOGIN_LINK_TTL).unwrap();
+    let expired = env
+        .channel
+        .create_login_link(&identity::owner(), created)
+        .unwrap();
+    let response = redeem(env.main_app(), &expired, &[]).await;
+    assert_eq!(response.status(), StatusCode::GONE);
+    assert!(!response.headers().contains_key(SET_COOKIE));
+    let path = format!("/login/{}", link_token(&expired));
+    let response = call(env.main_app(), Method::GET, &path, &[], None).await;
+    assert_eq!(response.status(), StatusCode::GONE);
+    let html = body_text(response).await;
+    assert!(html.contains("giles admin login-link"), "{html}");
+
+    for token in ["nope", &"0".repeat(64)] {
+        let path = format!("/login/{token}");
+        let response = call(env.main_app(), Method::GET, &path, &[], None).await;
+        assert_eq!(response.status(), StatusCode::GONE, "{token}");
+        let form = format!("token={token}");
+        let response = call(env.main_app(), Method::POST, "/login", &[], Some(&form)).await;
+        assert_eq!(response.status(), StatusCode::GONE, "{token}");
+    }
+
+    let someone = UserId::new("someone").unwrap();
+    assert_eq!(
+        env.channel.create_login_link(&someone, Timestamp::now()),
+        Err(LoginLinkError::UnknownUser(someone))
+    );
+    let no_web = env_with(WebConfig::default(), &["irc:libera.chat:owner"]).await;
+    assert_eq!(
+        no_web
+            .channel
+            .create_login_link(&identity::owner(), Timestamp::now()),
+        Err(LoginLinkError::NoWebIdentity(identity::owner()))
+    );
+}
+
+#[tokio::test]
+async fn expired_unknown_and_orphaned_sessions_are_logged_out() {
+    let env = env().await;
+    let long_ago = Timestamp::now()
+        .checked_sub(WEB_SESSION_TTL + Duration::from_secs(60))
+        .unwrap();
+    let expired = "e".repeat(64);
+    env.store
+        .web_session_create(
+            &expired,
+            identity::owner(),
+            long_ago,
+            long_ago.checked_add(WEB_SESSION_TTL).unwrap(),
+        )
+        .await
+        .unwrap();
+    for token in [expired.as_str(), &"f".repeat(64)] {
+        let response = call(
+            env.main_app(),
+            Method::GET,
+            "/",
+            &[("cookie", &session(token))],
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{token}");
+        assert_eq!(
+            set_cookie(&response),
+            "giles_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"
+        );
+    }
+
+    // A live session whose `web:<user>` identity was removed from `[owner]` logs nobody in.
+    let token = log_in(&env).await;
+    let moved = env_with(WebConfig::default(), &["irc:libera.chat:owner"]).await;
+    let now = Timestamp::now();
+    moved
+        .store
+        .web_session_create(
+            &token,
+            identity::owner(),
+            now,
+            now.checked_add(WEB_SESSION_TTL).unwrap(),
+        )
+        .await
+        .unwrap();
+    let response = call(
+        moved.main_app(),
+        Method::GET,
+        "/",
+        &[("cookie", &session(&token))],
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn expired_sessions_are_deleted_until_shutdown() {
+    let env = env().await;
+    let long_ago = Timestamp::now()
+        .checked_sub(WEB_SESSION_TTL + Duration::from_secs(60))
+        .unwrap();
+    let expired = "e".repeat(64);
+    env.store
+        .web_session_create(
+            &expired,
+            identity::owner(),
+            long_ago,
+            long_ago.checked_add(WEB_SESSION_TTL).unwrap(),
+        )
+        .await
+        .unwrap();
+    let live = log_in(&env).await;
+    let task = tokio::spawn(env.app.clone().expire_sessions());
+    tokio::time::timeout(WAIT, async {
+        // Looked up as of before it expired, so it's found until the row is gone.
+        while env
+            .store
+            .web_session(&expired, long_ago)
+            .await
+            .unwrap()
+            .is_some()
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the expired session was never deleted");
+    assert!(
+        env.store
+            .web_session(&live, Timestamp::now())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    env.shutdown.cancel();
+    tokio::time::timeout(WAIT, task).await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn logging_out_needs_the_csrf_token_and_ends_the_session() {
+    let env = env().await;
+    let token = log_in(&env).await;
+    let cookie = session(&token);
+
+    let response = call(
+        env.main_app(),
+        Method::POST,
+        "/logout",
+        &[("cookie", &cookie)],
+        Some("csrf=wrong"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let now = Timestamp::now();
+    assert!(env.store.web_session(&token, now).await.unwrap().is_some());
+
+    let form = format!("csrf={}", auth::cookie_csrf(&token));
+    let response = call(
+        env.main_app(),
+        Method::POST,
+        "/logout",
+        &[("cookie", &cookie)],
+        Some(&form),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        set_cookie(&response),
+        "giles_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"
+    );
+    assert!(env.store.web_session(&token, now).await.unwrap().is_none());
+    let response = call(
+        env.main_app(),
+        Method::GET,
+        "/",
+        &[("cookie", &cookie)],
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_cookie_login_posts_with_its_csrf_token() {
+    let env = env().await;
+    let token = log_in(&env).await;
+    let cookie = session(&token);
+    let csrf = auth::cookie_csrf(&token);
+    let path = format!("/chats/{}", chat());
+    let page = body_text(
+        call(
+            env.main_app(),
+            Method::GET,
+            &path,
+            &[("cookie", &cookie)],
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert!(page.contains(&csrf), "{page}");
+
+    let messages = format!("{path}/messages");
+    let response = call(
+        env.main_app(),
+        Method::POST,
+        &messages,
+        &[("cookie", &cookie)],
+        Some("text=hi"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let response = call(
+        env.main_app(),
+        Method::POST,
+        &messages,
+        &[
+            ("cookie", &cookie),
+            ("hx-request", "true"),
+            ("x-csrf-token", &csrf),
+        ],
+        Some("text=hi"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let senders: Vec<String> = env
+        .pending()
+        .await
+        .into_iter()
+        .filter_map(|event| match event {
+            ChannelEvent::Message { message, .. } => Some(message.sender.to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(senders, ["owner"]);
+}
+
+#[tokio::test]
+async fn an_https_public_url_makes_the_cookie_secure() {
+    let config =
+        WebConfig::from_json(&serde_json::json!({"public_url": "https://giles.example.com"}))
+            .unwrap();
+    let env = env_with(config, &["web:owner"]).await;
+    let link = env
+        .channel
+        .create_login_link(&identity::owner(), Timestamp::now())
+        .unwrap();
+    assert!(
+        link.url.starts_with("https://giles.example.com/login/"),
+        "{}",
+        link.url
+    );
+    let response = redeem(env.main_app(), &link, &[]).await;
+    assert!(set_cookie(&response).ends_with("; SameSite=Lax; Secure"));
+}
+
+#[tokio::test]
+async fn the_identity_header_counts_only_on_the_proxy_listener() {
+    let env = env_with(
+        proxy_config(serde_json::json!({"identity_header": "x-user"})),
+        &["web:owner", "web:alice@example.com"],
+    )
+    .await;
+    let alice = [("x-user", "alice@example.com")];
+
+    let response = call(env.main_app(), Method::GET, "/", &alice, None).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = call(env.proxy_app(), Method::GET, "/", &[], None).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = call(env.proxy_app(), Method::GET, "/", &alice, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_text(response).await;
+    assert!(!html.contains("/logout"), "nothing to log out of: {html}");
+
+    // Someone the owner config doesn't list is refused.
+    let mallory = [("x-user", "mallory@example.com")];
+    let response = call(env.proxy_app(), Method::GET, "/", &mallory, None).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    // Posts carry the header's identity and need the login's CSRF token.
+    let sender = NativeId::new("alice@example.com").unwrap();
+    let csrf = auth::proxy_csrf(&env.channel.proxy_key, &sender);
+    let path = format!("/chats/{}", chat());
+    let page = body_text(call(env.proxy_app(), Method::GET, &path, &alice, None).await).await;
+    assert!(page.contains(&csrf), "{page}");
+    let messages = format!("{path}/messages");
+    let response = call(
+        env.proxy_app(),
+        Method::POST,
+        &messages,
+        &alice,
+        Some("text=hi"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let response = call(
+        env.proxy_app(),
+        Method::POST,
+        &messages,
+        &[alice[0], ("x-csrf-token", &csrf)],
+        Some("text=hi"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let pending = env.pending().await;
+    let Some(ChannelEvent::Message { message, .. }) = pending.last() else {
+        panic!("no message: {pending:?}");
+    };
+    assert_eq!(message.sender, sender);
+    assert!(message.sender_authenticated);
+
+    // `X-Forwarded-Proto` too is believed only from the proxy.
+    let https = [("x-forwarded-proto", "https")];
+    let link = env
+        .channel
+        .create_login_link(&identity::owner(), Timestamp::now())
+        .unwrap();
+    let response = redeem(env.main_app(), &link, &https).await;
+    assert!(!set_cookie(&response).contains("Secure"));
+    let link = env
+        .channel
+        .create_login_link(&identity::owner(), Timestamp::now())
+        .unwrap();
+    let response = redeem(env.proxy_app(), &link, &https).await;
+    assert!(set_cookie(&response).ends_with("; Secure"));
+}
+
+#[tokio::test]
+async fn a_tcp_proxy_listener_needs_the_shared_secret() {
+    let secret = "0123456789abcdef";
+    let env = env_with(
+        proxy_config(serde_json::json!({
+            "identity_header": "x-user",
+            "listen": "127.0.0.1:0",
+            "secret": secret,
+        })),
+        &["web:owner"],
+    )
+    .await;
+    let owner = ("x-user", "owner");
+    for headers in [
+        vec![owner],
+        vec![owner, ("x-giles-proxy-secret", "0123456789abcdeF")],
+    ] {
+        let response = call(env.proxy_app(), Method::GET, "/", &headers, None).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{headers:?}");
+    }
+    let with_secret = [owner, ("x-giles-proxy-secret", secret)];
+    let response = call(env.proxy_app(), Method::GET, "/", &with_secret, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    // The main listener believes neither.
+    let response = call(env.main_app(), Method::GET, "/", &with_secret, None).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn the_proxy_listener_binds_where_configured() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let root = crate::paths::DataRoot::new(root_dir.path(), &root_dir.path().join("tmp")).unwrap();
+    root.create_layout().unwrap();
+
+    let none = env().await;
+    assert!(none.app.bind_proxy(&root).await.unwrap().is_none());
+
+    let unix = env_with(
+        proxy_config(serde_json::json!({"identity_header": "x-user"})),
+        &["web:owner"],
+    )
+    .await;
+    let listener = unix.app.bind_proxy(&root).await.unwrap().unwrap();
+    assert_eq!(
+        listener.describe(),
+        root.proxy_socket().display().to_string()
+    );
+    assert!(matches!(
+        unix.app.bind_proxy(&root).await,
+        Err(ProxyError::InUse(_))
+    ));
+
+    let tcp = env_with(
+        proxy_config(serde_json::json!({
+            "identity_header": "x-user",
+            "listen": "127.0.0.1:0",
+            "secret": "0123456789abcdef",
+        })),
+        &["web:owner"],
+    )
+    .await;
+    let listener = tcp.app.bind_proxy(&root).await.unwrap().unwrap();
+    assert!(matches!(listener, ProxyListener::Tcp(_)));
+    assert!(listener.describe().starts_with("127.0.0.1:"));
 }
 
 #[tokio::test]

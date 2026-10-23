@@ -516,18 +516,42 @@ fn http_request(mut stream: impl Read + Write, path: &str, headers: &str) -> Str
 
 #[cfg(feature = "channel-web")]
 #[test]
-fn the_web_channel_replaces_the_home_page() {
+fn the_web_channel_replaces_the_home_page_and_trusts_only_the_proxy_socket() {
+    use std::os::unix::net::UnixStream;
+
     let env = Env::new();
     let home = env.path("home");
-    write_config(&home, &format!("{MINIMAL_CONFIG}[channel.web]\n"));
+    write_config(
+        &home,
+        &format!("{MINIMAL_CONFIG}[channel.web.config.proxy]\nidentity_header = \"x-user\"\n"),
+    );
     let daemon = Daemon::start(env.command(&["serve", "--home", home.to_str().unwrap()]));
     let addr = http_addr(&daemon.log);
+    let line = daemon
+        .log
+        .iter()
+        .find(|l| l.contains("trusted-proxy listener open"))
+        .unwrap();
+    let socket = PathBuf::from(line.split("at=").nth(1).unwrap().trim());
+    assert_eq!(mode(&socket), 0o600);
 
-    // The chat list needs a login.
-    let response = http_request(TcpStream::connect(addr).unwrap(), "/", "");
+    // The chat list needs a login, and the main listener ignores the identity header.
+    let response = http_request(TcpStream::connect(addr).unwrap(), "/", "x-user: owner\r\n");
     assert!(response.starts_with("HTTP/1.1 401 "), "{response}");
     assert!(response.contains("giles admin login-link"), "{response}");
 
+    // The proxy socket believes it.
+    let response = http_request(
+        UnixStream::connect(&socket).unwrap(),
+        "/",
+        "x-user: owner\r\n",
+    );
+    assert!(response.starts_with("HTTP/1.1 200 "), "{response}");
+    assert!(response.contains("<h1>Chats</h1>"), "{response}");
+    let response = http_request(UnixStream::connect(&socket).unwrap(), "/", "");
+    assert!(response.starts_with("HTTP/1.1 401 "), "{response}");
+
     let (status, log) = daemon.stop("TERM");
     assert!(status.success(), "{status}\n{log}");
+    assert!(!socket.exists(), "the socket outlived the daemon");
 }

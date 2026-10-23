@@ -8,10 +8,13 @@ feature `channel-web` (default on, forwarded by the `giles` crate). It has two h
   (`WebChannel::from_instance`, see [Registry and Startup](registry.md)), registered like any
   channel, and attached to the session manager by `Runtime::start_sessions` with the other
   registered channels. At most one instance may use the component.
-- `WebApp` is its HTTP side on the core's server ([HTTP Server](http.md)): `giles serve` builds
-  it with `WebApp::from_runtime(&runtime, shutdown)` (from `Registry::web_channel()`, the typed
-  handle) and `web.install(RouterBuilder::new())`, which replaces the placeholder `/` with the chat
-  list and merges the other routes.
+- `WebApp` is its HTTP side on the core's server ([HTTP Server](http.md)): `giles serve` builds it
+  with `WebApp::from_runtime(&runtime, shutdown)` (from `Registry::web_channel()`, the typed handle;
+  it also spawns the hourly expired-session cleanup) and `web.install(RouterBuilder::new())`, which
+  replaces the placeholder `/` with the chat list and merges the other routes, all behind the
+  authentication middleware. If a trusted proxy is configured, `serve` also opens
+  `web.bind_proxy(&root)` before startup completes and serves `web.proxy_app(app)` on it
+  ([Login](#login)).
 
 Neither half touches the agent loop: posted messages go through the normal inbound pipeline
 (router, inbox, turns; [Sessions and Turns](sessions.md)), and replies come back through
@@ -28,27 +31,132 @@ Neither half touches the agent loop: posted messages go through the normal inbou
 | `POST /chats/<id>/approvals`   | An approval button: posts `<answer> <code>` (CSRF-checked).      |
 | `GET /chats/<id>/events`       | Server-sent events for the page.                                 |
 | `GET /blobs/<sha256>`          | An attachment.                                                   |
+| `GET /login/<token>`           | A login link: a page with a button that posts the token.         |
+| `POST /login`                  | Uses up the link (`token`), sets the session cookie, 303 to `/`. |
+| `POST /logout`                 | Ends a cookie login (CSRF-checked), 303 to `/`.                  |
 
-Every route needs a `WebUser` (below); without one it's a 401 page saying how to log in. A chat id
-is 128 random bits as 32 lowercase hex digits (`new_chat_id`, `is_chat_id`), and is the
-conversation id (PLAN section 10): web chats are created by the user. Any other id in a path is a
-404. A chat is `ConversationKind::Direct`; v1 has one user, so every chat is the owner's.
+Every route except the two login routes needs a `WebUser` (below); without one it's a 401 page
+saying how to log in. A chat id is 128 random bits as 32 lowercase hex digits (`new_chat_id`,
+`is_chat_id`), and is the conversation id (PLAN section 10): web chats are created by the user.
+Any other id in a path is a 404. A chat is `ConversationKind::Direct`; v1 has one user, so every
+chat is the owner's.
 
 ## Who Is Asking
 
-`channels::web::WebUser { user: UserId, sender: NativeId, csrf: String }` is an axum extractor
-(`FromRequestParts` for any state) that reads a `WebUser` from the request's extensions, or
-rejects with the login page. Authentication is a middleware that inserts it (the web login, TASKS
-2.23); the extractor is the seam, so the admin pages (3.8) use the same one. `sender` is the native
-id in the `web` namespace that posted messages carry (`InboundMessage::sender`, with
-`sender_authenticated: true`); the router matches it against `[owner] identities` as
-`web:<sender>`, like any channel's sender.
+`channels::web::WebUser { user: UserId, sender: NativeId, csrf: String, .. }` is an axum
+extractor (`FromRequestParts` for any state) that reads a `WebUser` from the request's extensions,
+or rejects with the login page. The authentication middleware (`login::authenticate`, applied by
+`install`) inserts it; the extractor is the seam, so the admin pages (3.8) use the same one (their
+router must be wrapped in the same middleware: `from_fn_with_state(web_app, authenticate)`, or
+merged through `WebApp`). `sender` is the native id in the `web` namespace that posted messages
+carry (`InboundMessage::sender`, with `sender_authenticated: true`); the router matches it against
+`[owner] identities` as `web:<sender>`, like any channel's sender. `can_log_out()` is true for a
+cookie login.
 
 CSRF: `check_csrf(&user, &headers, form_field) -> Result<(), CsrfRejected>` accepts the token from
 the `X-CSRF-Token` header (htmx: the chat page sets `hx-headers` with it, inherited by every form
 on the page, including those that arrive over the event stream) or the `csrf` form field (plain
 form posts without JavaScript), compared as SHA-256 digests. A mismatch is a 403 page. Every POST
-checks it before acting.
+that needs a login checks it before acting. The token is per login and needs no storage:
+
+- Cookie login: SHA-256 of a fixed label and the session token. Only the browser has the token
+  (the cookie is `HttpOnly`, and the store keeps only its hash), so another site can't compute it,
+  and it survives restarts.
+- Proxy login: SHA-256 of a random per-run key (`WebChannel::proxy_key`) and the identity, since
+  the identity itself is no secret. A restart changes it; open pages then get a 403 on their next
+  post and a reload fixes them.
+
+On top of the token, the cookie is `SameSite=Lax`, so cross-site POSTs don't carry it at all.
+
+## Login
+
+PLAN section 3.4; v1 scope (section 1.1) is the login link and the trusted-proxy header. The
+login *code* flow (a code sent to the user's default channel) needs the outbox (3.1) and isn't
+built. Code: `login.rs` (middleware and routes), `links.rs`, `proxy.rs`, the cookie helpers in
+`auth.rs`, and the keys in `config.rs`.
+
+### Configuration
+
+`WebConfig::from_json` parses the instance's `config` table (unknown keys rejected, errors name the
+key and are scrubbed of secrets):
+
+- `public_url`: an `http`/`https` origin, normalized (lowercase host, no trailing slash); a path,
+  query, fragment, or user info is an error. Login links start with it; `https` makes the cookie
+  `Secure` on every listener. Unset: `http://<core.http_listen>` with an unspecified address shown
+  as loopback.
+- `proxy.identity_header` (required in `proxy`): the header naming the user. `proxy.listen`
+  (optional TCP address) requires `proxy.secret` (at least 16 bytes; held as a `config::Secret`, so
+  `Debug` output of `WebConfig` redacts it) and takes `proxy.secret_header` (default
+  `X-Giles-Proxy-Secret`, must differ from the identity header); without `listen`, `secret` and
+  `secret_header` are errors and the listener is the Unix socket. Neither header may be
+  `Authorization`, `Cookie`, `Host`, `X-CSRF-Token`, `X-Forwarded-Proto`, or `Last-Event-ID`.
+
+### Login Links
+
+`WebChannel::create_login_link(&UserId, now) -> Result<LoginLink { url, expires_at },
+LoginLinkError>` is what `giles admin login-link --user` calls over the admin service (2.24; the
+registry's `web_channel()` gives the typed channel). It refuses anyone but the owner
+(`UnknownUser`) and an owner without a `web:<user>` identity (`NoWebIdentity`: the router would drop
+their messages). The link is `<link base>/login/<token>`, 256 random bits as 64 hex digits, valid
+for `LOGIN_LINK_TTL` (10 minutes). Pending links live in memory only, by the SHA-256 of the token
+(`links::LoginLinks`): nothing on disk can be replayed, and a restart invalidates them. Expired
+links are dropped whenever one is created or redeemed.
+
+`GET /login/<token>` doesn't use the link: it shows a page with a form that posts the token to
+`POST /login`, so link previews (chat apps and mail clients fetch URLs) can't spend it. `POST
+/login` redeems it (removed under the lock: single use, even with concurrent posts), creates a
+session token (256 random bits) with `Store::web_session_create(token, user, now, now + 30 days)`,
+deletes the browser's previous cookie session if it had one, and answers 303 to `/` with
+`Set-Cookie: giles_session=<token>; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax` (`; Secure`
+over HTTPS). A link that doesn't exist, was used, or expired gets the same 410 page either way.
+Both answers are `Cache-Control: no-store`. The `Referrer-Policy: no-referrer` security header
+keeps the token out of `Referer`.
+
+No login CSRF check on `POST /login`: v1 has one user, so a forged login would log the victim in
+as the owner, which needs a valid link anyway.
+
+### The Session Cookie
+
+The middleware reads `giles_session` (`WEB_SESSION_TTL`, 30 days), looks the token up with
+`Store::web_session(token, now)` (expired rows don't count), and builds the `WebUser`: `user` and
+`sender` are the session's user id, so a link login posts as `web:owner`. If the owner's identities
+no longer include `web:<user>`, the session logs nobody in. A cookie that names no live session
+gets a deleting `Set-Cookie` on the response. A store error is a 500. `WebApp::expire_sessions`
+deletes expired rows now and every hour (`Store::web_sessions_expire`) until shutdown.
+
+`POST /logout` (CSRF-checked) deletes the session and the cookie. A proxy login has nothing to end,
+so the chat list shows no logout button for it.
+
+### The Trusted-Proxy Listener
+
+The identity header is honored only on a request marked `TrustedProxy`, a request extension only
+the proxy listener's layer adds, and a client can't forge an extension. The main listener never
+reads the header, so any local process (network-enabled plugins included) gets nothing by sending
+it there.
+
+- `WebApp::bind_proxy(&DataRoot) -> Result<Option<ProxyListener>, ProxyError>`: for the Unix socket,
+  `check_socket_dir`, then `DataRoot::proxy_socket()` (`run/proxy.sock` or the `$TMPDIR` fallback).
+  An existing socket that accepts a connection is `InUse` (another Giles); a stale one is removed;
+  anything that isn't a socket is `NotASocket` and left alone. The new socket is chmod 0600 (the
+  directory is 0700 already). For TCP, a plain bind. `giles serve` binds it before
+  `start_sessions`, so a failure stops startup, and logs `trusted-proxy listener open at=<where>`.
+- `WebApp::proxy_app(app)` wraps the main listener's whole application: the Unix socket marks every
+  request; TCP first compares the SHA-256 of the secret header with the configured secret's and
+  answers a bare 403 (logged) on a mismatch. `ProxyListener::serve(app, shutdown)` serves it like
+  `http::serve` and removes the socket file afterwards. `serve` runs both servers in one task that
+  ends at the first failure.
+- With the mark, a request carrying the identity header is that identity: if
+  `OwnerIdentities::contains("web", value)`, a `WebUser` for the owner with that `sender`; otherwise
+  a 403 page (the value is logged so the operator can add it). Without the header, the cookie
+  applies as usual.
+- `X-Forwarded-Proto: https` marks the cookie `Secure` only with the mark.
+
+### Rate Limits
+
+PLAN section 3.4 rate-limits the login *code* flow per user name and per client address, because
+an 8-character code can be guessed. Link and session tokens carry 256 random bits, so guessing is
+hopeless at any rate, and a limit on redemption would only let a local process lock the owner out.
+So there's no limiter yet; it comes with the code flow.
 
 ## Inbound: Events and Acks
 
@@ -213,19 +321,20 @@ directly it runs in a sandboxed opaque origin.
 ## Templates and Styles
 
 Templates are in `crates/giles-core/templates/web/`: pages `chats.html`, `chat.html`,
-`error.html`, `login_required.html` (extending `layout.html`), and fragments `message.html`,
-`approval.html`, `compose.html`, `attachments.html` (rendered by `render.rs`). Nothing inline: no
-scripts, styles, or `hx-on` handlers (the CSP and `allowEval: false` forbid them). The chat page is
-`hx-ext="sse"` with `sse-connect`; `#messages` has `sse-swap="message"` and `hx-swap="beforeend"`.
-The compose form replaces itself (`hx-target="this"`, `hx-swap="outerHTML"`); approval forms use
-`hx-swap="none"`. Every form also works as a plain form post. Styles are classes in
-`assets/giles.css`.
+`error.html`, `login_required.html`, `login.html` (extending `layout.html`), and fragments
+`message.html`, `approval.html`, `compose.html`, `attachments.html` (rendered by `render.rs`).
+Nothing inline: no scripts, styles, or `hx-on` handlers (the CSP and `allowEval: false` forbid
+them). The chat page is `hx-ext="sse"` with `sse-connect`; `#messages` has `sse-swap="message"` and
+`hx-swap="beforeend"`. The compose form replaces itself (`hx-target="this"`,
+`hx-swap="outerHTML"`); approval forms use `hx-swap="none"`. Every form also works as a plain form
+post. Styles are classes in `assets/giles.css`.
 
 ## Tests
 
-`crates/giles-core/src/channels/web/tests.rs` (router-level with `tower::ServiceExt::oneshot`, an
-injected `WebUser`, a temporary store), plus unit tests in `hub.rs`, `render.rs`, `pages.rs`,
-`auth.rs`, `config.rs`:
+`crates/giles-core/src/channels/web/tests.rs` (router-level with `tower::ServiceExt::oneshot`, a
+temporary store; the chat tests inject a `WebUser`, the login tests go through the real
+middleware), plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`,
+`links.rs`, `proxy.rs`:
 
 - Every route without a user is a 401 login page; malformed chat and blob ids are 404s.
 - The chat list: only this instance's chats, newest first, escaped titles. A chat page: transcript
@@ -249,3 +358,13 @@ injected `WebUser`, a temporary store), plus unit tests in `hub.rs`, `render.rs`
 - End to end: a real `Sessions` with the web channel attached and a fake turn runner that stores
   the messages and replies through `Reply::send`: a post becomes a turn, the reply reaches the open
   page, the events are acked, and a reload shows both from the transcript.
+- Login: a link shows its button without being used, logs in once with the right cookie flags and
+  a 30-day `web_sessions` row, then is 410; expired, unknown, and malformed links; link creation
+  refusals; expired, unknown, and orphaned sessions logged out with the cookie deleted; the hourly
+  cleanup; logout with CSRF; a cookie login's CSRF token; `public_url` and `X-Forwarded-Proto`
+  making cookies `Secure` (the latter only through the proxy).
+- Proxy: the identity header ignored on the main listener and honored on the proxy app, unknown
+  identities refused, posts carry the header's identity and need its CSRF token; a TCP listener
+  needs the exact secret; binding (socket mode 0600, `InUse`, stale socket replaced, non-socket
+  left alone). `crates/giles/tests/serve.rs` runs the daemon with a proxy socket and checks it
+  over real connections, and that the socket is gone after exit.

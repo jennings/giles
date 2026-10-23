@@ -53,6 +53,20 @@ async fn serve(root: DataRoot, config: Config) -> anyhow::Result<()> {
     let http_addr = listener
         .local_addr()
         .context("cannot read the HTTP listener's address")?;
+    // The web channel's pages and its trusted-proxy listener, if `giles.toml` configures them.
+    #[cfg(feature = "channel-web")]
+    let web = giles_core::channels::web::WebApp::from_runtime(&runtime, shutdown.clone());
+    #[cfg(feature = "channel-web")]
+    let proxy = match &web {
+        Some(web) => match web.bind_proxy(&root).await? {
+            Some(listener) => {
+                info!(at = %listener.describe(), "trusted-proxy listener open");
+                Some((listener, web.clone()))
+            }
+            None => None,
+        },
+        None => None,
+    };
     // Startup recovery, then every registered channel's events. The last step that can fail:
     // recovery changes state and resumed turns run, so nothing may abort startup after it.
     let sessions = runtime
@@ -63,15 +77,39 @@ async fn serve(root: DataRoot, config: Config) -> anyhow::Result<()> {
         )
         .await?;
     let builder = http::RouterBuilder::new();
-    // The web channel's pages, if `giles.toml` configures it.
     #[cfg(feature = "channel-web")]
-    let builder = match giles_core::channels::web::WebApp::from_runtime(&runtime, shutdown.clone())
-    {
+    let builder = match &web {
         Some(web) => web.install(builder),
         None => builder,
     };
     let app = builder.build();
-    let mut http_server = tokio::spawn(http::serve(listener, app, shutdown.clone()));
+    // One task serves every listener. It returns when all have stopped (on shutdown), or at the
+    // first failure.
+    #[cfg(feature = "channel-web")]
+    let proxy_server = {
+        let (app, shutdown) = (app.clone(), shutdown.clone());
+        async move {
+            match proxy {
+                Some((listener, web)) => listener
+                    .serve(web.proxy_app(app), shutdown)
+                    .await
+                    .context("the trusted-proxy listener failed"),
+                None => Ok(()),
+            }
+        }
+    };
+    #[cfg(not(feature = "channel-web"))]
+    let proxy_server = async { anyhow::Ok(()) };
+    let main_server = {
+        let shutdown = shutdown.clone();
+        async move {
+            http::serve(listener, app, shutdown)
+                .await
+                .context("the HTTP server failed")
+        }
+    };
+    let mut http_server =
+        tokio::spawn(async move { tokio::try_join!(main_server, proxy_server).map(|_| ()) });
     // Every configured plugin channel; one that fails to launch is logged and stays pending. A
     // shutdown during startup abandons the launches still running (killing their plugins).
     let plugins = PluginHost::new(Launcher::new(root.clone(), giles_exe, sandbox));
@@ -103,15 +141,10 @@ async fn serve(root: DataRoot, config: Config) -> anyhow::Result<()> {
         // The server only returns on shutdown; stop everything else with it.
         shutdown.cancel();
         plugins.stop_all(STOP_GRACE).await;
-        result
-            .context("the HTTP server panicked")?
-            .context("the HTTP server failed")?;
+        result.context("the HTTP server panicked")??;
         anyhow::bail!("the HTTP server stopped unexpectedly");
     }
-    http_server
-        .await
-        .context("the HTTP server panicked")?
-        .context("the HTTP server failed")?;
+    http_server.await.context("the HTTP server panicked")??;
     // Running turns are cancelled with the token; wait for them and the channel pumps, then stop
     // the plugins.
     sessions.closed().await;

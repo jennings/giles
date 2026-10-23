@@ -1,0 +1,13 @@
+{% extends "layout.html" %}
+
+{% block title %}Log in - Giles{% endblock %}
+
+{% block content %}
+<h1>Log in</h1>
+<p>This one-time link logs this browser in to Giles for 30 days. It works once, until
+{{ expires }}.</p>
+<form method="post" action="/login">
+<input type="hidden" name="token" value="{{ token }}">
+<button type="submit">Log in</button>
+</form>
+{% endblock %}

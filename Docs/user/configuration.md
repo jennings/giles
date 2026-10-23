@@ -135,7 +135,8 @@ config = { base_url = "http://127.0.0.1:11434/v1" }
 
 #### Channels
 
-The built-in channel is `web`. Any other component is a plugin, which Giles either launches itself
+The built-in channel is `web`; its `config` keys (`public_url`, `proxy`) are in
+[Web Chat](web.md#logging-in). Any other component is a plugin, which Giles either launches itself
 or, with `address`, connects to where someone else runs it.
 
 | Key           | Applies to        | Default    | Meaning                                                  |

@@ -1,16 +1,19 @@
-//! The built-in web channel (PLAN sections 9, 10): chat pages on the core's HTTP server, posted
-//! messages as channel events, and live output over server-sent events. Design:
-//! `Docs/technical/web-channel.md`.
+//! The built-in web channel (PLAN sections 3.4, 9, 10): chat pages on the core's HTTP server,
+//! posted messages as channel events, live output over server-sent events, and the web login.
+//! Design: `Docs/technical/web-channel.md`.
 //!
 //! [`WebChannel`] is the [`Channel`]: an in-memory event queue (events stay pending until acked,
-//! and are sent again on every new [`Channel::events`] stream), and per-chat [hubs](hub) that
-//! every open page of a chat follows. [`WebApp`] is the HTTP side: the pages, the event streams,
-//! and `/blobs/<sha256>`.
+//! and are sent again on every new [`Channel::events`] stream), per-chat hubs (`hub.rs`) that every
+//! open page of a chat follows, and the one-time login links. [`WebApp`] is the HTTP side: the
+//! pages, the event streams, `/blobs/<sha256>`, the login, and the trusted-proxy listener.
 
 mod auth;
 mod config;
 mod hub;
+mod links;
+mod login;
 mod pages;
+mod proxy;
 mod render;
 
 #[cfg(test)]
@@ -18,6 +21,7 @@ mod tests;
 
 use std::collections::VecDeque;
 use std::fmt;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -27,17 +31,21 @@ use futures::channel::mpsc;
 use futures::stream::BoxStream;
 use giles_types::{
     Channel, ChannelEvent, ChannelInfo, ChannelStatus, ConversationId, ConversationKind,
-    ConversationRef, DeltaSink, DeltaWriter, Error, EventId, InboundMessage, MessageId,
-    OutboundMessage, OutputMode, Result, SendTarget, Timestamp,
+    ConversationRef, DeltaSink, DeltaWriter, Error, EventId, InboundMessage, MessageId, NativeId,
+    OutboundMessage, OutputMode, Result, SendTarget, Timestamp, UserId,
 };
 use tokio::time::Instant;
 
-use crate::config::{ChannelInstance, InstanceName};
-use crate::identity;
+use crate::config::{ChannelInstance, Config, InstanceName, OwnerConfig};
+use crate::identity::{self, OwnerIdentities};
 
-pub use auth::{CSRF_FIELD, CSRF_HEADER, CsrfRejected, WebUser, check_csrf};
-pub use config::WebConfig;
+pub use auth::{
+    CSRF_FIELD, CSRF_HEADER, CsrfRejected, SESSION_COOKIE, WEB_SESSION_TTL, WebUser, check_csrf,
+};
+pub use config::{ProxyConfig, ProxyListen, WebConfig};
+pub use links::LOGIN_LINK_TTL;
 pub use pages::WebApp;
+pub use proxy::{ProxyError, ProxyListener};
 
 /// The component name, and the identity namespace of web senders (`web:<id>` in `[owner]`).
 pub const COMPONENT: &str = "web";
@@ -166,26 +174,77 @@ struct Inbound {
 pub struct WebChannel {
     instance: InstanceName,
     info: ChannelInfo,
+    config: WebConfig,
+    owner: OwnerIdentities,
+    /// Where login links point: the public URL, else the HTTP listener.
+    link_base: String,
+    /// Keys proxy logins' CSRF tokens; random per run.
+    proxy_key: [u8; 32],
     inbound: Mutex<Inbound>,
     hubs: hub::Hubs,
+    links: links::LoginLinks,
 }
 
 impl fmt::Debug for WebChannel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WebChannel")
             .field("instance", &self.instance)
+            .field("link_base", &self.link_base)
             .field("pending", &lock(&self.inbound).pending.len())
             .finish_non_exhaustive()
     }
 }
 
+/// A one-time login link ([`WebChannel::create_login_link`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginLink {
+    /// The URL to open: `<public URL>/login/<token>`.
+    pub url: String,
+    /// When it stops working.
+    pub expires_at: Timestamp,
+}
+
+/// A login link couldn't be created.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum LoginLinkError {
+    /// No such user. v1 has one, the owner (PLAN section 1.1).
+    #[error("there is no user `{0}`: this Giles has one user, `{owner}`", owner = identity::OWNER)]
+    UnknownUser(UserId),
+    /// The user has no identity in the `web` namespace, so the router would drop their messages.
+    #[error(
+        "`[owner] identities` doesn't list `web:{0}`; add it, or messages from the web chat are \
+         dropped as from an unknown sender"
+    )]
+    NoWebIdentity(UserId),
+}
+
+/// `http://<addr>`, with an unspecified address (`0.0.0.0`, `::`) replaced by loopback.
+fn listener_url(addr: SocketAddr) -> String {
+    let ip = match addr.ip() {
+        IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ip => ip,
+    };
+    format!("http://{}", SocketAddr::new(ip, addr.port()))
+}
+
 impl WebChannel {
-    /// The channel for instance `instance`. Its first event is a `Connected` status.
-    pub fn new(instance: InstanceName) -> Self {
+    /// The channel for instance `instance` with `config`, for `owner`, whose HTTP server listens
+    /// on `http_listen` (the login links' address unless `config.public_url` is set). Its first
+    /// event is a `Connected` status.
+    pub fn new(
+        instance: InstanceName,
+        config: WebConfig,
+        owner: &OwnerConfig,
+        http_listen: SocketAddr,
+    ) -> Self {
         let status = ChannelEvent::Status {
             id: EventId::new(new_id()).expect("a valid id"),
             status: ChannelStatus::Connected,
         };
+        let mut proxy_key = [0; 32];
+        getrandom::fill(&mut proxy_key).expect("the OS random number generator failed");
         Self {
             instance,
             info: ChannelInfo {
@@ -193,24 +252,39 @@ impl WebChannel {
                 output: OutputMode::Deltas,
                 can_initiate: false,
             },
+            link_base: config
+                .public_url
+                .clone()
+                .unwrap_or_else(|| listener_url(http_listen)),
+            config,
+            owner: OwnerIdentities::new(owner),
+            proxy_key,
             inbound: Mutex::new(Inbound {
                 pending: VecDeque::from([status]),
                 stream: None,
             }),
             hubs: hub::Hubs::new(),
+            links: links::LoginLinks::default(),
         }
     }
 
-    /// The channel for a configured `[channel.<instance>]` with `component = "web"`.
+    /// The channel for a configured `[channel.<instance>]` with `component = "web"` in `config`.
     ///
     /// # Errors
     ///
     /// The `giles.toml` key under the instance table and the reason, with secret values scrubbed.
-    pub fn from_instance(instance: &ChannelInstance) -> Result<Self, (&'static str, String)> {
-        // Nothing to keep yet; parsing checks the table has no unknown keys.
-        WebConfig::from_json(&instance.config.to_json())
+    pub fn from_instance(
+        instance: &ChannelInstance,
+        config: &Config,
+    ) -> Result<Self, (&'static str, String)> {
+        let web = WebConfig::from_json(&instance.config.to_json())
             .map_err(|reason| ("config", instance.config.scrub(&reason)))?;
-        let channel = Self::new(instance.name.clone());
+        let channel = Self::new(
+            instance.name.clone(),
+            web,
+            &config.owner,
+            config.core.http_listen,
+        );
         identity::validate_namespace(&instance.component, &channel.info.identity_namespace)
             .map_err(|e| ("component", e.to_string()))?;
         Ok(channel)
@@ -219,6 +293,44 @@ impl WebChannel {
     /// The instance name: the `channel` of its sessions.
     pub fn instance(&self) -> &InstanceName {
         &self.instance
+    }
+
+    /// The channel's settings.
+    pub fn config(&self) -> &WebConfig {
+        &self.config
+    }
+
+    /// Creates a one-time login link for `user`: it logs in whoever opens it first, within
+    /// [`LOGIN_LINK_TTL`] (10 minutes), with a 30-day session cookie. This is what
+    /// `giles admin login-link --user <user>` calls over the admin service (TASKS.md 2.24). Links
+    /// live in memory: a restart invalidates them.
+    ///
+    /// # Errors
+    ///
+    /// [`LoginLinkError::UnknownUser`] for anyone but the owner (v1);
+    /// [`LoginLinkError::NoWebIdentity`] if `[owner] identities` lacks `web:<user>`, the identity
+    /// a link login sends as.
+    pub fn create_login_link(
+        &self,
+        user: &UserId,
+        now: Timestamp,
+    ) -> Result<LoginLink, LoginLinkError> {
+        if *user != identity::owner() {
+            return Err(LoginLinkError::UnknownUser(user.clone()));
+        }
+        if !self.is_web_identity(user) {
+            return Err(LoginLinkError::NoWebIdentity(user.clone()));
+        }
+        let (token, expires_at) = self.links.create(user.clone(), now);
+        Ok(LoginLink {
+            url: format!("{}/login/{token}", self.link_base),
+            expires_at,
+        })
+    }
+
+    /// Whether `web:<user>` is one of the owner's identities: a cookie login's sender.
+    fn is_web_identity(&self, user: &UserId) -> bool {
+        NativeId::new(user.as_str()).is_ok_and(|id| self.owner.contains(COMPONENT, &id))
     }
 
     /// Queues `event` for the core and hands it to the open stream, if any.

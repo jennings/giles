@@ -246,7 +246,7 @@ The five tracks run in parallel.
 - [x] **2.22 Web channel** (§9, §10). Built-in `channel-web` on the 1.14 server: chat pages, posted
   messages as `ChannelEvent`s, live output over SSE (`deltas`), HTML from 1.7, approval buttons.
   **Needs:** 1.14, 1.7.
-- [ ] **2.23 Web login** (§3.4). Session cookie (`HttpOnly`, `SameSite=Lax`, `Secure` over HTTPS)
+- [x] **2.23 Web login** (§3.4). Session cookie (`HttpOnly`, `SameSite=Lax`, `Secure` over HTTPS)
   backed by `web_sessions`, expiring after 30 days; redemption of one-time login links; the
   trusted-proxy identity header, honored only on `run/proxy.sock` (mode 0600) or a TCP listener
   that also requires a shared-secret header. **Needs:** 2.22, 1.2.

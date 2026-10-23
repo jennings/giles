@@ -1,5 +1,6 @@
 //! The web channel's HTTP side: the chat list, chat pages, posting, approval buttons, the event
-//! streams, and `/blobs/<sha256>`.
+//! streams, and `/blobs/<sha256>`. The login pages and the authentication middleware are in
+//! [`login`](super::login).
 
 use std::convert::Infallible;
 use std::fmt;
@@ -13,6 +14,7 @@ use axum::http::header::{
     CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_SECURITY_POLICY, CONTENT_TYPE,
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::middleware::from_fn_with_state;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -49,15 +51,15 @@ const BLOB_CACHE_CONTROL: &str = "private, max-age=31536000, immutable";
 /// The web channel's HTTP application. Cheap to clone.
 #[derive(Clone)]
 pub struct WebApp {
-    inner: Arc<Inner>,
+    pub(super) inner: Arc<Inner>,
 }
 
-struct Inner {
-    channel: Arc<WebChannel>,
-    store: Store,
-    blobs: BlobStore,
-    clock: Arc<dyn Clock>,
-    shutdown: CancellationToken,
+pub(super) struct Inner {
+    pub(super) channel: Arc<WebChannel>,
+    pub(super) store: Store,
+    pub(super) blobs: BlobStore,
+    pub(super) clock: Arc<dyn Clock>,
+    pub(super) shutdown: CancellationToken,
 }
 
 impl fmt::Debug for WebApp {
@@ -99,15 +101,18 @@ impl WebApp {
         }
     }
 
-    /// The web application of the runtime's web channel, if `giles.toml` configures one.
+    /// The web application of the runtime's web channel, if `giles.toml` configures one. Also
+    /// starts deleting expired web sessions every hour, until `shutdown`.
     pub fn from_runtime(runtime: &Runtime, shutdown: CancellationToken) -> Option<Self> {
         let channel = runtime.registry.web_channel()?;
-        Some(Self::new(
+        let app = Self::new(
             channel,
             runtime.store.clone(),
             runtime.blobs.clone(),
             shutdown,
-        ))
+        );
+        tokio::spawn(app.clone().expire_sessions());
+        Some(app)
     }
 
     /// The channel.
@@ -116,11 +121,12 @@ impl WebApp {
     }
 
     /// Adds the web channel's pages to `builder`, the chat list replacing the placeholder home
-    /// page.
+    /// page. Every page goes through the authentication middleware (`login::authenticate`).
     pub fn install(&self, builder: RouterBuilder) -> RouterBuilder {
+        let auth = from_fn_with_state(self.clone(), super::login::authenticate);
         builder
-            .home(get(chats).with_state(self.clone()))
-            .merge(self.routes())
+            .home(get(chats).with_state(self.clone()).layer(auth.clone()))
+            .merge(self.routes().route_layer(auth))
     }
 
     fn routes(&self) -> Router {
@@ -131,6 +137,7 @@ impl WebApp {
             .route("/chats/{chat}/approvals", post(post_approval))
             .route("/chats/{chat}/events", get(events))
             .route("/blobs/{id}", get(blob))
+            .merge(super::login::routes())
             .with_state(self.clone())
     }
 }
@@ -173,7 +180,7 @@ fn not_found() -> Response {
 }
 
 /// Logs a database or blob store error and answers 500.
-fn internal_error(what: &str, err: &dyn std::error::Error) -> Response {
+pub(super) fn internal_error(what: &str, err: &dyn std::error::Error) -> Response {
     error!(error = %err, "{what}");
     error_page(
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -222,6 +229,8 @@ struct ChatItem {
 #[template(path = "web/chats.html")]
 struct ChatsPage {
     chats: Vec<ChatItem>,
+    /// Set for a cookie login: the page shows a logout button.
+    logout_csrf: Option<String>,
 }
 
 /// `GET /`: the user's chats, most recently active first.
@@ -246,7 +255,10 @@ async fn chats(State(app): State<WebApp>, user: WebUser) -> Response {
             active_at: c.last_active_at.to_string(),
         })
         .collect();
-    http::render(&ChatsPage { chats })
+    http::render(&ChatsPage {
+        chats,
+        logout_csrf: user.can_log_out().then(|| user.csrf.clone()),
+    })
 }
 
 /// `GET /chats/new`: a fresh chat id. Nothing is stored until the first message.

@@ -510,7 +510,7 @@ fn build_channel(
                     ),
                 ));
             }
-            let web = Arc::new(WebChannel::from_instance(instance)?);
+            let web = Arc::new(WebChannel::from_instance(instance, &registry.config)?);
             registry.web.get_or_init(|| web.clone());
             Ok(web)
         }

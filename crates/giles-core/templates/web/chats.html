@@ -6,6 +6,12 @@
 <div class="page-head">
 <h1>Chats</h1>
 <a class="button" href="/chats/new">New chat</a>
+{%- if let Some(csrf) = logout_csrf %}
+<form method="post" action="/logout">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button type="submit">Log out</button>
+</form>
+{%- endif %}
 </div>
 {%- if chats.is_empty() %}
 <p>No chats yet. Start one with <a href="/chats/new">New chat</a>.</p>
