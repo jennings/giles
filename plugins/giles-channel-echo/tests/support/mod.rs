@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use giles_core::commands::NoPendingApprovals;
 use giles_core::config::{Builtins, ChannelInstance, Config, LoadOptions};
 use giles_core::paths::DataRoot;
-use giles_core::plugin_host::{ChannelWiring, Launcher, PluginHost, STOP_GRACE};
+use giles_core::plugin_host::{ChannelWiring, Launcher, PluginHost};
 use giles_core::runtime::Runtime;
 use giles_core::sessions::{Sessions, Turn, TurnOutcome, TurnRunner};
 use giles_plugin_sdk::async_trait;
@@ -92,6 +92,12 @@ impl Home {
         link
     }
 
+    /// Sets environment variable `name`, as config references (`{ env = "NAME" }`) see it.
+    pub fn set_env(&mut self, name: &str, value: &str) {
+        self.env.retain(|(k, _)| k != name);
+        self.env.push((name.to_owned(), value.to_owned()));
+    }
+
     /// The loaded configuration.
     pub fn config(&self) -> Config {
         let env = |name: &str| {
@@ -158,7 +164,8 @@ impl Home {
     }
 
     /// Starts the core's runtime and sessions (turns recorded by [`Turns`], which replies to
-    /// each), and a plugin host that launches every plugin channel without a trampoline.
+    /// each), and a plugin host that supervises every plugin channel (launched without a
+    /// trampoline), returning after each one's first launch attempt.
     pub async fn start_core(&self) -> Core {
         let runtime = Runtime::start(self.root.clone(), Arc::new(self.config()))
             .await
@@ -178,7 +185,13 @@ impl Home {
             sessions: sessions.clone(),
             blobs: runtime.blobs.clone(),
         };
-        let host = PluginHost::new(self.launcher(PathBuf::from("/nonexistent/giles")), wiring);
+        let host = Arc::new(PluginHost::new(
+            self.launcher(PathBuf::from("/nonexistent/giles")),
+            wiring,
+        ));
+        tokio::time::timeout(WAIT, host.start(&self.config()))
+            .await
+            .unwrap();
         Core {
             runtime,
             sessions,
@@ -197,8 +210,8 @@ pub struct Core {
     pub sessions: Sessions,
     /// The turns run so far.
     pub turns: Arc<Turns>,
-    /// The plugin host.
-    pub host: PluginHost,
+    /// The plugin host (shared, as with the admin service).
+    pub host: Arc<PluginHost>,
     shutdown: CancellationToken,
 }
 
@@ -209,7 +222,7 @@ impl Core {
         tokio::time::timeout(WAIT, self.sessions.closed())
             .await
             .unwrap();
-        tokio::time::timeout(WAIT, self.host.stop_all(STOP_GRACE))
+        tokio::time::timeout(WAIT, self.host.stop_all())
             .await
             .unwrap();
     }

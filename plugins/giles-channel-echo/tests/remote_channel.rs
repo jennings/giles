@@ -8,6 +8,7 @@ mod support;
 
 use std::fs;
 
+use giles_core::plugin_host::PluginState;
 use giles_plugin_sdk::giles_types::{
     ChannelStatus, ConversationId, MediaId, OutboundMessage, SendTarget,
 };
@@ -24,7 +25,6 @@ async fn messages_reach_turns_get_acked_and_replies_come_back() {
     let home = Home::serving("[channel.echo]\nunsandboxed = true\n");
     home.install_echo_as("echo");
     let core = home.start_core().await;
-    core.host.launch_all(&home.config()).await;
     assert!(core.runtime.registry.channel("echo").is_some());
     assert!(core.runtime.registry.pending().is_empty());
 
@@ -65,7 +65,6 @@ async fn attachments_travel_both_ways() {
     let home = Home::serving("[channel.echo]\nunsandboxed = true\n");
     home.install_echo_as("echo");
     let core = home.start_core().await;
-    core.host.launch_all(&home.config()).await;
 
     // Two events with the same bytes, which the SDK stores once.
     home.inject("echo", "1", &owner_message("e1", "one", &["inbound bytes"]));
@@ -116,7 +115,6 @@ async fn an_attachment_over_max_blob_is_left_out_with_a_note() {
     let home = Home::serving("[channel.echo]\nunsandboxed = true\nmax_blob = 4\n");
     home.install_echo_as("echo");
     let core = home.start_core().await;
-    core.host.launch_all(&home.config()).await;
 
     home.inject("echo", "1", &owner_message("e1", "look", &["too long"]));
     let messages = core.turns.wait_for(1).await;
@@ -146,12 +144,18 @@ async fn the_host_registers_what_it_launches_and_stops_everything() {
     );
     home.install_echo_as("echo");
     let core = home.start_core().await;
-    core.host.launch_all(&home.config()).await;
-    let launched = core.host.launched().await;
-    assert_eq!(
-        launched.iter().map(|n| n.as_str()).collect::<Vec<_>>(),
-        ["echo"]
+    let states: Vec<(String, PluginState)> = core
+        .host
+        .statuses()
+        .into_iter()
+        .map(|status| (status.instance.to_string(), status.state))
+        .collect();
+    assert_eq!(states.len(), 2, "{states:?}");
+    assert!(
+        matches!(states[0].1, PluginState::Running { .. }),
+        "{states:?}"
     );
+    assert_eq!(states[1], ("missing".to_owned(), PluginState::Failed));
     let pending: Vec<String> = core
         .runtime
         .registry
@@ -169,10 +173,8 @@ async fn the_host_registers_what_it_launches_and_stops_everything() {
         .parse()
         .unwrap();
     let host = &core.host;
-    tokio::time::timeout(WAIT, host.stop_all(giles_core::plugin_host::STOP_GRACE))
-        .await
-        .unwrap();
-    assert!(host.launched().await.is_empty());
+    tokio::time::timeout(WAIT, host.stop_all()).await.unwrap();
+    assert_eq!(host.status("echo").unwrap().state, PluginState::Stopped);
     assert!(!pid_file.exists());
     // SAFETY: signal 0 only checks whether the process exists.
     #[allow(unsafe_code)]

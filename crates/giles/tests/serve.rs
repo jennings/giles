@@ -475,7 +475,10 @@ fn status_usage_and_login_link_ask_the_running_daemon() {
         "Plugin sandbox: ",
         "Channels:\n  libera  irc (plugin): no status yet\n",
         "Plugins:\n  libera (channel, irc)\n",
-        "state:     unknown (plugin supervision is not available)",
+        // Supervised: no `giles-channel-irc` anywhere (or no sandbox here), which waits for a new
+        // binary.
+        "state:     failed (not retried until its binary changes or it's restarted)",
+        "error:     ",
         "location:  giles-channel-irc",
     ] {
         assert!(stdout.contains(expected), "{expected:?} in:\n{stdout}");
@@ -641,7 +644,7 @@ fn install_script_plugin(home: &Path, component: &str, body: &str) {
 }
 
 #[test]
-fn plugins_that_fail_to_launch_stay_pending_and_giles_runs() {
+fn plugins_that_fail_to_launch_are_supervised_and_giles_runs() {
     let env = Env::new();
     let home = env.path("home");
     write_config(
@@ -676,18 +679,20 @@ fn plugins_that_fail_to_launch_stay_pending_and_giles_runs() {
         ),
         "{log}"
     );
-    for instance in ["flaky", "boxed"] {
-        let failed = log.lines().find(|line| {
-            line.contains("cannot launch the plugin; the instance stays pending")
-                && line.contains(&format!("instance={instance}"))
-        });
-        assert!(failed.is_some(), "{instance}\n{log}");
-    }
-    let boxed = log
-        .lines()
-        .find(|line| line.contains("stays pending") && line.contains("instance=boxed"))
-        .unwrap();
-    assert!(boxed.contains("retryable=false"), "{boxed}");
+    // A plugin that exits is relaunched with backoff; a sandbox failure waits for a new binary.
+    let flaky = log.lines().find(|line| {
+        line.contains("cannot launch the plugin; retrying after a delay")
+            && line.contains("supervisor{instance=flaky}")
+    });
+    assert!(
+        flaky.is_some_and(|line| line.contains("retry_in=1s")),
+        "{log}"
+    );
+    let boxed = log.lines().find(|line| {
+        line.contains("cannot launch the plugin; not retrying until its binary changes")
+            && line.contains("supervisor{instance=boxed}")
+    });
+    assert!(boxed.is_some(), "{log}");
     assert!(!home.join("run/pids/flaky.pid").exists());
     assert!(!home.join("run/pids/boxed.pid").exists());
 }

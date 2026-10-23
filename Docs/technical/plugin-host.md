@@ -1,14 +1,14 @@
 # Plugin Host
 
 Code: `crates/giles-core/src/plugin_host/` (`giles_core::plugin_host`). Design: PLAN sections 4.3,
-7.3, 7.4, 7.7, 7.8, 8.3, 8.5, 11.6, 12.1, 12.4, and 13.4. The plugin side of the same steps is the
-[Plugin SDK](plugin-sdk.md); the wire setup is [Plugin Transport](plugin-transport.md); the
-trampoline is the [Plugin Sandbox](sandbox.md).
+7.3, 7.4, 7.5, 7.7, 7.8, 7.9, 8.3, 8.5, 11.6, 12.1, 12.4, and 13.4. The plugin side of the same
+steps is the [Plugin SDK](plugin-sdk.md); the wire setup is [Plugin Transport](plugin-transport.md);
+the trampoline is the [Plugin Sandbox](sandbox.md).
 
 The plugin host launches gRPC channel plugins (provider plugins aren't supported in v1). It takes a
 configured `[channel.<instance>]` without `address` from its binary to a configured plugin, wraps
-the result in a `RemoteChannel`, and registers that with the registry and the session manager. It
-doesn't restart plugins yet (TASKS.md 2.17).
+the result in a `RemoteChannel`, registers that with the registry and the session manager, and
+supervises it: health checks, relaunches with backoff, and the stop sequence.
 
 ## Launch
 
@@ -248,18 +248,90 @@ The SDK also deletes a blob itself when the last event using it is acked, and sw
 unacked event refers to at startup, so a release lost to a crash or a restart leaks nothing (see
 [Plugin SDK](plugin-sdk.md#blobs)).
 
+## Supervision
+
+`plugin_host::supervisor` runs one task per plugin channel (PLAN section 7.5), under a
+`supervisor{instance=<name>}` span (each launch adds its own `plugin{instance=<name>}` span inside
+it). A launch is `Launcher::launch_channel` followed by `ChannelWiring::attach` (below), so every
+launch, the first and each relaunch, registers its new `RemoteChannel` and attaches it to the
+session manager, replacing the old one and its event pump.
+
+While the plugin runs, the task waits for the first of:
+
+- Shutdown (`stop_all`): `LaunchedPlugin::stop(STOP_GRACE)`: `Shutdown` with a deadline, then
+  `SIGTERM`, then `SIGKILL` to the process group.
+- A restart request (`PluginHost::restart`, for the admin service's `RestartPlugin`): the plugin
+  is stopped the same way and launched again at once, with the backoff reset.
+- The process exiting (`PluginProcess::wait`, which kills the rest of its group before reaping).
+- A failed health check: every `HEALTH_INTERVAL` (30 s) a `grpc.health.v1` `Check` of
+  `giles.channel.v1.ChannelService`, which must answer `SERVING` within `HEALTH_TIMEOUT` (10 s).
+  One failure stops the plugin and counts as a crash.
+
+After a crash or a failed check, the task relaunches after a delay from `FIRST_BACKOFF` (1 s),
+doubling up to `MAX_BACKOFF` (5 min); the delay starts over at 1 s if the plugin ran for at least
+`HEALTHY_RESET` (10 min). A failed launch is retried the same way if `LaunchError::is_retryable`.
+One that isn't (the sandbox trampoline's 125 or macOS `sandbox-exec`'s 71, no shared protocol (76),
+a `Describe` mismatch, a rejected config, a bad namespace, no binary, no sandbox on this host) is
+logged as `cannot launch the plugin; not retrying until its binary changes`, and the task hashes
+the binary (SHA-256 of the file `Launcher::find_binary` resolves, the same lookup as the launch)
+every `BINARY_RECHECK` (1 min) and relaunches once the hash differs from the failed launch's (a
+binary appearing or disappearing counts), or on a restart request. A plugin that exits after a
+successful launch is always retried: the trampoline's codes only mean something before the
+handshake. Shutdown interrupts any wait at once.
+
+### Status
+
+`PluginHost::statuses()` and `status(instance)` return `PluginStatus`, for `giles status` and the
+admin service (TASKS.md 2.24):
+
+```rust
+pub struct PluginStatus {
+    pub instance: InstanceName,
+    pub component: String,
+    pub binary: Option<PathBuf>,          // found at the last lookup, links resolved
+    pub state: PluginState,               // Starting | Running { pid, since } |
+                                          // BackingOff { until } | Failed | Stopped
+    pub restarts: u32,                    // relaunches since the core started
+    pub last_error: Option<String>,       // last launch failure, crash, or failed check; kept
+    pub describe: Option<DescribeInfo>,   // version, output, can_initiate, requested_grants
+    pub describe_cached: bool,            // describe came from the cache
+}
+```
+
+Messages in `last_error` are safe to show: `LaunchError` messages and health-check statuses are
+scrubbed of the instance's secrets and the token. The channel's own status (`Connected`,
+`NeedsAuth`, ...) is recorded by the session manager (`Sessions::channel_status`).
+
+`PluginHost` implements `admin::PluginControl` for the [Admin Service](admin.md): `plugins()`
+returns the statuses as `PluginRuntime`s (`Running { pid }` as `pid: Some(pid)`; the version and
+`requested_grants`, field for field as `SandboxGrants`, from `describe`), and `restart` is
+`PluginHost::restart`. `serve` shares one `Arc<PluginHost>` between the two.
+
+### The Describe Cache
+
+`DescribeCache` (PLAN section 7.9) keeps what each instance's binary reported in `Describe`, as
+`DescribeInfo`, in `<root>/cache/describe/<instance>.json` (mode 0600, written atomically): the
+binary's SHA-256, the instance's config hash (`ChannelInstance::config_hash`, taken before secrets
+are resolved), and the answer with its version. Each launch rewrites it. Before each launch, and at
+each binary check, supervision looks up the entry for the binary and config at hand and shows it
+in `PluginStatus::describe` (with `describe_cached`) until the plugin is up, so `giles status` can
+show capabilities and requested grants of a plugin that is failing or backing off. The lookup
+can't know the version before a launch, so it matches the binary and the config and returns the
+version recorded with them. A damaged file is a miss.
+
 ## Startup and Shutdown
 
-`PluginHost::new(launcher, ChannelWiring { registry, sessions, blobs })` and then
-`launch_all(&config)` launch every plugin channel concurrently after the sessions start and before
-`giles started` (see [The `giles` Binary](daemon.md)). Each launched plugin is wired at once by
-`ChannelWiring::attach(&plugin, max_blob)`: its `RemoteChannel` is registered with
-`Registry::register_channel` (so replies and `Registry::pending` see it) and attached with
-`Sessions::attach_channel(instance, component, channel)` (so its events flow). A failure to launch
-is logged as `cannot launch the plugin; the instance stays pending` with the error and whether it's
-retryable; nothing retries it yet (2.17). A shutdown signal during startup drops the launches still
-running, which kills their process groups. At shutdown, after the sessions have stopped,
-`stop_all(STOP_GRACE)` stops every launched plugin concurrently.
+`PluginHost::new(launcher, ChannelWiring { registry, sessions, blobs })` and then `start(&config)`
+start supervising every plugin channel after the sessions start, and return once each has had its
+first launch attempt, before `giles started` (see [The `giles` Binary](daemon.md)). Each launched
+plugin is wired at once by `ChannelWiring::attach(&plugin, max_blob)`: its `RemoteChannel` is
+registered with `Registry::register_channel` (so replies and `Registry::pending` see it) and
+attached with `Sessions::attach_channel(instance, component, channel)` (so its events flow). A
+shutdown signal during startup stops waiting for the first attempts. At shutdown, after the
+sessions have stopped, `stop_all()` stops every supervisor, which stops its plugin (or abandons
+its launch in progress, killing its process group), and waits for them; nothing is relaunched
+afterwards. A plugin that crashed stays registered (its `RemoteChannel` fails every call) until
+its relaunch replaces it.
 
 ## Tests
 
@@ -274,6 +346,13 @@ running, which kills their process groups. At shutdown, after the sessions have 
   size, lying and malformed transfers refused and nothing stored, `NOT_FOUND` notes, a transient
   `GetBlob` failure leaving the event unacked, `PutBlob` before `Send`, and `Send` errors mapped
   and scrubbed.
+- `plugin_host/supervisor/tests.rs`: supervision against fake launches in paused Tokio time:
+  backoff 1 s doubling to 5 min after crashes and failed launches, the reset after 10 minutes up
+  (and none after 9), health checks every 30 s and a failed one stopping and relaunching the
+  plugin, a failure that won't pass waiting until the binary's hash changes, restart requests,
+  shutdown of a running plugin and during a backoff, and the `Describe` cache shown while the
+  plugin is down (only for the binary it came from). `describe_cache.rs` unit tests: matching on
+  binary and config, rewriting, mode 0600, a damaged file.
 - `crates/giles-core/tests/plugin_host.rs`: shell scripts as plugins (and as a fake trampoline):
   handshake timeout, malformed line, unoffered protocol, exit 76, an early exit with scrubbed
   stderr under the instance span and exactly the scrubbed environment, a trampoline exiting 125
@@ -289,11 +368,17 @@ running, which kills their process groups. At shutdown, after the sessions have 
   recorded; attachments both ways (two events sharing bytes, released afterwards; `PutBlob` read
   back by the plugin); an attachment over `max_blob` left out with a note; registration clears
   `pending()`, and `stop_all` stops everything.
+- `plugins/giles-channel-echo/tests/supervision.rs`: a plugin killed with `SIGKILL` is relaunched
+  and its new channel carries messages both ways; a restart request does the same; a plugin
+  exiting 76 is `Failed` until a restart request finds a working binary; the `Describe` cache is
+  written and shown (`describe_cached`) when the same binary and config then fail to start; the
+  admin service (over `run/admin.sock`) shows the running plugin's state, pid, version, binary, and
+  requested grants, and `RestartPlugin` relaunches it.
 - `plugins/giles-channel-echo/tests/host_sandbox.rs`: the echo plugin through the trampoline (the
   test binary acting as `giles sandbox-exec`, since Cargo gives that package no path to `giles`):
   a working sandboxed launch where the host can sandbox (macOS, Linux with Landlock); on a Linux
   kernel without Landlock, a clean non-retryable failure with the trampoline's message.
 - `crates/giles/tests/serve.rs`: `giles serve` with plugins that fail to launch (one through the
   real trampoline, refused by `min_abi = 1000` on Linux and by its missing `/bin/sh` grant on
-  macOS) keeps running, logs them as pending, and stops cleanly; a shutdown signal while a plugin
-  launches exits at once and kills the plugin.
+  macOS) keeps running, logs the retryable one's backoff and the other as waiting for a new binary,
+  and stops cleanly; a shutdown signal while a plugin launches exits at once and kills the plugin.

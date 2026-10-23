@@ -10,17 +10,20 @@
 //! `Describe` and `Configure` results, and the [`PluginProcess`].
 //!
 //! [`RemoteChannel`] is a launched plugin's `ChannelService` as a `giles_types::Channel`.
-//! [`PluginHost`] launches every configured plugin channel at startup, registers its
-//! `RemoteChannel` with the registry and the session manager ([`ChannelWiring`]), and stops them
-//! at shutdown. See `Docs/technical/plugin-host.md`.
+//! [`PluginHost`] supervises every configured plugin channel ([`supervisor`]): it launches it,
+//! registers its `RemoteChannel` with the registry and the session manager ([`ChannelWiring`]),
+//! checks its health, relaunches it with backoff, records its `Describe` answer in the cache
+//! ([`DescribeCache`]), and stops it at shutdown. See `Docs/technical/plugin-host.md`.
 
+mod describe_cache;
 mod grpc;
 mod orphans;
 mod process;
 mod remote_channel;
 mod spec;
+pub mod supervisor;
 
-use std::collections::BTreeMap;
+use async_trait::async_trait;
 use std::ffi::OsString;
 use std::fs::{self, DirBuilder};
 use std::io;
@@ -31,22 +34,28 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use giles_plugin_sdk::convert::output_mode_from_proto;
+use giles_proto::channel::v1::channel_service_server::SERVICE_NAME as CHANNEL_SERVICE;
 use giles_proto::handshake::{EXIT_NO_SHARED_PROTOCOL, HandshakeError, HandshakeLine};
 use giles_proto::plugin::v1::{
-    ConfigureRequest, DescribeRequest, DescribeResponse, PluginKind, ShutdownRequest,
-    describe_response,
+    ConfigureRequest, DescribeRequest, DescribeResponse, PluginKind, SandboxGrants,
+    ShutdownRequest, describe_response,
 };
 use giles_store::BlobStore;
 use giles_types::Channel;
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, BufReader};
 use tokio::process::ChildStdout;
-use tokio::sync::Mutex;
+use tonic_health::pb::HealthCheckRequest;
+use tonic_health::pb::health_check_response::ServingStatus;
 use tracing::{Instrument as _, info, warn};
 
+pub use self::describe_cache::{DescribeCache, DescribeInfo, RequestedGrants};
 pub use self::grpc::{CallMetadata, PluginConnection, PluginTransport};
 pub use self::process::{PluginProcess, STDERR_TARGET};
 pub use self::remote_channel::{BLOB_CHUNK_TIMEOUT, RemoteChannel};
 use self::spec::{OFFERED_PROTOCOLS, launch_spec};
+use self::supervisor::{HEALTH_TIMEOUT, Launch, LaunchFailure, Running, Supervision};
+pub use self::supervisor::{PluginState, PluginStatus};
+use crate::admin::{PluginControl, PluginRunState, PluginRuntime};
 use crate::config::{
     ChannelInstance, ChannelRuntime, Config, InstanceName, Kind, Secret, discover_plugin,
     plugin_binary, scrub,
@@ -308,6 +317,13 @@ impl Launcher {
     /// The data root.
     pub fn root(&self) -> &DataRoot {
         &self.root
+    }
+
+    /// The binary a launch of channel component `component` would run now, links resolved (the
+    /// same lookup as the launch), or `None` if there is none.
+    pub fn find_binary(&self, component: &str) -> Option<PathBuf> {
+        let found = discover_plugin(&self.root, Kind::Channel, component, &*self.env)?;
+        fs::canonicalize(found).ok()
     }
 
     /// Launches the plugin channel `instance`, up to a successful `Configure`. Logs under a
@@ -813,66 +829,55 @@ impl ChannelWiring {
     }
 }
 
-/// The launched plugins of a running core: launched at startup, registered as channels, stopped
-/// at shutdown.
+/// The plugin channels of a running core, each supervised ([`supervisor`]): launched at
+/// startup, registered as channels, health-checked, relaunched with backoff, and stopped at
+/// shutdown. Its [`statuses`](Self::statuses) are what `giles status` shows.
 #[derive(Debug)]
 pub struct PluginHost {
     launcher: Launcher,
     wiring: ChannelWiring,
-    plugins: Mutex<BTreeMap<InstanceName, LaunchedPlugin>>,
+    supervision: Supervision,
 }
 
 impl PluginHost {
-    /// A host with nothing launched yet that hands launched channels to `wiring`.
+    /// A host supervising nothing yet that hands launched channels to `wiring`, with the
+    /// `Describe` cache of the launcher's data root.
     pub fn new(launcher: Launcher, wiring: ChannelWiring) -> Self {
+        let supervision = Supervision::new(DescribeCache::new(launcher.root()));
         Self {
             launcher,
             wiring,
-            plugins: Mutex::new(BTreeMap::new()),
+            supervision,
         }
     }
 
-    /// Launches every plugin channel in `config`, concurrently, and registers and attaches each
-    /// as soon as it's up ([`ChannelWiring::attach`]). A failure is logged, and that instance
-    /// stays pending.
+    /// Starts supervising every plugin channel in `config` and returns once each has had its
+    /// first launch attempt: up and registered ([`ChannelWiring::attach`]), or failed (logged,
+    /// and relaunched with backoff or once its binary changes).
     ///
-    /// Cancel-safe: dropping the future (a shutdown during startup) keeps the plugins launched
-    /// so far for [`PluginHost::stop_all`] and kills the process group of each launch in progress.
-    pub async fn launch_all(&self, config: &Config) {
-        let launches = config
+    /// Cancel-safe: dropping the future (a shutdown during startup) leaves supervision running
+    /// until [`PluginHost::stop_all`], which also abandons launches in progress (killing their
+    /// process groups).
+    pub async fn start(&self, config: &Config) {
+        let attempts: Vec<_> = config
             .channels
             .values()
             .filter(|instance| matches!(instance.runtime, ChannelRuntime::Plugin(_)))
-            .map(|instance| async {
-                let plugin = match self.launcher.launch_channel(instance).await {
-                    Ok(plugin) => plugin,
-                    Err(error) => {
-                        tracing::error!(
-                            instance = %instance.name,
-                            %error,
-                            retryable = error.is_retryable(),
-                            "cannot launch the plugin; the instance stays pending",
-                        );
-                        return;
-                    }
-                };
-                if let Err(error) = self.wiring.attach(&plugin, instance.max_blob) {
-                    tracing::error!(
-                        instance = %instance.name,
-                        %error,
-                        "cannot register the plugin's channel; stopping it",
-                    );
-                    if let Err(error) = plugin.stop(STOP_GRACE).await {
-                        warn!(instance = %instance.name, %error, "cannot stop the plugin");
-                    }
-                    return;
-                }
-                self.plugins
-                    .lock()
-                    .await
-                    .insert(instance.name.clone(), plugin);
-            });
-        futures::future::join_all(launches).await;
+            .map(|instance| {
+                let launch = Arc::new(PluginLaunch {
+                    launcher: self.launcher.clone(),
+                    instance: instance.clone(),
+                    wiring: self.wiring.clone(),
+                });
+                self.supervision.supervise(
+                    instance.name.clone(),
+                    instance.component.clone(),
+                    instance.config_hash,
+                    launch,
+                )
+            })
+            .collect();
+        futures::future::join_all(attempts).await;
     }
 
     /// The launcher.
@@ -880,20 +885,186 @@ impl PluginHost {
         &self.launcher
     }
 
-    /// The instances with a launched plugin.
-    pub async fn launched(&self) -> Vec<InstanceName> {
-        self.plugins.lock().await.keys().cloned().collect()
+    /// Every supervised instance's status, by instance name.
+    pub fn statuses(&self) -> Vec<PluginStatus> {
+        self.supervision.statuses()
     }
 
-    /// Stops every launched plugin concurrently ([`LaunchedPlugin::stop`] with `grace`).
-    pub async fn stop_all(&self, grace: Duration) {
-        let plugins = std::mem::take(&mut *self.plugins.lock().await);
-        let stops = plugins.into_iter().map(|(name, plugin)| async move {
-            if let Err(error) = plugin.stop(grace).await {
-                warn!(instance = %name, %error, "cannot stop the plugin");
+    /// The status of supervised instance `instance`.
+    pub fn status(&self, instance: &str) -> Option<PluginStatus> {
+        self.supervision.status(instance)
+    }
+
+    /// Relaunches `instance` now: stops it if it runs, and skips the backoff or the wait for a
+    /// new binary otherwise (the admin service's `RestartPlugin`). A request during a launch
+    /// takes effect once that launch is up. `false` if `instance` isn't supervised.
+    pub fn restart(&self, instance: &str) -> bool {
+        self.supervision.restart(instance)
+    }
+
+    /// Stops supervision and every plugin concurrently ([`LaunchedPlugin::stop`] with
+    /// [`STOP_GRACE`]), and waits for them. Nothing is relaunched afterwards.
+    pub async fn stop_all(&self) {
+        self.supervision.stop_all().await;
+    }
+}
+
+/// What the admin service's `Status`, `ListPlugins`, and `RestartPlugin` see of supervision.
+impl PluginControl for PluginHost {
+    fn plugins(&self) -> Vec<PluginRuntime> {
+        self.statuses().into_iter().map(plugin_runtime).collect()
+    }
+
+    fn restart(&self, instance: &str) -> bool {
+        PluginHost::restart(self, instance)
+    }
+}
+
+/// A supervised instance's status as the admin service reports it.
+fn plugin_runtime(status: PluginStatus) -> PluginRuntime {
+    let state = match status.state {
+        PluginState::Starting => PluginRunState::Starting,
+        PluginState::Running { pid, since } => PluginRunState::Running {
+            pid: Some(pid),
+            since,
+        },
+        PluginState::BackingOff { until } => PluginRunState::BackingOff { until },
+        PluginState::Failed => PluginRunState::Failed,
+        PluginState::Stopped => PluginRunState::Stopped,
+    };
+    let (version, requested_grants) = match status.describe {
+        Some(describe) => {
+            let grants = describe.requested_grants;
+            (
+                Some(describe.version),
+                Some(SandboxGrants {
+                    network_all: grants.network_all,
+                    network_ports: grants.network_ports,
+                    read: grants.read,
+                    write: grants.write,
+                }),
+            )
+        }
+        None => (None, None),
+    };
+    PluginRuntime {
+        instance: status.instance,
+        binary: status.binary,
+        state,
+        restarts: status.restarts,
+        last_error: status.last_error,
+        version,
+        requested_grants,
+    }
+}
+
+/// The launches of one configured plugin channel, for its supervisor.
+struct PluginLaunch {
+    launcher: Launcher,
+    instance: ChannelInstance,
+    wiring: ChannelWiring,
+}
+
+#[async_trait]
+impl Launch for PluginLaunch {
+    async fn binary(&self) -> Option<(PathBuf, [u8; 32])> {
+        let path = self.launcher.find_binary(&self.instance.component)?;
+        tokio::task::spawn_blocking(move || {
+            let hash = sha256_file(&path)
+                .inspect_err(|error| {
+                    warn!(path = %path.display(), %error, "cannot hash the plugin binary");
+                })
+                .ok()?;
+            Some((path, hash))
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    async fn launch(&self) -> Result<Box<dyn Running>, LaunchFailure> {
+        let plugin = self
+            .launcher
+            .launch_channel(&self.instance)
+            .await
+            .map_err(|error| LaunchFailure {
+                message: error.to_string(),
+                retryable: error.is_retryable(),
+            })?;
+        if let Err(reason) = self.wiring.attach(&plugin, self.instance.max_blob) {
+            if let Err(error) = plugin.stop(STOP_GRACE).await {
+                warn!(%error, "cannot stop the plugin");
             }
-        });
-        futures::future::join_all(stops).await;
+            return Err(LaunchFailure {
+                message: format!("cannot register the plugin's channel: {reason}"),
+                retryable: false,
+            });
+        }
+        Ok(Box::new(Live(plugin)))
+    }
+}
+
+/// A launched plugin under supervision.
+struct Live(LaunchedPlugin);
+
+#[async_trait]
+impl Running for Live {
+    fn pid(&self) -> u32 {
+        self.0.process.pid()
+    }
+
+    fn describe(&self) -> Option<DescribeInfo> {
+        DescribeInfo::from_describe(&self.0.describe)
+    }
+
+    async fn exited(&mut self) -> String {
+        match self.0.process.wait().await {
+            Ok(status) => format!("exited ({status})"),
+            Err(error) => format!("can't be waited for: {error}"),
+        }
+    }
+
+    async fn check_health(&self) -> Result<(), String> {
+        let request = HealthCheckRequest {
+            service: CHANNEL_SERVICE.to_owned(),
+        };
+        let mut client = self.0.connection.health();
+        match tokio::time::timeout(HEALTH_TIMEOUT, client.check(request)).await {
+            Err(_) => Err(format!("no answer within {HEALTH_TIMEOUT:?}")),
+            Ok(Err(status)) => {
+                let secrets: Vec<&Secret> = self.0.secrets.iter().collect();
+                Err(scrub(
+                    &format!("{:?}: {}", status.code(), status.message()),
+                    &secrets,
+                ))
+            }
+            Ok(Ok(response)) => match response.into_inner().status() {
+                ServingStatus::Serving => Ok(()),
+                other => Err(format!("{CHANNEL_SERVICE} is {}", other.as_str_name())),
+            },
+        }
+    }
+
+    async fn stop(self: Box<Self>) {
+        if let Err(error) = self.0.stop(STOP_GRACE).await {
+            warn!(%error, "cannot stop the plugin");
+        }
+    }
+}
+
+/// The SHA-256 of a file's contents.
+fn sha256_file(path: &Path) -> io::Result<[u8; 32]> {
+    use std::io::Read as _;
+
+    use sha2::Digest as _;
+    let mut file = fs::File::open(path)?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buf = vec![0; 64 * 1024];
+    loop {
+        match file.read(&mut buf)? {
+            0 => return Ok(hasher.finalize().into()),
+            n => hasher.update(&buf[..n]),
+        }
     }
 }
 
@@ -1008,5 +1179,63 @@ mod tests {
             error.to_string().ends_with("): Error: no sandbox"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn supervision_status_maps_onto_the_admin_runtime() {
+        let until = giles_types::Timestamp::UNIX_EPOCH;
+        let status = PluginStatus {
+            instance: InstanceName::new("irc").unwrap(),
+            component: "irc".into(),
+            binary: Some(PathBuf::from("/plugins/giles-channel-irc")),
+            state: PluginState::BackingOff { until },
+            restarts: 3,
+            last_error: Some("the plugin exited (exit status: 1)".into()),
+            describe: Some(DescribeInfo {
+                version: "2.0".into(),
+                output: giles_types::OutputMode::Blocks,
+                can_initiate: false,
+                requested_grants: RequestedGrants {
+                    network_all: false,
+                    network_ports: vec!["tcp:6697".into()],
+                    read: vec!["/etc/ssl".into()],
+                    write: vec!["/var/irc".into()],
+                },
+            }),
+            describe_cached: true,
+        };
+        let runtime = plugin_runtime(status.clone());
+        assert_eq!(runtime.state, PluginRunState::BackingOff { until });
+        assert_eq!(runtime.restarts, 3);
+        assert_eq!(runtime.binary, status.binary);
+        assert_eq!(runtime.last_error, status.last_error);
+        assert_eq!(runtime.version.as_deref(), Some("2.0"));
+        assert_eq!(
+            runtime.requested_grants,
+            Some(SandboxGrants {
+                network_all: false,
+                network_ports: vec!["tcp:6697".into()],
+                read: vec!["/etc/ssl".into()],
+                write: vec!["/var/irc".into()],
+            })
+        );
+
+        let running = PluginStatus {
+            state: PluginState::Running {
+                pid: 42,
+                since: until,
+            },
+            describe: None,
+            ..status
+        };
+        let runtime = plugin_runtime(running);
+        assert_eq!(
+            runtime.state,
+            PluginRunState::Running {
+                pid: Some(42),
+                since: until
+            }
+        );
+        assert_eq!((runtime.version, runtime.requested_grants), (None, None));
     }
 }

@@ -216,7 +216,7 @@ The five tracks run in parallel.
   prefix check; stderr logged under the instance span, stdout drained; trace context in gRPC
   metadata; pid files and orphan cleanup at startup. **Needs:** 1.1, 1.4, 1.5, 1.6. Can be built
   alongside 2.15; end-to-end tests use its echo plugin.
-- [ ] **2.17 Plugin host: supervision** (§7.5, §7.9). Health check every 30 s; restart with backoff
+- [x] **2.17 Plugin host: supervision** (§7.5, §7.9). Health check every 30 s; restart with backoff
   from 1 s to 5 min, reset after 10 min healthy; no retry after a protocol mismatch until the
   binary's hash changes; stop with `Shutdown`, then SIGTERM, then SIGKILL; `Describe` cache.
   **Needs:** 2.16.
@@ -255,8 +255,9 @@ The five tracks run in parallel.
   `requested_grants`, channel status), `ListPlugins`, `RestartPlugin`, `ListSessions`,
   `ResetSession`, `CreateLoginLink`, `UsageReport`; CLI `giles status`,
   `giles admin login-link --user`, `giles usage` (cache hit rate per agent). RPCs fill in as their
-  subsystems land. **Needs:** 1.4, 1.2. `RestartPlugin` and the plugins' lifecycle fields await
-  2.17 (`admin::PluginControl`); `CreateLoginLink` uses the web channel (`admin::LoginLinks`).
+  subsystems land. **Needs:** 1.4, 1.2. Plugin lifecycle fields and `RestartPlugin` come from 2.17
+  (the plugin host implements `admin::PluginControl`; toolsets join with 2.20); `CreateLoginLink`
+  uses the web channel (`admin::LoginLinks`).
 
 ## Phase 3: v1 Features
 

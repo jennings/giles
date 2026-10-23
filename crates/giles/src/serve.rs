@@ -4,13 +4,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context;
-use giles_core::admin::{AdminListener, AdminOptions, AdminService, InstanceLock};
+use giles_core::admin::{AdminListener, AdminOptions, AdminService, InstanceLock, PluginControl};
 use giles_core::agent_loop::AgentLoop;
 use giles_core::commands::NoPendingApprovals;
 use giles_core::config::Config;
 use giles_core::http;
 use giles_core::paths::DataRoot;
-use giles_core::plugin_host::{ChannelWiring, Launcher, PluginHost, STOP_GRACE};
+use giles_core::plugin_host::{ChannelWiring, Launcher, PluginHost};
 use giles_core::runtime::Runtime;
 use giles_core::sandbox::{self, HostReport};
 use giles_core::sessions::SystemClock;
@@ -117,6 +117,19 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     };
     let mut http_server =
         tokio::spawn(async move { tokio::try_join!(main_server, proxy_server).map(|_| ()) });
+    // Every configured plugin channel, supervised: registered and attached to the sessions as it
+    // comes up, relaunched with backoff when it fails. Startup waits for each first attempt; a
+    // shutdown during startup stops waiting, and `stop_all` abandons the launches still running
+    // (killing their plugins).
+    let wiring = ChannelWiring {
+        registry: runtime.registry.clone(),
+        sessions: sessions.clone(),
+        blobs: runtime.blobs.clone(),
+    };
+    let plugins = Arc::new(PluginHost::new(
+        Launcher::new(root.clone(), giles_exe, sandbox.clone().map(drop)),
+        wiring,
+    ));
     // Login links come from the built-in web channel, if one is configured.
     #[cfg(feature = "channel-web")]
     let login_links = runtime
@@ -128,30 +141,16 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     let admin = AdminService::new(AdminOptions {
         config: config.clone(),
         store: runtime.store.clone(),
-        sandbox: sandbox.clone(),
+        sandbox,
         started_at,
         channels: Arc::new(sessions.clone()),
-        // Plugin supervision (TASKS.md 2.17) plugs in here once it exists; until then
-        // `RestartPlugin` answers UNAVAILABLE.
-        plugins: None,
+        plugins: Some(plugins.clone() as Arc<dyn PluginControl>),
         login_links,
         clock: Arc::new(SystemClock),
     });
     let admin_server = tokio::spawn(admin_listener.serve(admin, shutdown.clone()));
-    // Every configured plugin channel, registered and attached to the sessions as it comes up;
-    // one that fails to launch is logged and stays pending. A shutdown during startup abandons
-    // the launches still running (killing their plugins).
-    let wiring = ChannelWiring {
-        registry: runtime.registry.clone(),
-        sessions: sessions.clone(),
-        blobs: runtime.blobs.clone(),
-    };
-    let plugins = PluginHost::new(
-        Launcher::new(root.clone(), giles_exe, sandbox.map(drop)),
-        wiring,
-    );
     tokio::select! {
-        () = plugins.launch_all(&config) => {}
+        () = plugins.start(&config) => {}
         () = shutdown.cancelled() => {}
     }
 
@@ -177,16 +176,16 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     if let Some(result) = early_exit {
         // The server only returns on shutdown; stop everything else with it.
         shutdown.cancel();
-        plugins.stop_all(STOP_GRACE).await;
+        plugins.stop_all().await;
         stop_admin(admin_server).await;
         result.context("the HTTP server panicked")??;
         anyhow::bail!("the HTTP server stopped unexpectedly");
     }
     http_server.await.context("the HTTP server panicked")??;
     // Running turns are cancelled with the token; wait for them and the channel pumps, then stop
-    // the plugins.
+    // the plugins and their supervision.
     sessions.closed().await;
-    plugins.stop_all(STOP_GRACE).await;
+    plugins.stop_all().await;
     stop_admin(admin_server).await;
     info!("giles stopped");
     // Held until here, so a new core can't start while this one still runs plugins.

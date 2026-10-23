@@ -49,7 +49,7 @@ and the `tracing` subscriber writes to stderr synchronously. Keep it that way.
 
 ## Exit Status
 
-Like `env(1)` and `chroot(1)`, so the [plugin host](plugin-host.md) and supervision (2.17) can tell
+Like `env(1)` and `chroot(1)`, so the [plugin host](plugin-host.md) and its supervision can tell
 the trampoline's failures from the plugin's own exits without parsing stderr. The codes are
 constants in `giles_core::sandbox`, and `SandboxError::exit_code` maps an error to its code.
 
@@ -62,10 +62,11 @@ constants in `giles_core::sandbox`, and `SandboxError::exit_code` maps an error 
 | 71     |                          | macOS: `sandbox-exec` couldn't apply the profile or `exec` the command (below) |
 | other  |                          | The plugin's own exit status                                 |
 
-A 125 means configuration or host trouble: restarting with backoff won't fix it, so 2.17 should
-log it and not retry until the configuration (or the binary) changes. 126 and 127 point at the
-plugin binary. A plugin that itself exits 125 to 127 is indistinguishable, as with `env(1)`; the
-trampoline's stderr line (`Error: ...`) tells them apart in the log.
+A 125 means configuration or host trouble: restarting with backoff won't fix it, so supervision
+logs it and doesn't retry until the binary changes (or a restart is requested; configuration
+reload is deferred). 126 and 127 point at the plugin binary. A plugin that itself exits 125 to 127
+is indistinguishable, as with `env(1)`; the trampoline's stderr line (`Error: ...`) tells them
+apart in the log.
 
 On macOS, `sandbox-exec` runs the command, and it exits with status 71 (`EX_OSERR`) when it can't
 apply the profile (`sandbox-exec: sandbox_apply: ...`, e.g. inside another sandbox that forbids
@@ -73,7 +74,7 @@ it) or can't `exec` the command (`sandbox-exec: execvp() of '...' failed: ...`).
 therefore checks the command first (exists, is a regular file, `access(X_OK)`) and fails with 126
 or 127 like the Linux path. A 71 remains possible when applying fails, when the profile itself
 forbids the `exec` (a script whose interpreter has no `execute` grant), or when the command
-changes between the check and the `exec`. 2.17 should treat it like 125. (`sandbox-exec` exits 65
+changes between the check and the `exec`. Supervision treats it like 125. (`sandbox-exec` exits 65
 for a profile it can't parse, which would be a bug in the generator.)
 
 ## File Descriptors
@@ -266,10 +267,10 @@ the user guide says.
 Linux has the same class of bug with Landlock, whose rules attach to whatever inode a descriptor
 opened at launch, and the same design closes it; see [Linux: Paths and Links](#paths-and-links).
 
-Note for 2.17: a plugin's children can outlive it, which is what makes the race above
-reachable. Stopping or restarting a plugin must kill its whole process tree, not just the plugin's
-pid; the plugin host starts each plugin in its own process group and signals the group
-([Plugin Host](plugin-host.md#the-process)). A child can leave the group
+A plugin's children can outlive it, which is what makes the race above reachable. Stopping or
+restarting a plugin kills its whole process tree, not just the plugin's pid: the plugin host starts
+each plugin in its own process group and signals the group, also when supervision relaunches it
+after a crash ([Plugin Host](plugin-host.md#the-process)). A child can leave the group
 with `setsid`, so a complete answer needs more (on Linux a cgroup; on macOS, e.g., a dedicated
 user per plugin); the resolution above doesn't depend on it.
 

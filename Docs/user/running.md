@@ -33,8 +33,8 @@ identities = ["web:owner"]
 
 Next it opens its database (`data/giles.db`, created on first start) and builds the components the
 configuration names. A provider or channel whose `config` it rejects stops startup with an error
-naming the file, line, and key. Channel plugins and toolsets can't be started yet: each one is
-logged as `instance not started`.
+naming the file, line, and key. Channel plugins start next ([Plugins](#plugins)). Toolsets can't be
+started yet: each one is logged as `instance not started`.
 
 It runs until it receives SIGINT (Ctrl-C) or SIGTERM, then shuts down and exits with status 0. If
 shutdown takes too long, a second Ctrl-C or SIGTERM makes it exit at once with status 130. Any other
@@ -123,6 +123,23 @@ GILES_LOG=info,giles=debug giles serve
 The filter syntax is that of `tracing-subscriber`'s
 [`EnvFilter`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html).
 An invalid filter is an error at startup.
+
+## Plugins
+
+`giles serve` launches every channel plugin at startup and keeps it running:
+
+- Every 30 seconds it checks that each plugin still answers. A plugin that exits or fails the check
+  is stopped (with its child processes) and started again after a delay: 1 second, then 2, 4, and
+  so on up to 5 minutes. A plugin that then runs for 10 minutes starts over at 1 second.
+- A plugin that fails in a way restarting won't fix, such as no sandbox on this machine, a
+  plugin built for another protocol version, or a `config` the plugin rejects, is logged as
+  `cannot launch the plugin; not retrying until its binary changes` and left alone until its binary
+  changes (Giles checks once a minute) or Giles restarts.
+- A message a plugin received but Giles hadn't stored yet when the plugin went down is delivered
+  again once it's back.
+
+Giles remembers what each plugin binary reported about itself (its version, capabilities, and
+requested sandbox grants) in `cache/`, so it can show them even while the plugin isn't running.
 
 ## Plugin Sandbox Check
 

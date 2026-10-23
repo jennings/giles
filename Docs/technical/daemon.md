@@ -62,20 +62,20 @@ to stderr, with ANSI colors only when stderr is a terminal. The filter is `GILES
    [Agent Loop](agent-loop.md)). This is the last step that can fail: recovery changes state and
    resumed turns start running, so nothing after it may abort startup. Then start the HTTP server
    on its own task ([HTTP Server](http.md#lifecycle)) and the admin service on another
-   ([Admin Service](admin.md)), and launch every plugin channel concurrently
-   (`PluginHost::launch_all`, abandoned if a shutdown signal arrives first,
-   [Plugin Host](plugin-host.md#startup-and-shutdown)), registering each with the registry and
-   attaching it to the sessions as it comes up; a plugin that fails to launch is logged and its
-   instance stays pending.
+   ([Admin Service](admin.md)), and start supervising every plugin channel (`PluginHost::start`,
+   [Plugin Host](plugin-host.md#supervision)), which waits for each one's first launch attempt
+   unless a shutdown signal arrives first. Each plugin is registered with the registry and attached
+   to the sessions as it comes up; one that fails is logged and relaunched with backoff, or once
+   its binary changes. The admin service reports supervision through `admin::PluginControl`.
 9. Log `giles started` with the root, admin socket path, HTTP URL, and instance and agent counts,
    plus a warning if the sockets use the `$TMPDIR` fallback.
 10. Wait until the shutdown token is cancelled, then await the HTTP server (it drains open requests
     for up to 5 s) and the sessions (`Sessions::closed`: running turns are cancelled, channel
-    pumps stop between events), then stop the plugins (`PluginHost::stop_all`: `Shutdown`, then
-    `SIGTERM`, then `SIGKILL` to each plugin's process group), await the admin server (it drains
-    for up to 5 s and removes its socket and token file), log `giles stopped`, release the lock,
-    and exit with status 0. If the HTTP server stops on its own first, cancel the token, stop the
-    plugins and the admin server, and exit with an error.
+    pumps stop between events), then stop the plugins and their supervision
+    (`PluginHost::stop_all`: `Shutdown`, then `SIGTERM`, then `SIGKILL` to each plugin's process
+    group), await the admin server (it drains for up to 5 s and removes its socket and token file),
+    log `giles stopped`, release the lock, and exit with status 0. If the HTTP server stops on its
+    own first, cancel the token, stop the plugins and the admin server, and exit with an error.
 
 The shutdown signal is a `tokio_util::sync::CancellationToken`. The first SIGINT or SIGTERM cancels
 it. Subsystems added later take a clone (or a `child_token()`), stop when it is cancelled, and are
