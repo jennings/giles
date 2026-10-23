@@ -5,12 +5,22 @@ Giles can run as a Linux container. The image holds `giles` and the first-party 
 anything. (The WhatsApp plugin joins them once it exists.) The built-in web channel and model
 providers are part of `giles` itself.
 
-## Building the Image
+## Getting the Image
 
-From a checkout of the repository, with Docker (BuildKit, the default builder):
+Every commit on the `main` branch is published to the GitHub Container Registry:
 
 ```sh
-docker build -t giles .
+docker pull ghcr.io/jennings/giles:latest
+```
+
+`latest` is the newest commit; `sha-<short commit>` tags (for example
+`ghcr.io/jennings/giles:sha-1a2b3c4`) pin one. The published image is for `linux/amd64` only.
+
+On other platforms, such as an arm64 machine, build it from a checkout of the repository, with
+Docker (BuildKit, the default builder):
+
+```sh
+docker build -t ghcr.io/jennings/giles:latest .
 ```
 
 The build compiles everything inside the container, so nothing but Docker is needed on the host.
@@ -54,7 +64,7 @@ network; put a reverse proxy that terminates TLS in front of it to reach it from
 docker run --detach --name giles --restart unless-stopped \
   --volume "$PWD/giles-home:/data" \
   --publish 127.0.0.1:8080:8080 \
-  giles
+  ghcr.io/jennings/giles:latest
 ```
 
 The container runs `giles serve`. Its log goes to `docker logs giles`. `docker stop giles` sends
@@ -67,8 +77,8 @@ docker exec giles giles status
 docker exec giles giles admin login-link --user owner
 ```
 
-Arguments after the image name replace `serve`, so `docker run --rm giles --version` prints the
-version.
+Arguments after the image name replace `serve`, so
+`docker run --rm ghcr.io/jennings/giles:latest --version` prints the version.
 
 ### Secrets From the Environment
 

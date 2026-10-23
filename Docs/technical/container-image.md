@@ -32,6 +32,12 @@ Three BuildKit cache mounts keep rebuilds incremental: the Cargo registry and gi
 directory. A cache mount isn't part of the layer, so the step copies the binaries out to `/out`,
 which the runtime stage copies from.
 
+The cache mounts live in the builder, so they help repeated local builds. In CI they don't: the
+GitHub Actions cache (`type=gha`) saves layers, not cache mounts, and each run starts a fresh
+builder, so whenever the sources change the Rust build step rebuilds every crate from scratch. Only
+a push that leaves the build context unchanged skips it, through the cached layer. Persisting the
+mounts across runs (for example by exporting them into the Actions cache) is a later improvement.
+
 ## Runtime Stage
 
 The runtime stage is `debian:bookworm-slim` with three packages:
@@ -65,10 +71,13 @@ the title, a description, and the license, `MIT OR Apache-2.0`.
 
 The plugin sandbox needs no extra privileges: Docker's default seccomp profile allows the
 `landlock_*` syscalls and installing seccomp filters, and Landlock needs no capabilities. Landlock
-comes from the host's kernel, which the startup check reports ([Plugin Sandbox](sandbox.md)).
-Apple's `container` VMs, used for local Linux checks, have no Landlock, and the check reports that.
+comes from the host's kernel, which the startup check reports ([Plugin Sandbox](sandbox.md)). The
+CI image job checks it on GitHub's Ubuntu runners ([Continuous Integration](ci.md)); Apple's
+`container` VMs, used for local Linux checks, have no Landlock, and the check reports that.
 
 ## Not Yet
 
+- `linux/arm64` images. The build is portable (it builds natively on arm64), but CI publishes
+  only `linux/amd64`, since building under QEMU emulation is too slow; an arm64 runner can add it.
 - A `minimal` image with `giles` alone, as a second final stage.
 - The WhatsApp plugin, added to `bins` when it lands.

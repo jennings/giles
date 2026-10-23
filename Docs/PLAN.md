@@ -1551,7 +1551,8 @@ plugins. (Bazel may be added later.)
   from `PROTOC` if set, else from a vendored `protoc` crate, so building needs no system `protoc`.
 - `giles-plugin-sdk` is publishable to crates.io for third-party plugin authors.
 - CI runs `cargo fmt --check`, `cargo clippy`, `cargo test --workspace`, and `buf lint` and
-  `buf breaking` against the main branch.
+  `buf breaking` against the main branch. On pushes to the main branch, after those pass, it also
+  builds the container image (section 14.2) and publishes it to the GitHub Container Registry.
 - A snapshot test renders the system prompt and tool list for representative agent configs, so any
   change to the cached prompt prefix shows up in review.
 
@@ -1579,6 +1580,12 @@ meant for real use (the test-only echo channel plugin is left out).
 - `.dockerignore` is an allowlist of what the build reads (the workspace manifests, lockfile,
   toolchain file, `crates/`, `plugins/`, `proto/`, and the license files), so `target/`, `.jj/`,
   `spikes/`, and the docs stay out.
+
+CI publishes the image to `ghcr.io/jennings/giles` from every push to the main branch, tagged
+`latest` and `sha-<short commit>`, for `linux/amd64` only (an arm64 build under QEMU emulation is
+too slow; a native arm64 runner can add it later). Before pushing, it smoke-tests the image: the
+binaries run, and `giles serve` starts on a fresh `/data` volume with the HTTP port reachable and
+the sandbox startup check passing (section 12.1). Pull requests don't build the image.
 
 The plugin sandbox works inside the container: Docker's default seccomp profile allows the
 `landlock_*` and `seccomp` syscalls (checked in `moby/profiles` `seccomp/default.json`). The host

@@ -80,3 +80,89 @@ jobs:
           else
             echo "::notice::No buf module at base ${BASE}; skipping buf breaking."
           fi
+
+  # Builds the container image from each push to main, smoke-tests it, and publishes it to the
+  # GitHub Container Registry. Pull requests don't build it.
+  image:
+    name: Container image
+    if: github.event_name == 'push'
+    needs: [rust, protobuf]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    # One publish at a time, in push order, so `latest` ends at the newest commit.
+    concurrency:
+      group: ${{ github.workflow }}-image
+      cancel-in-progress: false
+    env:
+      TEST_TAG: giles:test
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      # ghcr.io/<owner>/<repo>, lowercased, tagged `latest` and `sha-<short commit>`. GitHub reports
+      # the repository's license as Apache-2.0 alone, which would replace the Dockerfile's label.
+      - name: Image tags and labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest
+            type=sha
+          labels: |
+            org.opencontainers.image.licenses=MIT OR Apache-2.0
+      # amd64 only: an arm64 Rust release build under QEMU emulation is too slow.
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.TEST_TAG }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # The binaries run, and `giles serve` starts with the published layout: the default
+      # entrypoint, the /data volume, the HTTP port, and the plugin sandbox (the runner's kernel has
+      # Landlock, and Docker's default seccomp profile allows it).
+      - name: Smoke test
+        run: |
+          docker run --rm "$TEST_TAG" --version
+          docker run --rm --entrypoint sh "$TEST_TAG" -c \
+            'ls -l /usr/local/bin/giles-channel-irc /usr/local/bin/giles-channel-email'
+          # A new named volume takes /data's ownership (the giles user) from the image.
+          docker run --rm --volume giles-smoke:/data --entrypoint sh "$TEST_TAG" -c \
+            'printf "[core]\nhttp_listen = \"0.0.0.0:8080\"\n\n[owner]\nidentities = [\"web:owner\"]\n" > /data/giles.toml'
+          docker run --detach --name giles-smoke --volume giles-smoke:/data \
+            --publish 127.0.0.1:8080:8080 "$TEST_TAG"
+          started=
+          for _ in $(seq 30); do
+            if docker exec giles-smoke giles status > status.txt 2>&1; then
+              started=1
+              break
+            fi
+            sleep 1
+          done
+          docker logs giles-smoke
+          cat status.txt
+          [ -n "$started" ]
+          grep -q '^Plugin sandbox: Landlock ABI' status.txt
+          curl --fail --silent --show-error http://127.0.0.1:8080/ > /dev/null
+          docker stop giles-smoke
+          [ "$(docker inspect --format '{{.State.ExitCode}}' giles-smoke)" = 0 ]
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # The same build again, so every layer comes from the builder's cache.
+      - name: Push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha

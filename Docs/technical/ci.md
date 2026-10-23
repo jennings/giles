@@ -45,6 +45,45 @@ full history so the base is available. If the base has no `buf.yaml` (the push t
 contracts, or a new branch), there is nothing to compare against and the step only logs a notice.
 See [gRPC Protocols](protocols.md) for the rules.
 
+**Container image** runs only on pushes to `main`, after Rust and Protobuf pass, and publishes the
+image the `Dockerfile` builds ([Container Image](container-image.md)) to the GitHub Container
+Registry as `ghcr.io/jennings/giles` (`ghcr.io/` plus the repository name, lowercased by
+`docker/metadata-action`). It is the only job with `packages: write`. Each push is tagged `latest`
+and `sha-<short commit>`, so a deployment can pin a commit. The job's own concurrency group runs
+one publish at a time, in push order, so `latest` ends at the newest commit; a push that arrives
+while another is waiting replaces it, and the skipped commit gets no `sha-` tag.
+
+The job sets up Buildx (`docker/setup-buildx-action`), builds the image for `linux/amd64` with
+`docker/build-push-action`, loads it into the runner's Docker as `giles:test`, and smoke-tests it
+before anything is pushed:
+
+- `giles --version` runs, and both plugin binaries are in `/usr/local/bin/`.
+- `giles serve` starts with the default entrypoint, a fresh named volume at `/data` holding a
+  `giles.toml` with only `http_listen = "0.0.0.0:8080"` and the owner, and the port published.
+- `giles status`, run in the container until the admin socket answers (up to 30 seconds), must
+  report `Plugin sandbox: Landlock ABI ...`: the startup sandbox check passes under Docker's
+  default seccomp profile on the runner's kernel. The status and the container log are printed.
+- The web server answers `GET /` with a success status through the published port.
+- `docker stop` (SIGTERM) leaves exit status 0, a clean shutdown.
+
+If that passes, it logs in to `ghcr.io` with the workflow's `GITHUB_TOKEN`
+(`docker/login-action`) and runs `docker/build-push-action` again with `push: true` and the tags
+and labels from `docker/metadata-action`. The second build takes every step from the builder's
+cache, so it pushes the layers that were tested. Both builds read the GitHub Actions cache
+(`type=gha`) and the first writes it with `mode=max`, which keeps the build stage's layers too, so a
+push that changes nothing in the build context (docs or CI only, see `.dockerignore`) doesn't
+compile anything. BuildKit's cache mounts (the Cargo registry and `target/`) aren't saved between
+runs, so a source change rebuilds the workspace from scratch.
+
+The image is `linux/amd64` only: an arm64 build under QEMU emulation would take too long. Adding
+`linux/arm64` needs an arm64 runner (`ubuntu-24.04-arm`) building natively, with the two digests
+merged into one manifest list.
+
+A package pushed to a personal account starts private. To let anyone pull it, the owner makes it
+public once in the package's settings on GitHub (Package settings, Danger Zone, Change visibility).
+The image's `org.opencontainers.image.source` label links the package to the repository, so the
+repository's Actions workflows keep write access to it.
+
 ## Docs jobs
 
 **Build** runs on `ubuntu-latest`. It installs prebuilt binaries of pinned versions of `rumdl` (with

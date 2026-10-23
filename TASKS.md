@@ -60,6 +60,11 @@ Sequential, except 0.2 and 0.3, which can run in parallel after 0.1.
 - [x] **0.6 Publish the book to GitHub Pages** (added by the owner). Move `mdbook build` (and the
   Markdown lint) out of `ci.yml` into its own GitHub Actions workflow that builds `Docs/` and, on
   pushes to `main`, deploys it to GitHub Pages; pull requests only build it. **Needs:** 0.2, 0.3.
+- [x] **0.7 Publish the container image** (added by the owner). A job in `ci.yml` that, on pushes
+  to `main` after the other CI jobs pass, builds the `linux/amd64` image (4.4), smoke-tests it
+  (`--version`, `giles serve` with the sandbox startup check passing, the HTTP port), and pushes it
+  to the GitHub Container Registry as `ghcr.io/jennings/giles` tagged `latest` and `sha-<commit>`;
+  pull requests don't build it. **Needs:** 0.2, 4.4.
 
 ## Phase 1: Foundations
 
