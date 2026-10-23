@@ -186,7 +186,7 @@ async fn summarize(
             return Ok(Pass::Failed);
         }
     };
-    let config = agent_loop.registry.config().clone();
+    let config = agent_loop.registry.config();
     let Some(info) = or_cancel(&turn.cancel, agent_loop.models.get(&model, &config)).await else {
         return Ok(Pass::Cancelled);
     };

@@ -51,19 +51,20 @@ pub use send_attachment::{SEND_ATTACHMENT, SendAttachmentTool};
 /// [`RegistryError::ToolName`] if a tool's name isn't reserved for core tools (a bug).
 pub fn register(runtime: &Runtime) -> Result<(), RegistryError> {
     let registry = &runtime.registry;
+    let config = registry.live_config();
     registry.register_core_tool(Arc::new(MemoryTool::new(
         runtime.root.clone(),
-        runtime.config.clone(),
+        config.clone(),
     )))?;
     registry.register_core_tool(Arc::new(MemorySearchTool::new(
         runtime.store.clone(),
-        runtime.config.clone(),
+        config.clone(),
     )))?;
     registry.register_core_tool(Arc::new(LoadSkillTool::new(runtime.blobs.clone())))?;
     registry.register_core_tool(Arc::new(SendAttachmentTool::new(runtime.blobs.clone())))?;
     registry.register_core_tool(Arc::new(ScheduleTool::new(
         runtime.store.clone(),
-        runtime.config.clone(),
+        config.clone(),
         runtime.jobs.clone(),
         Arc::new(SystemClock),
     )))?;

@@ -17,7 +17,8 @@ impl Registry {
     ///
     /// [`PathsError::InvalidName`] if `agent` isn't a valid directory name.
     pub fn skill_sources(&self, agent: &AgentId) -> Result<Vec<SkillSource>, PathsError> {
-        let toolsets = self.config.toolsets.values().flat_map(|toolset| {
+        let config = self.config();
+        let toolsets = config.toolsets.values().flat_map(|toolset| {
             toolset.skills.iter().map(|dir| SkillSource {
                 dir: dir.clone(),
                 prefix: Some(toolset.name.to_string()),

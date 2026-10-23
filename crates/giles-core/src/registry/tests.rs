@@ -262,7 +262,7 @@ fn builds_the_anthropic_provider_and_resolves_agent_models() {
     let providers: Vec<_> = registry.providers().into_iter().map(|(n, _)| n).collect();
     assert_eq!(providers, [name("anthropic"), name("cheap")]);
 
-    let config = registry.config().clone();
+    let config = registry.config();
     let jeeves = &config.agents[&AgentId::new("jeeves").unwrap()];
     let model = registry.agent_model(jeeves).unwrap();
     assert_eq!(model.instance, name("anthropic"));
@@ -318,7 +318,7 @@ fn builds_the_openai_provider() {
     let registry = home.build().unwrap();
     let providers: Vec<_> = registry.providers().into_iter().map(|(n, _)| n).collect();
     assert_eq!(providers, [name("ollama"), name("openai")]);
-    let config = registry.config().clone();
+    let config = registry.config();
     let model = registry
         .agent_model(&config.agents[&AgentId::new("jeeves").unwrap()])
         .unwrap();

@@ -15,7 +15,7 @@ use tempfile::TempDir;
 use super::memory::{self, Scope, Target, parse_input, target};
 use super::*;
 use super::{memory_search, schedule};
-use crate::config::{Config, LoadOptions};
+use crate::config::{Config, LiveConfig, LoadOptions};
 use crate::identity::owner;
 use crate::paths::DataRoot;
 use crate::scheduler::JobChanges;
@@ -26,7 +26,7 @@ const CAP: usize = 60;
 struct Setup {
     dir: TempDir,
     root: DataRoot,
-    config: Arc<Config>,
+    config: LiveConfig,
     store: Store,
 }
 
@@ -70,7 +70,7 @@ impl Setup {
         Self {
             dir,
             root,
-            config: Arc::new(config),
+            config: LiveConfig::new(Arc::new(config)),
             store,
         }
     }

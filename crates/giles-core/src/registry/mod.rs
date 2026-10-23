@@ -22,7 +22,7 @@ use tracing::{info, warn};
 
 use crate::config::{
     AgentConfig, ChannelInstance, ChannelRuntime, Config, ConfigError, InstanceName, KeyPath, Kind,
-    ModelRef, ProviderInstance,
+    LiveConfig, ModelRef, ProviderInstance,
 };
 use crate::core_tools::CoreTool;
 use crate::paths::{DataRoot, PathsError};
@@ -130,7 +130,7 @@ fn insert<T: ?Sized>(map: &Map<T>, name: &InstanceName, item: Arc<T>) -> Option<
 /// Configured instances and the objects serving them. Shared as `Arc<Registry>`.
 pub struct Registry {
     root: DataRoot,
-    config: Arc<Config>,
+    config: LiveConfig,
     providers: Map<dyn Provider>,
     channels: Map<dyn Channel>,
     toolsets: Map<dyn Toolset>,
@@ -163,7 +163,7 @@ impl Registry {
     pub fn new(root: DataRoot, config: Arc<Config>) -> Self {
         Self {
             root,
-            config,
+            config: LiveConfig::new(config),
             providers: RwLock::default(),
             channels: RwLock::default(),
             toolsets: RwLock::default(),
@@ -189,7 +189,8 @@ impl Registry {
         media: Arc<dyn MediaSource>,
     ) -> Result<Self, RegistryError> {
         let registry = Self::new(root, config);
-        for instance in registry.config.providers.values() {
+        let config = registry.config();
+        for instance in config.providers.values() {
             let provider = build_provider(instance, &media).map_err(|(key, reason)| {
                 let path = KeyPath::root()
                     .key("provider")
@@ -199,7 +200,7 @@ impl Registry {
             })?;
             insert(&registry.providers, &instance.name, provider);
         }
-        for instance in registry.config.channels.values() {
+        for instance in config.channels.values() {
             if let ChannelRuntime::BuiltIn = instance.runtime {
                 let channel = build_channel(&registry, instance).map_err(|(key, reason)| {
                     let path = KeyPath::root()
@@ -230,8 +231,14 @@ impl Registry {
         &self.root
     }
 
-    /// The configuration the registry was built from.
-    pub fn config(&self) -> &Arc<Config> {
+    /// The configuration now: the one the registry was built from, plus the agents created since
+    /// ([`live_config`](Self::live_config)). A snapshot; keep it for the work at hand.
+    pub fn config(&self) -> Arc<Config> {
+        self.config.get()
+    }
+
+    /// The shared configuration that agents created at runtime are added to (TASKS.md 5.1).
+    pub fn live_config(&self) -> &LiveConfig {
         &self.config
     }
 
@@ -332,10 +339,11 @@ impl Registry {
     }
 
     fn check_configured(&self, kind: Kind, name: &InstanceName) -> Result<(), RegistryError> {
+        let config = self.config();
         let configured = match kind {
-            Kind::Provider => self.config.providers.contains_key(name),
-            Kind::Channel => self.config.channels.contains_key(name),
-            Kind::Toolset => self.config.toolsets.contains_key(name),
+            Kind::Provider => config.providers.contains_key(name),
+            Kind::Channel => config.channels.contains_key(name),
+            Kind::Toolset => config.toolsets.contains_key(name),
         };
         if configured {
             Ok(())
@@ -388,8 +396,8 @@ impl Registry {
     /// Configured channels and toolsets that nothing has registered yet, by kind and name, with
     /// the part of Giles that will start them.
     pub fn pending(&self) -> Vec<Pending> {
-        let channels = self
-            .config
+        let config = self.config();
+        let channels = config
             .channels
             .values()
             .filter(|c| self.channel(c.name.as_str()).is_none())
@@ -404,8 +412,7 @@ impl Registry {
                     ChannelRuntime::BuiltIn => "the built-in channel was not constructed",
                 },
             });
-        let toolsets = self
-            .config
+        let toolsets = config
             .toolsets
             .values()
             .filter(|t| self.toolset(t.name.as_str()).is_none())
@@ -543,7 +550,7 @@ fn build_channel(
                     ),
                 ));
             }
-            let web = Arc::new(WebChannel::from_instance(instance, &registry.config)?);
+            let web = Arc::new(WebChannel::from_instance(instance, &registry.config())?);
             registry.web.get_or_init(|| web.clone());
             Ok(web)
         }

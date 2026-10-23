@@ -150,7 +150,7 @@ async fn drive(agent_loop: &AgentLoop, turn: &Turn) -> Result<TurnOutcome, TurnE
     {
         warn!(session = %session.id, "an earlier turn left empty slots; filled as interrupted");
     }
-    let config = agent_loop.registry.config().clone();
+    let config = agent_loop.registry.config();
     let agent = config
         .agents
         .get(&session.agent)

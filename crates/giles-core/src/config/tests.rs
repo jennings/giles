@@ -763,6 +763,36 @@ fn validate_agent_checks_a_source_as_loading_does() {
 }
 
 #[test]
+fn live_config_adds_agents_without_changing_earlier_snapshots() {
+    let home = with_provider();
+    home.agent("jeeves", "models = [\"anthropic/claude-sonnet-4-5\"]");
+    let config = home.load_ok();
+    let agent = |id: &str| {
+        config
+            .validate_agent(&home.root, id, "models = [\"anthropic/m\"]")
+            .unwrap()
+    };
+    let live = LiveConfig::new(std::sync::Arc::new(config.clone()));
+    let before = live.get();
+    let after = live.add_agent(agent("bunter")).unwrap();
+    assert_eq!(after.agents.len(), 2);
+    assert!(std::sync::Arc::ptr_eq(&after, &live.get()));
+    assert_eq!(
+        before.agents.len(),
+        1,
+        "an earlier snapshot keeps its agents"
+    );
+    // A clone shares the configuration.
+    assert!(live.clone().get().agents.contains_key(&agent_id("bunter")));
+
+    // Ids are taken ignoring case; a refusal changes nothing.
+    for (id, taken) in [("bunter", "bunter"), ("JEEVES", "jeeves")] {
+        assert_eq!(live.add_agent(agent(id)).unwrap_err().0.as_str(), taken);
+    }
+    assert!(std::sync::Arc::ptr_eq(&after, &live.get()));
+}
+
+#[test]
 fn agent_settings() {
     let home = with_provider();
     home.write("agents/jeeves/morning.md", "Good morning.")

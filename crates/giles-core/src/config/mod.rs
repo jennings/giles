@@ -2,7 +2,8 @@
 //! 7.7 and 11.2).
 //!
 //! [`Config::load`] reads and validates everything once, at startup; changes need a restart (PLAN
-//! section 1.1). Every problem is a [`ConfigError`] naming the file, the key path, and the reason.
+//! section 1.1), except agents created in the web UI, which join the running configuration through
+//! [`LiveConfig`]. Every problem is a [`ConfigError`] naming the file, the key path, and the reason.
 //! Unknown keys are errors everywhere except inside an instance's free-form `config` table, which
 //! belongs to the component. Secret references are resolved during loading; resolved values are
 //! held as [`Secret`]s or in a [`PluginConfig`], whose `Debug` output is redacted.
@@ -13,6 +14,7 @@ mod error;
 mod giles;
 mod hash;
 mod instances;
+mod live;
 mod model;
 mod names;
 mod plugin_config;
@@ -43,6 +45,7 @@ pub use instances::{
     OAuthClientCredentials, Program, ProviderInstance, Remote, Sandbox, StdioServer,
     ToolsetInstance, ToolsetTransport,
 };
+pub use live::{AgentExists, LiveConfig};
 pub use model::ModelRef;
 pub use names::{Builtins, Component, InstanceName, Kind, is_valid_name, plugin_binary};
 pub use plugin_config::PluginConfig;

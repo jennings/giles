@@ -328,7 +328,7 @@ impl Setup {
             SessionsOptions {
                 store: self.store.clone(),
                 router,
-                agents: HashMap::from([(agent(), self.policy)]),
+                agents: Arc::new(HashMap::from([(agent(), self.policy)])),
                 channels: Arc::new(Lookup {
                     channel: self.channel.clone(),
                     registered: self.registered,

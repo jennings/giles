@@ -10,7 +10,8 @@ The agent loop plugs in as a `TurnRunner`; the decision before anything is store
 | ------------------------ | ----------------------------------------------------------------------- |
 | `Sessions`               | The manager: `start`, `attach_channel`, `stop`, `is_running`, `hold`, `wait_idle`, `open_direct`, `channel_status(es)`, `closed` |
 | `SessionHold`            | Exclusive use of a session between its turns: `session`, `cancel`; released on drop |
-| `SessionsOptions`        | Store, `Router`, per-agent `AgentPolicy`, `ChannelLookup`, `TurnRunner`, `Approvals`, `Clock` |
+| `SessionsOptions`        | Store, `Router`, `AgentPolicies`, `ChannelLookup`, `TurnRunner`, `Approvals`, `Clock` |
+| `AgentPolicies`          | An agent's `AgentPolicy` (`busy_mode`, `idle_reset`), looked up when needed; implemented by `LiveConfig` (agents created at runtime included) and by a `HashMap` for tests |
 | `TurnRunner`             | `async fn run_turn(&self, turn: Turn) -> TurnOutcome`; the agent loop implements it |
 | `Turn`                   | `session`, `requester`, `messages: Vec<TurnMessage>`, `busy_mode`, `cancel`, `steering`, `reply`, `job` |
 | `JobTurn`                | A job run's `prompt` message, `model`, and approval target (the scheduler builds it) |
@@ -24,9 +25,11 @@ The agent loop plugs in as a `TurnRunner`; the decision before anything is store
 
 `giles serve` calls `Runtime::start_sessions(runner, approvals, shutdown)` after `Runtime::start`
 and binding the HTTP listener: it's the last startup step that can fail, since recovery changes
-state and resumed turns start running. It builds the `Router` from `[owner]` and `[[routes]]` and
-the `AgentPolicy` map (`busy_mode`, `idle_reset`) from the agents, runs `Sessions::start` (recovery,
-then resume, then the prune task), and attaches every channel registered so far. The plugin host
+state and resumed turns start running. It builds the `Router` from `[owner]` and `[[routes]]`,
+passes the registry's `LiveConfig` as the `AgentPolicies` (so an agent created in the web UI gets
+its policy without a restart; a session of an agent no longer configured gets the defaults), runs
+`Sessions::start` (recovery, then resume, then the prune task), and attaches every channel
+registered so far. The plugin host
 then registers each plugin channel as it comes up and attaches it with
 `Sessions::attach_channel(instance, component, channel)` ([Plugin Host](plugin-host.md)); attaching
 an instance again (a restarted plugin) stops the earlier pump after its current event.

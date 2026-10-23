@@ -147,7 +147,7 @@ pub(super) async fn run(
     }
     let now = context.clock.now();
     // The wait may have run past the end of the job's hours.
-    let tz = message_timezone(context.registry.config(), agent);
+    let tz = message_timezone(&context.registry.config(), agent);
     if !in_active_hours(job.active_hours.as_ref(), &tz, now) {
         debug!(job = %label, "the DM went quiet after the job's active hours; skipped");
         return true;
@@ -293,7 +293,7 @@ impl Run<'_> {
         text.push_str("\n\n");
         text.push_str(self.prompt.trim());
         let config = self.context.registry.config();
-        let tz = message_timezone(config, self.agent);
+        let tz = message_timezone(&config, self.agent);
         job_message(
             &text,
             self.context.clock.now(),

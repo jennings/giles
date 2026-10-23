@@ -14,9 +14,7 @@ use crate::paths::DataRoot;
 use crate::registry::{Registry, RegistryError};
 use crate::router::Router;
 use crate::scheduler::{JobChanges, OutboxDelivery, Scheduler, SchedulerOptions};
-use crate::sessions::{
-    AgentPolicy, Approvals, Clock, Sessions, SessionsOptions, SystemClock, TurnRunner,
-};
+use crate::sessions::{Approvals, Clock, Sessions, SessionsOptions, SystemClock, TurnRunner};
 
 /// Startup failed.
 #[derive(Debug, thiserror::Error)]
@@ -54,13 +52,12 @@ pub enum StartError {
 pub struct Runtime {
     /// The data root.
     pub root: DataRoot,
-    /// The configuration, as loaded at startup.
-    pub config: Arc<Config>,
     /// The database, `data/giles.db`.
     pub store: Store,
     /// The blob store, `data/blobs`.
     pub blobs: BlobStore,
-    /// Configured instances and their objects, the tool index, and the skill index.
+    /// Configured instances and their objects, the tool index, the skill index, and the running
+    /// configuration ([`Registry::config`]).
     pub registry: Arc<Registry>,
     /// Proactive sends to identities (PLAN section 6.11): job replies, approval prompts of job
     /// turns, login codes. Its sender starts with [`start_outbox`](Self::start_outbox).
@@ -92,7 +89,6 @@ impl Runtime {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let runtime = Self {
             root,
-            config,
             outbox: Outbox::new(store.clone(), registry.clone(), clock),
             store,
             blobs,
@@ -132,10 +128,11 @@ impl Runtime {
         approvals: Arc<dyn Approvals>,
         shutdown: CancellationToken,
     ) -> Result<Sessions, StartError> {
+        let config = self.registry.config();
         let options = SessionsOptions {
             store: self.store.clone(),
-            router: Router::new(&self.config.owner, &self.config.routes),
-            agents: AgentPolicy::from_config(&self.config),
+            router: Router::new(&config.owner, &config.routes),
+            agents: Arc::new(self.registry.live_config().clone()),
             channels: self.registry.clone(),
             runner,
             approvals,
@@ -145,7 +142,7 @@ impl Runtime {
             .await
             .map_err(StartError::Sessions)?;
         for (name, channel) in self.registry.channels() {
-            let component = self.config.channels[&name].component.clone();
+            let component = config.channels[&name].component.clone();
             sessions.attach_channel(name, component, channel);
         }
         Ok(sessions)
@@ -169,7 +166,7 @@ impl Runtime {
                 runner,
                 delivery: Arc::new(OutboxDelivery::new(
                     self.outbox.clone(),
-                    self.config.owner.clone(),
+                    self.registry.config().owner.clone(),
                 )),
                 changes: self.jobs.clone(),
                 clock: Arc::new(SystemClock),

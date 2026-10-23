@@ -133,7 +133,7 @@ fn session(agent: &str, kind: SessionKind) -> Session {
 
 async fn assemble(home: &Home, agent: &str, kind: SessionKind) -> SessionPrompt {
     let registry = home.registry();
-    let config = registry.config().clone();
+    let config = registry.config();
     let agent_config = &config.agents[&AgentId::new(agent).unwrap()];
     prompt::assemble(&registry, agent_config, &session(agent, kind))
         .await

@@ -1048,7 +1048,10 @@ async fn a_posted_message_reaches_the_agent_and_the_reply_reaches_the_page() {
         SessionsOptions {
             store: env.store.clone(),
             router,
-            agents: HashMap::from([(AgentId::new("jeeves").unwrap(), AgentPolicy::default())]),
+            agents: Arc::new(HashMap::from([(
+                AgentId::new("jeeves").unwrap(),
+                AgentPolicy::default(),
+            )])),
             channels: Arc::new(Lookup(env.channel.clone())),
             runner: Arc::new(EchoRunner {
                 store: env.store.clone(),

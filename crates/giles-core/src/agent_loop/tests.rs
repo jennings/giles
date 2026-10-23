@@ -924,7 +924,7 @@ async fn the_prefix_is_stable_across_turns_and_restarts() {
 async fn rebuilding_refreshes_system_and_keeps_the_tools() {
     let h = Harness::new().await;
     let agent_loop = h.agent_loop();
-    let config = h.registry.config().clone();
+    let config = h.registry.config();
     let agent = &config.agents[&AgentId::new(AGENT).unwrap()];
     let first = agent_loop.session_prompt(&h.session, agent).await.unwrap();
     assert!(Arc::ptr_eq(
@@ -972,7 +972,7 @@ async fn the_owner_timezone_falls_back_to_the_agent_timezone() {
     let mut h =
         Harness::with_agent("models = [\"anthropic/test-model\"]\ntimezone = \"Asia/Tokyo\"\n")
             .await;
-    let config = h.registry.config().clone();
+    let config = h.registry.config();
     let agent = &config.agents[&AgentId::new(AGENT).unwrap()];
     // The owner's zone wins.
     assert_eq!(
@@ -1850,7 +1850,7 @@ async fn a_session_near_the_context_window_continues_from_a_summary() {
     assert!(system_text(next).contains("Tea at five."));
     assert_eq!(next.tools, requests[0].tools);
     // Later requests keep the rebuilt prompt.
-    let config = h.registry.config().clone();
+    let config = h.registry.config();
     let agent = &config.agents[&AgentId::new(AGENT).unwrap()];
     let cached = agent_loop.session_prompt(&h.session, agent).await.unwrap();
     assert_eq!(cached.system, next.system);

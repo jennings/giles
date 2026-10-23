@@ -20,7 +20,7 @@ use tracing::{info, warn};
 use super::{CoreCall, CoreTool};
 use crate::agent_loop::ToolOutput;
 use crate::agent_loop::history::message_timezone;
-use crate::config::{Config, JobPrompt, JobSession, parse_cron};
+use crate::config::{JobPrompt, JobSession, LiveConfig, parse_cron};
 use crate::scheduler::{JobChanges, RuntimeSpec, When};
 use crate::sessions::Clock;
 
@@ -40,7 +40,7 @@ const TIME_FORMAT: &str = "%a %Y-%m-%d %H:%M %Z";
 /// The `schedule` tool.
 pub struct ScheduleTool {
     store: Store,
-    config: Arc<Config>,
+    config: LiveConfig,
     changes: JobChanges,
     clock: Arc<dyn Clock>,
 }
@@ -58,7 +58,7 @@ impl ScheduleTool {
     /// tells the scheduler through `changes`.
     pub fn new(
         store: Store,
-        config: Arc<Config>,
+        config: LiveConfig,
         changes: JobChanges,
         clock: Arc<dyn Clock>,
     ) -> Self {
@@ -296,7 +296,8 @@ impl ScheduleTool {
         } else {
             out.push_str("Runtime jobs belong to users; this turn has none.");
         }
-        if let Some(config) = self.config.agents.get(agent)
+        let snapshot = self.config.get();
+        if let Some(config) = snapshot.agents.get(agent)
             && !config.jobs.is_empty()
         {
             out.push_str("\n\nConfigured jobs (read-only):");
@@ -368,11 +369,12 @@ impl CoreTool for ScheduleTool {
 
     async fn call(&self, call: CoreCall) -> ToolOutput {
         let agent = &call.context.agent;
-        let Some(agent_config) = self.config.agents.get(agent) else {
+        let config = self.config.get();
+        let Some(agent_config) = config.agents.get(agent) else {
             return ToolOutput::error(format!("agent `{agent}` is not configured"));
         };
         // Runtime jobs run as the requester, in their time zone (v1: the owner's).
-        let tz = message_timezone(&self.config, agent_config);
+        let tz = message_timezone(&config, agent_config);
         let request = match parse_input(call.input, self.clock.now(), &tz) {
             Ok(request) => request,
             Err(error) => return ToolOutput::error(error),

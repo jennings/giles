@@ -5,7 +5,6 @@
 //! so it's parallel-safe ([`PARALLEL_SAFE_CORE_TOOLS`](crate::agent_loop::PARALLEL_SAFE_CORE_TOOLS)).
 
 use std::fmt::Write as _;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use giles_store::{
@@ -21,7 +20,7 @@ use super::{CoreCall, CoreTool};
 use crate::agent_loop::ToolOutput;
 use crate::agent_loop::history::{message_timezone, strip_time_prefix, time_prefix};
 use crate::agent_loop::prompt::memory_user;
-use crate::config::Config;
+use crate::config::LiveConfig;
 
 /// The tool's name.
 pub const MEMORY_SEARCH: &str = "memory_search";
@@ -39,12 +38,12 @@ pub const NO_MATCHES: &str = "No matches.";
 #[derive(Debug, Clone)]
 pub struct MemorySearchTool {
     store: Store,
-    config: Arc<Config>,
+    config: LiveConfig,
 }
 
 impl MemorySearchTool {
     /// Searches `store`, showing times in the zone `config` gives each agent's messages.
-    pub fn new(store: Store, config: Arc<Config>) -> Self {
+    pub fn new(store: Store, config: LiveConfig) -> Self {
         Self { store, config }
     }
 }
@@ -161,14 +160,15 @@ impl CoreTool for MemorySearchTool {
             Err(error) => return ToolOutput::error(error),
         };
         let agent = &call.context.agent;
-        let Some(agent_config) = self.config.agents.get(agent) else {
+        let config = self.config.get();
+        let Some(agent_config) = config.agents.get(agent) else {
             return ToolOutput::error(format!("agent `{agent}` is not configured"));
         };
         match self.store.search(scope, &query, limit).await {
             Ok(hits) => ToolOutput {
                 content: vec![Block::text(render(
                     &hits,
-                    &message_timezone(&self.config, agent_config),
+                    &message_timezone(&config, agent_config),
                 ))],
                 is_error: false,
             },

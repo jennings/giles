@@ -571,7 +571,7 @@ async fn a_calls_policy_comes_from_its_toolset_or_the_core_tool_list() {
     let s = Setup::new().await;
     let tools = s.tools(&["par__*", "serial__*", "memory*"]);
     let config = s.registry.config();
-    let policy = |name: &str| CallPolicy::of(&tools, config, name);
+    let policy = |name: &str| CallPolicy::of(&tools, &config, name);
     let five_minutes = Duration::from_secs(300);
     let of = |parallel, deadline| CallPolicy { parallel, deadline };
 

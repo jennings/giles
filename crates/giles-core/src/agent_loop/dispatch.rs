@@ -209,7 +209,7 @@ impl ToolDispatcher for PolicyDispatcher {
             .into_iter()
             .enumerate()
             .map(|(index, call)| {
-                let policy = CallPolicy::of(&tools, config, &call.name);
+                let policy = CallPolicy::of(&tools, &config, &call.name);
                 let registry = self.registry.clone();
                 let tools = tools.clone();
                 let context = context.clone();

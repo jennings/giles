@@ -208,7 +208,7 @@ impl Scheduler {
             clock: options.clock,
             shutdown,
         });
-        let config = context.registry.config().clone();
+        let config = context.registry.config();
         for (agent, agent_config) in &config.agents {
             for job in &agent_config.jobs {
                 let job = JobDef::from_config(agent, job);
@@ -297,7 +297,7 @@ async fn sleep_or_forever(delay: Option<Duration>) {
 /// deleted) or a one-shot job has run.
 async fn job_task(context: Arc<Context>, job: JobDef, stop: CancellationToken) {
     let label = job.label();
-    let config = context.registry.config().clone();
+    let config = context.registry.config();
     let Some(agent) = config.agents.get(&job.agent) else {
         warn!(job = %label, agent = %job.agent, "job of an agent that isn't configured; skipped");
         return;

@@ -27,7 +27,7 @@ use crate::config::{Config, InstanceName, LoadOptions};
 use crate::identity::owner;
 use crate::paths::DataRoot;
 use crate::router::Router;
-use crate::sessions::{AgentPolicy, SessionsOptions, Turn, TurnOutcome};
+use crate::sessions::{SessionsOptions, Turn, TurnOutcome};
 
 const AGENT: &str = "jeeves";
 /// Long enough that only a hang reaches it (paused time jumps straight there).
@@ -254,7 +254,7 @@ impl Harness {
             SessionsOptions {
                 store: store.clone(),
                 router: Router::new(&config.owner, &config.routes),
-                agents: AgentPolicy::from_config(&config),
+                agents: Arc::new(registry.live_config().clone()),
                 channels: registry.clone(),
                 runner: runner.clone(),
                 approvals: Arc::new(NoPendingApprovals),

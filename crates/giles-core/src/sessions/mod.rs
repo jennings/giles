@@ -30,7 +30,7 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use crate::commands::{ApprovalReply, NoPendingApprovals};
-use crate::config::{AgentConfig, BusyMode, Config, InstanceName};
+use crate::config::{AgentConfig, BusyMode, InstanceName, LiveConfig};
 use crate::registry::Registry;
 use crate::router::{Routed, Router};
 
@@ -126,14 +126,26 @@ impl AgentPolicy {
             idle_reset: agent.idle_reset,
         }
     }
+}
 
-    /// Every configured agent's policy.
-    pub fn from_config(config: &Config) -> HashMap<AgentId, Self> {
-        config
-            .agents
-            .iter()
-            .map(|(id, agent)| (id.clone(), Self::of(agent)))
-            .collect()
+/// Where the session manager looks up each agent's [`AgentPolicy`] when it needs it, so agents
+/// added while the core runs (TASKS.md 5.1) get theirs.
+pub trait AgentPolicies: Send + Sync {
+    /// `agent`'s policy, or `None` if no such agent is configured now.
+    fn policy(&self, agent: &AgentId) -> Option<AgentPolicy>;
+}
+
+/// The daemon's: every agent in the running configuration.
+impl AgentPolicies for LiveConfig {
+    fn policy(&self, agent: &AgentId) -> Option<AgentPolicy> {
+        self.get().agents.get(agent).map(AgentPolicy::of)
+    }
+}
+
+/// A fixed set, for tests.
+impl AgentPolicies for HashMap<AgentId, AgentPolicy> {
+    fn policy(&self, agent: &AgentId) -> Option<AgentPolicy> {
+        self.get(agent).copied()
     }
 }
 
@@ -143,9 +155,9 @@ pub struct SessionsOptions {
     pub store: Store,
     /// Classifies inbound messages.
     pub router: Router,
-    /// Per-agent settings. An agent missing here (a session left over from an agent that was
+    /// Per-agent settings. An agent missing there (a session left over from an agent that was
     /// removed from the configuration) gets the defaults.
-    pub agents: HashMap<AgentId, AgentPolicy>,
+    pub agents: Arc<dyn AgentPolicies>,
     /// Where replies and restart notices are sent.
     pub channels: Arc<dyn ChannelLookup>,
     /// Runs turns: the agent loop (TASKS.md 2.4).
@@ -161,7 +173,6 @@ impl fmt::Debug for SessionsOptions {
         f.debug_struct("SessionsOptions")
             .field("store", &self.store)
             .field("router", &self.router)
-            .field("agents", &self.agents)
             .finish_non_exhaustive()
     }
 }
@@ -349,7 +360,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 struct Inner {
     store: Store,
     router: Router,
-    agents: HashMap<AgentId, AgentPolicy>,
+    agents: Arc<dyn AgentPolicies>,
     channels: Arc<dyn ChannelLookup>,
     runner: Arc<dyn TurnRunner>,
     approvals: Arc<dyn Approvals>,
@@ -436,7 +447,7 @@ impl SessionHold {
 
 impl Inner {
     fn policy(&self, agent: &AgentId) -> AgentPolicy {
-        self.agents.get(agent).copied().unwrap_or_default()
+        self.agents.policy(agent).unwrap_or_default()
     }
 
     /// A row was queued for `session` (by `from`, if known): start a driver unless one is live,

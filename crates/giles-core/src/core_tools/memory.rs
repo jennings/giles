@@ -8,8 +8,6 @@
 //! no requester. The prompt keeps the snapshot it was built with; the tool result shows the
 //! file after the batch.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use giles_store::Session;
 use giles_types::{Block, ToolSpec, UserId};
@@ -19,7 +17,7 @@ use serde_json::{Value, json};
 use super::{CoreCall, CoreTool};
 use crate::agent_loop::ToolOutput;
 use crate::agent_loop::prompt::{AGENT_MEMORY_TITLE, EMPTY_MEMORY, USER_MEMORY_TITLE, memory_user};
-use crate::config::Config;
+use crate::config::LiveConfig;
 use crate::identity::owner;
 use crate::memory::{self, BatchError, MemoryError, MemoryOp, usage_header};
 use crate::paths::DataRoot;
@@ -31,12 +29,12 @@ pub const MEMORY: &str = "memory";
 #[derive(Debug, Clone)]
 pub struct MemoryTool {
     root: DataRoot,
-    config: Arc<Config>,
+    config: LiveConfig,
 }
 
 impl MemoryTool {
     /// Writes memory files under `root`, with each agent's `memory_cap` from `config`.
-    pub fn new(root: DataRoot, config: Arc<Config>) -> Self {
+    pub fn new(root: DataRoot, config: LiveConfig) -> Self {
         Self { root, config }
     }
 }
@@ -176,7 +174,8 @@ impl CoreTool for MemoryTool {
             Err(error) => return ToolOutput::error(error),
         };
         let agent = &call.context.agent;
-        let Some(config) = self.config.agents.get(agent) else {
+        let snapshot = self.config.get();
+        let Some(config) = snapshot.agents.get(agent) else {
             return ToolOutput::error(format!("agent `{agent}` is not configured"));
         };
         let cap = config.memory_cap as usize;
