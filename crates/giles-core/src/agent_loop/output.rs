@@ -78,7 +78,7 @@ pub fn output_for(turn: &Turn) -> Box<dyn OutputSink> {
 }
 
 /// Sends nothing.
-struct Discard;
+pub(super) struct Discard;
 
 #[async_trait]
 impl OutputSink for Discard {

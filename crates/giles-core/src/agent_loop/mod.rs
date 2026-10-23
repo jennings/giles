@@ -8,6 +8,10 @@
 //! run its tools through the [`ToolDispatcher`] filling each slot, and repeat until the model
 //! stops asking for tools. Every provider request records one `usage` row.
 //!
+//! Compaction (PLAN section 6.8): before each request, a history near the model's context
+//! window is summarized by the agent's `compaction_model` into a `summaries` row, and the
+//! session's `system` is rebuilt with a fresh memory snapshot ([`compaction`]).
+//!
 //! Turn control (PLAN section 6.3): `/stop` cancels [`Turn::cancel`], which drops the running
 //! request or the dispatcher's stream (cancelling every running call at its toolset) and fills
 //! the unanswered slots with `cancelled`. With `busy_mode = "steer"` the requester's new
@@ -18,9 +22,10 @@
 //! from the [`ApprovalBoard`] the session manager answers; the dispatcher gates `ask` calls and
 //! questions on it, and a requester message during a wait denies it.
 //!
-//! Seams for later tasks: [`ToolDispatcher`] (the [`PolicyDispatcher`] runs calls, core tools
-//! ([`crate::core_tools`]) included) and [`AgentLoop::rebuild_prompt`] (2.10 compaction).
+//! Seam for later tasks: [`ToolDispatcher`] (the [`PolicyDispatcher`] runs calls, core tools
+//! ([`crate::core_tools`]) included).
 
+pub mod compaction;
 pub mod dispatch;
 pub mod glob;
 pub mod history;

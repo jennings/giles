@@ -42,6 +42,17 @@ impl Clock for FixedClock {
     }
 }
 
+/// Advances one second on every reading, so stored rows are ordered in time.
+#[derive(Default)]
+struct TickingClock(std::sync::atomic::AtomicI64);
+
+impl Clock for TickingClock {
+    fn now(&self) -> Timestamp {
+        let tick = self.0.fetch_add(1, Ordering::SeqCst);
+        now() + jiff::SignedDuration::from_secs(tick)
+    }
+}
+
 /// What the fake provider does for one request.
 enum Script {
     /// `complete` succeeds and the stream yields these, then ends.
@@ -305,6 +316,9 @@ impl Harness {
             "giles.toml",
             "[owner]\nidentities = [\"fake:owner\"]\ntimezone = \"America/Los_Angeles\"\n\
              [provider.anthropic]\nconfig = { api_key = { secret = \"anthropic\" } }\n\
+             [provider.ollama]\ncomponent = \"openai\"\n\
+             config = { base_url = \"http://127.0.0.1:11434/v1\", \
+             models.\"qwen3:8b\" = { context_window = 2000 } }\n\
              [toolset.github]\nurl = \"https://example.com/mcp\"\n\
              [channel.fake]\n",
         );
@@ -388,6 +402,17 @@ impl Harness {
             self.store.clone(),
             Arc::new(FixedClock),
             dispatcher,
+            Arc::new(ApprovalBoard::default()),
+        )
+    }
+
+    /// An agent loop whose clock advances a second per reading.
+    fn ticking_agent_loop(&self) -> AgentLoop {
+        AgentLoop::new(
+            self.registry.clone(),
+            self.store.clone(),
+            Arc::new(TickingClock::default()),
+            Arc::new(PolicyDispatcher::new(self.registry.clone())),
             Arc::new(ApprovalBoard::default()),
         )
     }
@@ -1410,17 +1435,18 @@ async fn without_the_models_info_every_attachment_is_sent_for_the_provider_to_ju
 }
 
 #[tokio::test]
-async fn models_are_listed_only_once_media_appears_and_a_failure_waits_to_retry() {
+async fn a_failed_model_listing_waits_to_retry_and_media_goes_to_the_provider_to_judge() {
     let mut h = Harness::new().await;
     h.provider.listing_fails.store(true, Ordering::SeqCst);
     let agent_loop = h.agent_loop();
-    // No media: no listing.
+    // Each turn looks the model up (its context window decides compaction); this one fails.
     h.provider.push(text("Hello."));
     let (turn, _) = h.turn(&["Hi"]);
     assert_eq!(agent_loop.run_turn(turn).await, TurnOutcome::Completed);
-    assert_eq!(h.provider.listed.load(Ordering::SeqCst), 0);
+    assert_eq!(h.provider.listed.load(Ordering::SeqCst), 1);
 
-    // Listing fails: every attachment is sent for the provider to judge.
+    // Within the retry window the next turn doesn't list again, and every attachment is sent
+    // for the provider to judge.
     let ogg = media_ref(3, "audio/ogg", None);
     h.provider.push(text("Heard."));
     let (mut turn, _) = h.turn(&["Listen"]);
@@ -1431,7 +1457,7 @@ async fn models_are_listed_only_once_media_appears_and_a_failure_waits_to_retry(
     assert_eq!(h.provider.requests()[1].messages[2].content, sent);
     assert_eq!(h.provider.listed.load(Ordering::SeqCst), 1);
 
-    // Within the retry window the next turn doesn't list again.
+    // Nor does the one after.
     h.provider.push(text("Still heard."));
     let (turn, _) = h.turn(&["Again"]);
     assert_eq!(agent_loop.run_turn(turn).await, TurnOutcome::Completed);
@@ -1539,4 +1565,297 @@ async fn tools_take_session_media_by_id_and_their_media_results_get_references()
             is_error: false,
         }]
     );
+}
+
+/// An agent whose summaries are written by `anthropic/summarizer`.
+const COMPACTING_AGENT: &str = "models = [\"anthropic/test-model\"]\n\
+     compaction_model = \"anthropic/summarizer\"\n\
+     tools = [\"github__*\", \"memory\"]\n";
+
+/// A harness whose agent's model has a 2,000-token context window: requests estimated above
+/// 1,600 tokens are compacted, keeping at most 500 tokens of recent messages.
+async fn compacting_harness() -> Harness {
+    let h = Harness::with_agent(COMPACTING_AGENT).await;
+    *h.provider.models.lock().unwrap() = vec![ModelInfo {
+        context_window: Some(2_000),
+        ..test_model(&[])
+    }];
+    h
+}
+
+/// A response of `blocks` whose request had `input` input tokens (the anchor of the next
+/// estimate: `input` plus 5 output tokens).
+fn sized(blocks: Vec<Block>, stop: StopReason, input: u64) -> Script {
+    let Script::Events(mut events) = response(blocks, stop) else {
+        unreachable!()
+    };
+    let at = events.len() - 2;
+    events[at] = Ok(CompletionEvent::Usage(Usage {
+        input_tokens: input,
+        output_tokens: 5,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+    }));
+    Script::Events(events)
+}
+
+fn request_text(request: &CompletionRequest) -> String {
+    match &request.messages[..] {
+        [Message { content, .. }] => match &content[..] {
+            [Block::Text { text }] => text.clone(),
+            other => panic!("not one text block: {other:?}"),
+        },
+        other => panic!("not one message: {other:?}"),
+    }
+}
+
+fn summary_message(summary: &str) -> Vec<Block> {
+    vec![Block::text(format!(
+        "{}\n\n{summary}",
+        history::SUMMARY_INTRO
+    ))]
+}
+
+fn system_text(request: &CompletionRequest) -> &str {
+    match &request.system[..] {
+        [Block::Text { text }] => text,
+        _ => "",
+    }
+}
+
+#[tokio::test]
+async fn a_session_near_the_context_window_continues_from_a_summary() {
+    let mut h = compacting_harness().await;
+    let agent_loop = h.ticking_agent_loop();
+    let first = format!("First {}", "x".repeat(3_000));
+
+    // About 1,300 tokens: no compaction yet. The response reports a 1,700-token prompt.
+    h.provider
+        .push(sized(vec![Block::text("One.")], StopReason::EndTurn, 1_700));
+    let (turn, _) = h.turn(&[&first]);
+    assert_eq!(agent_loop.run_turn(turn).await, TurnOutcome::Completed);
+    assert_eq!(h.provider.requests().len(), 1);
+
+    // The next request would be over 1,600 tokens: the first message is summarized (the rest
+    // fits in the 500 kept), and `system` gets the memory as it is now.
+    std::fs::write(
+        h.dir.path().join(format!("agents/{AGENT}/MEMORY.md")),
+        "Tea at five.",
+    )
+    .unwrap();
+    h.provider.push(text("The user sent a long first message."));
+    h.provider
+        .push(sized(vec![Block::text("Two.")], StopReason::EndTurn, 1_700));
+    let (turn, _) = h.turn(&["Second"]);
+    assert_eq!(agent_loop.run_turn(turn).await, TurnOutcome::Completed);
+
+    let requests = h.provider.requests();
+    assert_eq!(requests.len(), 3);
+    let summarize = &requests[1];
+    assert_eq!(summarize.model, "summarizer");
+    assert_eq!(summarize.system, [Block::text(compaction::SUMMARY_SYSTEM)]);
+    assert!(summarize.tools.is_empty());
+    assert_eq!(
+        request_text(summarize),
+        format!("<conversation>\nUser:\n{PREFIX} {first}\n</conversation>")
+    );
+
+    let summary = h.store.load_history(h.session.id).await.unwrap().summary;
+    let summary = summary.unwrap();
+    assert_eq!((summary.from_seq, summary.through_seq), (1, 1));
+    assert_eq!(summary.content, "The user sent a long first message.");
+
+    let next = &requests[2];
+    assert_eq!(next.model, "test-model");
+    let contents: Vec<_> = next.messages.iter().map(|m| m.content.clone()).collect();
+    assert_eq!(
+        contents,
+        [
+            summary_message("The user sent a long first message."),
+            vec![Block::text("One.")],
+            vec![Block::text(format!("{PREFIX} Second"))],
+        ]
+    );
+    assert!(system_text(&requests[0]).contains("Tea at four."));
+    assert!(system_text(next).contains("Tea at five."));
+    assert_eq!(next.tools, requests[0].tools);
+    // Later requests keep the rebuilt prompt.
+    let config = h.registry.config().clone();
+    let agent = &config.agents[&AgentId::new(AGENT).unwrap()];
+    let cached = agent_loop.session_prompt(&h.session, agent).await.unwrap();
+    assert_eq!(cached.system, next.system);
+
+    // The transcript keeps every message; the summary is never sent to the channel.
+    assert_eq!(
+        h.store
+            .recent_messages(h.session.id, 100)
+            .await
+            .unwrap()
+            .len(),
+        4
+    );
+    assert_eq!(h.sent(), ["One.", "Two."]);
+    // One usage row per request, the summary's under the compaction model.
+    let usage = h.store.usage_by_model(None, None).await.unwrap();
+    let rows: Vec<_> = usage
+        .iter()
+        .map(|u| (u.agent.as_str(), u.model.as_str(), u.requests))
+        .collect();
+    assert_eq!(rows, [(AGENT, "summarizer", 1), (AGENT, "test-model", 2)]);
+
+    // Near the limit again: the new summary rolls the old one up with the next messages.
+    h.provider.push(text("Rolled up."));
+    h.provider.push(text("Three."));
+    let (turn, _) = h.turn(&["Third"]);
+    assert_eq!(agent_loop.run_turn(turn).await, TurnOutcome::Completed);
+    let requests = h.provider.requests();
+    assert_eq!(requests.len(), 5);
+    assert_eq!(requests[3].model, "summarizer");
+    assert_eq!(
+        request_text(&requests[3]),
+        "<previous-summary>\nThe user sent a long first message.\n</previous-summary>\n\n\
+         <conversation>\nAssistant:\nOne.\n</conversation>"
+    );
+    let summary = h.store.load_history(h.session.id).await.unwrap().summary;
+    let summary = summary.unwrap();
+    assert_eq!((summary.from_seq, summary.through_seq), (1, 2));
+    assert_eq!(
+        requests[4].messages[0].content,
+        summary_message("Rolled up.")
+    );
+    assert_eq!(requests[4].messages.len(), 4);
+}
+
+#[tokio::test]
+async fn compaction_after_a_tool_batch_keeps_the_call_with_its_result() {
+    let mut h = compacting_harness().await;
+    let agent_loop = h.ticking_agent_loop();
+    let first = format!("First {}", "x".repeat(3_000));
+    let input = json!({"pad": "y".repeat(1_200)});
+    h.provider.push(sized(
+        vec![tool_use("t1", "github__list_issues", input.clone())],
+        StopReason::ToolUse,
+        1_700,
+    ));
+    h.provider.push(text("Summary."));
+    h.provider.push(text("Done."));
+    let (turn, _) = h.turn(&[&first]);
+    assert_eq!(agent_loop.run_turn(turn).await, TurnOutcome::Completed);
+
+    // With the result the next request is over the threshold. Keeping only the result would
+    // fit better, but the result stays with its call.
+    let requests = h.provider.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[1].model, "summarizer");
+    let summary = h.store.load_history(h.session.id).await.unwrap().summary;
+    assert_eq!(summary.unwrap().through_seq, 1);
+    let contents: Vec<_> = requests[2]
+        .messages
+        .iter()
+        .map(|m| m.content.clone())
+        .collect();
+    assert_eq!(
+        contents,
+        [
+            summary_message("Summary."),
+            vec![tool_use("t1", "github__list_issues", input.clone())],
+            result("t1", &format!("list_issues ran with {input}"), false)
+                .unwrap()
+                .1,
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_failed_summary_is_logged_and_the_turn_goes_on_without_compacting() {
+    let mut h = compacting_harness().await;
+    let agent_loop = h.ticking_agent_loop();
+    let first = format!("First {}", "x".repeat(3_000));
+    h.provider
+        .push(sized(vec![Block::text("One.")], StopReason::EndTurn, 1_700));
+    let (turn, _) = h.turn(&[&first]);
+    assert_eq!(agent_loop.run_turn(turn).await, TurnOutcome::Completed);
+
+    // The summary request fails: the turn's requests go out uncompacted, and the turn doesn't
+    // try again after its tool batch, though it's still over the threshold.
+    h.provider
+        .push(Script::Refuse(Error::unavailable("overloaded")));
+    h.provider.push(sized(
+        vec![tool_use("t1", "github__list_issues", json!({}))],
+        StopReason::ToolUse,
+        1_700,
+    ));
+    h.provider
+        .push(sized(vec![Block::text("Two.")], StopReason::EndTurn, 1_700));
+    let (turn, _) = h.turn(&["Second"]);
+    assert_eq!(agent_loop.run_turn(turn).await, TurnOutcome::Completed);
+    let requests = h.provider.requests();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(requests[1].model, "summarizer");
+    assert_eq!(requests[2].messages.len(), 3);
+    assert_eq!(requests[3].model, "test-model");
+    assert_eq!(requests[3].messages.len(), 5);
+    let history = h.store.load_history(h.session.id).await.unwrap();
+    assert!(history.summary.is_none());
+    // The refused request generated nothing and records no usage.
+    assert_eq!(h.usage_requests().await, 3);
+    assert_eq!(h.sent(), ["One.", "Two."]);
+
+    // The next turn tries again.
+    h.provider.push(text("Summary."));
+    h.provider.push(text("Three."));
+    let (turn, _) = h.turn(&["Third"]);
+    assert_eq!(agent_loop.run_turn(turn).await, TurnOutcome::Completed);
+    let requests = h.provider.requests();
+    assert_eq!(requests[4].model, "summarizer");
+    assert_eq!(requests[5].messages[0].content, summary_message("Summary."));
+}
+
+#[tokio::test]
+async fn without_a_reported_context_window_a_long_session_compacts_at_the_default() {
+    let mut h = Harness::with_agent(COMPACTING_AGENT).await;
+    let agent_loop = h.ticking_agent_loop();
+    h.provider.push(sized(
+        vec![Block::text("One.")],
+        StopReason::EndTurn,
+        compaction::DEFAULT_CONTEXT_WINDOW * 80 / 100,
+    ));
+    let (turn, _) = h.turn(&["First"]);
+    assert_eq!(agent_loop.run_turn(turn).await, TurnOutcome::Completed);
+    h.provider.push(text("Summary."));
+    h.provider.push(text("Two."));
+    let (turn, _) = h.turn(&["Second"]);
+    assert_eq!(agent_loop.run_turn(turn).await, TurnOutcome::Completed);
+    let requests = h.provider.requests();
+    assert_eq!(requests[1].model, "summarizer");
+    assert_eq!(requests[2].messages[0].content, summary_message("Summary."));
+}
+
+#[cfg(feature = "provider-openai")]
+#[tokio::test]
+async fn an_unlisted_model_uses_the_context_window_its_provider_config_sets() {
+    // `ollama` is an OpenAI-compatible instance whose config gives `qwen3:8b` a 2,000-token
+    // window; its model list doesn't have the model.
+    let mut h = Harness::with_agent("models = [\"ollama/qwen3:8b\"]\n").await;
+    h.registry
+        .register_provider(&name("ollama"), h.provider.clone())
+        .unwrap();
+    let agent_loop = h.ticking_agent_loop();
+    h.provider
+        .push(sized(vec![Block::text("One.")], StopReason::EndTurn, 1_700));
+    let (turn, _) = h.turn(&["First"]);
+    assert_eq!(agent_loop.run_turn(turn).await, TurnOutcome::Completed);
+    h.provider.push(text("Summary."));
+    h.provider.push(text("Two."));
+    let (turn, _) = h.turn(&["Second"]);
+    assert_eq!(agent_loop.run_turn(turn).await, TurnOutcome::Completed);
+    let requests = h.provider.requests();
+    assert_eq!(requests.len(), 3);
+    // No `compaction_model`: the agent's model summarizes.
+    assert_eq!(requests[1].model, "qwen3:8b");
+    assert_eq!(
+        requests[1].system,
+        [Block::text(compaction::SUMMARY_SYSTEM)]
+    );
+    assert_eq!(requests[2].messages[0].content, summary_message("Summary."));
 }

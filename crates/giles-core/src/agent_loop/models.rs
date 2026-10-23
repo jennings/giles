@@ -1,6 +1,7 @@
 //! What the agent loop knows about each model it calls: the provider's [`ModelInfo`], listed
 //! once and kept for the daemon's life. The agent loop uses it to send a model only the media
-//! types it accepts (PLAN section 5).
+//! types it accepts (PLAN section 5) and for its context window, which decides when a session
+//! is compacted ([`super::compaction`]).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -38,7 +39,9 @@ impl ModelInfos {
     /// `model`'s info from its provider's model list, listed on first use. `None` when the
     /// provider doesn't list the model (e.g. an alias of a listed id), or listing failed or took
     /// longer than [`LIST_MODELS_TIMEOUT`] (logged; retried after [`LIST_MODELS_RETRY`]). Then
-    /// the provider's own media rules alone decide what it sends.
+    /// the provider's own media rules alone decide what it sends, and compaction takes the
+    /// context window from the provider instance's configuration, else assumes
+    /// [`DEFAULT_CONTEXT_WINDOW`](super::compaction::DEFAULT_CONTEXT_WINDOW) (128,000 tokens).
     pub(super) async fn get(
         &self,
         model: &ResolvedModel,

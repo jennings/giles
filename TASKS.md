@@ -181,7 +181,7 @@ The five tracks run in parallel.
 - [x] **2.9 Media in turns** (§5). Inbound attachments become `Image`/`Audio`/`Document` blocks with
   `[media:<id> <name> <type>]` references; media types a provider doesn't accept reach the model
   only as the reference. **Needs:** 2.4, 1.3.
-- [ ] **2.10 Compaction** (§6.8). Near the model's context limit, summarize older history with
+- [x] **2.10 Compaction** (§6.8). Near the model's context limit, summarize older history with
   `compaction_model` into `summaries`; the prompt uses the summary plus recent messages; `system`
   is rebuilt with a fresh memory snapshot. **Needs:** 2.4.
 

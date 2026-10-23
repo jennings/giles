@@ -6,11 +6,12 @@ use futures::StreamExt;
 use giles_store::{InboxId, SessionKind, Slot, UsageRecord};
 use giles_types::{
     Block, CacheRetention, CallContext, ChannelConversation, CompletionEvent, CompletionRequest,
-    GenerationParams, Message, MessageMeta, ModelInfo, Role, StopReason, Usage,
+    GenerationParams, Message, MessageMeta, Role, StopReason, Usage,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
+use super::compaction::{self, Compaction};
 use super::dispatch::{ToolBatch, ToolRequest};
 use super::history::{self, request_messages, user_message};
 use super::output::OutputSink;
@@ -31,7 +32,7 @@ const MAX_NOTICE_ERROR_CHARS: usize = 300;
 
 /// Why a turn failed.
 #[derive(Debug, thiserror::Error)]
-enum TurnError {
+pub(super) enum TurnError {
     #[error("agent `{0}` is not configured")]
     UnknownAgent(String),
     #[error(transparent)]
@@ -59,7 +60,7 @@ impl TurnError {
 }
 
 /// `text` cut to at most `max` characters, marked with `…` when cut.
-fn shorten(text: &str, max: usize) -> String {
+pub(super) fn shorten(text: &str, max: usize) -> String {
     match text.char_indices().nth(max) {
         Some((at, _)) => format!("{}…", &text[..at]),
         None => text.to_owned(),
@@ -105,7 +106,7 @@ pub(super) async fn after_panic(
 }
 
 /// How one provider request ended.
-enum Received {
+pub(super) enum Received {
     /// The response is complete.
     Complete(Response),
     /// The turn was cancelled while it streamed; nothing of it is stored.
@@ -166,10 +167,17 @@ async fn drive(agent_loop: &AgentLoop, turn: &Turn) -> Result<TurnOutcome, TurnE
         .append_messages(session.id, messages)
         .await?;
 
-    let prompt = agent_loop.session_prompt(session, agent).await?;
+    let mut prompt = agent_loop.session_prompt(session, agent).await?;
     let model = agent_loop.registry.agent_model(agent)?;
-    // The model's media types, looked up once the history holds media, then kept for the turn.
-    let mut model_info: Option<Option<Arc<ModelInfo>>> = None;
+    // The model's context window (compaction) and media types, looked up once per turn.
+    let Some(model_info) = or_cancel(&turn.cancel, agent_loop.models.get(&model, &config)).await
+    else {
+        return Ok(TurnOutcome::Cancelled);
+    };
+    let mut compaction = Compaction::new(
+        compaction::context_window(model_info.as_deref(), &model, &config),
+        &prompt,
+    );
     let context = CallContexts {
         call: call_context(turn),
         turn: Arc::new(TurnContext {
@@ -201,19 +209,19 @@ async fn drive(agent_loop: &AgentLoop, turn: &Turn) -> Result<TurnOutcome, TurnE
             return Ok(TurnOutcome::Cancelled);
         }
         let history = agent_loop.store.load_history(session.id).await?;
+        // Before the request, never inside a tool batch: every slot of the last one is filled.
+        let Some(history) = compaction
+            .check(agent_loop, turn, agent, &mut prompt, history)
+            .await?
+        else {
+            return Ok(TurnOutcome::Cancelled);
+        };
         let mut messages = request_messages(history);
         let media = Arc::new(SessionMedia::from_messages(&messages));
-        if !media.is_empty() {
-            if model_info.is_none() {
-                let lookup = agent_loop.models.get(&model, &config);
-                let Some(info) = or_cancel(&turn.cancel, lookup).await else {
-                    return Ok(TurnOutcome::Cancelled);
-                };
-                model_info = Some(info);
-            }
-            if let Some(Some(info)) = &model_info {
-                media::keep_accepted(&mut messages, &|media_type| info.accepts(media_type));
-            }
+        if !media.is_empty()
+            && let Some(info) = &model_info
+        {
+            media::keep_accepted(&mut messages, &|media_type| info.accepts(media_type));
         }
         let request = CompletionRequest {
             model: model.model.clone(),
@@ -330,7 +338,7 @@ fn iteration_cap(agent: &AgentConfig, kind: SessionKind) -> Option<u32> {
 
 /// Makes one provider request and reads its stream to the end, recording its usage once the
 /// stream has started (a request refused before streaming generated nothing and records none).
-async fn receive(
+pub(super) async fn receive(
     agent_loop: &AgentLoop,
     turn: &Turn,
     model: &ResolvedModel,
@@ -613,7 +621,10 @@ async fn send_notice(turn: &Turn, text: &str) {
 }
 
 /// Runs `future` unless `cancel` fires first.
-async fn or_cancel<F: Future>(cancel: &CancellationToken, future: F) -> Option<F::Output> {
+pub(super) async fn or_cancel<F: Future>(
+    cancel: &CancellationToken,
+    future: F,
+) -> Option<F::Output> {
     tokio::select! {
         biased;
         () = cancel.cancelled() => None,
