@@ -5,6 +5,7 @@
 //! key that has no effect on an instance of its shape (e.g. `sandbox` on a built-in channel) is an
 //! error, not silently ignored.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -14,6 +15,7 @@ use url::{Host, Url};
 use super::error::{ConfigError, KeyPath};
 use super::names::{Builtins, Component, InstanceName, Kind, invalid_name_reason, is_valid_name};
 use super::plugin_config::PluginConfig;
+use super::secrets::{Resolver, Secret};
 use super::units::{ByteSize, HumanDuration};
 
 /// The largest blob the core fetches from a plugin when the instance sets no `max_blob`: 50 MiB
@@ -89,8 +91,35 @@ pub struct Sandbox {
 pub struct Remote {
     /// `http` or `https`. Plain `http` to a host other than loopback requires `insecure`.
     pub url: Url,
+    /// How the core authenticates to it, if at all.
+    pub auth: Option<Auth>,
     /// `insecure = true`: allow plain text to a non-loopback host.
     pub insecure: bool,
+}
+
+/// How the core authenticates to a remote component: `auth = { bearer = ... }` or
+/// `auth = { oauth = { ... } }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Auth {
+    /// A static bearer token.
+    Bearer(Secret),
+    /// OAuth 2.0 client credentials; remote channels only.
+    OAuth(Box<OAuthClientCredentials>),
+}
+
+/// OAuth 2.0 client credentials grant settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct OAuthClientCredentials {
+    /// The token endpoint (`https`, or `http` to loopback).
+    pub token_url: Url,
+    /// The client id.
+    pub client_id: String,
+    /// The client secret.
+    pub client_secret: Secret,
+    /// Scopes to request; none if empty.
+    pub scopes: Vec<String>,
 }
 
 /// A `[toolset.<instance>]`: one MCP server (PLAN section 7.10).
@@ -127,6 +156,8 @@ pub struct StdioServer {
     pub program: Program,
     /// Arguments, passed unchanged.
     pub args: Vec<String>,
+    /// Environment variables to add, by name. Values may come from secret references.
+    pub env: BTreeMap<String, Secret>,
     /// Stop the server after this long without calls; off unless set (PLAN section 7.5).
     pub idle_stop: Option<Duration>,
     /// The sandbox it runs in.
@@ -148,19 +179,23 @@ pub enum Program {
     },
 }
 
+// `config`, `auth`, and `env` may hold credentials, so they're taken as raw TOML values and
+// checked by hand: serde's type errors quote the offending value.
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawProvider {
     component: Option<String>,
-    config: Option<toml::Table>,
+    config: Option<toml::Value>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawChannel {
     component: Option<String>,
-    config: Option<toml::Table>,
+    config: Option<toml::Value>,
     address: Option<String>,
+    auth: Option<toml::Value>,
     insecure: Option<bool>,
     max_blob: Option<ByteSize>,
     unsandboxed: Option<bool>,
@@ -172,7 +207,9 @@ pub(crate) struct RawToolset {
     component: Option<String>,
     command: Option<String>,
     args: Option<Vec<String>>,
+    env: Option<toml::Value>,
     url: Option<String>,
+    auth: Option<toml::Value>,
     insecure: Option<bool>,
     deadline: Option<HumanDuration>,
     idle_stop: Option<HumanDuration>,
@@ -185,6 +222,7 @@ pub(crate) struct RawToolset {
 pub(crate) struct Ctx<'a> {
     pub file: &'a Path,
     pub builtins: &'a Builtins,
+    pub resolver: &'a Resolver<'a>,
 }
 
 impl Ctx<'_> {
@@ -229,9 +267,9 @@ impl Ctx<'_> {
     fn config(
         &self,
         path: &KeyPath,
-        config: Option<toml::Table>,
+        config: Option<toml::Value>,
     ) -> Result<PluginConfig, ConfigError> {
-        PluginConfig::from_toml(self.file, &path.key("config"), config.unwrap_or_default())
+        PluginConfig::from_toml(self.file, &path.key("config"), config, self.resolver)
     }
 
     pub fn provider(&self, name: &str, raw: RawProvider) -> Result<ProviderInstance, ConfigError> {
@@ -264,6 +302,7 @@ impl Ctx<'_> {
             (Component::BuiltIn { .. }, address) => {
                 let why = "on a built-in channel";
                 self.forbid(&path, "address", address.is_some(), why)?;
+                self.forbid(&path, "auth", raw.auth.is_some(), why)?;
                 self.forbid(&path, "insecure", raw.insecure.is_some(), why)?;
                 self.forbid(&path, "unsandboxed", raw.unsandboxed.is_some(), why)?;
                 self.forbid(&path, "max_blob", raw.max_blob.is_some(), why)?;
@@ -272,10 +311,18 @@ impl Ctx<'_> {
             (Component::Plugin { .. }, Some(address)) => {
                 let why = "on a remote channel (one with `address`)";
                 self.forbid(&path, "unsandboxed", raw.unsandboxed.is_some(), why)?;
-                ChannelRuntime::Remote(self.remote(&path, "address", &address, raw.insecure)?)
+                ChannelRuntime::Remote(self.remote(
+                    &path,
+                    "address",
+                    &address,
+                    raw.auth,
+                    raw.insecure,
+                    true,
+                )?)
             }
             (Component::Plugin { binary, .. }, None) => {
                 let why = "without `address`";
+                self.forbid(&path, "auth", raw.auth.is_some(), why)?;
                 self.forbid(&path, "insecure", raw.insecure.is_some(), why)?;
                 ChannelRuntime::Plugin(Launch {
                     binary: binary.clone(),
@@ -305,11 +352,21 @@ impl Ctx<'_> {
             self.forbid(&path, "component", raw.component.is_some(), why)?;
             self.forbid(&path, "command", raw.command.is_some(), why)?;
             self.forbid(&path, "args", raw.args.is_some(), why)?;
+            self.forbid(&path, "env", raw.env.is_some(), why)?;
             self.forbid(&path, "idle_stop", raw.idle_stop.is_some(), why)?;
             self.forbid(&path, "unsandboxed", raw.unsandboxed.is_some(), why)?;
-            ToolsetTransport::Http(self.remote(&path, "url", &url, raw.insecure)?)
+            ToolsetTransport::Http(self.remote(
+                &path,
+                "url",
+                &url,
+                raw.auth,
+                raw.insecure,
+                false,
+            )?)
         } else {
-            self.forbid(&path, "insecure", raw.insecure.is_some(), "without `url`")?;
+            let why = "without `url`";
+            self.forbid(&path, "auth", raw.auth.is_some(), why)?;
+            self.forbid(&path, "insecure", raw.insecure.is_some(), why)?;
             let program = match raw.command {
                 Some(command) => {
                     let why = "together with `command`";
@@ -336,6 +393,7 @@ impl Ctx<'_> {
             ToolsetTransport::Stdio(StdioServer {
                 program,
                 args: raw.args.unwrap_or_default(),
+                env: self.env(&path.key("env"), raw.env)?,
                 idle_stop,
                 sandbox: Sandbox {
                     unsandboxed: raw.unsandboxed.unwrap_or(false),
@@ -376,18 +434,132 @@ impl Ctx<'_> {
         Ok(Program::Command(command))
     }
 
-    /// A remote component's `address` or `url`.
+    /// A remote component's `address` or `url`, and `auth`. `oauth` says whether OAuth client
+    /// credentials are supported (remote channels) or only bearer tokens (remote toolsets).
     fn remote(
         &self,
         path: &KeyPath,
         key: &str,
         text: &str,
+        auth: Option<toml::Value>,
         insecure: Option<bool>,
+        oauth: bool,
     ) -> Result<Remote, ConfigError> {
         let insecure = insecure.unwrap_or(false);
         let url =
             parse_remote_url(text, insecure).map_err(|reason| self.err(path.key(key), reason))?;
-        Ok(Remote { url, insecure })
+        let auth = auth
+            .map(|auth| self.auth(&path.key("auth"), &auth, oauth))
+            .transpose()?;
+        Ok(Remote {
+            url,
+            auth,
+            insecure,
+        })
+    }
+
+    /// `auth = { bearer = <credential> }` or
+    /// `auth = { oauth = { token_url, client_id, client_secret = <credential>, scopes } }`.
+    fn auth(&self, path: &KeyPath, auth: &toml::Value, oauth: bool) -> Result<Auth, ConfigError> {
+        let shape = if oauth {
+            "must be { bearer = ... } or { oauth = { ... } }"
+        } else {
+            "must be { bearer = ... }"
+        };
+        let table = auth
+            .as_table()
+            .filter(|t| t.len() == 1)
+            .ok_or_else(|| self.err(path.clone(), shape))?;
+        let (method, value) = table.iter().next().expect("one entry");
+        let at = path.key(method);
+        match method.as_str() {
+            "bearer" => Ok(Auth::Bearer(self.resolver.value(self.file, &at, value)?)),
+            "oauth" if oauth => Ok(Auth::OAuth(Box::new(self.oauth(&at, value)?))),
+            "oauth" => Err(self.err(at, "remote toolsets support only `bearer` auth")),
+            _ => Err(self.err(at, format!("unknown auth method; {shape}"))),
+        }
+    }
+
+    fn oauth(
+        &self,
+        path: &KeyPath,
+        value: &toml::Value,
+    ) -> Result<OAuthClientCredentials, ConfigError> {
+        let table = value.as_table().ok_or_else(|| {
+            self.err(
+                path.clone(),
+                "must be a table with token_url, client_id, client_secret",
+            )
+        })?;
+        if let Some(key) = table.keys().find(|k| {
+            !matches!(
+                k.as_str(),
+                "token_url" | "client_id" | "client_secret" | "scopes"
+            )
+        }) {
+            return Err(self.err(path.key(key), format!("unknown field `{key}`")));
+        }
+        let string = |key: &str| match table.get(key) {
+            Some(toml::Value::String(s)) => Ok(s.clone()),
+            Some(_) => Err(self.err(path.key(key), "must be a string")),
+            None => Err(self.err(path.clone(), format!("missing field `{key}`"))),
+        };
+        let token_url = string("token_url")?;
+        let token_url = parse_remote_url(&token_url, false)
+            .map_err(|reason| self.err(path.key("token_url"), reason))?;
+        let client_id = string("client_id")?;
+        let client_secret = match table.get("client_secret") {
+            Some(value) => self
+                .resolver
+                .value(self.file, &path.key("client_secret"), value)?,
+            None => return Err(self.err(path.clone(), "missing field `client_secret`")),
+        };
+        let scopes = match table.get("scopes") {
+            None => Vec::new(),
+            Some(toml::Value::Array(items)) => items
+                .iter()
+                .enumerate()
+                .map(|(i, item)| {
+                    item.as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| self.err(path.key("scopes").index(i), "must be a string"))
+                })
+                .collect::<Result<_, _>>()?,
+            Some(_) => return Err(self.err(path.key("scopes"), "must be an array of strings")),
+        };
+        Ok(OAuthClientCredentials {
+            token_url,
+            client_id,
+            client_secret,
+            scopes,
+        })
+    }
+
+    /// A stdio toolset's `env`: a table of variable names to credentials.
+    fn env(
+        &self,
+        path: &KeyPath,
+        env: Option<toml::Value>,
+    ) -> Result<BTreeMap<String, Secret>, ConfigError> {
+        let Some(env) = env else {
+            return Ok(BTreeMap::new());
+        };
+        let table = env.as_table().ok_or_else(|| {
+            self.err(
+                path.clone(),
+                format!("must be a table, not {}", env.type_str()),
+            )
+        })?;
+        table
+            .iter()
+            .map(|(name, value)| {
+                let at = path.key(name);
+                if name.is_empty() || name.contains(['=', '\0']) {
+                    return Err(self.err(at, "invalid environment variable name"));
+                }
+                Ok((name.clone(), self.resolver.value(self.file, &at, value)?))
+            })
+            .collect()
     }
 }
 

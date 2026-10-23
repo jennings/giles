@@ -45,13 +45,36 @@ impl Home {
         self.write(&format!("agents/{name}/agent.toml"), agent_toml)
     }
 
+    /// Loads with the v1 built-ins and [`test_env`] as the environment.
     fn load(&self) -> Result<Config, ConfigError> {
-        Config::load(&self.root)
+        Config::load_with(
+            &self.root,
+            &LoadOptions {
+                env: &test_env,
+                ..LoadOptions::default()
+            },
+        )
+    }
+
+    /// Writes `secrets.toml` with `mode`.
+    fn secrets(&self, contents: &str, mode: u32) -> &Self {
+        self.write("secrets.toml", contents);
+        std::fs::set_permissions(
+            self.path("secrets.toml"),
+            std::os::unix::fs::PermissionsExt::from_mode(mode),
+        )
+        .unwrap();
+        self
     }
 
     fn load_ok(&self) -> Config {
         self.load().unwrap_or_else(|e| panic!("{e}"))
     }
+}
+
+/// The environment tests load with: only `GITHUB_TOKEN` is set.
+fn test_env(name: &str) -> Option<std::ffi::OsString> {
+    (name == "GITHUB_TOKEN").then(|| "env-github-token".into())
 }
 
 /// Asserts that loading fails in `file` (relative to the root) at `key` with a reason containing
@@ -367,7 +390,11 @@ fn providers_are_built_in() {
         providers: &["openai"],
         channels: &[],
     };
-    let err = Config::load_with(&home.root, &builtins).unwrap_err();
+    let options = LoadOptions {
+        builtins,
+        ..LoadOptions::default()
+    };
+    let err = Config::load_with(&home.root, &options).unwrap_err();
     assert_eq!(err.key.to_string(), "provider.anthropic.component");
     assert!(err.reason.contains("built-in: openai"), "{err}");
 }
@@ -489,7 +516,7 @@ fn channel_rules() {
         (
             "[channel.irc]\nconfig = 5",
             "channel.irc.config",
-            "invalid type",
+            "must be a table, not integer",
         ),
     ];
     for (toml, key, reason) in cases {
@@ -981,8 +1008,8 @@ fn agent_directories() {
     assert_error(&home, "agents/empty", "", "needs an agent.toml");
 }
 
-/// The `toml` code blocks of a Markdown document whose first line is `# ~/.giles/<path>`, as
-/// (path, contents).
+/// The `toml` code blocks of a Markdown document whose first line is `# ~/.giles/<path>`
+/// (optionally followed by a note), as (path, contents).
 fn documented_files(markdown: &str) -> Vec<(&str, String)> {
     let mut files = Vec::new();
     let mut lines = markdown.lines();
@@ -991,7 +1018,11 @@ fn documented_files(markdown: &str) -> Vec<(&str, String)> {
             continue;
         }
         let block: Vec<&str> = lines.by_ref().take_while(|l| *l != "```").collect();
-        if let Some(path) = block.first().and_then(|l| l.strip_prefix("# ~/.giles/")) {
+        let path = block
+            .first()
+            .and_then(|l| l.strip_prefix("# ~/.giles/"))
+            .and_then(|l| l.split_whitespace().next());
+        if let Some(path) = path {
             files.push((path, block.join("\n")));
         }
     }
@@ -1003,14 +1034,304 @@ fn the_documented_full_example_is_valid() {
     let doc = include_str!("../../../../Docs/user/configuration.md");
     let files = documented_files(doc);
     let paths: Vec<&str> = files.iter().map(|(path, _)| *path).collect();
-    assert_eq!(paths, ["giles.toml", "agents/jeeves/agent.toml"]);
+    assert_eq!(
+        paths,
+        ["giles.toml", "secrets.toml", "agents/jeeves/agent.toml"]
+    );
     let home = Home::new("");
     for (path, contents) in &files {
         home.write(path, contents);
     }
+    home.secrets(&files[1].1, 0o600);
     home.write("agents/jeeves/morning.md", "Plan my day.");
     let config = home.load_ok();
     assert_eq!(config.agents.len(), 1);
     assert_eq!(config.routes.len(), 2);
     assert_eq!(config.agents[&agent_id("jeeves")].jobs.len(), 2);
+    let libera = config.channels["libera"].config.to_json();
+    assert_eq!(libera["sasl_password"], "correct horse battery staple");
+}
+
+/// Instances whose credentials come from `secrets.toml`, the environment, and literals.
+const WITH_SECRETS: &str = r#"
+[provider.anthropic]
+config = { api_key = { secret = "anthropic" }, region = "us" }
+
+[channel.mail]
+component = "email"
+address = "https://mail.example.com:7443"
+auth = { oauth = { token_url = "https://auth.example.com/token", client_id = "giles", client_secret = { secret = "mail" }, scopes = ["chat", "admin"] } }
+
+[channel.relay]
+component = "irc"
+address = "https://relay.example.com"
+auth = { bearer = "literal-bearer" }
+
+[toolset.github]
+url = "https://api.githubcopilot.com/mcp/"
+auth = { bearer = { env = "GITHUB_TOKEN" } }
+
+[toolset.files]
+command = "/bin/files"
+env = { FILES_TOKEN = { secret = "files" }, MODE = "ro" }
+"#;
+
+const SECRETS: &str =
+    "anthropic = \"sk-ant-1\"\nmail = \"mail-secret\"\nfiles = \"files-secret\"\n";
+
+#[test]
+fn secret_references_resolve() {
+    let home = Home::new(&format!("{MINIMAL}{WITH_SECRETS}"));
+    home.secrets(SECRETS, 0o600);
+    let config = home.load_ok();
+
+    let anthropic = &config.providers["anthropic"].config;
+    assert_eq!(anthropic.to_json()["api_key"], "sk-ant-1");
+    assert_eq!(anthropic.redacted()["api_key"], "<redacted>");
+    assert_eq!(anthropic.redacted()["region"], "us");
+
+    let ChannelRuntime::Remote(mail) = &config.channels["mail"].runtime else {
+        panic!()
+    };
+    let Some(Auth::OAuth(oauth)) = &mail.auth else {
+        panic!("{:?}", mail.auth)
+    };
+    assert_eq!(oauth.token_url.as_str(), "https://auth.example.com/token");
+    assert_eq!(oauth.client_id, "giles");
+    assert_eq!(oauth.client_secret.expose(), "mail-secret");
+    assert_eq!(oauth.scopes, ["chat", "admin"]);
+
+    let ChannelRuntime::Remote(relay) = &config.channels["relay"].runtime else {
+        panic!()
+    };
+    assert_eq!(
+        relay.auth,
+        Some(Auth::Bearer(Secret::new("literal-bearer")))
+    );
+
+    let ToolsetTransport::Http(github) = &config.toolsets["github"].transport else {
+        panic!()
+    };
+    assert_eq!(
+        github.auth,
+        Some(Auth::Bearer(Secret::new("env-github-token")))
+    );
+
+    let ToolsetTransport::Stdio(files) = &config.toolsets["files"].transport else {
+        panic!()
+    };
+    assert_eq!(files.env["FILES_TOKEN"].expose(), "files-secret");
+    assert_eq!(files.env["MODE"].expose(), "ro");
+
+    // Nothing that holds a credential shows it in `Debug`.
+    let debug = format!("{config:?}");
+    for value in [
+        "sk-ant-1",
+        "mail-secret",
+        "files-secret",
+        "env-github-token",
+        "literal-bearer",
+    ] {
+        assert!(!debug.contains(value), "{value} in {debug}");
+    }
+    assert!(debug.contains("<redacted>"));
+}
+
+#[test]
+fn secrets_toml_must_be_private() {
+    for mode in [0o644, 0o640, 0o604, 0o660] {
+        let home = Home::new(MINIMAL);
+        home.secrets(SECRETS, mode);
+        assert_error(&home, "secrets.toml", "", "group or others");
+    }
+    // Checked even when nothing refers to it.
+    let home = Home::new(MINIMAL);
+    home.secrets("", 0o644);
+    assert_error(&home, "secrets.toml", "", "chmod 600");
+}
+
+#[test]
+fn secret_resolution_errors() {
+    let cases = [
+        (
+            "[provider.anthropic]\nconfig = { api_key = { secret = \"nope\" } }",
+            "provider.anthropic.config.api_key",
+            "no secret \"nope\" in",
+        ),
+        (
+            "[toolset.t]\nurl = \"https://x\"\nauth = { bearer = { env = \"UNSET\" } }",
+            "toolset.t.auth.bearer",
+            "environment variable UNSET is not set",
+        ),
+        (
+            "[toolset.t]\ncommand = \"/x\"\nenv = { A = { secret = \"nope\" } }",
+            "toolset.t.env.A",
+            "no secret",
+        ),
+        (
+            "[provider.anthropic]\nconfig = { api_key = { env = 1 } }",
+            "provider.anthropic.config.api_key",
+            "non-empty string",
+        ),
+    ];
+    for (toml, key, reason) in cases {
+        let home = Home::new(&format!("{MINIMAL}{toml}\n"));
+        home.secrets(SECRETS, 0o600);
+        assert_error(&home, "giles.toml", key, reason);
+    }
+    let home = Home::new(&format!(
+        "{MINIMAL}[provider.anthropic]\nconfig = {{ api_key = {{ secret = \"anthropic\" }} }}\n"
+    ));
+    let missing = format!("{} does not exist", home.path("secrets.toml").display());
+    assert_error(
+        &home,
+        "giles.toml",
+        "provider.anthropic.config.api_key",
+        &missing,
+    );
+}
+
+#[test]
+fn auth_and_env_rules() {
+    let remote = "[channel.x]\ncomponent = \"irc\"\naddress = \"https://x\"";
+    let cases = [
+        (
+            "[channel.web]\nauth = { bearer = \"t\" }",
+            "channel.web.auth",
+            "built-in",
+        ),
+        (
+            "[channel.x]\nauth = { bearer = \"t\" }",
+            "channel.x.auth",
+            "without `address`",
+        ),
+        (
+            "[toolset.t]\ncommand = \"/x\"\nauth = { bearer = \"t\" }",
+            "toolset.t.auth",
+            "without `url`",
+        ),
+        (
+            "[toolset.t]\nurl = \"https://x\"\nenv = { A = \"b\" }",
+            "toolset.t.env",
+            "remote toolset",
+        ),
+        (
+            "[toolset.t]\nurl = \"https://x\"\nauth = { oauth = {} }",
+            "toolset.t.auth.oauth",
+            "only `bearer`",
+        ),
+        (
+            "[toolset.t]\nurl = \"https://x\"\nauth = \"t\"",
+            "toolset.t.auth",
+            "must be { bearer = ... }",
+        ),
+        (
+            &format!("{remote}\nauth = {{}}"),
+            "channel.x.auth",
+            "or { oauth",
+        ),
+        (
+            &format!("{remote}\nauth = {{ bearer = \"a\", oauth = {{}} }}"),
+            "channel.x.auth",
+            "must be",
+        ),
+        (
+            &format!("{remote}\nauth = {{ basic = \"a\" }}"),
+            "channel.x.auth.basic",
+            "unknown auth",
+        ),
+        (
+            &format!("{remote}\nauth = {{ bearer = [] }}"),
+            "channel.x.auth.bearer",
+            "not array",
+        ),
+        (
+            &format!(
+                "{remote}\nauth = {{ oauth = {{ token_url = \"https://t\", client_id = \"c\" }} }}"
+            ),
+            "channel.x.auth.oauth",
+            "missing field `client_secret`",
+        ),
+        (
+            &format!(
+                "{remote}\nauth = {{ oauth = {{ token_url = \"http://t.example.com\", \
+                 client_id = \"c\", client_secret = \"s\" }} }}"
+            ),
+            "channel.x.auth.oauth.token_url",
+            "insecure = true",
+        ),
+        (
+            &format!(
+                "{remote}\nauth = {{ oauth = {{ token_url = \"https://t\", client_id = 5, \
+                 client_secret = \"s\" }} }}"
+            ),
+            "channel.x.auth.oauth.client_id",
+            "must be a string",
+        ),
+        (
+            &format!(
+                "{remote}\nauth = {{ oauth = {{ token_url = \"https://t\", client_id = \"c\", \
+                 client_secret = \"s\", scope = [] }} }}"
+            ),
+            "channel.x.auth.oauth.scope",
+            "unknown field `scope`",
+        ),
+        (
+            &format!(
+                "{remote}\nauth = {{ oauth = {{ token_url = \"https://t\", client_id = \"c\", \
+                 client_secret = \"s\", scopes = [1] }} }}"
+            ),
+            "channel.x.auth.oauth.scopes[0]",
+            "must be a string",
+        ),
+        (
+            "[toolset.t]\ncommand = \"/x\"\nenv = \"A=b\"",
+            "toolset.t.env",
+            "must be a table",
+        ),
+        (
+            "[toolset.t]\ncommand = \"/x\"\nenv = { \"A=B\" = \"c\" }",
+            "toolset.t.env.\"A=B\"",
+            "variable name",
+        ),
+        (
+            "[toolset.t]\ncommand = \"/x\"\nenv = { A = 1 }",
+            "toolset.t.env.A",
+            "not integer",
+        ),
+        (
+            "[provider.anthropic]\nconfig = \"sk-123\"",
+            "provider.anthropic.config",
+            "must be a table",
+        ),
+    ];
+    for (toml, key, reason) in cases {
+        let home = Home::new(&format!("{MINIMAL}{toml}\n"));
+        assert_error(&home, "giles.toml", key, reason);
+    }
+}
+
+#[test]
+fn errors_never_show_credential_values() {
+    // Values at credential paths, even literal ones of the wrong type, stay out of errors.
+    let cases = [
+        "[channel.x]\ncomponent = \"irc\"\naddress = \"https://x\"\nauth = { bearer = 98765432 }",
+        "[channel.x]\ncomponent = \"irc\"\naddress = \"https://x\"\nauth = \"98765432\"",
+        "[toolset.t]\ncommand = \"/x\"\nenv = { TOKEN = 98765432 }",
+        "[toolset.t]\ncommand = \"/x\"\nenv = \"98765432\"",
+        "[provider.anthropic]\nconfig = \"98765432\"",
+        "[provider.anthropic]\nconfig = 98765432",
+    ];
+    for toml in cases {
+        let home = Home::new(&format!("{MINIMAL}{toml}\n"));
+        let err = home.load().unwrap_err();
+        let shown = format!("{err} {err:?}");
+        assert!(!shown.contains("98765432"), "{shown}");
+    }
+    let home = Home::new(MINIMAL);
+    home.secrets("token = 98765432\n", 0o600);
+    let err = home.load().unwrap_err();
+    let shown = format!("{err} {err:?}");
+    assert_eq!(err.key.to_string(), "token");
+    assert!(!shown.contains("98765432"), "{shown}");
 }

@@ -1,32 +1,38 @@
 # Configuration
 
-`giles_core::config` reads and validates `giles.toml` and every `agents/<agent>/agent.toml` (PLAN
-sections 1.1 and 11.2). The user-facing reference is [Configuration](../user/configuration.md).
+`giles_core::config` reads and validates `giles.toml`, `secrets.toml`, and every
+`agents/<agent>/agent.toml` (PLAN sections 1.1, 7.7, and 11.2). The user-facing reference is
+[Configuration](../user/configuration.md).
 
 ## Loading
 
 ```rust
-let config: Config = Config::load(&data_root)?;            // the v1 built-ins
-let config: Config = Config::load_with(&data_root, &builtins)?;
+// The v1 built-ins and the process environment.
+let config: Config = Config::load(&data_root)?;
+// Explicit built-ins and environment (tests, or a core built with fewer features).
+let options = LoadOptions { builtins, env: &|name| lookup(name) };
+let config: Config = Config::load_with(&data_root, &options)?;
 ```
 
 `Config::load` runs once, before `giles serve` builds its runtime; configuration reload is deferred
-(D28). It reads files only through `DataRoot` (`config_file`, `agents_dir`), and returns the first
-problem as a `ConfigError`. Everything else in the core takes the resulting `Config` and never
-reads the files again (agent Markdown files are read per turn by their owners, not here).
+(D28). It reads files only through `DataRoot` (`config_file`, `secrets_file`, `agents_dir`), and
+returns the first problem as a `ConfigError`. Everything else in the core takes the resulting
+`Config` and never reads the files again (agent Markdown files are read per turn by their owners,
+not here).
 
 The steps:
 
 1. Read `giles.toml` (UTF-8) and deserialize it into private `Raw*` structs. Every struct has
-   `#[serde(deny_unknown_fields)]`; the only place unknown keys pass is an instance's `config`,
-   which is deserialized as a `toml::Table`.
+   `#[serde(deny_unknown_fields)]`; the only place unknown keys pass is an instance's `config`.
 2. Validate `[core]` and `[owner]`.
-3. Check that instance names are unique across the three kinds, ignoring ASCII case (they share
+3. Load `secrets.toml` ([Secrets](#secrets)).
+4. Check that instance names are unique across the three kinds, ignoring ASCII case (they share
    the data directory namespace, `data/plugins/<instance>/`, and pid files, and macOS file systems
-   are case-insensitive by default), then validate each instance into its typed form.
-4. Load every agent: each directory in `agents/` not starting with `.` must have a valid name and
+   are case-insensitive by default), then validate each instance into its typed form, resolving
+   secret references.
+5. Load every agent: each directory in `agents/` not starting with `.` must have a valid name and
    an `agent.toml`. Models are checked against the configured provider instances.
-5. Validate `[[routes]]` against the channel instances and agents.
+6. Validate `[[routes]]` against the channel instances and agents.
 
 `Config` holds typed, validated values only: `InstanceName`, `AgentId`, `ModelRef`,
 `std::time::Duration`, `jiff::tz::TimeZone`, `croner::Cron`, `url::Url`. Defaults are applied
@@ -83,6 +89,47 @@ credentials, and plain `http` needs `insecure = true` unless the host is `localh
 The `config` table becomes a `PluginConfig`, a JSON object for `Configure` (PLAN section 7.7).
 TOML datetimes become their TOML text; infinite and NaN floats, which JSON can't carry, are
 errors.
+
+## Secrets
+
+`secrets.toml` is optional. If it exists it must be a regular file with no group or other
+permission bits (`mode & 0o077 == 0`, checked on the file `fs::metadata` follows) and a flat table
+of strings; otherwise loading fails, even if nothing refers to it.
+
+A reference is an inline table with exactly one key, `secret` or `env`, whose value is a non-empty
+string. References are resolved in three places:
+
+- Anywhere in an instance's `config` table, including inside arrays. A one-key `secret`/`env`
+  table there is always a reference, so components can't use that shape as data.
+- Credentials: `auth.bearer`, `auth.oauth.client_secret`, and the values of a stdio toolset's
+  `env`. These also accept a literal string.
+
+`{ env = ... }` reads the process environment through `LoadOptions::env`; an unset variable or a
+non-UTF-8 value is an error. A missing secret names the secrets file, and says when it doesn't
+exist.
+
+Keeping values out of output:
+
+- Credentials are `Secret`, whose `Debug` and `Display` print `<redacted>`; `Secret::expose` is
+  the only way to the value.
+- `PluginConfig` remembers the key paths that held references and the values they resolved to.
+  Its `Debug` and `redacted()` put `<redacted>` at those paths; only `to_json()`, for `Configure`,
+  has the values.
+- `scrub(text, &[&Secret])` replaces secret values in text Giles didn't write but logs or shows:
+  a component's `Configure` error (`PluginConfig::scrub`), or a plugin's or MCP server's stderr,
+  with the instance's `auth`, `env`, and `PluginConfig::secrets()` values. It makes one pass,
+  taking the longest matching value at each position, so overlapping values can't garble the
+  output and an inserted `<redacted>` is never matched again. Values shorter than
+  `MIN_SCRUB_LEN` (4 bytes) are skipped: replacing every `1` or `443` in a message would garble
+  it, and a value that short protects nothing.
+- `config`, `auth`, and `env` are deserialized as raw `toml::Value`s and checked by hand, because
+  serde's type errors quote the offending value (`invalid type: string "sk-...", expected a map`).
+  The same goes for `secrets.toml`, whose errors give only the key and the value's type.
+- TOML syntax errors use the parser's message and position, never its `Display`, which quotes the
+  source line.
+
+`Config`'s `Debug` output is therefore safe to log. Literal strings in a `config` table are not
+secrets as far as Giles knows; the user guide tells operators to use references for credentials.
 
 ## Values
 

@@ -1,9 +1,11 @@
-//! Configuration: `giles.toml` and `agents/<agent>/agent.toml` (PLAN section 11.2).
+//! Configuration: `giles.toml`, `secrets.toml`, and `agents/<agent>/agent.toml` (PLAN sections
+//! 7.7 and 11.2).
 //!
 //! [`Config::load`] reads and validates everything once, at startup; changes need a restart (PLAN
 //! section 1.1). Every problem is a [`ConfigError`] naming the file, the key path, and the reason.
 //! Unknown keys are errors everywhere except inside an instance's free-form `config` table, which
-//! belongs to the component.
+//! belongs to the component. Secret references are resolved during loading; resolved values are
+//! held as [`Secret`]s or in a [`PluginConfig`], whose `Debug` output is redacted.
 
 mod agent;
 mod error;
@@ -12,9 +14,11 @@ mod instances;
 mod model;
 mod names;
 mod plugin_config;
+mod secrets;
 mod units;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -31,13 +35,38 @@ pub use agent::{
 pub use error::{ConfigError, KeyPath, Position, Segment};
 pub use giles::{CoreConfig, DEFAULT_HTTP_LISTEN, Identity, OwnerConfig, Route};
 pub use instances::{
-    ChannelInstance, ChannelRuntime, DEFAULT_MAX_BLOB, DEFAULT_TOOL_DEADLINE, Launch, Program,
-    ProviderInstance, Remote, Sandbox, StdioServer, ToolsetInstance, ToolsetTransport,
+    Auth, ChannelInstance, ChannelRuntime, DEFAULT_MAX_BLOB, DEFAULT_TOOL_DEADLINE, Launch,
+    OAuthClientCredentials, Program, ProviderInstance, Remote, Sandbox, StdioServer,
+    ToolsetInstance, ToolsetTransport,
 };
 pub use model::ModelRef;
 pub use names::{Builtins, Component, InstanceName, Kind, is_valid_name, plugin_binary};
 pub use plugin_config::PluginConfig;
+pub use secrets::{MIN_SCRUB_LEN, REDACTED, Secret, scrub};
 pub use units::{parse_duration, parse_size};
+
+/// What [`Config::load_with`] needs besides the data root.
+#[derive(Clone, Copy)]
+pub struct LoadOptions<'a> {
+    /// The components compiled into this core.
+    pub builtins: Builtins,
+    /// Looks up an environment variable for `{ env = "NAME" }` references.
+    pub env: &'a dyn Fn(&str) -> Option<OsString>,
+}
+
+impl Default for LoadOptions<'static> {
+    /// The v1 built-ins ([`Builtins::V1`]) and the process environment.
+    fn default() -> Self {
+        Self {
+            builtins: Builtins::V1,
+            env: &process_env,
+        }
+    }
+}
+
+fn process_env(name: &str) -> Option<OsString> {
+    std::env::var_os(name)
+}
 
 /// The whole validated configuration.
 #[derive(Debug, Clone)]
@@ -60,23 +89,22 @@ pub struct Config {
 }
 
 impl Config {
-    /// Loads and validates the configuration under `root` with the v1 built-in components
-    /// ([`Builtins::V1`]).
+    /// Loads and validates the configuration under `root` with the default [`LoadOptions`]: the
+    /// v1 built-in components and the process environment.
     ///
     /// # Errors
     ///
     /// The first problem found, as a [`ConfigError`].
     pub fn load(root: &DataRoot) -> Result<Self, ConfigError> {
-        Self::load_with(root, &Builtins::V1)
+        Self::load_with(root, &LoadOptions::default())
     }
 
-    /// Loads and validates the configuration under `root`; `builtins` are the components compiled
-    /// into this core.
+    /// Loads and validates the configuration under `root`.
     ///
     /// # Errors
     ///
     /// The first problem found, as a [`ConfigError`].
-    pub fn load_with(root: &DataRoot, builtins: &Builtins) -> Result<Self, ConfigError> {
+    pub fn load_with(root: &DataRoot, options: &LoadOptions<'_>) -> Result<Self, ConfigError> {
         let file = root.config_file();
         let source = read_file(&file).map_err(|e| match &e.source {
             Some(io) if io.kind() == io::ErrorKind::NotFound => ConfigError::file(
@@ -85,20 +113,25 @@ impl Config {
             ),
             _ => e,
         })?;
-        Self::from_source(root, builtins, &file, &source).map_err(|e| e.located(&file, &source))
+        Self::from_source(root, options, &file, &source).map_err(|e| e.located(&file, &source))
     }
 
     /// Validates `source`, the contents of `file` (`giles.toml`), and loads everything it refers
     /// to.
     fn from_source(
         root: &DataRoot,
-        builtins: &Builtins,
+        options: &LoadOptions<'_>,
         file: &Path,
         source: &str,
     ) -> Result<Self, ConfigError> {
         let mut raw: giles::RawGiles = parse_toml(file, source)?;
         let core = raw.core();
         let owner = raw.owner(file)?;
+        let secrets = secrets::Secrets::load(&root.secrets_file())?;
+        let resolver = secrets::Resolver {
+            secrets: &secrets,
+            env: options.env,
+        };
 
         // Compared case-insensitively: on a case-insensitive file system (the macOS default),
         // `Libera` and `libera` would share a data directory and pid file.
@@ -123,7 +156,11 @@ impl Config {
             }
         }
 
-        let ctx = instances::Ctx { file, builtins };
+        let ctx = instances::Ctx {
+            file,
+            builtins: &options.builtins,
+            resolver: &resolver,
+        };
         let mut providers = BTreeMap::new();
         for (name, instance) in std::mem::take(&mut raw.provider) {
             let instance = ctx.provider(&name, instance)?;

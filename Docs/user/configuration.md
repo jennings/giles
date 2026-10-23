@@ -107,6 +107,7 @@ supported yet, so `component` must name one of these.
 
 ```toml
 [provider.anthropic]
+config = { api_key = { secret = "anthropic" } }
 
 [provider.ollama]
 component = "openai"
@@ -125,11 +126,27 @@ or, with `address`, connects to where someone else runs it.
 | `max_blob`    | plugins           | `"50 MiB"` | The largest attachment Giles accepts from the plugin     |
 | `unsandboxed` | launched plugins  | `false`    | Run without a sandbox (logged as a warning at every launch) |
 | `address`     | remote plugins    |            | `https://host:port` (or `http://`) of a running plugin   |
+| `auth`        | remote plugins    | none       | `{ bearer = <credential> }` or `{ oauth = { ... } }`, below |
 | `insecure`    | remote plugins    | `false`    | Allow plain `http://` to a host other than this machine  |
 
 Plain `http://` is accepted without `insecure` only for `localhost`, `127.0.0.0/8`, and `::1`:
 without TLS, anyone on the network path could inject messages. Addresses can't contain a user name
-or password.
+or password; use `auth`:
+
+```toml
+[channel.mail]
+component = "email"
+address = "https://mail-bridge.example.com:7443"
+
+[channel.mail.auth.oauth]
+token_url = "https://auth.example.com/token"
+client_id = "giles"
+client_secret = { secret = "mail-bridge" }
+scopes = ["channel"]
+```
+
+`oauth` uses the OAuth 2.0 client credentials grant: `token_url` (`https://`), `client_id`,
+`client_secret` (a credential), and optional `scopes`.
 
 #### Toolsets
 
@@ -146,9 +163,11 @@ A toolset is an MCP server. It runs one of three ways:
 | `command`     | stdio      |           | The program to run                                            |
 | `component`   | stdio      | name      | The plugin to run when there's no `command`                   |
 | `args`        | stdio      | `[]`      | Arguments                                                     |
+| `env`         | stdio      | `{}`      | Environment variables to set, name to credential              |
 | `idle_stop`   | stdio      | off       | Stop the server after this long without calls (a duration); it restarts on the next call |
 | `unsandboxed` | stdio      | `false`   | Run without a sandbox (logged as a warning at every launch)   |
 | `url`         | remote     |           | The server's `https://` (or `http://`) URL                    |
+| `auth`        | remote     | none      | `{ bearer = <credential> }`                                   |
 | `insecure`    | remote     | `false`   | Allow plain `http://` to a host other than this machine       |
 | `deadline`    | all        | `"5m"`    | How long one tool call may run                                |
 | `parallel`    | all        | `false`   | The toolset's tools may run in parallel with each other and with read-only core tools |
@@ -164,8 +183,44 @@ idle_stop = "30m"
 
 [toolset.github]
 url = "https://api.githubcopilot.com/mcp/"
+auth = { bearer = { env = "GITHUB_TOKEN" } }
 deadline = "2m"
 ```
+
+### Secrets
+
+Keep credentials out of `giles.toml`. Put them in `secrets.toml` in the data root, a flat table of
+names to strings:
+
+```toml
+anthropic = "sk-ant-..."
+github = "ghp_..."
+```
+
+Giles refuses to start if group or others have any access to `secrets.toml`; make it private with
+`chmod 600 ~/.giles/secrets.toml`. The file is optional when nothing refers to it.
+
+Refer to a secret with `{ secret = "<name>" }`, or take a value from Giles' own environment with
+`{ env = "<VARIABLE>" }`. A reference works:
+
+- anywhere in an instance's `config` table, at any depth (a table whose only key is `secret` or
+  `env` is always a reference there);
+- as a credential: `auth.bearer`, `auth.oauth.client_secret`, and the values of a toolset's
+  `env`. A credential may also be a plain string.
+
+```toml
+[provider.anthropic]
+config = { api_key = { secret = "anthropic" } }
+
+[toolset.github]
+url = "https://api.githubcopilot.com/mcp/"
+auth = { bearer = { env = "GITHUB_TOKEN" } }
+```
+
+Giles resolves references when it starts and fails if a secret is missing or a variable is unset.
+Components receive plain values and never read `secrets.toml` or the environment themselves. Error
+messages and logs name the key and the secret or variable, never the value; where Giles shows an
+instance's `config`, values that came from references read `<redacted>`.
 
 ### `[[routes]]`
 
@@ -237,7 +292,8 @@ time zone, else the agent's, else the system's.
 
 ## Full Example
 
-This configuration is checked by Giles' test suite, so it stays valid.
+This configuration, with `GITHUB_TOKEN` set in Giles' environment, is checked by Giles' test suite,
+so it stays valid.
 
 ```toml
 # ~/.giles/giles.toml
@@ -250,6 +306,7 @@ default = "irc:libera.chat:account:stephen"
 timezone = "America/Los_Angeles"
 
 [provider.anthropic]
+config = { api_key = { secret = "anthropic" } }
 
 [provider.ollama]
 component = "openai"
@@ -259,10 +316,16 @@ config = { base_url = "http://127.0.0.1:11434/v1" }
 
 [channel.libera]
 component = "irc"
-config = { server = "irc.libera.chat:6697", nick = "jeeves", channels = ["#giles"] }
+
+[channel.libera.config]
+server = "irc.libera.chat:6697"
+nick = "jeeves"
+channels = ["#giles"]
+sasl_password = { secret = "libera" }
 
 [toolset.github]
 url = "https://api.githubcopilot.com/mcp/"
+auth = { bearer = { env = "GITHUB_TOKEN" } }
 deadline = "2m"
 
 [toolset.files]
@@ -278,6 +341,12 @@ agent = "jeeves"
 
 [[routes]]
 agent = "jeeves"
+```
+
+```toml
+# ~/.giles/secrets.toml (mode 0600)
+anthropic = "sk-ant-api03-..."
+libera = "correct horse battery staple"
 ```
 
 ```toml
