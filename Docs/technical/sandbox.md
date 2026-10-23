@@ -91,7 +91,7 @@ with mode 0600, and pass its path.
   "write": [],
   "execute": ["/opt/homebrew/bin"],
   "network": ["tcp:6697"],
-  "unix_sockets": false,
+  "unix": [],
   "min_abi": 4,
   "unsandboxed": false,
   "env": {"GILES_PLUGIN_MAGIC": "...", "GILES_PLUGIN_PROTOCOLS": "1"},
@@ -106,7 +106,7 @@ with mode 0600, and pass its path.
 | `write`        | `[]`               | Extra writable paths.                                               |
 | `execute`      | `[]`               | Extra paths under which programs may run. The command always may.   |
 | `network`      | `false`            | `false`: no IP sockets. `true`: all IP traffic. `["tcp:<port>"]`: TCP connects to those remote ports only. |
-| `unix_sockets` | `false`            | Allow `socket(AF_UNIX, ...)`. `socketpair` is always allowed.       |
+| `unix`         | `[]`               | Unix sockets the plugin may connect to. Non-empty also allows `socket(AF_UNIX, ...)` on Linux (below). `socketpair` is always allowed. |
 | `min_abi`      | unset              | Lowest Landlock ABI to accept (Linux; ignored on macOS).            |
 | `unsandboxed`  | `false`            | Skip the backend, with a warning. The environment is still scrubbed. |
 | `env`          | `{}`               | Variables to pass: `GILES_*` names and `LANG`.                      |
@@ -127,7 +127,13 @@ The spec is the trampoline's input, not configuration. 1.1 parses the `sandbox =
 12.4). 2.16 and 2.19 build the spec from those grants plus the per-kind defaults: `network`
 defaults to `true` for providers and channels and to `false` for stdio toolsets, and 2.19 adds a
 toolset's install prefix to `read` and `execute`. The spec's own defaults are the most
-restrictive values, so a field the core forgets denies rather than allows.
+restrictive values, so a field the core forgets denies rather than allows. The config's
+`sandbox.unix` list goes to `unix` unchanged.
+
+`unix` is enforced differently per platform. Linux (2.13): the seccomp filter allows the `AF_UNIX`
+family iff the list is non-empty; Landlock can only restrict connecting to a named socket by path
+from ABI 9, so below that a plugin with any `unix` grant can connect to every socket it can reach.
+macOS (2.14): the Seatbelt profile allows connecting to exactly the listed paths.
 
 ## Environment
 

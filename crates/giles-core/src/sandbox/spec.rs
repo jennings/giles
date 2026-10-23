@@ -56,10 +56,12 @@ pub struct Spec {
     /// IP network access.
     #[serde(default)]
     pub network: Network,
-    /// Whether the command may create `AF_UNIX` sockets (PLAN section 7.4). `socketpair` is
-    /// always allowed.
-    #[serde(default)]
-    pub unix_sockets: bool,
+    /// Unix sockets the command may connect to: absolute paths (PLAN section 7.4). Empty (the
+    /// default) means no Unix sockets. On Linux a non-empty list lets the command create
+    /// `AF_UNIX` sockets at all (Landlock restricts connecting by path only from ABI 9); macOS
+    /// allows connecting to exactly these paths. `socketpair` is always allowed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unix: Vec<PathBuf>,
     /// The lowest Landlock ABI the launch accepts (Linux only; macOS ignores it). Unset accepts
     /// any ABI the host check accepts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -150,7 +152,7 @@ impl Spec {
             write: Vec::new(),
             execute: Vec::new(),
             network: Network::Off,
-            unix_sockets: false,
+            unix: Vec::new(),
             min_abi: None,
             unsandboxed: false,
             env: BTreeMap::new(),
@@ -189,6 +191,7 @@ impl Spec {
             ("read", &self.read),
             ("write", &self.write),
             ("execute", &self.execute),
+            ("unix", &self.unix),
         ] {
             for path in paths {
                 check_path(field, path)?;
@@ -352,7 +355,7 @@ mod tests {
         let spec = Spec::parse(r#"{"data_dir": "/d"}"#).unwrap();
         assert_eq!(spec, Spec::new("/d"));
         assert_eq!(spec.network, Network::Off);
-        assert!(!spec.unix_sockets && !spec.unsandboxed);
+        assert!(spec.unix.is_empty() && !spec.unsandboxed);
         assert_eq!(spec.search_path(), DEFAULT_PATH);
         assert_eq!(spec.tmp_dir(), Path::new("/d/tmp"));
     }
@@ -366,7 +369,7 @@ mod tests {
                 "write": ["/srv/out"],
                 "execute": ["/opt/homebrew/bin"],
                 "network": ["tcp:6697", "tcp:443", "tcp:443"],
-                "unix_sockets": true,
+                "unix": ["/run/user/1000/bus"],
                 "min_abi": 4,
                 "unsandboxed": false,
                 "env": {"GILES_PLUGIN_MAGIC": "cookie", "LANG": "C.UTF-8"},
@@ -378,7 +381,7 @@ mod tests {
         assert_eq!(spec.write, [Path::new("/srv/out")]);
         assert_eq!(spec.execute, [Path::new("/opt/homebrew/bin")]);
         assert_eq!(spec.network, Network::Tcp(BTreeSet::from([443, 6697])));
-        assert!(spec.unix_sockets);
+        assert_eq!(spec.unix, [Path::new("/run/user/1000/bus")]);
         assert_eq!(spec.min_abi, Some(4));
         assert_eq!(spec.env["GILES_PLUGIN_MAGIC"], "cookie");
         assert_eq!(spec.search_path(), "/opt/homebrew/bin:/usr/bin");
@@ -388,6 +391,7 @@ mod tests {
     fn to_json_round_trips() {
         let mut spec = Spec::new("/d");
         spec.read.push("/r".into());
+        spec.unix.push("/s.sock".into());
         spec.network = Network::Tcp(BTreeSet::from([443]));
         spec.min_abi = Some(6);
         spec.env.insert("GILES_PLUGIN_PROTOCOLS".into(), "1".into());
@@ -428,7 +432,7 @@ mod tests {
 
     #[test]
     fn relative_and_dotdot_grants_are_rejected() {
-        for field in ["read", "write", "execute"] {
+        for field in ["read", "write", "execute", "unix"] {
             for (path, reason) in [("rel/x", "is not absolute"), ("/x/..", "contains `..`")] {
                 let err = parse_err(&format!(r#"{{"data_dir": "/d", "{field}": ["{path}"]}}"#));
                 assert!(
