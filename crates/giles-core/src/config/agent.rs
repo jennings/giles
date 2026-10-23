@@ -241,12 +241,22 @@ pub(crate) fn load(
     dir: &Path,
     providers: &BTreeSet<&str>,
 ) -> Result<AgentConfig, ConfigError> {
+    let source = super::read_file(&dir.join("agent.toml"))?;
+    parse(id, dir, &source, providers)
+}
+
+/// Validates `source` as the `agent.toml` in `dir` of agent `id`, as [`load`] does once it has
+/// read the file. Job prompt files are looked up in `dir`.
+pub(crate) fn parse(
+    id: &str,
+    dir: &Path,
+    source: &str,
+    providers: &BTreeSet<&str>,
+) -> Result<AgentConfig, ConfigError> {
     let file = dir.join("agent.toml");
-    let source = super::read_file(&file)?;
-    let raw: RawAgent = super::parse_toml(&file, &source)?;
-    let err = |path: KeyPath, reason: String| {
-        ConfigError::at(&file, path, reason).located(&file, &source)
-    };
+    let raw: RawAgent = super::parse_toml(&file, source)?;
+    let err =
+        |path: KeyPath, reason: String| ConfigError::at(&file, path, reason).located(&file, source);
     let root = KeyPath::root();
 
     let check_model = |path: KeyPath, model: &ModelRef| {
@@ -340,7 +350,7 @@ pub(crate) fn load(
             }
             (None, None) => {
                 let reason = "missing `prompt` or `prompt_file`";
-                return Err(ConfigError::at(&file, path, reason).located(&file, &source));
+                return Err(ConfigError::at(&file, path, reason).located(&file, source));
             }
             (Some(text), None) if text.trim().is_empty() => {
                 return Err(err("prompt", "must not be empty".into()));

@@ -34,6 +34,12 @@ The steps:
    an `agent.toml`. Models are checked against the configured provider instances.
 6. Validate `[[routes]]` against the channel instances and agents.
 
+`Config::validate_agent(root, id, source)` runs step 5 for one agent that isn't on disk yet: the id
+as a directory name, then the same parser and checks as a loaded `agent.toml` (models against this
+configuration's provider instances, job prompt files in the agent's directory). It writes nothing;
+the web UI validates an agent it creates with it before writing the files
+([Web Channel](web-channel.md)).
+
 `Config` holds typed, validated values only: `InstanceName`, `AgentId`, `ModelRef`,
 `std::time::Duration`, `jiff::tz::TimeZone`, `croner::Cron`, `url::Url`. Defaults are applied
 during validation and exported as constants (`DEFAULT_HTTP_LISTEN`, `DEFAULT_MAX_BLOB`,

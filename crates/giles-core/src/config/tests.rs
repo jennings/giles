@@ -726,6 +726,43 @@ fn agent_defaults() {
 }
 
 #[test]
+fn validate_agent_checks_a_source_as_loading_does() {
+    let home = with_provider();
+    let config = home.load_ok();
+    let agent = config
+        .validate_agent(
+            &home.root,
+            "bunter",
+            "name = \"Bunter\"\nmodels = [\"anthropic/claude-sonnet-4-5\"]\n",
+        )
+        .unwrap();
+    assert_eq!(agent.id.as_str(), "bunter");
+    assert_eq!(agent.dir, home.path("agents/bunter"));
+    assert_eq!(agent.name.as_deref(), Some("Bunter"));
+    // Nothing was written, and the loaded configuration is unchanged.
+    assert!(!home.path("agents/bunter").exists());
+    assert!(config.agents.is_empty());
+
+    let error = |id: &str, source: &str| config.validate_agent(&home.root, id, source).unwrap_err();
+    let bad_id = error("../x", "models = [\"anthropic/m\"]");
+    assert_eq!(bad_id.file, home.path("agents"));
+    assert!(bad_id.reason.contains("agent"), "{bad_id}");
+    let unknown = error("bunter", "models = [\"nope/m\"]");
+    assert_eq!(unknown.file, home.path("agents/bunter/agent.toml"));
+    assert_eq!(unknown.key.to_string(), "models[0]");
+    assert!(unknown.reason.contains("no provider instance"), "{unknown}");
+    // Positioned in the source, like a file loaded at startup.
+    assert!(unknown.position.is_some(), "{unknown}");
+    let glob = error("bunter", "models = [\"anthropic/m\"]\ntools = [\"a b\"]");
+    assert_eq!(glob.key.to_string(), "tools[0]");
+    let unknown_key = error("bunter", "models = [\"anthropic/m\"]\nowner = \"x\"");
+    assert!(
+        unknown_key.reason.contains("unknown field"),
+        "{unknown_key}"
+    );
+}
+
+#[test]
 fn agent_settings() {
     let home = with_provider();
     home.write("agents/jeeves/morning.md", "Good morning.")

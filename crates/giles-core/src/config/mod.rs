@@ -276,6 +276,32 @@ impl Config {
             agents,
         })
     }
+
+    /// Validates `source` as the `agent.toml` of an agent `id` that would live in
+    /// `agents/<id>/` under `root`, exactly as [`load`](Self::load) validates each agent at
+    /// startup: the id as a directory name, every key, the models against this configuration's
+    /// provider instances, and job prompt files in the agent's directory. Reads nothing else and
+    /// writes nothing; the web UI checks an agent it creates with this before writing it.
+    ///
+    /// # Errors
+    ///
+    /// The first problem found, as a [`ConfigError`] in `agents/<id>/agent.toml` (in
+    /// `agents/` for an invalid id).
+    pub fn validate_agent(
+        &self,
+        root: &DataRoot,
+        id: &str,
+        source: &str,
+    ) -> Result<AgentConfig, ConfigError> {
+        if !is_valid_name(id) {
+            return Err(ConfigError::file(
+                &root.agents_dir(),
+                names::invalid_name_reason("agent", id),
+            ));
+        }
+        let providers = self.providers.keys().map(InstanceName::as_str).collect();
+        agent::parse(id, &root.agents_dir().join(id), source, &providers)
+    }
 }
 
 /// Loads every agent: each directory in `agents/` whose name doesn't start with `.`. Files there
