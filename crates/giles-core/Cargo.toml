@@ -29,6 +29,7 @@ giles-store.workspace = true
 giles-types.workspace = true
 jiff = { workspace = true, features = ["tz-system", "tzdb-zoneinfo", "tzdb-bundle-always"] }
 reqwest.workspace = true
+rmcp = { version = "3.7.0", default-features = false, features = ["client", "transport-async-rw"] }
 serde.workspace = true
 serde-saphyr = { version = "2.0.0", default-features = false, features = ["deserialize"] }
 serde_json.workspace = true
@@ -36,7 +37,7 @@ serde_path_to_error = "0.1.20"
 sha2.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
 tokio-util.workspace = true
 toml.workspace = true
 tracing.workspace = true
@@ -52,8 +53,16 @@ workspace = true
 [dev-dependencies]
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 prost.workspace = true
+# The MCP test server (tests/support/mcp_server.rs).
+rmcp = { version = "3.7.0", default-features = false, features = ["elicitation", "server", "transport-io"] }
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "time"] }
 tonic.workspace = true
 tonic-health = "0.14.6"
 tonic-prost = "0.14.6"
 tower = { version = "0.5.3", default-features = false, features = ["util"] }
+tracing-subscriber = { workspace = true, features = ["fmt"] }
+
+# Runs the MCP test server as its own stdio child, so it can't use libtest (which prints to stdout).
+[[test]]
+name = "mcp_stdio"
+harness = false

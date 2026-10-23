@@ -23,6 +23,7 @@
 - [Storage](technical/storage.md)
 - [Plugin Transport](technical/plugin-transport.md)
 - [Plugin Sandbox](technical/sandbox.md)
+- [MCP Client](technical/mcp.md)
 - [Rendering Model Output](technical/rendering.md)
 - [HTTP Server](technical/http.md)
 - [gRPC Protocols](technical/protocols.md)
