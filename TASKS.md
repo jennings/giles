@@ -111,7 +111,7 @@ All parallel. Each task needs only Phase 0.
 - [x] **1.10 Skills** (§6.6). Parse Agent Skills `SKILL.md` (front-matter `name` and
   `description`, body); discover from `<root>/skills/` and `agents/<agent>/skills/`, agent skills
   overriding global ones; sorted listing. (Toolset skill dirs come in 2.21.)
-- [ ] **1.11 Memory files** (§6.7, §11.3). Optional front-matter preserved on rewrite;
+- [x] **1.11 Memory files** (§6.7, §11.3). Optional front-matter preserved on rewrite;
   `§`-separated entries; batches of `add`, `patch{old_text, content}`, `remove{old_text}` with
   unique-match rules; cap checked on the batch result, with the current entries and overflow
   returned on failure; usage header (`[67% — 1,474/2,200]`); per-file lock and

@@ -45,3 +45,49 @@ description: Prepare the weekly review. Use when asked for a weekly summary or r
 A skill with a mistake is skipped, and Giles logs a warning naming the file and the problem; the
 agent's other skills keep working. Skills are read when a conversation starts, so edits need no
 restart. Giles never runs scripts that a skill contains.
+
+## Memory Files
+
+Memory is plain Markdown, one file per scope:
+
+| File                                    | What it holds                                 | Who writes it        |
+| --------------------------------------- | --------------------------------------------- | -------------------- |
+| `agents/<agent>/MEMORY.md`              | What the agent remembers in general           | The agent and you    |
+| `agents/<agent>/users/<user>/MEMORY.md` | What the agent remembers about one person     | The agent and you    |
+| `users/<user>/USER.md`                  | A person's profile, shown in their DMs only   | People only          |
+
+A memory file holds entries separated by a line containing only `§`:
+
+```markdown
+---
+# Optional front-matter. No fields are required; Giles keeps it as written.
+reviewed: 2026-10-01
+---
+Stephen prefers short answers and metric units.
+§
+The home server is a Raspberry Pi 5 named `pantry`.
+It runs the backups at 02:00.
+§
+Weekly review happens on Fridays.
+```
+
+- An entry can span several lines and paragraphs. A `§` inside a line is ordinary text.
+- Front-matter (between two `---` lines at the top) is optional and kept exactly as you wrote it
+  when the agent updates the file. It isn't counted toward the size limit.
+- A missing file is the same as an empty one; Giles creates it, and its directories, on the first
+  write.
+
+The agent edits memory one batch at a time: it adds entries, patches a piece of text inside one
+entry, or removes the entry containing some text. A batch either applies completely or not at all.
+When the agent rewrites a file, it tidies the layout: one `§` line between entries, no blank lines
+around them, `\n` line endings. The text of each entry is kept.
+
+Each memory file the agent writes is limited to `memory_cap` characters (default 2,200, set per
+agent in `agent.toml`). The agent sees how full it is in a header such as `[67% — 1,474/2,200]`. A
+change that would go over the limit is refused, and the agent is shown the current entries so it
+can merge or drop some. Giles never cuts text you wrote: if you make a file longer than the limit,
+it stays that way, and the agent's changes to it fail until it (or you) brings the file back under
+the limit.
+
+You can edit memory files at any time. Each conversation reads memory when it starts, so your
+changes and the agent's show up in conversations that start afterward.

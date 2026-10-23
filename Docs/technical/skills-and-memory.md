@@ -75,3 +75,101 @@ file I/O; async callers run it on a blocking thread.
 `SkillSource::prefix` is for toolset skill directories (§7.10, task 2.21): with `Some(instance)`,
 each skill from that source is named `<instance>__<skill>`. Name validation and the directory-name
 check apply to the bare name.
+
+## Memory Files
+
+`giles_core::memory` reads and updates memory files: agent-wide `agents/<agent>/MEMORY.md`, per-user
+`agents/<agent>/users/<user>/MEMORY.md`, and the person-written profile `users/<user>/USER.md`.
+
+| Item                                  | Purpose                                                          |
+| ------------------------------------- | ---------------------------------------------------------------- |
+| `agent_memory_file(root, agent)`      | `agents/<agent>/MEMORY.md`                                       |
+| `user_memory_file(root, agent, user)` | `agents/<agent>/users/<user>/MEMORY.md`                          |
+| `user_profile_file(root, user)`       | `users/<user>/USER.md` (read with `read`, never `apply`)         |
+| `MemoryDoc`                           | A parsed file: `parse`, `entries`, `body`, `chars`, `apply`      |
+| `MemoryOp`                            | `Add { content }`, `Patch { old_text, content }`, `Remove { .. }` |
+| `BatchError`                          | Why a batch was rejected, with the operation's index             |
+| `read(path).await`                    | The file as a `MemoryDoc`; a missing file is empty               |
+| `apply(path, ops, cap).await`         | Applies a batch under the file lock and returns the result       |
+| `usage_header(used, cap)`             | `[67% — 1,474/2,200]`                                            |
+
+The `cap` argument is the agent's `memory_cap` (`config::AgentConfig::memory_cap`, a `u32` that
+config validates as positive; its default, 2,200, is `config::DEFAULT_MEMORY_CAP`). Callers convert
+it with `as usize`.
+
+### Format
+
+- Front-matter, if present, is kept verbatim (byte for byte, including comments, unknown fields, and
+  `\r\n`) and written back unchanged. The only exception: if the closing `---` was the file's last
+  line without a line ending and entries follow, a `\n` is added.
+- The rest is split at lines holding only `§` (surrounding spaces and tabs allowed). A `§` inside a
+  line is ordinary text. Line endings are normalized to `\n`; each entry loses leading blank lines
+  and trailing whitespace; empty entries are dropped. A file without front-matter loses a leading
+  byte-order mark.
+- `MemoryDoc::render` writes the front-matter, the entries joined by `\n§\n`, and a final newline.
+  So the first model write normalizes the layout of a person-written body (blank lines around
+  separators, `\r\n`); the text of each entry is kept.
+- Rendering always round-trips: `parse(render(doc))` has the same entries. Without front-matter, a
+  body whose first entry starts with a `---` line and has a later `---` line (a thematic break or a
+  setext heading underline) would read back as front-matter, swallowing entries out of the prompt
+  and the cap; a body starting with a byte-order mark would lose it. In those cases the file starts
+  with a `§` line, which parses as an empty entry and is dropped. A test renders and re-parses every
+  combination of up to three tricky entries, with and without front-matter.
+- `body()` is the entries joined by `\n§\n`, without front-matter: what the prompt shows. `chars()`
+  is its length in Unicode scalar values, computed without building it. Front-matter doesn't count
+  toward the cap.
+
+### Batches
+
+`MemoryDoc::apply(ops, cap)` is pure. Operations run in order on a working copy, each seeing the
+previous ones' result, and the first failure rejects the whole batch:
+
+- `add` appends `content` as a new entry (trimmed like a parsed entry). Empty content is rejected.
+- `patch` replaces the only occurrence of `old_text` with `content`. Occurrences are counted across
+  all entries, overlapping ones included (`aa` occurs twice in `aaa`), so the span is unique and
+  always inside one entry; it can't cross a separator. An entry left empty is removed, which makes
+  `patch` with empty `content` a way to delete part of an entry.
+- `remove` removes the only entry containing `old_text`. Several occurrences inside that one entry
+  are fine; two matching entries are ambiguous.
+- Matching is exact and case-sensitive. `old_text` and `content` have `\r\n` normalized to `\n` to
+  match the parsed file. Empty `old_text` is rejected.
+- No entry may end up containing a line that holds only `§`: it would silently split the entry.
+- Errors name the operation as `operations[<index>] (<op>)`, counting from 0 like the tool's JSON
+  array, and say how to fix the call (for example, include more text to make a match unique).
+
+The cap is checked once, on the final result: a batch may pass through an over-cap state. When the
+result is over, `BatchError::OverCap` carries the current (unchanged) entries, their size, the cap,
+and the overflow, so the tool result can show the model what to consolidate. Text is never
+truncated. A file that people pushed over the cap therefore accepts only batches that end at or
+under it. A batch that shrinks the file but leaves it over the cap still fails: the plan says an
+over-cap file makes model writes fail until someone consolidates, and the overflow in the error
+tells the model exactly how much one batch must free.
+
+`usage_header` rounds the percentage down, so 100% means exactly at the cap; an over-cap file shows
+more than 100%. Numbers use commas between thousands.
+
+`MemoryOp` deserializes from `{"op": "add" | "patch" | "remove", ...}`; the `memory` tool (task
+2.11) owns the JSON schema the model sees and the scope rules (who may write which file). `apply`
+never refuses a path by itself, so the tool must not pass `USER.md`.
+
+### Writing
+
+- `read` takes no lock: writes replace the file by rename, so a reader sees the old or the new file.
+  A missing file is empty memory; a file that exists but isn't UTF-8 is an error.
+- `apply` resolves the path to a canonical lock key (the longest existing ancestor is
+  canonicalized and the rest appended, so `a/../a/MEMORY.md` and a symlinked directory share a
+  key), then takes that file's `tokio::sync::Mutex` from a process-wide map. Map entries nobody
+  holds are dropped on the next lookup. The lock is per process; v1 has one daemon.
+- Under the lock it reads, applies, and writes only if the result differs. The write creates parent
+  directories (mode 0700), writes a `tempfile` named `.MEMORY.md.<random>.tmp` in the same directory
+  with the old file's permissions (0600 for a new file), fsyncs it, renames it over the target, and
+  fsyncs the directory. A failed write leaves the old file and removes the temporary file.
+- If the path is a symbolic link, its target is written, so the link survives. This holds for a
+  dangling link too: the link itself is followed (`read_link`, a relative target taken from the
+  link's canonical directory with `.` and `..` resolved lexically) before the ancestors are
+  canonicalized, so the first write creates the target.
+- The file I/O runs in `spawn_blocking`, and the lock guard moves into that closure: if the caller's
+  future is dropped mid-write, the write still finishes before the next batch can start.
+
+A test runs 48 concurrent batches against one file through three different path spellings on a
+multi-threaded runtime and checks that every entry lands; without the lock it loses most of them.

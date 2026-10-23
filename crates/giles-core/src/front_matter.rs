@@ -7,6 +7,9 @@
 /// A file split at the end of its front-matter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Split<'a> {
+    /// The whole block, verbatim: a byte-order mark if any, both `---` lines, and the line ending
+    /// after the closing one (absent when the file ends there).
+    pub raw: &'a str,
     /// The file up to the closing `---` line: a byte-order mark if any, the opening `---` line, and
     /// the YAML. This is itself a YAML stream (`---` starts a document), so a parser's line
     /// numbers match the file's.
@@ -36,10 +39,12 @@ pub(crate) fn split(text: &str) -> Option<Split<'_>> {
     let mut offset = yaml_start;
     for line in lines {
         if is_delimiter(line) {
+            let end = offset + line.len();
             return Some(Split {
+                raw: &text[..end],
                 document: &text[..offset],
                 yaml: &text[yaml_start..offset],
-                body: &text[offset + line.len()..],
+                body: &text[end..],
             });
         }
         offset += line.len();
@@ -59,20 +64,23 @@ mod tests {
     #[test]
     fn splits_lf_and_crlf() {
         let s = split("---\nname: x\n---\nbody\n").unwrap();
+        assert_eq!(s.raw, "---\nname: x\n---\n");
         assert_eq!(
             (s.document, s.yaml, s.body),
             ("---\nname: x\n", "name: x\n", "body\n")
         );
 
         let s = split("---\r\nname: x\r\n---\r\nbody\r\n").unwrap();
+        assert_eq!(s.raw, "---\r\nname: x\r\n---\r\n");
         assert_eq!(s.document, "---\r\nname: x\r\n");
         assert_eq!(s.yaml, "name: x\r\n");
         assert_eq!(s.body, "body\r\n");
     }
 
     #[test]
-    fn keeps_bom_in_document() {
+    fn keeps_bom_in_raw_block_and_document() {
         let s = split("\u{feff}---\na: 1\n---\nrest").unwrap();
+        assert_eq!(s.raw, "\u{feff}---\na: 1\n---\n");
         assert_eq!(s.document, "\u{feff}---\na: 1\n");
         assert_eq!(s.yaml, "a: 1\n");
         assert_eq!(s.body, "rest");
@@ -81,6 +89,7 @@ mod tests {
     #[test]
     fn empty_block_and_closing_line_at_end_of_file() {
         let s = split("---\n---").unwrap();
+        assert_eq!(s.raw, "---\n---");
         assert_eq!((s.document, s.yaml, s.body), ("---\n", "", ""));
     }
 

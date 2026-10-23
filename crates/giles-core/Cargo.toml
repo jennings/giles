@@ -30,7 +30,9 @@ serde-saphyr = { version = "2.0.0", default-features = false, features = ["deser
 serde_json.workspace = true
 serde_path_to_error = "0.1.20"
 sha2.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "rt"] }
 toml.workspace = true
 tracing.workspace = true
 url = "2.5.8"
@@ -46,8 +48,7 @@ workspace = true
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 prost.workspace = true
-tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "net", "rt", "time"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "time"] }
 tonic.workspace = true
 tonic-health = "0.14.6"
 tonic-prost = "0.14.6"
