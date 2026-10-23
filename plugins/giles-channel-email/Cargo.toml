@@ -1,0 +1,33 @@
+[package]
+name = "giles-channel-email"
+description = "The Giles email channel plugin: IMAP IDLE in, SMTP out."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+async-imap = { version = "0.12.0", default-features = false, features = ["runtime-tokio"] }
+async-smtp = { version = "0.10.2", default-features = false, features = ["runtime-tokio"] }
+futures.workspace = true
+giles-plugin-sdk.workspace = true
+mail-builder = { version = "1.0.0", default-features = false }
+mail-parser = { version = "0.11.9", features = ["full_encoding"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-rustls = { version = "0.26.6", default-features = false }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+base64 = "0.22.1"
+rcgen = "0.14.5"
+tempfile.workspace = true
+
+[lints]
+workspace = true

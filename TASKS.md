@@ -280,7 +280,7 @@ other and with the rest of this phase.
   direct conversations, channels reported as group; IRC rendering and splitting; `recipient`
   resolves an account to its current nick, or `UNAVAILABLE`; namespace `irc:<network>`.
   **Needs:** 2.15, 1.7. End-to-end with the core needs 2.18.
-- [ ] **3.5 Email channel plugin** (§3.3, §8.5, §10). `giles-channel-email`: pick the libraries;
+- [x] **3.5 Email channel plugin** (§3.3, §8.5, §10). `giles-channel-email`: pick the libraries;
   IMAP IDLE with a `UIDVALIDITY:UID` cursor; sender verified from the topmost
   `Authentication-Results` carrying the configured `authserv-id` (`dmarc=pass` or aligned
   `dkim=pass`); automated mail dropped; thread root as the conversation; SMTP

@@ -141,7 +141,8 @@ policy runs, so a forged sender can't even request a pairing code.
 Channels also drop messages that must never start a turn: echoes of the agent's own messages
 (WhatsApp delivers copies of messages sent from the linked account) and automated mail
 (`Auto-Submitted` other than `no`, `Precedence: bulk` or `list`, `List-Id`). Outbound mail carries
-`Auto-Submitted: auto-replied`, per RFC 3834, so other robots don't answer it.
+`Auto-Submitted`, per RFC 3834, so other robots don't answer it: `auto-replied` on replies,
+`auto-generated` on proactive sends (jobs, reminders), which answer nothing.
 
 | Channel  | Native identifier          | Verified by                                                     |
 | -------- | -------------------------- | --------------------------------------------------------------- |
@@ -1150,7 +1151,7 @@ RPCs belong to multi-user support (section 1.1) and are added to `giles.admin.v1
 | -------- | ------------------------ | ------------------------- | ---- | --------------------------------------- |
 | Web      | Built-in                 | HTTP + SSE                | SSE  | Web chat id                             |
 | IRC      | `giles-channel-irc`      | IRC connection            | IRC  | Channel name, or nick for DMs           |
-| Email    | `giles-channel-email`    | IMAP with IDLE            | SMTP | Thread root (`Message-ID`/`References`) |
+| Email    | `giles-channel-email`    | IMAP with IDLE            | SMTP | Sender + thread root (`Message-ID`/`References`) |
 | WhatsApp | `giles-channel-whatsapp` | WhatsApp Web multi-device | Same | Chat JID                                |
 
 Rendering CommonMark:

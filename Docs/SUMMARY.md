@@ -12,6 +12,7 @@
 - [Model Providers](user/providers.md)
 - [Web Chat](user/web.md)
 - [IRC](user/irc.md)
+- [Email](user/email.md)
 - [Skills and Memory Files](user/skills-and-memory.md)
 - [Writing a Plugin](user/writing-a-plugin.md)
 
@@ -36,6 +37,7 @@
 - [HTTP Server](technical/http.md)
 - [Web Channel](technical/web-channel.md)
 - [IRC Channel](technical/irc.md)
+- [Email Channel](technical/email.md)
 - [gRPC Protocols](technical/protocols.md)
 - [Admin Service](technical/admin.md)
 - [Configuration](technical/config.md)
