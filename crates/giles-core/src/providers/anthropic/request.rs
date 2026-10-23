@@ -222,7 +222,7 @@ async fn media_json(
 ) -> Result<Value> {
     let essence = wire::media_essence(&media_ref.media_type);
     if !MEDIA_TYPES.contains(&essence.as_str()) {
-        return Ok(json!({"type": "text", "text": wire::media_reference(&media_ref)}));
+        return Ok(json!({"type": "text", "text": crate::media::reference(&media_ref)}));
     }
     let data = BASE64.encode(media.read(&media_ref).await?);
     let source = json!({"type": "base64", "media_type": essence, "data": data});

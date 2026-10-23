@@ -273,7 +273,7 @@ async fn media_or_reference(
 ) -> Result<Value> {
     Ok(match media.part(media_ref, name).await? {
         Some(part) => part,
-        None => text_part(wire::media_reference(media_ref)),
+        None => text_part(crate::media::reference(media_ref)),
     })
 }
 
@@ -305,7 +305,7 @@ async fn tool_json(
                 )));
             }
         };
-        let reference = wire::media_reference(&media_ref);
+        let reference = crate::media::reference(&media_ref);
         if let Some(part) = media.part(&media_ref, name.as_deref()).await? {
             run.relocated.push(text_part(reference.clone()));
             run.relocated.push(part);
@@ -333,7 +333,7 @@ fn assistant_json(content: Vec<Block>, send_reasoning: bool) -> Result<Option<Va
             Block::Text { text } if text.is_empty() => {}
             Block::Text { text } => texts.push(text),
             Block::Image { media } | Block::Audio { media } | Block::Document { media, .. } => {
-                texts.push(wire::media_reference(&media));
+                texts.push(crate::media::reference(&media));
             }
             Block::ToolUse { id, name, input } => tool_calls.push(json!({
                 "id": id,

@@ -1,11 +1,11 @@
-//! Wire-format helpers shared by the built-in providers: media references and types, numbers in
-//! request bodies, and the loop that turns a response's server-sent events into
-//! [`CompletionEvent`]s.
+//! Wire-format helpers shared by the built-in providers: media types, numbers in request bodies,
+//! and the loop that turns a response's server-sent events into [`CompletionEvent`]s. Media
+//! references are [`crate::media::reference`].
 
 use std::collections::VecDeque;
 
 use futures::{Stream, StreamExt};
-use giles_types::{CompletionEvent, Error, MediaRef, Result};
+use giles_types::{CompletionEvent, Error, Result};
 use serde_json::{Number, Value};
 
 use crate::providers::sse::SseEvent;
@@ -19,15 +19,6 @@ pub fn media_essence(media_type: &str) -> String {
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase()
-}
-
-/// The text that stands in for an attachment the model doesn't receive as content:
-/// `[media:<id> <name> <type>]`, or `[media:<id> <type>]` without a name (PLAN section 5).
-pub fn media_reference(media: &MediaRef) -> String {
-    match &media.name {
-        Some(name) => format!("[media:{} {name} {}]", media.id, media.media_type),
-        None => format!("[media:{} {}]", media.id, media.media_type),
-    }
 }
 
 /// A temperature as its shortest decimal form (`0.7`, not `0.699999988079071`).
@@ -109,28 +100,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use giles_types::{MediaId, StopReason};
+    use giles_types::StopReason;
 
     use super::*;
 
     #[test]
-    fn media_helpers() {
+    fn media_essence_is_the_lowercased_type_without_parameters() {
         assert_eq!(media_essence(" Audio/OGG; codecs=opus"), "audio/ogg");
-        let mut media = MediaRef {
-            id: MediaId::from_digest([1; 32]),
-            media_type: "text/csv".into(),
-            size: 1,
-            name: None,
-        };
-        assert_eq!(
-            media_reference(&media),
-            format!("[media:{} text/csv]", media.id)
-        );
-        media.name = Some("q3.csv".into());
-        assert_eq!(
-            media_reference(&media),
-            format!("[media:{} q3.csv text/csv]", media.id)
-        );
     }
 
     #[test]

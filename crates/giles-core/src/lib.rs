@@ -11,6 +11,7 @@ mod front_matter;
 pub mod http;
 pub mod identity;
 pub mod mcp;
+pub mod media;
 pub mod memory;
 pub mod net;
 pub mod paths;

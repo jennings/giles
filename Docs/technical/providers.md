@@ -69,9 +69,9 @@ limit and be tested against every chunk boundary.
   when the body ends before that, returning the final events or the error for a cut-off response.
   `completion_events(events, mapper)` drives it: the stream ends after `Stop` without reading the
   rest of the body, or after the first error.
-- `media_reference(&MediaRef)` is the text an attachment becomes when the model doesn't receive
-  it as content, `[media:<id> <name> <type>]` (PLAN section 5), and `media_essence(type)` is a
-  media type without parameters, lowercased, for matching.
+- `media_essence(type)` is a media type without parameters, lowercased, for matching. The text an
+  attachment becomes when the model doesn't receive it as content, `[media:<id> <name> <type>]`
+  (PLAN section 5), is `giles_core::media::reference(&MediaRef)`, shared with the agent loop.
 - `temperature(f32)` is a temperature as its shortest decimal (`0.7`, not `0.699999988079071`);
   NaN and infinity are `Error::InvalidRequest`.
 
