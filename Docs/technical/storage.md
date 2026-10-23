@@ -147,3 +147,44 @@ stemming, case and accent folding.
   and rarer words first.
 - Each hit has the message's ids, seq, role, time, the session's channel and conversation, and a
   snippet with matches wrapped in `**`.
+
+## Inbox
+
+Every acked inbound event is an `inbox` row (PLAN 8.5): the channel instance, the event id, the
+routed session and sender, the whole event as JSON, and a state. `inbox_insert` uses
+`ON CONFLICT (instance, event_id) DO NOTHING`, so inserting and deduplicating are one statement in
+one transaction, and the core acks only after it returns. Duplicates return `None` and change
+nothing.
+
+```text
+insert(queued) -> queued -> started -> done
+                            started -> unknown   (startup recovery)
+insert(done)                                     (dedupe key only: status events, dropped messages)
+```
+
+| Method                       | Contract                                                       |
+| ---------------------------- | -------------------------------------------------------------- |
+| `inbox_insert`               | Insert-or-dedupe; `state` must be `Queued` (with a session) or `Done`. |
+| `inbox_entry`                | One row by id.                                                 |
+| `inbox_queued`               | A session's queued rows, oldest first: the next turn's messages. |
+| `inbox_sessions_with_queued` | Sessions with queued rows, by oldest row: the turns to run after a restart. |
+| `inbox_start`, `inbox_finish` | Queued to started, started to done; all rows in the batch or none (`Conflict`, `NotFound`). |
+| `inbox_interrupt`            | Startup: every started row becomes `unknown` and is returned, so the requester can be told. |
+| `inbox_prune(before)`        | Deletes `done` and `unknown` rows received strictly before `before` (now minus 30 days). Queued and started rows are never pruned. |
+
+## Outbox
+
+Proactive sends wait in `outbox` until the channel accepts them or they expire (PLAN 6.11). A row
+is due while `next_attempt_at <= now < expires_at`, and expired once `expires_at <= now`. The
+backoff schedule belongs to the sender (task 3.1); the store records attempts, the last error, and
+the next attempt time. Only one sender loop may run, since rows aren't leased.
+
+| Method               | Contract                                                               |
+| -------------------- | ---------------------------------------------------------------------- |
+| `outbox_enqueue`     | New row, due at `created_at`; `expires_at` must be later.              |
+| `outbox_due`         | Due rows, earliest attempt first, up to a limit.                       |
+| `outbox_next_wakeup` | The earliest `next_attempt_at` or `expires_at`, for the sender's sleep. |
+| `outbox_retry`       | Records a failure: `attempts + 1`, `last_error`, next attempt time.    |
+| `outbox_delete`      | Delivered, or its approval was resolved.                               |
+| `outbox_expire`      | Deletes and returns expired rows, for logging instance, recipient, and kind. |
+| `outbox_expire_kind` | Deletes and returns every row of a kind, due or not: at startup, the prompts of approvals that died with the old process. |
