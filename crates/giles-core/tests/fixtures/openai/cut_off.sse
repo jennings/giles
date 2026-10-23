@@ -1,0 +1,4 @@
+data: {"id":"chatcmpl-CTx3","object":"chat.completion.chunk","created":1761170500,"model":"gpt-5.1-2025-11-13","choices":[{"index":0,"delta":{"role":"assistant","content":"","refusal":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-CTx3","object":"chat.completion.chunk","created":1761170500,"model":"gpt-5.1-2025-11-13","choices":[{"index":0,"delta":{"content":"Half a sen"},"logprobs":null,"finish_reason":null}],"usage":null}
+

@@ -10,9 +10,11 @@ license.workspace = true
 publish = false
 
 [features]
-default = ["provider-anthropic"]
+default = ["provider-anthropic", "provider-openai"]
 # The built-in Anthropic provider.
 provider-anthropic = ["giles-core/provider-anthropic"]
+# The built-in OpenAI-compatible provider.
+provider-openai = ["giles-core/provider-openai"]
 
 [dependencies]
 anyhow.workspace = true

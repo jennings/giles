@@ -1,0 +1,31 @@
+{
+  "data": [
+    {
+      "id": "anthropic/claude-sonnet-4.5",
+      "canonical_slug": "anthropic/claude-4.5-sonnet-20250929",
+      "name": "Anthropic: Claude Sonnet 4.5",
+      "created": 1759161676,
+      "context_length": 1000000,
+      "architecture": {
+        "modality": "text+image+file->text",
+        "input_modalities": ["text", "image", "file"],
+        "output_modalities": ["text"],
+        "tokenizer": "Claude",
+        "instruct_type": null
+      },
+      "pricing": {"prompt": "0.000003", "completion": "0.000015"},
+      "top_provider": {"context_length": 1000000, "max_completion_tokens": 64000, "is_moderated": false},
+      "per_request_limits": null,
+      "supported_parameters": ["include_reasoning", "max_tokens", "reasoning", "temperature", "tool_choice", "tools"]
+    },
+    {
+      "id": "deepseek/deepseek-chat-v3.1",
+      "name": "DeepSeek: DeepSeek V3.1",
+      "created": 1755779628,
+      "context_length": 163840,
+      "architecture": {"modality": "text->text", "input_modalities": ["text"], "output_modalities": ["text"]},
+      "top_provider": {"context_length": 163840, "max_completion_tokens": null, "is_moderated": false},
+      "supported_parameters": ["max_tokens", "temperature", "tools"]
+    }
+  ]
+}

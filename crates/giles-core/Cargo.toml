@@ -10,9 +10,11 @@ license.workspace = true
 publish = false
 
 [features]
-default = ["provider-anthropic"]
+default = ["provider-anthropic", "provider-openai"]
 # The built-in Anthropic Messages API provider (`providers::anthropic`).
 provider-anthropic = ["dep:base64", "dep:reqwest", "dep:webpki-root-certs"]
+# The built-in OpenAI-compatible Chat Completions provider (`providers::openai`).
+provider-openai = ["dep:base64", "dep:reqwest", "dep:webpki-root-certs"]
 
 [dependencies]
 askama = "0.16.1"

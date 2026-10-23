@@ -7,11 +7,13 @@ use giles_types::{MediaRef, Result};
 
 #[cfg(feature = "provider-anthropic")]
 pub mod anthropic;
-#[cfg(feature = "provider-anthropic")]
+#[cfg(any(feature = "provider-anthropic", feature = "provider-openai"))]
 pub mod http;
-#[cfg(feature = "provider-anthropic")]
+#[cfg(feature = "provider-openai")]
+pub mod openai;
+#[cfg(any(feature = "provider-anthropic", feature = "provider-openai"))]
 pub mod sse;
-#[cfg(feature = "provider-anthropic")]
+#[cfg(any(feature = "provider-anthropic", feature = "provider-openai"))]
 pub mod wire;
 
 /// Where a provider gets the bytes of the attachments it sends inline (images, PDFs). In the

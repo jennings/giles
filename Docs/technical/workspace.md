@@ -77,6 +77,6 @@ Consequences for code:
 - A dependency used by a single crate goes in that crate's own manifest.
 - Internal crates are also listed in `[workspace.dependencies]` with both `path` and `version`, so
   the publishable crates resolve on crates.io. `giles-core` is listed with `default-features =
-  false`: its built-in components are Cargo features (`provider-anthropic`, on by default) that the
-  `giles` crate forwards under the same names and turns on by default.
+  false`: its built-in components are Cargo features (`provider-anthropic` and `provider-openai`,
+  on by default) that the `giles` crate forwards under the same names and turns on by default.
 - Libraries use `thiserror` for errors; `anyhow` is for the binary.

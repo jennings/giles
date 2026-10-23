@@ -1,0 +1,20 @@
+data: {"id":"chatcmpl-CTx2","object":"chat.completion.chunk","created":1761170100,"model":"gpt-5.1-2025-11-13","choices":[{"index":0,"delta":{"role":"assistant","content":"","refusal":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-CTx2","object":"chat.completion.chunk","created":1761170100,"model":"gpt-5.1-2025-11-13","choices":[{"index":0,"delta":{"content":"Checking both cities."},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-CTx2","object":"chat.completion.chunk","created":1761170100,"model":"gpt-5.1-2025-11-13","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_DdmO9pD3xa9XTPNJ32zg2hcA","type":"function","function":{"name":"weather__get","arguments":""}}]},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-CTx2","object":"chat.completion.chunk","created":1761170100,"model":"gpt-5.1-2025-11-13","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"ci"}}]},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-CTx2","object":"chat.completion.chunk","created":1761170100,"model":"gpt-5.1-2025-11-13","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ty\": \"Paris\"}"}}]},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-CTx2","object":"chat.completion.chunk","created":1761170100,"model":"gpt-5.1-2025-11-13","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_q8Vn2LxRk4TzWm1pYs7dEe3B","type":"function","function":{"name":"weather__get","arguments":""}}]},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-CTx2","object":"chat.completion.chunk","created":1761170100,"model":"gpt-5.1-2025-11-13","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\"city\": \"Oslo\"}"}}]},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-CTx2","object":"chat.completion.chunk","created":1761170100,"model":"gpt-5.1-2025-11-13","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"tool_calls"}],"usage":null}
+
+data: {"id":"chatcmpl-CTx2","object":"chat.completion.chunk","created":1761170100,"model":"gpt-5.1-2025-11-13","choices":[],"usage":{"prompt_tokens":120,"completion_tokens":58,"total_tokens":178,"prompt_tokens_details":{"cached_tokens":0,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":0,"audio_tokens":0,"accepted_prediction_tokens":0,"rejected_prediction_tokens":0}}}
+
+data: [DONE]
+

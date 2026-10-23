@@ -103,7 +103,7 @@ All parallel. Each task needs only Phase 0.
   plus a breakpoint at the end of `system` (1 h TTL, 5 min for jobs), usage with cache tokens,
   declared media types, consecutive `User` messages merged, config validation, `list_models`.
   Tests against recorded responses.
-- [ ] **1.9 OpenAI-compatible provider** (§4.2, §5). Feature `provider-openai`: streaming Chat
+- [x] **1.9 OpenAI-compatible provider** (§4.2, §5). Feature `provider-openai`: streaming Chat
   Completions with `base_url` (OpenAI, OpenRouter, Ollama), tool calls, tool-result images moved
   into a following `user` message, `Opaque` of other API families not sent, usage including
   cached tokens where reported, declared media types, config validation, `list_models`. Tests

@@ -5,9 +5,13 @@ that the `giles` crate forwards under the same name (PLAN section 4.2). Both imp
 `giles_types::Provider` (see [Message Model and Traits](message-model.md)) by translating the
 message model to and from the provider's wire format; the core never sees wire formats.
 
-| Feature              | Module                 | API                    |
-| -------------------- | ---------------------- | ---------------------- |
-| `provider-anthropic` | `providers::anthropic` | Anthropic Messages API |
+| Feature              | Module                 | API                                    |
+| -------------------- | ---------------------- | -------------------------------------- |
+| `provider-anthropic` | `providers::anthropic` | Anthropic Messages API                 |
+| `provider-openai`    | `providers::openai`    | OpenAI-compatible Chat Completions API |
+
+Both are on by default. The shared modules below are compiled when either is, so `giles-core` builds
+with no provider, either one, or both (`--no-default-features --features provider-openai`).
 
 ## Shared plumbing
 
@@ -276,3 +280,217 @@ tests) that records requests and replays hand-written responses in the documente
 (`tests/fixtures/anthropic/*.sse`, `models_page*.json`) in 7-byte chunks. It checks exact request
 bodies and headers, exact event sequences, that the stored blocks of a response reproduce the API's
 blocks when sent back, and the error mapping. Nothing calls the real API.
+
+## OpenAI-compatible
+
+`providers::openai` speaks the
+[Chat Completions API](https://platform.openai.com/docs/api-reference/chat) (`POST
+<base_url>/chat/completions` with `stream: true`), which OpenAI, OpenRouter, Ollama, vLLM,
+llama.cpp, and most gateways serve. Its API family name, `Opaque::api`, is `openai`
+(`openai::API`).
+
+```rust
+let config = OpenAiConfig::from_json(&instance_config_json)?;
+let provider = OpenAiProvider::new(config, media_source)?; // impl giles_types::Provider
+```
+
+`OpenAiProvider::new(OpenAiConfig, Arc<dyn MediaSource>)` builds the HTTP client and sends nothing.
+Requests carry `Authorization: Bearer <api_key>` when there is a key (marked sensitive) and the
+configured extra headers.
+
+### Configuration
+
+`OpenAiConfig::from_json` validates the instance's `config` table like the Anthropic one; the keys
+are in [Providers](../user/providers.md). The struct:
+
+- `api_key: Option<http::ApiKey>`: optional, since local servers need none.
+- `base_url`: the API root including its version path (`https://api.openai.com/v1`,
+  `https://openrouter.ai/api/v1`, `http://localhost:11434/v1`); paths `/chat/completions` and
+  `/models` are appended.
+- `dialect: Dialect` (`OpenAi`, `OpenRouter`, `Generic`): from the `base_url` host
+  (`api.openai.com`, `openrouter.ai`, anything else) unless the `dialect` key sets it, e.g. for a
+  proxy in front of OpenAI. It picks the few request fields that differ (below).
+- `headers: HeaderMap`: extra headers such as OpenRouter's `HTTP-Referer` and `X-Title`. Values are
+  marked sensitive, since some gateways authenticate with a custom header (Azure's `api-key`), so
+  `Debug` shows `Sensitive`. `Authorization` (use `api_key`) and headers the provider or the HTTP
+  client sets (`Accept`, `Content-Type`, `Content-Length`, `Host`, `Connection`,
+  `Transfer-Encoding`) are rejected. Errors name the header, never its value.
+- `defaults: ModelSettings` and `models: BTreeMap<String, ModelSettings>`: what the provider needs
+  to know about a model that the API doesn't report. `ModelSettings { media_types, context_window,
+  max_tokens, reasoning }`, every field optional; `settings(model)` takes the model's own fields
+  over the instance's, field by field.
+
+### Media
+
+Compatible servers differ in which media they accept, and `/models` doesn't say, so the config
+declares it. `media_types(model)` is the model's declared list, else the instance's, else the
+dialect's default: the four common image types (`openai::DEFAULT_IMAGE_TYPES`) for OpenAI and
+OpenRouter, nothing for other servers (vision varies by local model, and sending an image to a
+model without vision fails every later request). A declared type must be one the API has a content
+part for: an image type, `audio/wav`, `audio/mpeg`, or `application/pdf`; anything else is a config
+error.
+
+| Media type (declared) | Content part                                                            |
+| --------------------- | ----------------------------------------------------------------------- |
+| `image/*`             | `image_url` with a `data:<type>;base64,...` URL                         |
+| `audio/wav`           | `input_audio` with `format: "wav"`                                      |
+| `audio/mpeg`          | `input_audio` with `format: "mp3"`                                      |
+| `application/pdf`     | `file` with `filename` (`Document.name`, the media name, or `<id>.pdf`) |
+| anything undeclared   | `text` with the reference `[media:<id> <name> <type>]`, no bytes read   |
+
+The part follows the media type, whatever the block variant. As for Anthropic, the core is expected
+to filter media by `ModelInfo::accepts`; this is the backstop.
+
+### Request mapping
+
+| Giles                                     | Chat Completions                                                               |
+| ----------------------------------------- | ------------------------------------------------------------------------------ |
+| `system` (text blocks only)               | one `system` message, the texts joined by blank lines; omitted when empty      |
+| `User` message                            | one `user` message; `content` is a string for a single text, else parts        |
+| `ToolResult` (in a `User` message)        | one `tool` message per result, in order, with `tool_call_id`                   |
+| media in a `ToolResult`                   | its reference in the `tool` text; if declared, moved to a following `user`     |
+| `is_error: true`                          | the `tool` text prefixed with `Error:` (the API has no error flag)             |
+| `Assistant` message                       | `content` (texts joined by blank lines, `null` without text) and `tool_calls`  |
+| `ToolUse`                                 | a `tool_calls` entry, `type: "function"`, `arguments` as compact JSON text     |
+| `Reasoning` with `opaque` `{api: openai}` | its text in the stored field (`reasoning`, `reasoning_content`); not to OpenAI |
+| other `Reasoning`, any `Opaque`           | dropped (PLAN section 5)                                                       |
+| empty text                                | dropped; a message left empty is skipped                                       |
+| `ToolSpec`                                | `{type: "function", function: {name, description, parameters}}`                |
+
+Consecutive user messages stay separate: Chat Completions doesn't require alternating roles, and
+keeping them apart keeps each stored message's time prefix on its own. Within a run of consecutive
+user messages, though, every tool result is sent first, because the `tool` messages answering an
+assistant's `tool_calls` must follow it directly. The run becomes its `tool` messages, then one
+`user` message with the relocated media (each part preceded by its reference text, so the model can
+tie it to the `tool` message that names it), then the run's other content. `tool` messages hold
+only text (PLAN section 5), hence the relocation. A `ToolUse` in a user message, a `ToolResult` in
+an assistant message, and anything but text and media in a tool result are `Error::InvalidRequest`.
+
+Generation parameters depend on the dialect:
+
+| `GenerationParams`       | OpenAI                                    | OpenRouter                   | Generic                       |
+| ------------------------ | ----------------------------------------- | ---------------------------- | ----------------------------- |
+| `max_tokens`             | `max_completion_tokens`                   | `max_tokens`                 | `max_tokens`                  |
+| `temperature`            | sent, except to declared reasoning models | sent                         | sent                          |
+| `reasoning_budget: Some` | `reasoning_effort` (declared reasoning)   | `reasoning: {max_tokens: n}` | `reasoning_effort` (declared) |
+| `reasoning_budget: None` | nothing                                   | nothing                      | nothing                       |
+| `cache_retention`        | nothing (caching is automatic)            | top-level `cache_control`    | nothing                       |
+
+- `max_tokens` is the request's, else the model's or instance's `max_tokens` setting, else not
+  sent (the server's default). OpenAI deprecated `max_tokens` and its reasoning models reject it;
+  other servers may not know `max_completion_tokens`.
+- A reasoning budget becomes an effort level, `low` up to 2,048 tokens, `medium` up to 8,192, and
+  `high` above. It's sent only to models declared `reasoning = true`, because OpenAI rejects
+  `reasoning_effort` for models that don't reason and other servers may too. OpenRouter takes a
+  token budget directly and ignores it for models that don't reason, so it always gets one. A
+  `None` budget sends nothing: there is no value every model accepts for "off" (OpenAI's `none`
+  is GPT-5.1 and later only), so the model keeps its default.
+- OpenAI's reasoning models accept only the default temperature, so it's left out for models
+  declared `reasoning` on the OpenAI dialect.
+- On OpenRouter, a top-level `cache_control` (`{type: "ephemeral"}`, with `ttl: "1h"` for
+  `CacheRetention::Long`) turns on Anthropic's automatic caching for Claude models; OpenRouter
+  applies it only where the upstream provider needs it. OpenAI, DeepSeek, Gemini, and local servers
+  cache prefixes on their own.
+- The system prompt goes in a `system` message rather than OpenAI's newer `developer` role, which
+  other servers may not know; OpenAI treats `system` as `developer` for reasoning models.
+
+### Stream mapping
+
+`StreamMapper` turns the chunks into `CompletionEvent`s. Chat Completions has no block events: a
+chunk's `choices[0].delta` may carry reasoning, text, and tool call fragments, and a server may
+interleave them. The mapper opens a block when a different kind of content arrives, closing the
+open one with `BlockStop` first, so blocks never overlap and indexes count from 0. Within a delta it
+takes reasoning, then text, then tool calls. Only choice 0 is read.
+
+| Chunk content                                      | `CompletionEvent`                                            |
+| -------------------------------------------------- | ------------------------------------------------------------ |
+| `delta.reasoning` or `delta.reasoning_content`     | a `Reasoning` block (opened if needed) and `ReasoningDelta`  |
+| `delta.content`, `delta.refusal`                   | a `Text` block (opened if needed) and `TextDelta`            |
+| `delta.tool_calls[]` starting a call (new `index`) | `BlockStart { kind: ToolUse, tool: Some((id, name)) }`       |
+| `function.arguments` fragments                     | `ToolInputDelta`; accumulated and parsed at the block's stop |
+| `finish_reason`                                    | `BlockStop` for the open block; the reason is kept           |
+| `usage` (any chunk; normally the last, no choices) | `Usage`                                                      |
+| `data: [DONE]`                                     | `Stop`; the stream ends                                      |
+| `error` object                                     | an `Err` item; the stream ends                               |
+| empty deltas, `role`, `reasoning_details`, others  | none                                                         |
+
+Tool calls are matched by `id` and `index`. A fragment continues the open call when it carries no
+id (or the open call's id) and its index matches the open call's or is absent. Any other fragment
+starts a call, which must carry `id` and `function.name` (else `Error::Other`). A new id always
+starts a call, whatever its index: Ollama sends index 0 for every call of a response, each with
+its own id. Several calls in one chunk, whole calls in one fragment (Ollama), and `arguments` sent
+as a JSON object rather than text are handled. A fragment without a new id for a call index
+already seen, after the call was closed (because other content came between), is `Error::Other`,
+since a closed block can't be reopened. Arguments that don't parse (cut off by the output limit)
+become `{}`, logged, as with Anthropic; no arguments are `{}`.
+
+Reasoning becomes `Reasoning { text, opaque: {api: "openai", data: {"field": <field>}} }`, the
+field being the delta field it streamed in. The request mapping sends the text back in that field
+of the assistant message, which DeepSeek requires during tool use (`reasoning_content`) and Ollama
+and OpenRouter read (`reasoning`). Every instance of this component shares the `openai` family, so
+after a fallback reasoning from one server can reach another; the OpenAI dialect never gets the
+field, since OpenAI doesn't stream reasoning in Chat Completions and may reject unknown fields.
+OpenRouter's `reasoning_details` (encrypted or signed reasoning of the upstream model) isn't kept.
+
+Stop reasons, applied at `[DONE]`: `tool_calls` (and the legacy `function_call`) is `ToolUse`,
+`length` is `MaxTokens`, `content_filter` is `Refusal`, and `stop` is `EndTurn`. A response that
+made tool calls stops with `ToolUse` whatever the reason (older Ollama reported `stop`), and one
+that streamed `refusal` text with `stop` is `Refusal`. Unknown reasons are logged and end the turn.
+
+Usage: `prompt_tokens` counts all input, so `input_tokens = prompt_tokens - cached - cache writes`
+(saturating), `cache_read_tokens` is `prompt_tokens_details.cached_tokens` (DeepSeek:
+`prompt_cache_hit_tokens`), `cache_write_tokens` is `prompt_tokens_details.cache_write_tokens`
+(OpenRouter, and OpenAI on models that charge for writes), else 0, and `output_tokens` is
+`completion_tokens` (reasoning tokens included). The request asks for usage with
+`stream_options: {include_usage: true}`; a server that sends it on every chunk just updates the
+totals.
+
+Ending: `[DONE]` with a finish reason gives `Stop`. A body that ends after a finish reason but
+without `[DONE]` is complete too (not every server sends it). `[DONE]` or the end of the body
+without a finish reason is `Error::Unavailable`: the response was cut off.
+
+Mid-stream `error` objects (`{"error": {...}}` in a chunk; some servers send a bare string) map by
+an HTTP status given as `code` (OpenRouter's upstream failures, e.g. 502) like an HTTP error,
+else by the textual code or type: `server_error`, `api_error`, `overloaded_error`,
+`rate_limit_error`, `rate_limit_exceeded`, `timeout`, and `service_unavailable` are `Unavailable`;
+`not_found_error` and `model_not_found` are `NotFound`; `invalid_request_error`,
+`context_length_exceeded`, `authentication_error`, `permission_error`, and `insufficient_quota`
+are `InvalidRequest`; others are `Other`. OpenRouter's `finish_reason: "error"` without an error
+object is `Unavailable`.
+
+### Errors
+
+Errors before the stream starts, and HTTP statuses, map as for Anthropic (`http::status_error`:
+408, 429, 5xx are `Unavailable` with `Retry-After`; 404 is `NotFound`; other 4xx are
+`InvalidRequest`). Messages are `openai <status> <code or type>: <message>` from an
+`{"error": {...}}` body (OpenAI's string `code`, such as `rate_limit_exceeded`, is preferred over
+its `type`), else the first 64 KiB of the body. Some servers echo the API key in an
+authentication error; the provider replaces it with `<redacted>`.
+
+### Models
+
+`list_models` reads `GET <base_url>/models` (one page; the API isn't paginated). OpenAI and
+Ollama report only ids, so most of `ModelInfo` comes from the config:
+
+- `context_window`: the configured one, else what the server reports (`context_length` from
+  OpenRouter, `max_model_len` from vLLM, `top_provider.context_length`), else unknown.
+- `max_output_tokens`: OpenRouter's `top_provider.max_completion_tokens`, else unknown.
+- `media_types`: the model's own configured list as is; otherwise `media_types(model)` without the
+  types whose modality the server says the model lacks (OpenRouter's
+  `architecture.input_modalities`: `image`, `audio`, and `file` for PDFs).
+- `reasoning`: configured, else whether the server lists a `reasoning` or `reasoning_effort`
+  parameter (OpenRouter's `supported_parameters`), else false.
+- `display_name`: OpenRouter's `name`.
+
+### Tests
+
+Unit tests next to each module cover config validation, request bodies (every mapping row,
+dialects, relocation, reasoning round trips), the stream state machine (interleaving, parallel and
+index-less tool calls, finish reasons, usage math, errors, protocol violations), and model mapping.
+`tests/openai.rs` runs the provider against the shared local server with hand-written streams
+modeled on OpenAI, OpenRouter (comment keep-alives, `reasoning_details`, cost and cache-write
+usage, a mid-stream upstream error), and Ollama (whole tool calls, `reasoning`, no key)
+(`tests/fixtures/openai/`). It checks exact request bodies, URLs under each `base_url` shape, and
+headers, exact event sequences, that the stored blocks of a response are sent back correctly
+(tool calls, relocated tool-result images, reasoning), the HTTP and mid-stream error mapping with
+`Retry-After`, key redaction, and the three model lists. Nothing calls a real API.

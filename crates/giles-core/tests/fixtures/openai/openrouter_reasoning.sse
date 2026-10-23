@@ -1,0 +1,18 @@
+: OPENROUTER PROCESSING
+
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-1761170200-Xq3","provider":"Anthropic","model":"anthropic/claude-sonnet-4.5","object":"chat.completion.chunk","created":1761170200,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"The user","reasoning_details":[{"type":"reasoning.text","text":"The user","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null,"logprobs":null}]}
+
+data: {"id":"gen-1761170200-Xq3","provider":"Anthropic","model":"anthropic/claude-sonnet-4.5","object":"chat.completion.chunk","created":1761170200,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":" wants a haiku.","reasoning_details":[{"type":"reasoning.text","text":" wants a haiku.","signature":"ErUBCkYIBhgCIkD","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null,"logprobs":null}]}
+
+data: {"id":"gen-1761170200-Xq3","provider":"Anthropic","model":"anthropic/claude-sonnet-4.5","object":"chat.completion.chunk","created":1761170200,"choices":[{"index":0,"delta":{"role":"assistant","content":"Autumn moonlight—"},"finish_reason":null,"native_finish_reason":null,"logprobs":null}]}
+
+data: {"id":"gen-1761170200-Xq3","provider":"Anthropic","model":"anthropic/claude-sonnet-4.5","object":"chat.completion.chunk","created":1761170200,"choices":[{"index":0,"delta":{"role":"assistant","content":"\na worm digs silently"},"finish_reason":null,"native_finish_reason":null,"logprobs":null}]}
+
+data: {"id":"gen-1761170200-Xq3","provider":"Anthropic","model":"anthropic/claude-sonnet-4.5","object":"chat.completion.chunk","created":1761170200,"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":"stop","native_finish_reason":"end_turn","logprobs":null}]}
+
+data: {"id":"gen-1761170200-Xq3","provider":"Anthropic","model":"anthropic/claude-sonnet-4.5","object":"chat.completion.chunk","created":1761170200,"choices":[],"usage":{"prompt_tokens":10339,"completion_tokens":60,"total_tokens":10399,"cost":0.0042,"is_byok":false,"prompt_tokens_details":{"cached_tokens":10000,"cache_write_tokens":300,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":12,"image_tokens":0}}}
+
+data: [DONE]
+
