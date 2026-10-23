@@ -188,3 +188,35 @@ the next attempt time. Only one sender loop may run, since rows aren't leased.
 | `outbox_delete`      | Delivered, or its approval was resolved.                               |
 | `outbox_expire`      | Deletes and returns expired rows, for logging instance, recipient, and kind. |
 | `outbox_expire_kind` | Deletes and returns every row of a kind, due or not: at startup, the prompts of approvals that died with the old process. |
+
+## Jobs
+
+Config jobs live in `agent.toml`; runtime jobs (from the `schedule` tool) are `jobs` rows with the
+agent, the creator, and the scheduler's JSON `spec`, which the store doesn't interpret. Their ids
+use `AUTOINCREMENT`, so a deleted job's id is never reused. `job_runs` keeps the last run of every
+job, keyed by agent and `JobKey`: `Config(id)` is stored as `config:<id>` and `Runtime(id)` as
+`runtime:<row id>`, so config and runtime ids can't collide. A trigger deletes a runtime job's
+`job_runs` row with the job.
+
+| Method                               | Contract                                         |
+| ------------------------------------ | ------------------------------------------------ |
+| `job_create`                         | New runtime job.                                 |
+| `job`, `jobs(agent?, creator?)`      | One job; jobs filtered by agent and creator, oldest first. |
+| `job_update_spec`, `job_delete`      | `false` if the job doesn't exist.                |
+| `job_last_run`, `job_set_last_run`   | Read and upsert the last run time.               |
+
+## Usage
+
+`record_usage` stores one row per provider request (PLAN 11.7): time, provider instance, model,
+agent, user, session, the four token counts of `giles_types::Usage`, and the fallback flag.
+`usage_by_agent(since)` sums requests, fallbacks, and tokens per agent. `AgentUsage::cache_hit_rate`
+is cache-read tokens over all input tokens (uncached input + cache reads + cache writes), since
+`input_tokens` excludes cached tokens. Token counts above `i64::MAX` are rejected, not truncated.
+
+## Web Sessions
+
+`web_sessions` backs the login cookie (PLAN 3.4). The store hashes the cookie token with SHA-256
+and keeps only the hash, so a database copy can't be replayed as a login. The token is random with
+at least 128 bits of entropy, so a plain hash suffices. `web_session_create` (`Conflict` on a token
+collision), `web_session(token, now)` (only unexpired sessions), `web_session_delete` (logout), and
+`web_sessions_expire(now)`. The 30-day lifetime is the caller's `expires_at`.

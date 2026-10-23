@@ -75,7 +75,7 @@ All parallel. Each task needs only Phase 0.
   - Sandbox grants parsed; `read`/`write` grants overlapping `GILES_HOME` (other than the
     instance's data dir) or plugin dirs rejected.
   - Instance config hash taken before secret resolution (for the cache, §7.9).
-- [ ] **1.2 SQLite store** (§11.4). `giles-store`: `rusqlite` (bundled) on a blocking pool, WAL,
+- [x] **1.2 SQLite store** (§11.4). `giles-store`: `rusqlite` (bundled) on a blocking pool, WAL,
   migrations embedded in the binary. v1 tables `sessions`, `messages`, `summaries`, `inbox`,
   `outbox`, `jobs`, `job_runs`, `usage`, `web_sessions`, and the FTS5 `search` index kept by
   triggers on `messages`. Typed query APIs, tested against temporary databases.

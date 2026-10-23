@@ -13,16 +13,20 @@
 mod db;
 mod error;
 mod inbox;
+mod jobs;
 mod messages;
 mod migrate;
 mod outbox;
 mod search;
 mod sessions;
 mod time;
+mod usage;
+mod web_sessions;
 
 pub use db::{OpenOptions, Store};
 pub use error::{BoxError, Error, Result};
 pub use inbox::{InboxEntry, InboxId, InboxState, NewInboxEvent};
+pub use jobs::{JobKey, RuntimeJob, RuntimeJobId};
 pub use messages::{
     Appended, Entry, History, Slot, StoredMessage, StoredMessageId, Summary, SummaryId,
 };
@@ -30,6 +34,8 @@ pub use migrate::{MigrationPlan, SCHEMA_VERSION};
 pub use outbox::{NewOutbox, OutboxEntry, OutboxId};
 pub use search::{SNIPPET_ELLIPSIS, SNIPPET_END, SNIPPET_START, SearchHit, SearchScope};
 pub use sessions::{Session, SessionId, SessionKey, SessionKind};
+pub use usage::{AgentUsage, UsageRecord};
+pub use web_sessions::WebSession;
 
 use giles_types::Timestamp;
 use rusqlite::{Params, Row, Statement};
