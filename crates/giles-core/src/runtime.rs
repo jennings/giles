@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::blobs::BlobMedia;
 use crate::config::Config;
+use crate::core_tools;
 use crate::paths::DataRoot;
 use crate::registry::{Registry, RegistryError};
 use crate::router::Router;
@@ -57,10 +58,10 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    /// Opens (and migrates) the database and the blob store under `root` and builds the registry
-    /// from `config` with built-in providers reading attachments from the blob store. The data
-    /// root's layout must exist. `serve` logs the registry's summary
-    /// ([`Registry::log_summary`]) once it has registered the toolsets.
+    /// Opens (and migrates) the database and the blob store under `root`, builds the registry
+    /// from `config` with built-in providers reading attachments from the blob store, and
+    /// registers the core tools. The data root's layout must exist. `serve` logs the registry's
+    /// summary ([`Registry::log_summary`]) once it has registered the toolsets.
     ///
     /// # Errors
     ///
@@ -76,13 +77,15 @@ impl Runtime {
             .map_err(|source| StartError::Blobs { path, source })?;
         let media = Arc::new(BlobMedia::new(blobs.clone()));
         let registry = Registry::from_config(root.clone(), config.clone(), media)?;
-        Ok(Self {
+        let runtime = Self {
             root,
             config,
             store,
             blobs,
             registry: Arc::new(registry),
-        })
+        };
+        core_tools::register(&runtime)?;
+        Ok(runtime)
     }
 
     /// Starts the session manager: runs startup recovery, resumes queued messages, and starts

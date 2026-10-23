@@ -187,7 +187,7 @@ The five tracks run in parallel.
 
 ### Track B: Core Tools
 
-- [ ] **2.11 `memory` and `memory_search`** (§6.7). `memory(scope, operations[])` on 1.11 for the
+- [x] **2.11 `memory` and `memory_search`** (§6.7). `memory(scope, operations[])` on 1.11 for the
   `agent` and owner `user` scopes; agent-wide writes only in owner turns and config jobs;
   `memory_search` over the owner's DM transcripts with this agent (FTS5). **Needs:** 2.5, 1.11.
 - [ ] **2.12 `load_skill` and `send_attachment`** (§5, §6.6). **Needs:** 2.5, 2.9.

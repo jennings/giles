@@ -38,6 +38,12 @@ pub const SOUL_FILE: &str = "SOUL.md";
 /// What a memory section shows when its file is missing or empty.
 pub const EMPTY_MEMORY: &str = "(empty)";
 
+/// The heading of the agent-wide memory section (the `memory` tool's `agent` scope).
+pub const AGENT_MEMORY_TITLE: &str = "Agent memory";
+
+/// The heading of the per-user memory section (the `memory` tool's `user` scope).
+pub const USER_MEMORY_TITLE: &str = "User memory";
+
 /// The prompt prefix of one session: its tools and its `system`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionPrompt {
@@ -242,7 +248,7 @@ async fn load_memory(
     let cap = agent.memory_cap as usize;
     let doc = memory::read(&memory::agent_memory_file(root, agent.id.as_str())?).await?;
     let mut sections = vec![MemorySection {
-        title: "Agent memory",
+        title: AGENT_MEMORY_TITLE,
         intro: "What you remember in general, shared by all your conversations.",
         usage: Some(doc.usage_header(cap)),
         body: doc.body(),
@@ -258,7 +264,7 @@ async fn load_memory(
         let path = memory::user_memory_file(root, agent.id.as_str(), user.as_str())?;
         let doc = memory::read(&path).await?;
         sections.push(MemorySection {
-            title: "User memory",
+            title: USER_MEMORY_TITLE,
             intro: "What you remember about this user.",
             usage: Some(doc.usage_header(cap)),
             body: doc.body(),

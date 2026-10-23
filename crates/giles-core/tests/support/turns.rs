@@ -1,6 +1,7 @@
 //! A daemon wired the way `giles serve` wires it (`Runtime::start`, `AgentLoop::from_runtime`,
 //! `Runtime::start_sessions`), with a scripted provider, a fake channel, and fake toolsets whose
-//! calls the test controls. For the turn-control and approval tests, on paused Tokio time.
+//! calls the test controls. The agent is offered those toolsets and the memory core tools. For the
+//! turn-control, approval, and memory-tool tests, on paused Tokio time.
 #![allow(dead_code)] // Each test file uses a part of it.
 
 use std::collections::{HashMap, VecDeque};
@@ -305,7 +306,7 @@ impl Daemon {
             "agents/jeeves/agent.toml",
             &format!(
                 "models = [\"anthropic/test-model\"]\n\
-                 tools = [\"met__*\", \"par__*\", \"slow__*\"]\n{agent_toml}"
+                 tools = [\"met__*\", \"par__*\", \"slow__*\", \"memory*\"]\n{agent_toml}"
             ),
         );
         let config = Config::load_with(

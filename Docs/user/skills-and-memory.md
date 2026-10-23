@@ -94,10 +94,19 @@ Weekly review happens on Fridays.
 - A missing file is the same as an empty one; Giles creates it, and its directories, on the first
   write.
 
-The agent edits memory one batch at a time: it adds entries, patches a piece of text inside one
-entry, or removes the entry containing some text. A batch either applies completely or not at all.
-When the agent rewrites a file, it tidies the layout: one `§` line between entries, no blank lines
-around them, `\n` line endings. The text of each entry is kept.
+The agent edits memory with its `memory` tool, one batch at a time: it adds entries, patches a
+piece of text inside one entry, or removes the entry containing some text. A batch either applies
+completely or not at all. When the agent rewrites a file, it tidies the layout: one `§` line
+between entries, no blank lines around them, `\n` line endings. The text of each entry is kept.
+
+Who may write which file:
+
+- `agents/<agent>/MEMORY.md` is loaded into every conversation the agent has, so it's written only
+  in your conversations and in jobs (both the jobs in `agent.toml` and the ones the agent schedules
+  for you).
+- `agents/<agent>/users/owner/MEMORY.md` is written only in your direct conversations and in jobs
+  that report to you.
+- `USER.md` is never written by the agent.
 
 Each memory file the agent writes is limited to `memory_cap` characters (default 2,200, set per
 agent in `agent.toml`). The agent sees how full it is in a header such as `[67% — 1,474/2,200]`. A
@@ -107,4 +116,15 @@ it stays that way, and the agent's changes to it fail until it (or you) brings t
 the limit.
 
 You can edit memory files at any time. Each conversation reads memory when it starts, so your
-changes and the agent's show up in conversations that start afterward.
+changes and the agent's show up in conversations that start afterward. Within a conversation, the
+agent sees its own changes in the `memory` tool's result.
+
+## Searching Past Conversations
+
+The `memory_search` tool lets the agent look up something said before that isn't in its memory.
+It searches the text of your direct conversations with that agent, on every channel (not job runs,
+not other agents' conversations, not memory files), and returns short excerpts, best matches first,
+with when each message was sent. Matching ignores word endings (`running` finds `run`), case, and
+accents.
+
+Both tools are offered only if the agent's `tools` allow them, for example `tools = ["memory*"]`.

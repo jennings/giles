@@ -62,6 +62,9 @@ pub enum RegistryError {
     /// Skill discovery's blocking task failed.
     #[error("skill discovery failed: {0}")]
     Task(#[from] tokio::task::JoinError),
+    /// A core tool's name isn't one of [`CORE_TOOLS`].
+    #[error(transparent)]
+    ToolName(#[from] ToolNameError),
 }
 
 impl From<ConfigError> for RegistryError {

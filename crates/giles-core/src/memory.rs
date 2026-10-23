@@ -70,9 +70,11 @@ pub fn user_profile_file(root: &DataRoot, user: &str) -> Result<PathBuf, PathsEr
 
 /// One operation in a `memory` tool batch.
 ///
-/// Serialized with an `op` tag: `{"op": "patch", "old_text": "...", "content": "..."}`.
+/// Serialized with an `op` tag: `{"op": "patch", "old_text": "...", "content": "..."}`. Fields
+/// an operation doesn't take are an error, so `{"op": "remove", "old_text": ..., "content": ...}`
+/// (a whole-entry replace, which this format leaves out on purpose) can't silently drop `content`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
 pub enum MemoryOp {
     /// Appends a new entry.

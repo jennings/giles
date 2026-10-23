@@ -148,9 +148,12 @@ tells the model exactly how much one batch must free.
 `usage_header` rounds the percentage down, so 100% means exactly at the cap; an over-cap file shows
 more than 100%. Numbers use commas between thousands.
 
-`MemoryOp` deserializes from `{"op": "add" | "patch" | "remove", ...}`; the `memory` tool (task
-2.11) owns the JSON schema the model sees and the scope rules (who may write which file). `apply`
-never refuses a path by itself, so the tool must not pass `USER.md`.
+`MemoryOp` deserializes from `{"op": "add" | "patch" | "remove", ...}` and rejects fields the
+operation doesn't take (`deny_unknown_fields`), so a whole-entry replace sent as `remove` with a
+`content` fails instead of deleting the entry and dropping the replacement. The `memory` tool
+([below](#the-memory-and-memory_search-tools)) owns the JSON schema the model sees and the scope
+rules (who may write which file). `apply` never refuses a path by itself, so the tool must not pass
+`USER.md`.
 
 ### Writing
 
@@ -173,3 +176,37 @@ never refuses a path by itself, so the tool must not pass `USER.md`.
 
 A test runs 48 concurrent batches against one file through three different path spellings on a
 multi-threaded runtime and checks that every entry lands; without the lock it loses most of them.
+
+## The `memory` and `memory_search` Tools
+
+Core tools (§6.7) in `giles_core::core_tools::{memory, memory_search}`, registered by
+`core_tools::register` at the end of `Runtime::start` (see [Agent Loop](agent-loop.md#core-tools)).
+
+`memory(scope, operations[])` (`MemoryTool`, holding the data root and the configuration):
+
+- Input: `scope` is `agent` or `user`; `operations` a non-empty array of `MemoryOp`s. The schema
+  is closed (`additionalProperties: false`, one `oneOf` branch per op), and parsing enforces it at
+  both levels. Parsing errors name the field or `operations[<i>]`; `group` is refused as not
+  available in v1.
+- Scope rules (`memory::target`, pure): `agent` is refused with `not permitted for <user>` unless
+  the requester is the owner or there is none (a config job; §6.3: only config jobs have no
+  requester, and runtime jobs run as their creator). `user` is the memory of the session's user
+  (`prompt::memory_user`: direct and job sessions only, so never in a group), and only in that
+  user's turns or a config job's.
+- The cap is the agent's `memory_cap`, per file. Success returns `Saved. <Agent|User> memory is now
+  [usage]:` and the entries (`(empty)` if none); `OverCap` returns its message, then `... is
+  unchanged [usage]:` and the current entries, as an error result. Other batch errors are their
+  message. Nothing touches the session's cached prompt: the snapshot stays until the session ends
+  or is compacted (§6.7).
+
+`memory_search(query, limit?)` (`MemorySearchTool`, holding the store; parallel-safe):
+
+- Scope (`memory_search::scope`): in a direct or job session with a user,
+  `SearchScope::direct(agent, user)` (every direct session of the user with this agent, every
+  channel); in a group, `SearchScope::conversation`; otherwise an error.
+- `limit` defaults to 10 (`DEFAULT_LIMIT`), at most 50 (`MAX_LIMIT`); a blank query is an error.
+- Each hit is `<time> <user|you> on <channel>: <snippet>`, snippets with `**` around matches and
+  newlines flattened. A user message's time is its stored time prefix (when it was sent), split
+  out of the snippet with its match markers removed (`split_sent_prefix`: the prefix is indexed,
+  so a query word like `22` or `BST` is highlighted inside it); other messages, and snippets cut
+  before the prefix, show their stored time in the message time zone. No hits: `No matches.`
