@@ -105,6 +105,8 @@ pub trait LoginLinks: Send + Sync {
 }                                             // LoginLinkError::{UnknownUser, Refused}(message)
 ```
 
-`serve` passes `plugins: None` and `login_links: None` until plugin supervision (TASKS.md 2.17)
-and the web channel's login links (2.23) are wired in; until then `RestartPlugin` and
-`CreateLoginLink` answer `UNAVAILABLE`, and `ListPlugins` reports configuration only.
+The built-in web channel implements `LoginLinks` (its `UnknownUser` becomes `UnknownUser`,
+`NoWebIdentity` becomes `Refused`); `serve` passes `registry.web_channel()`, so without a
+`[channel.web]` instance `CreateLoginLink` answers `UNAVAILABLE`. `serve` passes `plugins: None`
+until plugin supervision (TASKS.md 2.17) is wired in; until then `RestartPlugin` answers
+`UNAVAILABLE` and `ListPlugins` reports configuration only.

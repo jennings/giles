@@ -63,9 +63,8 @@ Every page needs a login. There are two ways to log in.
 `giles admin login-link --user owner` prints a one-time URL. Opening it shows a **Log in** button;
 pressing it logs that browser in for 30 days. A link works once and only for 10 minutes, and a
 restart of Giles cancels any unused ones. (Opening the link doesn't use it up, so a chat app that
-fetches a link to preview it can't spend it.) **Log out** on the chat list ends the login. The
-`giles admin` commands come with the admin service, which isn't built yet; until then, log in
-through a trusted proxy.
+fetches a link to preview it can't spend it.) **Log out** on the chat list ends the login. See
+[Command Line](cli.md).
 
 `[owner] identities` must list `web:owner`: messages you send after logging in with a link come
 from that identity. If you remove it later, existing logins stop working.

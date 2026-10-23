@@ -11,9 +11,9 @@
 //!   the same user.
 //! - [`connect`] is the client side: check the socket directory, connect, read the token.
 //!
-//! Subsystems that land later plug in through traits: [`PluginControl`] (plugin supervision) and
-//! [`LoginLinks`] (the web channel). Until they're wired, the RPCs that need them answer
-//! `UNAVAILABLE`. See `Docs/technical/admin.md`.
+//! Other subsystems plug in through traits: [`PluginControl`] (plugin supervision) and
+//! [`LoginLinks`] (implemented by the built-in web channel). Without them, the RPCs that need them
+//! answer `UNAVAILABLE`. See `Docs/technical/admin.md`.
 
 mod auth;
 mod client;

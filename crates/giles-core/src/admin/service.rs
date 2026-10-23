@@ -31,8 +31,8 @@ impl ChannelStatuses for Sessions {
     }
 }
 
-/// Creates one-time web login links (PLAN section 3.4). The built-in web channel implements it
-/// (TASKS.md 2.23); until it's wired, `CreateLoginLink` answers `UNAVAILABLE`.
+/// Creates one-time web login links (PLAN section 3.4). The built-in web channel implements it;
+/// without one, `CreateLoginLink` answers `UNAVAILABLE`.
 pub trait LoginLinks: Send + Sync {
     /// A new one-time login link for `user`, valid from `now`.
     ///
@@ -63,6 +63,26 @@ pub enum LoginLinkError {
     /// (`FAILED_PRECONDITION`).
     #[error("{0}")]
     Refused(String),
+}
+
+#[cfg(feature = "channel-web")]
+impl LoginLinks for crate::channels::web::WebChannel {
+    fn create_login_link(
+        &self,
+        user: &UserId,
+        now: Timestamp,
+    ) -> Result<LoginLink, LoginLinkError> {
+        use crate::channels::web::{self, WebChannel};
+        match WebChannel::create_login_link(self, user, now) {
+            Ok(web::LoginLink { url, expires_at }) => Ok(LoginLink { url, expires_at }),
+            Err(err @ web::LoginLinkError::UnknownUser(_)) => {
+                Err(LoginLinkError::UnknownUser(err.to_string()))
+            }
+            Err(err @ web::LoginLinkError::NoWebIdentity(_)) => {
+                Err(LoginLinkError::Refused(err.to_string()))
+            }
+        }
+    }
 }
 
 /// What the admin service reads and controls.

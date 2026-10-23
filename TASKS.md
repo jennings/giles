@@ -256,7 +256,7 @@ The five tracks run in parallel.
   `ResetSession`, `CreateLoginLink`, `UsageReport`; CLI `giles status`,
   `giles admin login-link --user`, `giles usage` (cache hit rate per agent). RPCs fill in as their
   subsystems land. **Needs:** 1.4, 1.2. `RestartPlugin` and the plugins' lifecycle fields await
-  2.17 (`admin::PluginControl`); `CreateLoginLink` awaits 2.23 (`admin::LoginLinks`).
+  2.17 (`admin::PluginControl`); `CreateLoginLink` uses the web channel (`admin::LoginLinks`).
 
 ## Phase 3: v1 Features
 

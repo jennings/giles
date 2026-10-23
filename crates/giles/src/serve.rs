@@ -117,16 +117,24 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     };
     let mut http_server =
         tokio::spawn(async move { tokio::try_join!(main_server, proxy_server).map(|_| ()) });
+    // Login links come from the built-in web channel, if one is configured.
+    #[cfg(feature = "channel-web")]
+    let login_links = runtime
+        .registry
+        .web_channel()
+        .map(|web| web as Arc<dyn giles_core::admin::LoginLinks>);
+    #[cfg(not(feature = "channel-web"))]
+    let login_links = None;
     let admin = AdminService::new(AdminOptions {
         config: config.clone(),
         store: runtime.store.clone(),
         sandbox: sandbox.clone(),
         started_at,
         channels: Arc::new(sessions.clone()),
-        // Plugin supervision (TASKS.md 2.17) and the web channel's login links (2.23) plug in
-        // here once they exist; until then those RPCs answer UNAVAILABLE.
+        // Plugin supervision (TASKS.md 2.17) plugs in here once it exists; until then
+        // `RestartPlugin` answers UNAVAILABLE.
         plugins: None,
-        login_links: None,
+        login_links,
         clock: Arc::new(SystemClock),
     });
     let admin_server = tokio::spawn(admin_listener.serve(admin, shutdown.clone()));

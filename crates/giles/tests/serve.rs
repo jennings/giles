@@ -515,6 +515,92 @@ fn status_usage_and_login_link_ask_the_running_daemon() {
     assert!(!ok && stderr.contains("giles is not running"), "{stderr}");
 }
 
+/// `POST <path>` with the urlencoded `form` to `addr`; the whole response.
+#[cfg(feature = "channel-web")]
+fn http_post_form(addr: SocketAddr, path: &str, form: &str) -> String {
+    let mut stream = TcpStream::connect(addr).unwrap();
+    write!(
+        stream,
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\
+         Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{form}",
+        form.len()
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response
+}
+
+#[cfg(feature = "channel-web")]
+#[test]
+fn admin_login_link_prints_a_url_that_logs_in_once() {
+    let env = Env::new();
+    let home = env.path("home");
+    let home_arg = home.to_str().unwrap();
+    // Links start with `http_listen` as configured, so give it a real port rather than 0.
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    write_config(
+        &home,
+        &format!(
+            "[core]\nhttp_listen = \"127.0.0.1:{port}\"\n\n[owner]\n\
+             identities = [\"web:owner\"]\n\n[channel.web]\n"
+        ),
+    );
+    let daemon = Daemon::start(env.command(&["serve", "--home", home_arg]));
+    let addr = http_addr(&daemon.log);
+
+    let (ok, stdout, stderr) = run_cli(
+        &env,
+        &["admin", "login-link", "--home", home_arg, "--user", "owner"],
+    );
+    assert!(ok, "{stderr}");
+    assert!(stderr.contains("The link works once, until"), "{stderr}");
+    let url = stdout.trim();
+    let prefix = format!("http://{addr}/login/");
+    let token = url
+        .strip_prefix(&prefix)
+        .unwrap_or_else(|| panic!("{url} doesn't start with {prefix}"));
+
+    // Opening the link shows the login page; posting its form logs in, once.
+    let page = http_request(
+        TcpStream::connect(addr).unwrap(),
+        &format!("/login/{token}"),
+        "",
+    );
+    assert!(page.starts_with("HTTP/1.1 200 OK\r\n"), "{page}");
+    let form = format!("token={token}");
+    let first = http_post_form(addr, "/login", &form);
+    assert!(first.starts_with("HTTP/1.1 303 "), "{first}");
+    assert!(
+        first.to_ascii_lowercase().contains("\r\nset-cookie: "),
+        "{first}"
+    );
+    let again = http_post_form(addr, "/login", &form);
+    assert!(!again.starts_with("HTTP/1.1 303 "), "{again}");
+
+    // v1 has one user.
+    let (ok, stdout, stderr) = run_cli(
+        &env,
+        &[
+            "admin",
+            "login-link",
+            "--home",
+            home_arg,
+            "--user",
+            "stranger",
+        ],
+    );
+    assert!(!ok && stdout.is_empty(), "{stdout}");
+    assert!(stderr.contains("there is no user `stranger`"), "{stderr}");
+
+    let (status, log) = daemon.stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+}
+
 #[cfg(feature = "provider-anthropic")]
 #[test]
 fn a_component_that_cannot_be_built_fails_with_the_file_and_key() {
