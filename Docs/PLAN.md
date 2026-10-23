@@ -1207,8 +1207,9 @@ No plugin is ever granted read or write access to any part of `GILES_HOME` excep
 ### 11.2 Configuration
 
 Three kinds of TOML file: `giles.toml`, `agents/<agent>/agent.toml`, and `users/<user>/user.toml`.
-They're written by people. The core never edits them; it only creates new `users/<user>/user.toml`
-files for users created at runtime (section 3.2).
+The core never edits `giles.toml`; people write it. The core may create and edit `agent.toml` and
+`user.toml` files, for example for an agent created in the web UI or a user created at runtime
+(section 3.2), so both people and the core write those.
 
 `giles.toml`:
 
@@ -1357,7 +1358,7 @@ Per-user operations:
     covering those messages are deleted and regenerated.
   - The `search` index is maintained by triggers, so their rows leave it with the messages.
   - Usage rows keep their token counts with the user cleared.
-  - `user.toml` is listed for the operator to delete, since the core doesn't edit or delete TOML.
+  - `user.toml` is listed for the operator to delete; the core doesn't delete TOML files.
 
 Backups: copying a live SQLite file in WAL mode can capture a broken state, so `giles backup <dir>`
 is the supported way: `VACUUM INTO` for the database plus a tar of the TOML, Markdown, and blobs.
