@@ -1107,9 +1107,10 @@ or later, which includes elicitation.
 ### 8.7 Admin
 
 The core serves `giles.admin.v1.AdminService` on `<root>/run/admin.sock` (mode 0600). The `giles`
-CLI and the web admin pages are its clients. Every call needs the token in `<root>/run/admin.token`
-(mode 0600, outside every plugin's grants), because file modes don't separate the core from its
-plugins, which run as the same user.
+CLI and the web admin pages are its clients: the CLI over the socket, the web admin pages
+in-process behind the web login. Every call on the socket needs the token in
+`<root>/run/admin.token` (mode 0600, outside every plugin's grants), because file modes don't
+separate the core from its plugins, which run as the same user.
 
 | Area     | RPCs                                                                      |
 | -------- | ------------------------------------------------------------------------- |

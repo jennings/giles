@@ -158,6 +158,15 @@ pub(super) fn error_page(status: StatusCode, title: &str, message: &str) -> Resp
     response
 }
 
+/// `Cache-Control: no-store`, for answers no cache may keep: the login pages (they hold a token or
+/// set a cookie) and every admin page (live state).
+pub(super) fn no_store(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
 #[derive(Template)]
 #[template(path = "web/login_required.html")]
 struct LoginRequiredPage;

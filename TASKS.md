@@ -296,7 +296,7 @@ other and with the rest of this phase.
   non-loopback address refused unless `insecure = true`; bearer token or OAuth client credentials;
   degraded with backoff while unreachable; the core only calls `Shutdown` and disconnects.
   **Needs:** 2.18.
-- [ ] **3.8 Web admin pages** (§8.5, §8.7). Server-rendered status and plugin pages over the admin
+- [x] **3.8 Web admin pages** (§8.5, §8.7). Server-rendered status and plugin pages over the admin
   service, including a QR code for a channel in `NeedsAuth`. **Needs:** 2.23, 2.24.
 
 ## Phase 4: Operations and Release

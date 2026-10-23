@@ -1,0 +1,82 @@
+{% extends "layout.html" %}
+
+{% block title %}Status - Giles{% endblock %}
+
+{% block head %}
+{%- if refresh %}
+<meta http-equiv="refresh" content="{{ refresh_secs }}">
+{%- endif %}
+{% endblock %}
+
+{% block content %}
+{% include "web/admin_nav.html" %}
+<h1>Status</h1>
+<dl class="facts">
+<dt>Version</dt>
+<dd>giles {{ version }}</dd>
+{%- if let Some(started) = started %}
+<dt>Running since</dt>
+<dd><time datetime="{{ started.iso }}">{{ started.text }}</time></dd>
+{%- endif %}
+<dt>Plugin sandbox</dt>
+<dd class="{% if sandbox_ok %}state-ok{% else %}state-bad{% endif %}">{{ sandbox }}</dd>
+{%- if let Some(error) = config_error %}
+<dt>Configuration error</dt>
+<dd class="state-bad">{{ error }}</dd>
+{%- endif %}
+</dl>
+
+<h2>Channels</h2>
+{%- if channels.is_empty() %}
+<p>No channels are configured.</p>
+{%- endif %}
+{%- for channel in channels %}
+<section class="admin-item" id="channel-{{ channel.instance }}">
+<h3>{{ channel.instance }} <span class="detail">{{ channel.component }}, {{ channel.runtime }}</span></h3>
+<p class="state-{{ channel.status.class }}">{{ channel.status.text }}
+{%- if let Some(since) = channel.since %} <span class="detail">since <time datetime="{{ since.iso }}">{{ since.text }}</time></span>{% endif -%}
+</p>
+{%- if let Some(linking) = channel.status.linking %}
+<div class="linking">
+{%- if let Some(qr) = linking.qr %}
+{{ qr|safe }}
+<p>Scan this QR code with the app you're linking (WhatsApp: <em>Linked devices</em>, <em>Link a device</em>). The page reloads every {{ refresh_secs }} seconds to show the newest code.</p>
+{%- endif %}
+{%- if let Some(error) = linking.qr_error %}
+<p class="state-bad">{{ error }}</p>
+{%- endif %}
+{%- if let Some(code) = linking.pair_code %}
+<p>Enter this code in the app you're linking:</p>
+<p class="pair-code">{{ code }}</p>
+{%- endif %}
+{%- if let Some(url) = linking.url %}
+<p>Open this address to log in:
+{%- if let Some(href) = linking.url_href %}
+<a href="{{ href }}" rel="noreferrer noopener" target="_blank">{{ url }}</a>
+{%- else %}
+<code>{{ url }}</code>
+{%- endif %}
+</p>
+{%- endif %}
+{%- if let Some(expires) = linking.expires %}
+<p class="detail">Valid until <time datetime="{{ expires.iso }}">{{ expires.text }}</time>.</p>
+{%- endif %}
+</div>
+{%- endif %}
+</section>
+{%- endfor %}
+
+<h2>Plugins</h2>
+{%- if plugins.is_empty() %}
+<p>No plugins are configured.</p>
+{%- else %}
+<table class="admin-table">
+<thead><tr><th>Instance</th><th>Kind</th><th>State</th></tr></thead>
+<tbody>
+{%- for plugin in plugins %}
+<tr><td><a href="/admin/plugins#plugin-{{ plugin.instance }}">{{ plugin.instance }}</a></td><td>{{ plugin.kind }}</td><td class="state-{{ plugin.class }}">{{ plugin.state_word }}</td></tr>
+{%- endfor %}
+</tbody>
+</table>
+{%- endif %}
+{% endblock %}

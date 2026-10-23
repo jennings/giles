@@ -14,8 +14,8 @@ use askama::Template;
 use axum::Extension;
 use axum::Router;
 use axum::extract::{Form, Path, Request, State};
-use axum::http::header::{CACHE_CONTROL, SET_COOKIE};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::header::SET_COOKIE;
+use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -27,7 +27,7 @@ use super::auth::{
     Login, SESSION_COOKIE, TrustedProxy, WEB_SESSION_TTL, WebUser, check_csrf,
     clear_session_cookie, cookie, cookie_csrf, proxy_csrf, session_cookie,
 };
-use super::pages::{WebApp, error_page, internal_error};
+use super::pages::{WebApp, error_page, internal_error, no_store};
 use super::{COMPONENT, WebChannel, links, random_hex};
 use crate::http;
 use crate::identity;
@@ -133,14 +133,6 @@ impl WebChannel {
             login: Login::Cookie(token.to_owned()),
         })
     }
-}
-
-/// `Cache-Control: no-store`: the login page holds a token, and the login answer sets a cookie.
-fn no_store(mut response: Response) -> Response {
-    response
-        .headers_mut()
-        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
 }
 
 /// The answer for a link that doesn't (or no longer) work: the same whether it never existed,

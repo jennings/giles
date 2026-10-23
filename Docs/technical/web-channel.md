@@ -12,7 +12,8 @@ feature `channel-web` (default on, forwarded by the `giles` crate). It has two h
   with `WebApp::from_runtime(&runtime, shutdown)` (from `Registry::web_channel()`, the typed handle;
   it also spawns the hourly expired-session cleanup) and `web.install(RouterBuilder::new())`, which
   replaces the placeholder `/` with the chat list and merges the other routes, all behind the
-  authentication middleware. If a trusted proxy is configured, `serve` also opens
+  authentication middleware. `web.install_admin(builder, admin)` adds the admin pages
+  ([Admin Pages](#admin-pages)). If a trusted proxy is configured, `serve` also opens
   `web.bind_proxy(&root)` before startup completes and serves `web.proxy_app(app)` on it
   ([Login](#login)).
 
@@ -34,6 +35,9 @@ Neither half touches the agent loop: posted messages go through the normal inbou
 | `GET /login/<token>`           | A login link: a page with a button that posts the token.         |
 | `POST /login`                  | Uses up the link (`token`), sets the session cookie, 303 to `/`. |
 | `POST /logout`                 | Ends a cookie login (CSRF-checked), 303 to `/`.                  |
+| `GET /admin`                   | The status page ([Admin Pages](#admin-pages)).                   |
+| `GET /admin/plugins`           | The plugins page.                                                |
+| `POST /admin/plugins/<i>/restart` | Restarts plugin instance `<i>` (CSRF-checked), 303 back.      |
 
 Every route except the two login routes needs a `WebUser` (below); without one it's a 401 page
 saying how to log in. A chat id is 128 random bits as 32 lowercase hex digits (`new_chat_id`,
@@ -312,10 +316,62 @@ filename*=UTF-8''<name>` for anything else, and `Cache-Control: private, max-age
 immutable` (the URL is the content hash). An HTML or SVG blob therefore downloads, and even opened
 directly it runs in a sandboxed opaque origin.
 
+## Admin Pages
+
+PLAN sections 8.7 and 10; code in `admin.rs` (pages) and `qr.rs` (QR codes). The admin pages are a
+client of the admin service ([Admin Service](admin.md)), like `giles status`, but in-process:
+`WebApp::install_admin(builder, admin: Arc<dyn AdminService>)` takes the generated
+`giles.admin.v1` server trait, and `giles serve` passes the same `Arc<AdminService>` it serves on
+the admin socket (`AdminListener::serve` takes the `Arc`). So the pages show exactly what the CLI
+shows, and there's no token to handle: the socket's token keeps local processes (plugins included)
+out of the service, and these routes are guarded by the web login instead. Tests pass a fake
+implementation of the trait.
+
+- Who: the routes sit behind the same authentication middleware as the chat pages, so no login is
+  the 401 login page; then the `WebUser` must be the owner (`identity::owner()`), else a 403 page.
+  v1 has only the owner; the `admin` role (PLAN section 3.1) comes with multi-user support.
+- `GET /admin` calls `Status`: version, start time, the host's sandbox, the configuration error
+  (always unset in v1), every configured channel with its runtime and last status (and when it
+  arrived), and a table of the plugins (instance, kind, one-word state) linking to the plugins page.
+- `GET /admin/plugins` calls `ListPlugins`: per plugin its state with details (pid, start time,
+  retry time, restarts), last error, channel status, location, version, sandbox, what the sandbox
+  lacks on this host, and the grants it requested. A plugin with a known state (supervision reports
+  it) has a **Restart** form; toolsets, which don't report to the admin service yet, have none.
+- `POST /admin/plugins/<instance>/restart` checks the owner, then CSRF (`check_csrf`: the `csrf`
+  field or the `X-CSRF-Token` header), then calls `RestartPlugin` and answers 303 to
+  `/admin/plugins`. Errors show the service's message: `NOT_FOUND` as 404,
+  `FAILED_PRECONDITION` as 409, `UNAVAILABLE` as 503, `INVALID_ARGUMENT` as 400; anything else is
+  logged and a generic 500.
+- Every answer on the admin routes (pages, error pages, the 401 login page, redirects) is
+  `Cache-Control: no-store`: a `map_response` route layer outside the authentication middleware
+  applies `pages::no_store`, the helper the login routes use too. Times are UTC (`<time datetime>`
+  carries RFC 3339).
+
+A channel whose status is `NeedsAuth` gets a linking box under it: a QR code, a pair code, or a URL
+(an `<a>` only for `http`/`https`, with `rel="noreferrer noopener"`; anything else, such as
+`javascript:`, is shown as code), and the challenge's expiry. While any channel needs auth the page
+carries `<meta http-equiv="refresh" content="5">` (`ADMIN_REFRESH_SECS`; `layout.html` has a
+`head` block for it), so it follows the plugin's newest code without JavaScript; once every channel
+is past `NeedsAuth` the page stops reloading.
+
+`qr::svg(payload)` encodes the payload with the `qrcode` crate (error correction level M, no
+default features: no image crate) and draws the modules itself as one `<path>` of rectangles, one
+per horizontal run of dark modules, on a white square with the four-module quiet zone, so it scans
+on a dark page too. The `<svg>` is inlined in the page (not an `<img>`: it's the code the page was
+rendered with), and uses presentation attributes only, which the CSP allows. The payload never
+appears in the markup; a payload too long for a QR code shows a note pointing at `giles status`,
+which prints it.
+
+Escaping: every string from the admin service (plugin errors, versions, channel errors, pair codes,
+URLs, locations) goes through askama's HTML escaping; the QR `<svg>` is the only `|safe` value. The
+service never returns secrets: plugin errors and stderr are scrubbed by the plugin host, configs
+aren't part of `Status`, and remote URLs can't carry credentials (config validation).
+
 ## Templates and Styles
 
 Templates are in `crates/giles-core/templates/web/`: pages `chats.html`, `chat.html`,
-`error.html`, `login_required.html`, `login.html` (extending `layout.html`), and fragments
+`error.html`, `login_required.html`, `login.html`, `admin_status.html`, `admin_plugins.html`
+(extending `layout.html`; `admin_nav.html` is included by the admin pages), and fragments
 `message.html`, `approval.html`, `compose.html`, `attachments.html` (rendered by `render.rs`).
 Nothing inline: no scripts, styles, or `hx-on` handlers (the CSP and `allowEval: false` forbid
 them). The chat page is `hx-ext="sse"` with `sse-connect`; `#messages` has `sse-swap="message"` and
@@ -328,7 +384,7 @@ post. Styles are classes in `assets/giles.css`.
 `crates/giles-core/src/channels/web/tests.rs` (router-level with `tower::ServiceExt::oneshot`, a
 temporary store; the chat tests inject a `WebUser`, the login tests go through the real
 middleware), plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`,
-`links.rs`, `proxy.rs`:
+`links.rs`, `proxy.rs`, `admin.rs`, `qr.rs`:
 
 - Every route without a user is a 401 login page; malformed chat and blob ids are 404s.
 - The chat list: only this instance's chats, newest first, escaped titles. A chat page: transcript
@@ -366,3 +422,13 @@ middleware), plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `c
   needs the exact secret; binding (socket mode 0600, `InUse`, stale socket replaced, non-socket
   left alone). `crates/giles/tests/serve.rs` runs the daemon with a proxy socket and checks it
   over real connections, and that the socket is gone after exit.
+- Admin pages (`tests/admin.rs`, over a fake admin service): anonymous requests get 401 and a
+  non-owner 403 on every admin route, with nothing restarted; the status page shows the fake state
+  with plugin strings escaped and no reload; a `NeedsAuth` QR channel gets an `<svg>` (a new
+  payload, a new code), the refresh, and never the payload text; pair codes and URLs are escaped,
+  and a `javascript:` URL isn't a link; the plugins page shows details and a restart form only for
+  supervised plugins; restarting needs the CSRF token (field or header) and shows the service's
+  `NOT_FOUND` escaped; every admin answer, refusals and redirects included, is `no-store`. `qr.rs`
+  checks that the SVG draws exactly the code's dark modules inside the quiet zone, and that an
+  oversized payload is an error. `crates/giles/tests/serve.rs` checks that the daemon serves
+  `/admin` from its own admin service, behind the login.

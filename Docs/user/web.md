@@ -54,6 +54,32 @@ or expired).
 Attachments are served at `/blobs/<id>`, only to you while logged in. Images (PNG, JPEG, GIF, WebP,
 AVIF) show inline; any other file downloads instead of opening in the browser.
 
+## Admin Pages
+
+**Status** on the chat list opens the admin pages, the browser version of `giles status`
+([Command Line](cli.md)). Only the owner can open them.
+
+- `/admin` shows the version, when Giles started, whether this machine can sandbox plugins, every
+  channel with its last status (connected, an error, or waiting to be linked), and a summary of
+  the plugins.
+- `/admin/plugins` shows each plugin in detail: its state (running, retrying, failed), restarts,
+  last error, channel status, binary or URL, version, and sandbox. **Restart** restarts a plugin
+  now, even one that failed for good or is waiting out its retry delay. Toolsets have no button
+  yet: Giles doesn't track their state on these pages.
+
+### Linking a Channel
+
+A channel that needs linking or a login (such as WhatsApp before you've linked it, or after it
+was logged out) shows what it needs on the status page:
+
+- A QR code: scan it with the app (WhatsApp: **Linked devices**, **Link a device**).
+- A pair code: enter it in the app.
+- An address to open (a link only if it's `http` or `https`).
+
+While any channel waits to be linked, the page reloads itself every 5 seconds, so it always shows
+the channel's newest code (WhatsApp replaces its QR code every 20 seconds or so). Once the channel
+reports that it's connected, the code disappears and the reloading stops.
+
 ## Logging In
 
 Every page needs a login. There are two ways to log in.

@@ -161,3 +161,72 @@ button,
   flex-basis: 100%;
   color: #dc2626;
 }
+
+/* The admin pages. */
+.admin-nav {
+  display: flex;
+  gap: 1rem;
+  margin: 0.75rem 0;
+}
+
+.admin-item {
+  margin: 1rem 0;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.2rem 1rem;
+}
+
+.facts dt {
+  opacity: 0.7;
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.admin-table {
+  border-collapse: collapse;
+}
+
+.admin-table th,
+.admin-table td {
+  padding: 0.2rem 1rem 0.2rem 0;
+  text-align: left;
+}
+
+.detail {
+  font-size: 0.9em;
+  font-weight: normal;
+  opacity: 0.7;
+}
+
+.state-ok {
+  color: #16a34a;
+}
+
+.state-warn {
+  color: #d97706;
+}
+
+.state-bad {
+  color: #dc2626;
+}
+
+/* A QR code to scan: always dark on white, whatever the color scheme. */
+.qr {
+  display: block;
+  width: min(18rem, 100%);
+  height: auto;
+}
+
+.pair-code {
+  font-family: ui-monospace, monospace;
+  font-size: 1.6em;
+  letter-spacing: 0.15em;
+}

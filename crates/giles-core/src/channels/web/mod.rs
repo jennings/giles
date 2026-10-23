@@ -1,12 +1,14 @@
 //! The built-in web channel (PLAN sections 3.4, 9, 10): chat pages on the core's HTTP server,
-//! posted messages as channel events, live output over server-sent events, and the web login.
-//! Design: `Docs/technical/web-channel.md`.
+//! posted messages as channel events, live output over server-sent events, the web login, and the
+//! admin pages. Design: `Docs/technical/web-channel.md`.
 //!
 //! [`WebChannel`] is the [`Channel`]: an in-memory event queue (events stay pending until acked,
 //! and are sent again on every new [`Channel::events`] stream), per-chat hubs (`hub.rs`) that every
 //! open page of a chat follows, and the one-time login links. [`WebApp`] is the HTTP side: the
-//! pages, the event streams, `/blobs/<sha256>`, the login, and the trusted-proxy listener.
+//! pages, the event streams, `/blobs/<sha256>`, the login, the trusted-proxy listener, and the
+//! owner's admin pages over the admin service (`admin.rs`).
 
+mod admin;
 mod auth;
 mod config;
 mod hub;
@@ -14,6 +16,7 @@ mod links;
 mod login;
 mod pages;
 mod proxy;
+mod qr;
 mod render;
 
 #[cfg(test)]
@@ -39,6 +42,7 @@ use tokio::time::Instant;
 use crate::config::{ChannelInstance, Config, InstanceName, OwnerConfig};
 use crate::identity::{self, OwnerIdentities};
 
+pub use admin::ADMIN_REFRESH_SECS;
 pub use auth::{
     CSRF_FIELD, CSRF_HEADER, CsrfRejected, SESSION_COOKIE, WEB_SESSION_TTL, WebUser, check_csrf,
 };

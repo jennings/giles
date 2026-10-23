@@ -77,7 +77,9 @@ Giles speaks plain HTTP. To reach it from another machine, put a reverse proxy t
 (Caddy, nginx, Tailscale Serve) in front of it rather than exposing the port directly.
 
 With a `[channel.web]` instance configured, the web server's home page is your list of chats
-([Web Chat](web.md)); without one it only shows that Giles is running.
+([Web Chat](web.md)), and `/admin` shows what `giles status` shows, including the QR code of a
+channel waiting to be linked ([Admin Pages](web.md#admin-pages)); without one it only shows that
+Giles is running.
 
 ## The Data Root
 

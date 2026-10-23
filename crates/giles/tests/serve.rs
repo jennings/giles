@@ -823,6 +823,19 @@ fn the_web_channel_replaces_the_home_page_and_trusts_only_the_proxy_socket() {
     let response = http_request(UnixStream::connect(&socket).unwrap(), "/", "");
     assert!(response.starts_with("HTTP/1.1 401 "), "{response}");
 
+    // The admin pages are served from the daemon's own admin service, behind the same login.
+    let response = http_request(TcpStream::connect(addr).unwrap(), "/admin", "");
+    assert!(response.starts_with("HTTP/1.1 401 "), "{response}");
+    let response = http_request(
+        UnixStream::connect(&socket).unwrap(),
+        "/admin",
+        "x-user: owner\r\n",
+    );
+    assert!(response.starts_with("HTTP/1.1 200 "), "{response}");
+    let version = format!("giles {}", env!("CARGO_PKG_VERSION"));
+    assert!(response.contains(&version), "{response}");
+    assert!(response.contains(r#"id="channel-web""#), "{response}");
+
     let (status, log) = daemon.stop("TERM");
     assert!(status.success(), "{status}\n{log}");
     assert!(!socket.exists(), "the socket outlived the daemon");

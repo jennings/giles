@@ -37,6 +37,8 @@ use crate::sessions::{
     TurnRunner,
 };
 
+mod admin;
+
 const INSTANCE: &str = "web";
 const CSRF: &str = "csrf-token-for-tests";
 const WAIT: Duration = Duration::from_secs(10);

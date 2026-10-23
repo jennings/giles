@@ -12,7 +12,8 @@ time the daemon starts, so run these commands as that user.
 ## `giles status`
 
 What the daemon is doing: its version and start time, whether this host can sandbox plugins, every
-channel with its last reported status, and every plugin (channel plugins and MCP toolsets).
+channel with its last reported status, and every plugin (channel plugins and MCP toolsets). The
+web chat's [admin pages](web.md#admin-pages) show the same, with QR codes drawn as images.
 
 ```text
 giles 0.1.0, running since 2026-10-23 09:12:04 PDT

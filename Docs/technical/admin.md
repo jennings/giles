@@ -1,8 +1,9 @@
 # Admin Service
 
 `giles_core::admin` serves `giles.admin.v1.AdminService` (PLAN section 8.7,
-[gRPC Protocols](protocols.md)) on the admin socket. The `giles` CLI is its client; the web admin
-pages will be another.
+[gRPC Protocols](protocols.md)) on the admin socket. The `giles` CLI is its client over the socket;
+the web admin pages are another, calling the same `Arc<AdminService>` in-process behind the web
+login ([Web Channel](web-channel.md#admin-pages)).
 
 ## One Core per Data Root
 

@@ -108,7 +108,8 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
         .await?;
     // Config and runtime jobs; their replies and approval prompts go through the outbox.
     let scheduler = runtime.start_scheduler(sessions.clone(), runner, shutdown.clone());
-    // Plugin supervision (started below) and the admin service, built before the HTTP application.
+    // Plugin supervision (started below) and the admin service, built before the HTTP application:
+    // the web admin pages call the same service the admin socket serves.
     let wiring = ChannelWiring {
         registry: runtime.registry.clone(),
         sessions: sessions.clone(),
@@ -139,7 +140,7 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     let builder = http::RouterBuilder::new();
     #[cfg(feature = "channel-web")]
     let builder = match &web {
-        Some(web) => web.install(builder),
+        Some(web) => web.install_admin(web.install(builder), admin.clone()),
         None => builder,
     };
     let app = builder.build();

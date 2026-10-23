@@ -1,0 +1,52 @@
+{% extends "layout.html" %}
+
+{% block title %}Plugins - Giles{% endblock %}
+
+{% block content %}
+{% include "web/admin_nav.html" %}
+<h1>Plugins</h1>
+{%- if plugins.is_empty() %}
+<p>No plugins are configured.</p>
+{%- endif %}
+{%- for plugin in plugins %}
+<section class="admin-item" id="plugin-{{ plugin.instance }}">
+<div class="page-head">
+<h2>{{ plugin.instance }} <span class="detail">{{ plugin.kind }}{% if !plugin.component.is_empty() %}, {{ plugin.component }}{% endif %}</span></h2>
+{%- if plugin.restartable %}
+<form method="post" action="/admin/plugins/{{ plugin.instance }}/restart">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button type="submit">Restart</button>
+</form>
+{%- endif %}
+</div>
+<dl class="facts">
+<dt>State</dt>
+<dd class="state-{{ plugin.class }}">{{ plugin.state }}</dd>
+{%- if let Some(error) = plugin.error %}
+<dt>Last error</dt>
+<dd class="state-bad">{{ error }}</dd>
+{%- endif %}
+{%- if let Some(channel) = plugin.channel %}
+<dt>Channel</dt>
+<dd>{{ channel }}</dd>
+{%- endif %}
+<dt>Location</dt>
+<dd><code>{{ plugin.location }}</code></dd>
+{%- if let Some(version) = plugin.version %}
+<dt>Version</dt>
+<dd>{{ version }}</dd>
+{%- endif %}
+<dt>Sandbox</dt>
+<dd>{{ plugin.sandbox }}</dd>
+{%- for missing in plugin.lacking %}
+<dt>Lacking</dt>
+<dd>{{ missing }}</dd>
+{%- endfor %}
+{%- if let Some(requests) = plugin.requests %}
+<dt>Requests</dt>
+<dd>{{ requests }}</dd>
+{%- endif %}
+</dl>
+</section>
+{%- endfor %}
+{% endblock %}
