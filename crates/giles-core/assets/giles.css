@@ -237,3 +237,30 @@ button,
   font-size: 1.6em;
   letter-spacing: 0.15em;
 }
+
+/* The agent pages: a file's contents, and the form that creates an agent. */
+.agent-file pre {
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.agent-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  max-width: 40rem;
+}
+
+.agent-form label {
+  font-weight: 600;
+  margin-top: 0.6rem;
+}
+
+.agent-form .detail {
+  margin: 0;
+}
+
+.agent-form button {
+  align-self: flex-start;
+  margin-top: 1rem;
+}

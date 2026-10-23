@@ -38,6 +38,7 @@ use crate::sessions::{
 };
 
 mod admin;
+mod agents;
 
 const INSTANCE: &str = "web";
 const CSRF: &str = "csrf-token-for-tests";
@@ -48,6 +49,9 @@ struct Env {
     store: Store,
     blobs: BlobStore,
     channel: Arc<WebChannel>,
+    /// The registry of the configuration [`load_config`] wrote; the app reads its running
+    /// configuration. No component is registered.
+    registry: Arc<crate::registry::Registry>,
     app: WebApp,
     shutdown: CancellationToken,
 }
@@ -69,11 +73,13 @@ fn owner_config(identities: &[&str]) -> OwnerConfig {
     }
 }
 
-/// The agents every test configuration has: `jeeves` (named "Jeeves") and `bunter`.
+/// The agents every test configuration has: `jeeves` (named "Jeeves", with a job whose prompt is
+/// `prompts/morning.md`) and `bunter`.
 const AGENTS: [(&str, &str); 2] = [
     (
         "jeeves",
-        "name = \"Jeeves\"\nmodels = [\"fake/test-model\"]\n",
+        "name = \"Jeeves\"\nmodels = [\"fake/test-model\"]\ntools = [\"memory\"]\n\
+         [[jobs]]\nid = \"morning\"\ncron = \"0 8 * * *\"\nprompt_file = \"prompts/morning.md\"\n",
     ),
     ("bunter", "models = [\"fake/test-model\"]\n"),
 ];
@@ -103,6 +109,9 @@ fn load_config(dir: &std::path::Path, identities: &[&str]) -> crate::config::Con
         std::fs::create_dir_all(&agent_dir).unwrap();
         std::fs::write(agent_dir.join("agent.toml"), toml).unwrap();
     }
+    let prompts = root.agents_dir().join("jeeves/prompts");
+    std::fs::create_dir_all(&prompts).unwrap();
+    std::fs::write(prompts.join("morning.md"), "Plan my day.").unwrap();
     crate::config::Config::load_with(
         &root,
         &crate::config::LoadOptions {
@@ -128,12 +137,14 @@ async fn env_with(config: WebConfig, identities: &[&str]) -> Env {
         "0.0.0.0:8080".parse().unwrap(),
     ));
     let shutdown = CancellationToken::new();
-    let live = crate::config::LiveConfig::new(Arc::new(load_config(dir.path(), identities)));
+    let root = crate::paths::DataRoot::new(dir.path(), &dir.path().join("tmp")).unwrap();
+    let config = Arc::new(load_config(dir.path(), identities));
+    let registry = Arc::new(crate::registry::Registry::new(root, config));
     let app = WebApp::new(
         channel.clone(),
         store.clone(),
         blobs.clone(),
-        live,
+        registry.live_config().clone(),
         shutdown.clone(),
     );
     Env {
@@ -141,6 +152,7 @@ async fn env_with(config: WebConfig, identities: &[&str]) -> Env {
         store,
         blobs,
         channel,
+        registry,
         app,
         shutdown,
     }
@@ -1948,6 +1960,7 @@ async fn the_agent_loop_streams_a_reply_live_to_the_page() {
         store: runtime.store.clone(),
         blobs: runtime.blobs.clone(),
         channel: runtime.registry.web_channel().unwrap(),
+        registry: runtime.registry.clone(),
         app: WebApp::from_runtime(&runtime, shutdown.clone()).unwrap(),
         shutdown,
         _dir: dir,

@@ -9,6 +9,7 @@
 //! owner's admin pages over the admin service (`admin.rs`).
 
 mod admin;
+mod agents;
 mod auth;
 mod config;
 mod hub;

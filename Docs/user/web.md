@@ -29,7 +29,8 @@ in it. Each chat is its own conversation with its own history, the way each What
 (`/new` in a chat starts a fresh session in the same chat, shown as "New session").
 
 To talk to a particular agent, pick it under **Chat with** on the chat list and press **Start**.
-The list has every configured agent, and that chat always goes to the agent you picked, whatever
+The list has every configured agent, including one you've just created ([Agents](#agents)), and
+that chat always goes to the agent you picked, whatever
 `[[routes]]` say. The chat list and the chat page show which agent such a chat is with. If that
 agent is later removed from the configuration, its chats can't be opened any more.
 
@@ -85,6 +86,44 @@ was logged out) shows what it needs on the status page:
 While any channel waits to be linked, the page reloads itself every 5 seconds, so it always shows
 the channel's newest code (WhatsApp replaces its QR code every 20 seconds or so). Once the channel
 reports that it's connected, the code disappears and the reloading stops.
+
+## Agents
+
+**Agents** in the admin pages' menu (`/admin/agents`) lists every agent with its models, a link
+to its page, and **Chat** to start a chat with it. Only the owner can open these pages.
+
+An agent's page shows its models, tools, and time zone, then every file in `agents/<agent>/`:
+`agent.toml`, `SOUL.md`, `MEMORY.md`, what it remembers about each user
+(`users/<user>/MEMORY.md`) and learned in each group (`groups/<instance>/<conversation>/MEMORY.md`,
+labeled with the conversation as the channel names it, `#giles` rather than `%23giles`), its jobs'
+prompt files, its skills, and anything else there. Contents are shown as plain text. For now you see
+every file; once Giles has several users, each user will see only their own memory file of an
+agent. Limits keep the page small:
+
+- At most 200 files are listed, at most 8 directories deep; names starting with `.` are skipped.
+- Each file shows at most its first 64 KiB, and the page at most 1 MiB of contents in all.
+- A file that isn't text (an image, say) is listed with its size, not shown.
+- A symbolic link is listed but never followed, so a link can't show a file from outside the
+  agent's directory.
+
+**New agent** opens a form that creates one:
+
+- **Id**: the directory name, letters, digits, and `-`. An id that's taken (ignoring case) or
+  `new` is refused.
+- **Name**: optional, the display name.
+- **Models**: `<provider>/<model>`, several separated by commas. The field suggests the models
+  your providers list; you can type any other.
+- **Tools** and **Ask first**: optional tool names or globs, separated by commas or spaces.
+- **Time zone**: optional, such as `Europe/London`.
+- **SOUL.md**: who the agent is, at most 64 KiB.
+
+Giles checks the agent exactly as it checks a hand-written `agent.toml` at startup (every model
+must name a configured provider, tool globs can't be empty, and so on). If something is wrong, the
+form comes back with the problem and nothing is written. Otherwise Giles writes
+`agents/<id>/agent.toml` and `SOUL.md`, and the agent can be used at once, without a restart: chat
+with it from its page or the chat list. It runs with the defaults for everything the form doesn't
+ask (see [Configuration](configuration.md)); edit `agent.toml` by hand for the rest, which, like
+any other configuration change, takes effect at the next restart.
 
 ## Logging In
 

@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use giles_types::{Skill, SkillSummary};
 use serde::Deserialize;
 
+pub(crate) use resources::fd_path;
 pub use resources::{
     MAX_RESOURCE_BYTES, MAX_RESOURCE_DEPTH, MAX_RESOURCE_FILES, Resource, ResourceError,
     ResourceList, list_resources, read_resource,

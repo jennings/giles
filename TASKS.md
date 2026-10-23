@@ -330,7 +330,7 @@ other and with the rest of this phase.
 
 Added by the owner after the v1 plan.
 
-- [ ] **5.1 Agents in the web UI** (§8.7, §11.2, §11.3). Owner-only pages behind the web login:
+- [x] **5.1 Agents in the web UI** (§8.7, §11.2, §11.3). Owner-only pages behind the web login:
   - A list of agents.
   - An agent's page shows its `agent.toml` and the files under `agents/<agent>/`: `SOUL.md`,
     `MEMORY.md`, per-user and per-group memory, job prompt files, and skills. For now every file is

@@ -6,7 +6,10 @@ of TOML file, both in the data root ([Installing and Running](running.md)):
 - `giles.toml`: the core, the owner, component instances, and routes.
 - `agents/<agent>/agent.toml`: one per agent.
 
-Giles never writes these files. If anything in them is wrong, `giles serve` refuses to start and
+Giles never writes `giles.toml`. It writes `agent.toml` and `SOUL.md` only for an agent you
+create in the web UI ([Agents](web.md#agents)); that agent is added to the running configuration
+at once, and its files are ordinary ones you can edit by hand like the rest (edits take effect at
+the next restart). If anything in these files is wrong, `giles serve` refuses to start and
 prints one error naming the file, the line and column when known, the key, and what is wrong (the
 data root's directories are still created, so a first start without `giles.toml` sets them up):
 

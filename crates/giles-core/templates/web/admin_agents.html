@@ -1,0 +1,27 @@
+{% extends "layout.html" %}
+
+{% block title %}Agents - Giles{% endblock %}
+
+{% block content %}
+{% include "web/admin_nav.html" %}
+<div class="page-head">
+<h1>Agents</h1>
+<a class="button" href="/admin/agents/new">New agent</a>
+</div>
+{%- if agents.is_empty() %}
+<p>No agents yet. Create one with <a href="/admin/agents/new">New agent</a>.</p>
+{%- else %}
+<table class="admin-table">
+<thead><tr><th>Agent</th><th>Models</th><th></th></tr></thead>
+<tbody>
+{%- for agent in agents %}
+<tr id="agent-{{ agent.id }}">
+<td><a href="/admin/agents/{{ agent.id }}">{{ agent.label }}</a></td>
+<td><code>{{ agent.models }}</code></td>
+<td><a href="/chats/new?agent={{ agent.id }}">Chat</a></td>
+</tr>
+{%- endfor %}
+</tbody>
+</table>
+{%- endif %}
+{% endblock %}

@@ -1,0 +1,39 @@
+{% extends "layout.html" %}
+
+{% block title %}{{ id }} - Agents - Giles{% endblock %}
+
+{% block content %}
+{% include "web/admin_nav.html" %}
+<div class="page-head">
+<h1>{{ label }}</h1>
+<a class="button" href="/chats/new?agent={{ id }}">Chat</a>
+</div>
+<dl class="facts">
+<dt>Models</dt>
+<dd><code>{{ models }}</code></dd>
+<dt>Tools</dt>
+<dd><code>{{ tools }}</code></dd>
+<dt>Ask first</dt>
+<dd><code>{{ ask }}</code></dd>
+{%- if let Some(timezone) = timezone %}
+<dt>Time zone</dt>
+<dd>{{ timezone }}</dd>
+{%- endif %}
+</dl>
+<h2>Files</h2>
+{%- if let Some(error) = files_error %}
+<p class="state-bad">The agent's directory can't be read: {{ error }}</p>
+{%- endif %}
+{%- if truncated %}
+<p class="notice">Not every file is listed: at most {{ max_files }}, and not too deep.</p>
+{%- endif %}
+{%- for file in files %}
+<section class="admin-item agent-file">
+<h3><code>{{ file.path }}</code>{% if let Some(label) = file.label %} <span class="detail">{{ label }}</span>{% endif %}</h3>
+<p class="detail">{{ file.note }}</p>
+{%- if let Some(text) = file.text %}
+<pre>{{ text }}</pre>
+{%- endif %}
+</section>
+{%- endfor %}
+{% endblock %}

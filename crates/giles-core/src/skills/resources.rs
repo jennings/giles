@@ -256,14 +256,14 @@ pub fn read_resource(dir: &Path, requested: &str) -> Result<Resource, ResourceEr
 
 /// The path of the file `file` has open, as the kernel sees it now.
 #[cfg(target_os = "linux")]
-fn fd_path(file: &fs::File) -> io::Result<PathBuf> {
+pub(crate) fn fd_path(file: &fs::File) -> io::Result<PathBuf> {
     use std::os::fd::AsRawFd;
     fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))
 }
 
 /// The path of the file `file` has open, as the kernel sees it now (`F_GETPATH`).
 #[cfg(target_os = "macos")]
-fn fd_path(file: &fs::File) -> io::Result<PathBuf> {
+pub(crate) fn fd_path(file: &fs::File) -> io::Result<PathBuf> {
     use std::ffi::OsString;
     use std::os::fd::AsRawFd;
     use std::os::unix::ffi::OsStringExt;

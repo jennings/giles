@@ -138,9 +138,19 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
         clock: Arc::new(SystemClock),
     }));
     let builder = http::RouterBuilder::new();
+    // The web channel's pages, the admin pages over the admin service, and the agent pages, which
+    // add agents to the running configuration (the registry's, which the web app also reads).
     #[cfg(feature = "channel-web")]
     let builder = match &web {
-        Some(web) => web.install_admin(web.install(builder), admin.clone()),
+        Some(web) => {
+            let creator = Arc::new(giles_core::agents::AgentCreator::new(
+                runtime.registry.clone(),
+            ));
+            web.install_agents(
+                web.install_admin(web.install(builder), admin.clone()),
+                creator,
+            )
+        }
         None => builder,
     };
     let app = builder.build();

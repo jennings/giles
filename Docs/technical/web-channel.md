@@ -38,6 +38,10 @@ Neither half touches the agent loop: posted messages go through the normal inbou
 | `GET /admin`                   | The status page ([Admin Pages](#admin-pages)).                   |
 | `GET /admin/plugins`           | The plugins page.                                                |
 | `POST /admin/plugins/<i>/restart` | Restarts plugin instance `<i>` (CSRF-checked), 303 back.      |
+| `GET /admin/agents`            | Every agent ([Agent Pages](#agent-pages)).                       |
+| `GET /admin/agents/new`        | The form that creates an agent.                                  |
+| `POST /admin/agents`           | Creates the agent (CSRF-checked), 303 to its page.               |
+| `GET /admin/agents/<agent>`    | The agent's settings and files.                                  |
 
 Every route except the two login routes needs a `WebUser` (below); without one it's a 401 page
 saying how to log in. A chat id is 128 random bits as 32 lowercase hex digits (`new_chat_id`), or
@@ -382,6 +386,61 @@ Escaping: every string from the admin service (plugin errors, versions, channel 
 URLs, locations) goes through askama's HTML escaping; the QR `<svg>` is the only `|safe` value. The
 service never returns secrets: plugin errors and stderr are scrubbed by the plugin host, configs
 aren't part of `Status`, and remote URLs can't carry credentials (config validation).
+
+## Agent Pages
+
+TASKS.md 5.1, in `agents.rs`: `web.install_agents(builder, Arc<agents::AgentCreator>)`, which
+`serve` calls after `install_admin` with a creator over the runtime's registry (so the chat list,
+reading the same `LiveConfig`, offers a new agent at once). Like the admin pages: the same
+authentication middleware, `may_administer` (the owner only; a guest gets 403, no login 401) on
+every route including the POST, `no-store` on every answer, and `check_csrf` on the POST. Unlike
+them, they call the core directly (`giles_core::agents`) rather than the admin service: there are
+no agent RPCs yet (PLAN section 8.7).
+
+- The list reads the running configuration: id, label (`Name (id)`), models, and links to the
+  page and to `/chats/new?agent=<id>` ([Choosing an Agent](#choosing-an-agent)).
+- An agent's page looks the id up in the running configuration (anything else, `..` included, is
+  a 404) and lists its directory with `agents::list_files(&agent, &viewer)` on a blocking thread.
+  The walk never follows a link: entries come from `read_dir` with `file_type()` (a link is listed
+  as one), files are opened with `O_NOFOLLOW | O_NONBLOCK`, and the descriptor's path
+  (`F_GETPATH` on macOS, `/proc/self/fd` on Linux, the helper `load_skill` uses) must be inside the
+  canonical agent directory. A directory swapped for a link mid-walk can still be listed (the
+  names and sizes below it, since `read_dir` follows it), but no contents from elsewhere are shown.
+  The walk stops once it has `MAX_FILES` entries. Dot names are skipped. Caps: `MAX_FILES` (200)
+  entries, `MAX_DEPTH` (8), the first
+  `MAX_FILE_BYTES` (64 KiB) of each file, `MAX_TOTAL_BYTES` (1 MiB) of contents per page. Text is
+  UTF-8 without NUL (a character split by the cut is dropped); anything else is listed with its
+  size. Contents are shown escaped in `<pre>`. Each entry has a `FileKind` (`Config`, `Soul`,
+  `AgentMemory`, `UserMemory`, `GroupMemory` with the conversation percent-decoded, `JobPrompt`
+  from the agent's `prompt_file`s, `Skill`, `Other`) that orders and labels it.
+- Who sees which file is one hook, `FileKind::visible_to(viewer)`, applied before a file is read
+  or counted. It allows everything now: v1's only user is the owner, the only one who can open the
+  pages. With several users it is where a user is limited to their own `UserMemory`.
+- The form offers `AgentCreator::known_models()` as a `<datalist>`: every registered provider's
+  `list_models()`, 5 s each, failures logged at `debug` with secrets scrubbed; any
+  `<provider>/<model>` can still be typed. Lists are split at commas and whitespace
+  (`agents::split_list`).
+- `AgentCreator::create` (one at a time, under a lock): builds `agent.toml` with the TOML
+  serializer (`agents::agent_toml`, unset values left out), validates it with
+  `Config::validate_agent` (the startup checks), refuses `RESERVED_AGENT_IDS` (`new`, the form's
+  address) and an id taken ignoring ASCII case, then writes the files into a staging directory,
+  `agents/.<id>.creating/` (created exclusively, mode 0700; config loading skips dot names, and
+  it's a sibling, so no agent's page lists it): `SOUL.md` then `agent.toml`, each as a 0600
+  temporary file that is fsynced and renamed. It fsyncs the staging directory, renames it to
+  `agents/<id>/` (refused if that exists and isn't empty), and fsyncs `agents/`, so the agent's
+  directory appears whole or not at all; on any failure the staging directory is removed. Then
+  `LiveConfig::add_agent`; if that refuses (another creator took the id, ignoring case, meanwhile)
+  the new directory is removed. A staging directory left by a crash breaks nothing (startup skips
+  it) and is removed when `serve` builds its `AgentCreator` at the next start. Of two creations
+  with the same id one wins; the other is told the id is taken, as is one whose directory exists
+  on disk. An invalid form comes back with `CreateError::form_message` (key and reason, never a
+  file path): 409 for a taken id, else 400. Write failures are logged and answered 500.
+
+The new agent is usable at once because everything that looks agents up reads the running
+configuration: the agent loop and core tools through `Registry::config()`, the session manager's
+`AgentPolicies` and the router through the shared `LiveConfig`. Config jobs of agents created this
+way (added to `agent.toml` by hand) start at the next restart, with the rest of a configuration
+change; general reload stays deferred (D28).
 
 ## Templates and Styles
 

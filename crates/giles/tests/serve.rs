@@ -840,3 +840,175 @@ fn the_web_channel_replaces_the_home_page_and_trusts_only_the_proxy_socket() {
     assert!(status.success(), "{status}\n{log}");
     assert!(!socket.exists(), "the socket outlived the daemon");
 }
+
+/// A fake OpenAI-compatible provider on a loopback port: `GET /v1/models` lists `test-model`, and
+/// every `POST /v1/chat/completions` streams `reply`. Returns the base URL.
+#[cfg(feature = "channel-web")]
+fn fake_openai(reply: &'static str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                reader.read_line(&mut request_line).unwrap();
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" || line.is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':')
+                        && name.eq_ignore_ascii_case("content-length")
+                    {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                let (content_type, body) = if request_line.starts_with("GET /v1/models") {
+                    (
+                        "application/json",
+                        r#"{"object":"list","data":[{"id":"test-model","object":"model"}]}"#
+                            .to_owned(),
+                    )
+                } else {
+                    let chunk = |delta: &str, finish: &str| {
+                        format!(
+                            "data: {{\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\
+                             \"choices\":[{{\"index\":0,\"delta\":{delta},\"finish_reason\":{finish}}}]}}\n\n"
+                        )
+                    };
+                    let body = [
+                        chunk(r#"{"role":"assistant","content":""}"#, "null"),
+                        chunk(&format!(r#"{{"content":"{reply}"}}"#), "null"),
+                        chunk("{}", "\"stop\""),
+                        "data: [DONE]\n\n".to_owned(),
+                    ]
+                    .concat();
+                    ("text/event-stream", body)
+                };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\
+                     Connection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            });
+        }
+    });
+    url
+}
+
+/// `POST <path>` with the urlencoded `form` over `stream`, with `headers`; the whole response.
+#[cfg(feature = "channel-web")]
+fn http_post(mut stream: impl Read + Write, path: &str, headers: &str, form: &str) -> String {
+    write!(
+        stream,
+        "POST {path} HTTP/1.1\r\nHost: giles\r\n{headers}Connection: close\r\n\
+         Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{form}",
+        form.len()
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response
+}
+
+/// A response's `Location` header.
+#[cfg(feature = "channel-web")]
+fn location(response: &str) -> &str {
+    response
+        .lines()
+        .find_map(|l| {
+            l.split_once(':')
+                .filter(|(name, _)| name.eq_ignore_ascii_case("location"))
+        })
+        .map(|(_, value)| value.trim())
+        .unwrap_or_else(|| panic!("no Location in {response}"))
+}
+
+/// TASKS.md 5.1 end to end: the owner creates an agent on the web, then chats with it, and its
+/// (fake) provider answers, all without a restart.
+#[cfg(all(feature = "channel-web", feature = "provider-openai"))]
+#[test]
+fn an_agent_created_on_the_web_answers_in_a_web_chat_without_a_restart() {
+    use std::os::unix::net::UnixStream;
+
+    let env = Env::new();
+    let home = env.path("home");
+    let base_url = fake_openai("Very good, sir.");
+    write_config(
+        &home,
+        &format!(
+            "{MINIMAL_CONFIG}[provider.fake]\ncomponent = \"openai\"\n\
+             config = {{ base_url = \"{base_url}\" }}\n\
+             [channel.web.config.proxy]\nidentity_header = \"x-user\"\n"
+        ),
+    );
+    let daemon = Daemon::start(env.command(&["serve", "--home", home.to_str().unwrap()]));
+    let line = daemon
+        .log
+        .iter()
+        .find(|l| l.contains("trusted-proxy listener open"))
+        .unwrap();
+    let socket = PathBuf::from(line.split("at=").nth(1).unwrap().trim());
+    let proxy = || UnixStream::connect(&socket).unwrap();
+    const OWNER: &str = "x-user: owner\r\n";
+
+    // The form offers the provider's model; its CSRF token is the login's.
+    let page = http_request(proxy(), "/admin/agents/new", OWNER);
+    assert!(page.starts_with("HTTP/1.1 200 "), "{page}");
+    assert!(
+        page.contains(r#"<option value="fake/test-model">"#),
+        "{page}"
+    );
+    let csrf = page
+        .split(r#"name="csrf" value=""#)
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap()
+        .to_owned();
+
+    let created = http_post(
+        proxy(),
+        "/admin/agents",
+        OWNER,
+        &format!("csrf={csrf}&id=butler&name=Butler&models=fake%2Ftest-model&soul=Be+brief."),
+    );
+    assert!(created.starts_with("HTTP/1.1 303 "), "{created}");
+    assert_eq!(location(&created), "/admin/agents/butler");
+    assert_eq!(
+        fs::read_to_string(home.join("agents/butler/SOUL.md")).unwrap(),
+        "Be brief."
+    );
+
+    let chat = http_request(proxy(), "/chats/new?agent=butler", OWNER);
+    assert!(chat.starts_with("HTTP/1.1 303 "), "{chat}");
+    let chat = location(&chat).to_owned();
+    let posted = http_post(
+        proxy(),
+        &format!("{chat}/messages"),
+        OWNER,
+        &format!("csrf={csrf}&text=Tea%2C+please."),
+    );
+    assert!(posted.starts_with("HTTP/1.1 303 "), "{posted}");
+
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let page = http_request(proxy(), &chat, OWNER);
+        if page.contains("Very good, sir.") {
+            assert!(page.contains("with Butler (butler)"), "{page}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "no reply:\n{page}");
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    let (status, log) = daemon.stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+    assert!(log.contains("agent created"), "{log}");
+}

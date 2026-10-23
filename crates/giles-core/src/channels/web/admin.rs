@@ -65,12 +65,13 @@ impl WebApp {
     }
 }
 
-/// Whether `user` may see the admin pages and use their buttons: the owner only.
-fn may_administer(user: &WebUser) -> bool {
+/// Whether `user` may see the admin pages (the agent pages too) and use their buttons: the owner
+/// only.
+pub(super) fn may_administer(user: &WebUser) -> bool {
     user.user == identity::owner()
 }
 
-fn forbidden() -> Response {
+pub(super) fn forbidden() -> Response {
     error_page(
         StatusCode::FORBIDDEN,
         "Not allowed",

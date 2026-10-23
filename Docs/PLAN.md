@@ -46,8 +46,9 @@ several users and group chats are the design for later; v1 builds this subset of
 - Web login: only the `giles admin login-link` one-time URL and the trusted-proxy header.
 - Tool approvals: answered by the owner.
 - Models: each agent uses the first model in `models`, with no fallback.
-- Config: read at startup; changes need a restart. Agent Markdown files are read per turn. v1 keeps
-  the owner, instances, and routes in `giles.toml`; they move to the web UI later (section 11.2).
+- Config: read at startup; changes need a restart, except agents created in the web UI, which join
+  the running configuration (section 8.7). Agent Markdown files are read per turn. v1 keeps the
+  owner, instances, and routes in `giles.toml`; they move to the web UI later (section 11.2).
 
 Deferred decisions, each with what v1 does meanwhile and when to revisit it, are in
 `Docs/decisions/`: D28, D49, D57, D58, D63, D65, D66.
@@ -1132,6 +1133,14 @@ separate the core from its plugins, which run as the same user.
 
 v1 reads config at startup and has no reload RPC; reload is deferred (D28). The Users and Pairing
 RPCs belong to multi-user support (section 1.1) and are added to `giles.admin.v1` with it.
+
+The web UI's agent pages (list an agent's configuration and files, create an agent) are owner-only
+admin pages, but have no RPCs yet: they call the core's agent management in-process. A created
+agent is written as `agent.toml` and `SOUL.md`, validated like startup config, and added to the
+running configuration without a reload; nothing else changes until a restart. Web chats can be
+started with a chosen agent, which routes them to it ahead of `[[routes]]`. Who sees which agent
+file is one per-viewer check: the owner sees all of them; with multi-user support a user sees only
+their own per-user memory.
 
 ## 9. HTTP and Web
 
