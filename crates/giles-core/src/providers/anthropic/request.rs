@@ -6,12 +6,12 @@ use giles_types::{
     Block, CacheRetention, CompletionRequest, Error, GenerationParams, MediaRef, Message, Opaque,
     Result, Role, ToolSpec,
 };
-use serde_json::{Map, Number, Value, json};
+use serde_json::{Map, Value, json};
 
 use super::API;
 use super::config::AnthropicConfig;
 use super::models::{FALLBACK_MAX_TOKENS, Family, MEDIA_TYPES, ThinkingMode, family_of};
-use crate::providers::MediaSource;
+use crate::providers::{MediaSource, wire};
 
 /// The first `anthropic-version` that rejects `temperature`. Versions are dates, so they compare
 /// as strings.
@@ -64,7 +64,7 @@ pub(crate) async fn body(
         && config.anthropic_version.as_str() < NO_SAMPLING_PARAMS_VERSION
         && family.is_some_and(|f| f.sampling_params)
     {
-        body.insert("temperature".into(), temperature_json(temperature)?);
+        body.insert("temperature".into(), wire::temperature(temperature)?);
     }
     Ok(Value::Object(body))
 }
@@ -220,19 +220,9 @@ async fn media_json(
     title: Option<String>,
     media: &dyn MediaSource,
 ) -> Result<Value> {
-    let essence = media_ref
-        .media_type
-        .split(';')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
+    let essence = wire::media_essence(&media_ref.media_type);
     if !MEDIA_TYPES.contains(&essence.as_str()) {
-        let reference = match &media_ref.name {
-            Some(name) => format!("[media:{} {name} {}]", media_ref.id, media_ref.media_type),
-            None => format!("[media:{} {}]", media_ref.id, media_ref.media_type),
-        };
-        return Ok(json!({"type": "text", "text": reference}));
+        return Ok(json!({"type": "text", "text": wire::media_reference(&media_ref)}));
     }
     let data = BASE64.encode(media.read(&media_ref).await?);
     let source = json!({"type": "base64", "media_type": essence, "data": data});
@@ -273,17 +263,6 @@ fn thinking_json(params: &GenerationParams, family: Option<&Family>) -> Option<V
     })
 }
 
-/// The temperature as its shortest decimal form (`0.7`, not `0.699999988079071`).
-fn temperature_json(temperature: f32) -> Result<Value> {
-    temperature
-        .to_string()
-        .parse::<f64>()
-        .ok()
-        .and_then(Number::from_f64)
-        .map(Value::Number)
-        .ok_or_else(|| Error::InvalidRequest(format!("invalid temperature {temperature}")))
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -293,7 +272,7 @@ mod tests {
     use giles_types::{MediaId, MessageMeta, Timestamp};
 
     use super::*;
-    use crate::providers::anthropic::config::ApiKey;
+    use crate::providers::http::ApiKey;
 
     /// Media bytes by id; reading an unknown id is `NotFound`.
     #[derive(Default)]

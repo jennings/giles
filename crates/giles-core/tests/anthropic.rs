@@ -14,7 +14,8 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 use futures::StreamExt;
 use giles_core::providers::MediaSource;
-use giles_core::providers::anthropic::{AnthropicConfig, AnthropicProvider, ApiKey};
+use giles_core::providers::anthropic::{AnthropicConfig, AnthropicProvider};
+use giles_core::providers::http::ApiKey;
 use giles_types::{
     Block, BlockKind, CacheRetention, CompletionEvent, CompletionRequest, Error, GenerationParams,
     MediaId, MediaRef, Message, MessageMeta, ModelInfo, Opaque, Provider, Role, StopReason,

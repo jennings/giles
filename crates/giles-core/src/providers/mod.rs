@@ -1,5 +1,5 @@
-//! Built-in model providers (PLAN section 4.2), each behind a Cargo feature, and the HTTP and
-//! server-sent events plumbing they share.
+//! Built-in model providers (PLAN section 4.2), each behind a Cargo feature, and the HTTP,
+//! server-sent events, and wire-format plumbing they share.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -11,6 +11,8 @@ pub mod anthropic;
 pub mod http;
 #[cfg(feature = "provider-anthropic")]
 pub mod sse;
+#[cfg(feature = "provider-anthropic")]
+pub mod wire;
 
 /// Where a provider gets the bytes of the attachments it sends inline (images, PDFs). In the
 /// daemon this is the blob store (PLAN section 11.5).

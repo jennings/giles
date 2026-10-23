@@ -1,6 +1,8 @@
 //! HTTP plumbing shared by the built-in providers: a `reqwest` client that trusts only the bundled
-//! Mozilla roots, and the mapping from HTTP failures to [`giles_types::Error`].
+//! Mozilla roots, config values every HTTP API has (an API key, a base URL), and the mapping from
+//! HTTP failures to [`giles_types::Error`].
 
+use std::fmt;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -31,6 +33,45 @@ impl Default for HttpOptions {
             read_timeout: Duration::from_secs(300),
         }
     }
+}
+
+/// An API key. `Debug` never shows it, and it has no `Display`.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ApiKey(String);
+
+impl ApiKey {
+    /// Wraps a key.
+    pub fn new(key: impl Into<String>) -> Self {
+        Self(key.into())
+    }
+
+    /// The key itself, for the authentication header.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ApiKey(<redacted>)")
+    }
+}
+
+/// Validates a `base_url` config value: an `http(s)` URL with no credentials, query, or fragment.
+/// Returns it without its trailing slash, or the reason it's invalid (naming `base_url`).
+pub fn base_url(text: &str) -> Result<String, String> {
+    let url =
+        reqwest::Url::parse(text).map_err(|error| format!("`base_url` is not a URL: {error}"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("`base_url` must be an http or https URL".into());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("`base_url` must not contain credentials".into());
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err("`base_url` must not have a query or fragment".into());
+    }
+    Ok(url.as_str().trim_end_matches('/').to_owned())
 }
 
 /// Builds a client that trusts only the bundled Mozilla root certificates (`webpki-root-certs`),

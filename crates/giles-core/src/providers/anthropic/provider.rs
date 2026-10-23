@@ -1,11 +1,10 @@
 //! [`AnthropicProvider`]: HTTP requests and responses.
 
-use std::collections::VecDeque;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::StreamExt;
 use futures::stream::BoxStream;
-use futures::{Stream, StreamExt};
 use giles_types::{CompletionEvent, CompletionRequest, Error, ModelInfo, Provider, Result};
 use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue};
 use reqwest::{RequestBuilder, Response};
@@ -13,10 +12,9 @@ use serde::Deserialize;
 
 use super::config::AnthropicConfig;
 use super::models::{ModelsPage, model_info};
+use super::request;
 use super::stream::{ApiError, StreamMapper};
-use super::{request, stream};
-use crate::providers::sse::{self, SseEvent};
-use crate::providers::{MediaSource, http};
+use crate::providers::{MediaSource, http, sse, wire};
 
 /// Models requested per `/v1/models` page, the API's maximum.
 const MODELS_PAGE_SIZE: &str = "1000";
@@ -156,59 +154,9 @@ impl Provider for AnthropicProvider {
                 "anthropic: expected an event stream, got content type {content_type:?}"
             )));
         }
-        Ok(completion_events(sse::events(http::body_stream(response))).boxed())
+        let events = sse::events(http::body_stream(response));
+        Ok(wire::completion_events(events, StreamMapper::new()).boxed())
     }
-}
-
-/// Maps a stream of SSE events to completion events. It ends after `Stop` without reading the
-/// rest of the body, or after the first error; a body that ends before `message_stop` yields a
-/// retryable error.
-fn completion_events<S>(events: S) -> impl Stream<Item = Result<CompletionEvent>> + Send
-where
-    S: Stream<Item = Result<SseEvent>> + Send,
-{
-    struct State<S> {
-        events: S,
-        mapper: StreamMapper,
-        ready: VecDeque<Result<CompletionEvent>>,
-        done: bool,
-    }
-    let state = State {
-        events: Box::pin(events),
-        mapper: StreamMapper::new(),
-        ready: VecDeque::new(),
-        done: false,
-    };
-    futures::stream::unfold(state, |mut state| async move {
-        loop {
-            if let Some(item) = state.ready.pop_front() {
-                return Some((item, state));
-            }
-            if state.done {
-                return None;
-            }
-            match state.events.next().await {
-                Some(Ok(event)) => match state.mapper.event(&event) {
-                    Ok(events) => {
-                        state.ready.extend(events.into_iter().map(Ok));
-                        state.done = state.mapper.is_finished();
-                    }
-                    Err(error) => {
-                        state.done = true;
-                        state.ready.push_back(Err(error));
-                    }
-                },
-                Some(Err(error)) => {
-                    state.done = true;
-                    state.ready.push_back(Err(error));
-                }
-                None => {
-                    state.done = true;
-                    state.ready.push_back(Err(stream::ended_early()));
-                }
-            }
-        }
-    })
 }
 
 #[cfg(test)]
@@ -217,7 +165,7 @@ mod tests {
     use giles_types::MediaRef;
 
     use super::*;
-    use crate::providers::anthropic::ApiKey;
+    use crate::providers::http::ApiKey;
 
     struct NoMedia;
 

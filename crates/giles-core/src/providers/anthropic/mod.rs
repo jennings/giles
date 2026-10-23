@@ -7,7 +7,7 @@ mod provider;
 mod request;
 mod stream;
 
-pub use config::{AnthropicConfig, ApiKey, DEFAULT_ANTHROPIC_VERSION, DEFAULT_BASE_URL};
+pub use config::{AnthropicConfig, DEFAULT_ANTHROPIC_VERSION, DEFAULT_BASE_URL};
 pub use models::MEDIA_TYPES;
 pub use provider::AnthropicProvider;
 

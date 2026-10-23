@@ -29,6 +29,12 @@ message model to and from the provider's wire format; the core never sees wire f
 - `transport_error` maps connect, TLS, timeout, and reset failures to `Error::Unavailable`, with
   the error's source chain in the message. `body_stream` applies it to a streamed body, and
   `error_body` reads at most 64 KiB of an error response.
+- `ApiKey` wraps an API key so `Debug` shows `ApiKey(<redacted>)`; it has no `Display`, and
+  `expose()` gives the key for the header, which providers mark sensitive (hidden from `Debug`,
+  kept out of HTTP/2 header compression tables).
+- `base_url(text)` validates a `base_url` config value: an `http` or `https` URL without
+  credentials, query, or fragment, returned without its trailing slash. Plain `http` is allowed
+  for local servers and proxies.
 
 The `reqwest` feature set is `rustls` (aws-lc-rs), `http2`, and `stream`, without `system-proxy`.
 Proxies from `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` still apply.
@@ -49,6 +55,21 @@ limit and be tested against every chunk boundary.
   `sse::events(http::body_stream(response))`. Body errors pass through, and the first error ends
   the stream.
 
+### Wire helpers
+
+`providers::wire` holds what the wire mappings share:
+
+- `EventMapper` is a provider's stream state machine: `event(&SseEvent)` maps one event to
+  `CompletionEvent`s or an error, `is_finished()` says `Stop` was emitted, and `end()` is called
+  when the body ends before that, returning the final events or the error for a cut-off response.
+  `completion_events(events, mapper)` drives it: the stream ends after `Stop` without reading the
+  rest of the body, or after the first error.
+- `media_reference(&MediaRef)` is the text an attachment becomes when the model doesn't receive
+  it as content, `[media:<id> <name> <type>]` (PLAN section 5), and `media_essence(type)` is a
+  media type without parameters, lowercased, for matching.
+- `temperature(f32)` is a temperature as its shortest decimal (`0.7`, not `0.699999988079071`);
+  NaN and infinity are `Error::InvalidRequest`.
+
 ## Anthropic
 
 `providers::anthropic` speaks the [Messages API](https://platform.claude.com/docs/en/api/messages)
@@ -68,9 +89,8 @@ nothing. Every request carries `x-api-key`, `anthropic-version`, and, when `beta
 
 `AnthropicConfig::from_json` validates the instance's `config` table, as JSON with secret references
 already resolved, and returns `Error::InvalidRequest` naming the bad key (never the API key). The
-keys are in [Providers](../user/providers.md). `ApiKey` wraps the key so `Debug` shows
-`ApiKey(<redacted>)`. The connect and read timeouts (`HttpOptions`) are fields of the struct, not
-config keys.
+keys are in [Providers](../user/providers.md); `api_key` is an `http::ApiKey`. The connect and read
+timeouts (`HttpOptions`) are fields of the struct, not config keys.
 
 ### Media
 

@@ -6,6 +6,7 @@ use serde_json::{Map, Value};
 
 use super::API;
 use crate::providers::sse::SseEvent;
+use crate::providers::wire::EventMapper;
 
 /// Turns the events of one streamed response into [`CompletionEvent`]s, one SSE event at a time.
 ///
@@ -119,15 +120,12 @@ impl StreamMapper {
     pub(crate) fn new() -> Self {
         Self::default()
     }
+}
 
-    /// Whether `message_stop` arrived and `Stop` was emitted. Later events are ignored.
-    pub(crate) fn is_finished(&self) -> bool {
-        self.finished
-    }
-
+impl EventMapper for StreamMapper {
     /// Maps one SSE event. An `error` event, or a malformed or out-of-order event, is an `Err`
     /// that ends the response.
-    pub(crate) fn event(&mut self, event: &SseEvent) -> Result<Vec<CompletionEvent>> {
+    fn event(&mut self, event: &SseEvent) -> Result<Vec<CompletionEvent>> {
         if self.finished {
             return Ok(Vec::new());
         }
@@ -168,6 +166,18 @@ impl StreamMapper {
         }
     }
 
+    /// Whether `message_stop` arrived and `Stop` was emitted. Later events are ignored.
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    /// A body that ends before `message_stop` was cut off: a retryable error.
+    fn end(&mut self) -> Result<Vec<CompletionEvent>> {
+        Err(ended_early())
+    }
+}
+
+impl StreamMapper {
     fn add_usage(&mut self, usage: Option<WireUsage>) {
         let usage = usage.unwrap_or_default();
         let total = &mut self.usage;
@@ -381,7 +391,7 @@ impl BlockState {
 
 /// The error for a response body that ended before `message_stop`: the connection was cut, so
 /// it's worth retrying.
-pub(crate) fn ended_early() -> Error {
+fn ended_early() -> Error {
     Error::unavailable("anthropic: the response stream ended before message_stop")
 }
 

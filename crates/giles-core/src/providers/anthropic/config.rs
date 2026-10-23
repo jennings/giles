@@ -6,35 +6,13 @@ use giles_types::Error;
 use reqwest::header::HeaderValue;
 use serde_json::Value;
 
-use crate::providers::http::HttpOptions;
+use crate::providers::http::{self, ApiKey, HttpOptions};
 
 /// The API endpoint used when `base_url` is not set.
 pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 
 /// The `anthropic-version` header sent when `anthropic_version` is not set.
 pub const DEFAULT_ANTHROPIC_VERSION: &str = "2023-06-01";
-
-/// An Anthropic API key. `Debug` never shows it, and it has no `Display`.
-#[derive(Clone, PartialEq, Eq)]
-pub struct ApiKey(String);
-
-impl ApiKey {
-    /// Wraps a key.
-    pub fn new(key: impl Into<String>) -> Self {
-        Self(key.into())
-    }
-
-    /// The key itself, for the `x-api-key` header.
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Debug for ApiKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("ApiKey(<redacted>)")
-    }
-}
 
 /// Settings of one Anthropic provider instance.
 #[derive(Debug, Clone, PartialEq)]
@@ -101,7 +79,7 @@ impl AnthropicConfig {
         let mut config = Self::new(api_key);
 
         if let Some(value) = table.get("base_url") {
-            config.base_url = base_url(string(value, "base_url")?)?;
+            config.base_url = http::base_url(string(value, "base_url")?).map_err(invalid)?;
         }
         if let Some(value) = table.get("anthropic_version") {
             config.anthropic_version = header_token(value, "anthropic_version")?;
@@ -166,22 +144,6 @@ fn header_token(value: &Value, key: &str) -> Result<String, Error> {
         )));
     }
     Ok(text.to_owned())
-}
-
-/// An `http(s)` URL with no credentials, query, or fragment, without its trailing slash.
-fn base_url(text: &str) -> Result<String, Error> {
-    let url = reqwest::Url::parse(text)
-        .map_err(|error| invalid(format!("`base_url` is not a URL: {error}")))?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err(invalid("`base_url` must be an http or https URL"));
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err(invalid("`base_url` must not contain credentials"));
-    }
-    if url.query().is_some() || url.fragment().is_some() {
-        return Err(invalid("`base_url` must not have a query or fragment"));
-    }
-    Ok(url.as_str().trim_end_matches('/').to_owned())
 }
 
 #[cfg(test)]
