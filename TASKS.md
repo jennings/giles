@@ -175,7 +175,7 @@ The five tracks run in parallel.
   pending approvals expiring after `approval_timeout`; a non-approval message from the requester
   denies with "Not approved. The user said: ..."; MCP elicitation through the same path.
   **Needs:** 2.5.
-- [ ] **2.8 Output delivery** (§6.9). `deltas` channels get streamed text; `blocks` channels get
+- [x] **2.8 Output delivery** (§6.9). `deltas` channels get streamed text; `blocks` channels get
   chunks flushed at paragraph boundaries outside code fences and at message end; reasoning and tool
   blocks never reach channels. **Needs:** 2.4. Parallel with 2.5–2.7.
 - [ ] **2.9 Media in turns** (§5). Inbound attachments become `Image`/`Audio`/`Document` blocks with

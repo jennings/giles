@@ -107,10 +107,11 @@ Run by hand, the binary only says that it's a Giles plugin and exits.
 ## The pieces
 
 - `ChannelPlugin::new(name, version)`: `name` is the `<name>` in `giles-channel-<name>`. Set
-  `output` (`Blocks` for chat services without message edits, `Deltas` for live streaming) and
-  `can_initiate` (whether the channel can message an identity that hasn't written first, needed
-  for scheduled jobs and login codes). Optionally `requested_grants`: sandbox grants to suggest to
-  the operator, shown in `giles status` and never applied by themselves.
+  `output` (`Blocks` for chat services without message edits, `Deltas` for live streaming; in
+  v1 plugin channels get `blocks` output either way, and only the built-in web channel streams)
+  and `can_initiate` (whether the channel can message an identity that hasn't written first,
+  needed for scheduled jobs and login codes). Optionally `requested_grants`: sandbox grants to
+  suggest to the operator, shown in `giles status` and never applied by themselves.
 - `serve(configure)`: call it first thing in `main` and return its exit code. `configure` runs
   when Giles sends the instance config. Return `Error::InvalidRequest` for a bad config; Giles
   shows the message and doesn't start the instance. `ctx.parse_config()` does this for you, naming

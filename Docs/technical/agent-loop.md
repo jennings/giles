@@ -15,7 +15,9 @@ model stops asking for tools. The session code that hands it turns is in
 | `PolicyDispatcher`            | The daemon's dispatcher: call-time checks, parallel runs, deadlines |
 | `CallPolicy`                  | A call's `parallel` and `deadline`, from its toolset or the core tool list |
 | `OutputSink`                  | Receives a turn's streamed events and finished messages            |
-| `MessageOutput`               | Sends each finished message's text through `Turn::reply`           |
+| `output::output_for`          | Picks a turn's sink: `ChannelOutput`, or none for an isolated job  |
+| `ChannelOutput`               | Sends assistant text through `Turn::reply`: `blocks` or `deltas`   |
+| `DeltaSink`, `DeltaWriter`    | A `deltas` channel's live-output hook (2.22 replaces with its own) |
 | `history::user_message`       | An inbound message's stored form, with its time prefix             |
 | `history::request_messages`   | A request's messages from `Store::load_history`                    |
 | `prompt::SessionPrompt`       | A session's `system` blocks and its `Arc<SessionTools>`            |
@@ -218,10 +220,50 @@ after <deadline>`, e.g. `timed out after 5m`; the batch goes on.
 
 ## Output
 
-`MessageOutput` sends each stored assistant message's `Text` blocks, trimmed and joined by blank
-lines, in one `Reply::send` once the message is complete; reasoning, tool, and opaque blocks never
-reach the channel, and a message without text sends nothing. A failed send is logged; the message
-is stored either way. Isolated job runs have no `Reply` and send nothing.
+`output::output_for(turn)` picks the sink once per turn (§6.9). An isolated job run has no
+`Reply` and sends nothing. Otherwise `ChannelOutput` sends into the turn's conversation, live if
+the channel registered for the instance right now declares `OutputMode::Deltas` and has a
+live-output hook; a `deltas` channel without one (or not registered yet) gets `blocks` output.
+
+Only `Text` blocks reach a channel: the sink follows `BlockStart`/`TextDelta`/`BlockStop` of
+text blocks and ignores reasoning, tool input, and every other event. Each text block is its own
+Markdown text: leading whitespace is dropped (a whitespace-only block sends nothing), and the
+`BlockStop` text is authoritative, so text the deltas missed is added then (deltas that don't
+match it are logged and left as sent). Sends stop once `Turn::cancel` fires, also mid-send; a
+failed send is logged and the message is stored either way.
+
+**`blocks`**: chunks go out through `Reply::send`, in order, as soon as they're complete. A chunk
+ends at a run of blank lines (whitespace only; `\n` or `\r\n`) outside a fenced code block, once
+the first characters of the next line show a new top-level block starts there (usually its
+first character), and at the end of the text block, so a chunk never spans text blocks (a fence
+can't span a tool call). It doesn't end:
+
+- inside a fence: three or more backticks or tildes at any indentation (a backtick fence's info
+  string has no backticks), closed by a run of the same character at least as long, indented at
+  most three columns more than the opening, then only whitespace; an unclosed fence runs to the
+  end of the text;
+- before an indented line, so indented code, list-item continuations, and nested blocks stay
+  with what came before (indented code is never split, at the cost of joining it to the
+  paragraph before it);
+- between list items (`-`, `*`, `+`, `1.`, `1)`), so a loose list stays one chunk;
+- after an ATX heading, which stays with what follows it.
+
+Chunks lose their trailing whitespace and the blank lines between them; anything else is sent
+byte for byte. The splitter (`Paragraphs`) is pure and tested with a table fed whole and one
+character at a time.
+
+**`deltas`**: each text block gets one live message (`DeltaSink::start(conversation)`) at its
+first non-whitespace text, then every delta is `push`ed as it arrives. The writers are
+`finish`ed, in order, when the message is complete (`message_end`), so a live message is marked
+done only once the response is stored. If `start` fails, it's logged and that block goes out as
+`blocks`.
+
+**Aborted responses** (`/stop`, shutdown, a provider error, or the sink dropped mid-response):
+nothing more goes out. In `blocks` mode the unsent text, even a complete paragraph still waiting
+for the next line, is dropped: the response isn't stored, so the model won't know it was sent,
+and after `/stop` the requester wants quiet (a failure notice follows a provider error anyway).
+Chunks already sent stay sent. In `deltas` mode the live messages are dropped unfinished, which
+the channel shows as cut off.
 
 ## Seams for Later Tasks
 
@@ -238,10 +280,16 @@ is stored either way. Isolated job runs have no `Reply` and send nothing.
   use up the call's deadline; a denial is that call's output. A barrier call waiting for approval
   holds up the calls after it, as it would while running. Mid-call elicitation arrives as
   `ToolCallEvent::ApprovalRequest` in `run_call`, answered on the handle's `answers` sender.
-- **2.8, output**: `AgentLoop::output_for(turn)` picks the sink; `OutputSink::event` sees every
-  streamed event and `message_aborted` is called when a streamed response is dropped.
 - **2.9, media**: inbound attachments into `history::user_message`, `ModelInfo::accepts` filtering,
   `ToolCall::media`.
 - **2.10, compaction**: `AgentLoop::rebuild_prompt`, and the summary rendering in
   `history::request_messages`.
 - **2.11, 2.12, core tools**: a core-tool arm in the dispatcher in place of `tool unavailable`.
+- **2.22, live output**: `output::DeltaSink`/`DeltaWriter` have the shape of 2.22's
+  `giles_types::{DeltaSink, DeltaWriter}` (`start(&ConversationId) -> Result<Box<dyn
+  DeltaWriter>>`, `push(&str)`, `async finish(self: Box<Self>) -> Result<MessageId>`, drop
+  unfinished = cut off). Whichever lands second deletes the two local traits in
+  `agent_loop/output.rs` (importing the `giles_types` ones, and dropping them from the
+  `agent_loop` re-exports) and makes `output::delta_sink(channel)` return `channel.deltas()`.
+  Nothing else changes: a channel is streamed to only if it declares `OutputMode::Deltas` and
+  `delta_sink` returns `Some`.

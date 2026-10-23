@@ -9,8 +9,8 @@
 //! stops asking for tools. Every provider request records one `usage` row.
 //!
 //! Seams for later tasks: [`ToolDispatcher`] (the [`PolicyDispatcher`] runs calls; 2.6 skips
-//! unstarted calls, 2.7 gates calls on approval, 2.11/2.12 add core tools), [`OutputSink`] (2.8
-//! streaming), [`AgentLoop::rebuild_prompt`] (2.10 compaction), and the tool-batch boundary hook
+//! unstarted calls, 2.7 gates calls on approval, 2.11/2.12 add core tools), [`DeltaSink`] (2.22
+//! live output), [`AgentLoop::rebuild_prompt`] (2.10 compaction), and the tool-batch boundary hook
 //! `at_batch_boundary` (2.6 steering).
 
 pub mod dispatch;
@@ -37,7 +37,7 @@ pub use dispatch::{
     CallPolicy, MAX_PARALLEL_CALLS, PARALLEL_SAFE_CORE_TOOLS, PolicyDispatcher, TIMED_OUT_RESULT,
     TOOL_UNAVAILABLE, ToolBatch, ToolDispatcher, ToolOutput, ToolRequest,
 };
-pub use output::{MessageOutput, OutputSink};
+pub use output::{ChannelOutput, DeltaSink, DeltaWriter, OutputSink};
 pub use prompt::{PromptError, SessionPrompt, SessionTools};
 
 use crate::config::AgentConfig;
@@ -179,10 +179,9 @@ impl AgentLoop {
         }
     }
 
-    /// Where the turn's responses go. TASKS.md 2.8 picks a streaming sink from the channel's
-    /// output mode here.
+    /// Where the turn's responses go ([`output::output_for`]).
     fn output_for(&self, turn: &Turn) -> Box<dyn OutputSink> {
-        Box::new(MessageOutput::new(turn.reply.clone()))
+        output::output_for(turn)
     }
 
     /// The tool-batch boundary (PLAN section 6.3): every slot of the last batch is filled and

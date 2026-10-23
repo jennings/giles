@@ -731,7 +731,8 @@ async fn cancelling_mid_stream_stores_nothing_of_the_response() {
     assert_eq!(running.await.unwrap(), TurnOutcome::Cancelled);
 
     assert_eq!(h.transcript().await, [user("Tell me a long story")]);
-    assert!(h.sent().is_empty());
+    // The text block that ended went out at its end; the unstarted one sends nothing.
+    assert_eq!(h.sent(), ["Complete block"]);
     // The request was made, so it has a usage row.
     assert_eq!(h.usage_requests().await, 1);
 }
@@ -1210,6 +1211,34 @@ async fn a_job_turn_stops_at_25_iterations_by_default() {
         [
             result("t25", "iteration limit", true),
             assistant(vec![Block::text("Stopped at the limit.")]),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_blocks_channel_gets_a_reply_in_paragraphs_in_order() {
+    let mut h = Harness::new().await;
+    h.provider.push(response(
+        vec![
+            Block::text("Checking.\n\nOne moment."),
+            tool_use("t1", "github__list_issues", json!({})),
+        ],
+        StopReason::ToolUse,
+    ));
+    h.provider.push(text(
+        "Found:\n\n```\na\n\nb\n```\n\n- one\n\n- two\n\nThat's all.",
+    ));
+    let (turn, _) = h.turn(&["Issues?"]);
+    assert_eq!(h.agent_loop().run_turn(turn).await, TurnOutcome::Completed);
+    assert_eq!(
+        h.sent(),
+        [
+            "Checking.",
+            "One moment.",
+            "Found:",
+            "```\na\n\nb\n```",
+            "- one\n\n- two",
+            "That's all."
         ]
     );
 }
