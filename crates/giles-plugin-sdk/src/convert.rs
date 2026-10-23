@@ -214,7 +214,9 @@ fn inbound_from_proto(message: pb::InboundMessage) -> Result<InboundMessage> {
     })
 }
 
-fn status_to_proto(status: ChannelStatus) -> Result<pb::ChannelStatus> {
+/// `ChannelStatus` to its wire form (also the admin service's `ChannelStatus` fields). A variant
+/// this version doesn't know is an error.
+pub fn status_to_proto(status: ChannelStatus) -> Result<pb::ChannelStatus> {
     use pb::channel_status::State;
     let state = match status {
         ChannelStatus::Connected => State::Connected(pb::Connected {}),
