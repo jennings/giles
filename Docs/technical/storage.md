@@ -101,6 +101,7 @@ instance, conversation id). Isolated job runs get keyless `job` sessions.
 | `session`             | A session by id, open or ended.                                       |
 | `end_session`         | Sets `ended_at` (`/new`, idle reset, end of a job run); `false` if already ended. The next `open_session` for the key starts a new session. |
 | `open_sessions`       | Every open session, oldest first.                                     |
+| `list_sessions`       | Sessions with their message counts (`SessionSummary`), newest activity (last message, else start) first; optionally one agent's, optionally with ended ones (admin `ListSessions`). |
 
 `Session::last_message_at` is the `created_at` of the session's last message, for `idle_reset`.
 
@@ -224,10 +225,11 @@ job, keyed by agent and `JobKey`: `Config(id)` is stored as `config:<id>` and `R
 
 `record_usage` stores one row per provider request (PLAN 11.7): time, provider instance, model,
 agent, user, session, the four token counts of `giles_types::Usage`, and the fallback flag.
-`usage_by_agent(since)` sums requests, fallbacks, and tokens per agent. The prompt cache hit rate,
-`giles_types::Usage::cache_hit_rate`, is cache-read tokens over all input tokens (uncached input +
-cache reads + cache writes), since `input_tokens` excludes cached tokens. Token counts above
-`i64::MAX` are rejected, not truncated.
+`usage_by_agent(since)` sums requests, fallbacks, and tokens per agent; `usage_by_model(since,
+until)` per agent, provider instance, and model (`since` inclusive, `until` exclusive; the admin
+`UsageReport`). The prompt cache hit rate, `giles_types::Usage::cache_hit_rate`, is cache-read
+tokens over all input tokens (uncached input + cache reads + cache writes), since `input_tokens`
+excludes cached tokens. Token counts above `i64::MAX` are rejected, not truncated.
 
 ## Web Sessions
 

@@ -89,9 +89,19 @@ impl Session {
     }
 }
 
+/// A session and the size of its transcript, from [`Store::list_sessions`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSummary {
+    /// The session.
+    pub session: Session,
+    /// Its stored messages, empty result slots included.
+    pub messages: u64,
+}
+
 const SELECT: &str = "SELECT s.id, s.agent, s.kind, s.channel, s.conversation, s.user_id,
         s.started_at, s.ended_at,
         (SELECT m.created_at FROM messages m WHERE m.session_id = s.id ORDER BY m.seq DESC LIMIT 1)
+            AS last_message_at
     FROM sessions s";
 
 fn from_row(row: &Row<'_>) -> Result<Session> {
@@ -227,6 +237,36 @@ impl Store {
         })
         .await
     }
+
+    /// Sessions with their message counts, newest activity (last message, else start) first:
+    /// only `agent`'s if set, and only open ones unless `include_ended`.
+    pub async fn list_sessions(
+        &self,
+        agent: Option<AgentId>,
+        include_ended: bool,
+    ) -> Result<Vec<SessionSummary>> {
+        self.read(move |conn| {
+            let mut stmt = conn.prepare_cached(&format!(
+                "SELECT q.*, (SELECT count(*) FROM messages m WHERE m.session_id = q.id)
+                 FROM ({SELECT} WHERE (?1 IS NULL OR s.agent = ?1)
+                    AND (?2 OR s.ended_at IS NULL)) q
+                 ORDER BY coalesce(q.last_message_at, q.started_at) DESC, q.id DESC"
+            ))?;
+            query_all(
+                &mut stmt,
+                params![agent.as_ref().map(AgentId::as_str), include_ended],
+                |row| {
+                    let messages: i64 = row.get(9)?;
+                    Ok(SessionSummary {
+                        session: from_row(row)?,
+                        messages: u64::try_from(messages)
+                            .map_err(|_| Error::corrupt("a negative message count"))?,
+                    })
+                },
+            )
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -338,6 +378,51 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, Error::InvalidRequest(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn list_sessions_orders_by_activity_and_filters() {
+        use crate::messages::tests::user;
+
+        let (_dir, store) = store().await;
+        let jeeves = AgentId::new("jeeves").unwrap();
+        // c1 starts first but has the newest message; c2 has none; the job is another agent's.
+        let (c1, _) = store
+            .open_session(key("c1"), SessionKind::Direct, owner(), at(0))
+            .await
+            .unwrap();
+        let (c2, _) = store
+            .open_session(key("c2"), SessionKind::Direct, owner(), at(10))
+            .await
+            .unwrap();
+        let job = store
+            .create_job_session(AgentId::new("bunter").unwrap(), None, at(5))
+            .await
+            .unwrap();
+        store
+            .append_messages(c1.id, vec![user("hi", 20), user("again", 30)])
+            .await
+            .unwrap();
+        let (c3, _) = store
+            .open_session(key("c3"), SessionKind::Direct, owner(), at(40))
+            .await
+            .unwrap();
+        assert!(store.end_session(c3.id, at(41)).await.unwrap());
+
+        let ids = |list: Vec<SessionSummary>| list.iter().map(|s| s.session.id).collect::<Vec<_>>();
+        let open = store.list_sessions(None, false).await.unwrap();
+        assert_eq!(open[0].session.last_message_at, Some(at(30)));
+        assert_eq!(open[0].messages, 2);
+        assert_eq!(open[1].messages, 0);
+        assert_eq!(ids(open), [c1.id, c2.id, job.id]);
+        assert_eq!(
+            ids(store.list_sessions(None, true).await.unwrap()),
+            [c3.id, c1.id, c2.id, job.id]
+        );
+        assert_eq!(
+            ids(store.list_sessions(Some(jeeves), true).await.unwrap()),
+            [c3.id, c1.id, c2.id]
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

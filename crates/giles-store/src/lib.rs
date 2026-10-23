@@ -40,8 +40,8 @@ pub use messages::{
 pub use migrate::{MigrationPlan, SCHEMA_VERSION};
 pub use outbox::{NewOutbox, OutboxEntry, OutboxId};
 pub use search::{SNIPPET_ELLIPSIS, SNIPPET_END, SNIPPET_START, SearchHit, SearchScope};
-pub use sessions::{Session, SessionId, SessionKey, SessionKind};
-pub use usage::{AgentUsage, UsageRecord};
+pub use sessions::{Session, SessionId, SessionKey, SessionKind, SessionSummary};
+pub use usage::{AgentUsage, ModelUsage, UsageRecord};
 pub use web_sessions::WebSession;
 
 use giles_types::Timestamp;
