@@ -52,6 +52,27 @@ section 8.7 belong to multi-user support and are added when it is built.
 - Messages are limited to 16 MiB instead of `tonic`'s 4 MiB default. Clients and servers set it
   from `giles_proto::MAX_MESSAGE_SIZE`.
 
+## Launch handshake
+
+Before any gRPC call, the core and a plugin agree on a few fixed values (PLAN section 7.4). Both
+sides take them from `giles_proto::handshake`, so they can't drift apart:
+
+| Constant                       | Value                                                        |
+| ------------------------------ | ------------------------------------------------------------ |
+| `MAGIC_COOKIE_ENV`             | `GILES_PLUGIN_MAGIC`, set to `MAGIC_COOKIE`                  |
+| `MAGIC_COOKIE`                 | `giles-plugin:5b2f0c7e9a1d4836`; never changes               |
+| `PROTOCOLS_ENV`                | `GILES_PLUGIN_PROTOCOLS`: the majors the core speaks, comma-separated, e.g. `1` |
+| `DATA_ENV`                     | `GILES_PLUGIN_DATA`: the instance's data directory           |
+| `PLUGIN_FD`                    | 3, the plugin's end of the socket pair                       |
+| `PROTOCOL_MAJOR`               | 1, the major of the `v1` packages                            |
+| `HANDSHAKE_VERSION`            | 1, the first field of the handshake line                     |
+| `EXIT_NO_SHARED_PROTOCOL`      | 76 (`EX_PROTOCOL`): the plugin shares no protocol major; don't retry until the binary changes |
+
+`HandshakeLine` formats and parses the line the plugin prints on stdout once it serves,
+`1|<protocol>|fd|3|grpc`. The parser accepts one trailing `\n` or `\r\n` and nothing else: no
+spaces, no leading zeros or signs in the protocol, no other transport. Protocol majors are plain
+decimal (`parse_major`).
+
 ## Mapping to `giles-types`
 
 `giles-proto` holds only the wire types. The plugin SDK and the core's `Remote*` adapters convert

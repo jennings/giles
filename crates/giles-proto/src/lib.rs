@@ -5,8 +5,9 @@
 //! `Docs/technical/protocols.md` for the packages, their conventions, and how they map to
 //! `giles-types`.
 //!
-//! This crate holds only the wire types. Conversions to and from `giles-types` belong to the code
-//! that speaks the protocol: the plugin SDK and the core's `Remote*` adapters.
+//! This crate holds only the wire types and the constants of the launch handshake
+//! ([`handshake`]). Conversions to and from `giles-types` belong to the code that speaks the
+//! protocol: the plugin SDK and the core's `Remote*` adapters.
 
 /// The largest gRPC message, encoded or decoded, that Giles sends or accepts: 16 MiB.
 ///
@@ -22,6 +23,8 @@ pub const MAX_BLOB_CHUNK_SIZE: usize = 1024 * 1024;
 /// server reflection.
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/giles_descriptor.bin"));
+
+pub mod handshake;
 
 pub mod types {
     //! `giles.types.v1`: the shared message types, mirroring `giles-types`.
