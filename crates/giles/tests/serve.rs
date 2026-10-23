@@ -1,8 +1,10 @@
-//! End-to-end tests of `giles serve`: data root resolution and layout, configuration loading, and
-//! clean shutdown on signals. Every test points `HOME` and `TMPDIR` into a temporary directory.
+//! End-to-end tests of `giles serve`: data root resolution and layout, configuration loading, the
+//! HTTP listener, and clean shutdown on signals. Every test points `HOME` and `TMPDIR` into a
+//! temporary directory.
 
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -148,8 +150,10 @@ fn assert_layout(root: &Path) {
     assert_eq!(mode(&root.join("run")), 0o700);
 }
 
-/// The smallest valid `giles.toml`.
-const MINIMAL_CONFIG: &str = "[owner]\nidentities = [\"web:owner\"]\n";
+/// The smallest valid `giles.toml`, plus an HTTP listener on a free port (the default 8080 would
+/// collide between tests running in parallel).
+const MINIMAL_CONFIG: &str =
+    "[core]\nhttp_listen = \"127.0.0.1:0\"\n\n[owner]\nidentities = [\"web:owner\"]\n";
 
 /// Creates the data root `root` (mode 0700, as `giles serve` would) holding `giles_toml`.
 fn write_config(root: &Path, giles_toml: &str) {
@@ -283,4 +287,67 @@ fn invalid_config_fails_with_the_file_and_key() {
         home.join("giles.toml").display()
     );
     assert!(stderr.contains(&expected), "{stderr}");
+}
+
+/// The HTTP address in the `giles started` line (`http=http://<addr>/`).
+fn http_addr(log: &[String]) -> SocketAddr {
+    let line = log.iter().find(|l| l.contains("giles started")).unwrap();
+    let url = line.split("http=http://").nth(1).unwrap();
+    url.split('/').next().unwrap().parse().unwrap()
+}
+
+#[test]
+fn serves_http_on_http_listen_until_stopped() {
+    let env = Env::new();
+    let home = env.path("home");
+    write_config(&home, MINIMAL_CONFIG);
+    let daemon = Daemon::start(env.command(&["serve", "--home", home.to_str().unwrap()]));
+    let addr = http_addr(&daemon.log);
+
+    let mut stream = TcpStream::connect(addr).unwrap();
+    write!(
+        stream,
+        "GET / HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+    assert!(
+        response
+            .to_ascii_lowercase()
+            .contains("\r\ncontent-security-policy: default-src 'self';"),
+        "{response}"
+    );
+    assert!(response.contains("is running."), "{response}");
+
+    let (status, log) = daemon.stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+    assert!(
+        TcpStream::connect(addr).is_err(),
+        "still listening after exit"
+    );
+}
+
+#[test]
+fn busy_http_listen_fails_at_startup() {
+    let env = Env::new();
+    let home = env.path("home");
+    let taken = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = taken.local_addr().unwrap();
+    write_config(
+        &home,
+        &format!("[core]\nhttp_listen = \"{addr}\"\n\n[owner]\nidentities = [\"web:owner\"]\n"),
+    );
+    let output = env
+        .command(&["serve", "--home", home.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!("cannot listen for HTTP on {addr}")),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("giles started"), "{stderr}");
 }

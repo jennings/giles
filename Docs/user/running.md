@@ -35,6 +35,24 @@ It runs until it receives SIGINT (Ctrl-C) or SIGTERM, then shuts down and exits 
 shutdown takes too long, a second Ctrl-C or SIGTERM makes it exit at once with status 130. Any other
 non-zero status means it failed to start; the error is printed on standard error.
 
+## The Web Interface
+
+`giles serve` also runs a web server, by default on `http://127.0.0.1:8080/`. The `giles started`
+log line shows the address, for example `http=http://127.0.0.1:8080/`. Set `http_listen` in the
+`[core]` table of `giles.toml` to change it ([Configuration](configuration.md#core)):
+
+```toml
+[core]
+http_listen = "127.0.0.1:9090"
+```
+
+The default only accepts connections from the same machine. If the address is in use (another
+Giles, or any other server on that port), `giles serve` fails at startup with
+`cannot listen for HTTP on <address>`. Port `0` picks any free port, which the log line then shows.
+
+Giles speaks plain HTTP. To reach it from another machine, put a reverse proxy that terminates TLS
+(Caddy, nginx, Tailscale Serve) in front of it rather than exposing the port directly.
+
 ## The Data Root
 
 Everything Giles keeps (configuration, secrets, agents, conversation history, attachments, plugin

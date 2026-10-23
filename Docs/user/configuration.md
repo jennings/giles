@@ -46,7 +46,8 @@ Settings of the core itself. Optional.
 | `http_listen` | `"127.0.0.1:8080"` | Address of the HTTP server (web chat, admin pages, login links)   |
 
 To reach Giles from other machines (or from outside a container), listen on `"0.0.0.0:8080"` and put
-a TLS-terminating reverse proxy in front of it.
+a TLS-terminating reverse proxy in front of it. Giles binds the address at startup and refuses to
+start if it can't (see [The Web Interface](running.md#the-web-interface)).
 
 ### `[owner]`
 

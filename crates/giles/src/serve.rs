@@ -4,6 +4,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use giles_core::config::Config;
+use giles_core::http;
 use giles_core::paths::DataRoot;
 use giles_core::sandbox;
 use tokio_util::sync::CancellationToken;
@@ -37,10 +38,19 @@ async fn serve(root: DataRoot, config: Config) -> anyhow::Result<()> {
         );
     }
     check_sandbox();
+
+    let listener = http::bind(config.core.http_listen).await?;
+    let http_addr = listener
+        .local_addr()
+        .context("cannot read the HTTP listener's address")?;
+    let app = http::RouterBuilder::new().build();
+    let mut http_server = tokio::spawn(http::serve(listener, app, shutdown.clone()));
+
     info!(
         version = env!("CARGO_PKG_VERSION"),
         root = %root.root().display(),
         admin_socket = %root.admin_socket().display(),
+        http = %format_args!("http://{http_addr}/"),
         agents = config.agents.len(),
         providers = config.providers.len(),
         channels = config.channels.len(),
@@ -48,7 +58,25 @@ async fn serve(root: DataRoot, config: Config) -> anyhow::Result<()> {
         "giles started",
     );
 
-    shutdown.cancelled().await;
+    // `biased`: once the token is cancelled the server returns promptly, so both branches can be
+    // ready together; that is a normal stop, not an early exit.
+    let early_exit = tokio::select! {
+        biased;
+        () = shutdown.cancelled() => None,
+        result = &mut http_server => Some(result),
+    };
+    if let Some(result) = early_exit {
+        // The server only returns on shutdown; stop everything else with it.
+        shutdown.cancel();
+        result
+            .context("the HTTP server panicked")?
+            .context("the HTTP server failed")?;
+        anyhow::bail!("the HTTP server stopped unexpectedly");
+    }
+    http_server
+        .await
+        .context("the HTTP server panicked")?
+        .context("the HTTP server failed")?;
     info!("giles stopped");
     Ok(())
 }

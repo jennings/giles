@@ -43,9 +43,13 @@ to stderr, with ANSI colors only when stderr is a terminal. The filter is `GILES
    path instead of killing the process.
 5. Check that the host can sandbox plugins (`giles_core::sandbox::check_host`, see
    [Plugin Sandbox](sandbox.md#host-check)) and log the result; a failure is a warning for now.
-6. Log `giles started` with the root, admin socket path, and instance and agent counts, plus a
-   warning if the sockets use the `$TMPDIR` fallback.
-7. Wait until the shutdown token is cancelled, log `giles stopped`, and exit with status 0.
+6. Bind the HTTP listener on `core.http_listen` (a busy address fails startup here) and start the
+   HTTP server on its own task ([HTTP Server](http.md#lifecycle)).
+7. Log `giles started` with the root, admin socket path, HTTP URL, and instance and agent counts,
+   plus a warning if the sockets use the `$TMPDIR` fallback.
+8. Wait until the shutdown token is cancelled, then await the HTTP server (it drains open requests
+   for up to 5 s), log `giles stopped`, and exit with status 0. If the HTTP server stops on its own
+   first, cancel the token and exit with an error.
 
 The shutdown signal is a `tokio_util::sync::CancellationToken`. The first SIGINT or SIGTERM cancels
 it. Subsystems added later take a clone (or a `child_token()`), stop when it is cancelled, and are

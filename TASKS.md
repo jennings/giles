@@ -124,7 +124,7 @@ All parallel. Each task needs only Phase 0.
 - [ ] **1.13 Spike: WhatsApp library** (§10). Link `whatsapp-rust` as a device (QR and pair code),
   send and receive a DM, survive a restart with the persisted session. Decide between
   `whatsapp-rust` and the `whatsmeow` fallback before 3.6; record the result.
-- [ ] **1.14 HTTP server skeleton** (§9). `axum` on `http_listen`, `askama` layout, vendored `htmx`
+- [x] **1.14 HTTP server skeleton** (§9). `axum` on `http_listen`, `askama` layout, vendored `htmx`
   and its SSE extension embedded in the binary, `Content-Security-Policy: img-src 'self' data:`
   and related headers.
 
