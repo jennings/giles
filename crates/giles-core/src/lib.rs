@@ -1,5 +1,6 @@
 //! Giles orchestration: the agent loop, routing, sessions, scheduling, and plugin supervision.
 
+pub mod admin;
 pub mod agent_loop;
 pub mod blobs;
 pub mod channels;

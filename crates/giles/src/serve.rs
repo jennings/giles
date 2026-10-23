@@ -4,6 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context;
+use giles_core::admin::{AdminListener, AdminOptions, AdminService, InstanceLock};
 use giles_core::agent_loop::AgentLoop;
 use giles_core::commands::NoPendingApprovals;
 use giles_core::config::Config;
@@ -11,27 +12,31 @@ use giles_core::http;
 use giles_core::paths::DataRoot;
 use giles_core::plugin_host::{Launcher, PluginHost, STOP_GRACE};
 use giles_core::runtime::Runtime;
-use giles_core::sandbox;
+use giles_core::sandbox::{self, HostReport};
+use giles_core::sessions::SystemClock;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::cli::ServeArgs;
 use crate::shutdown;
 
-/// Resolves and creates the data root, loads the configuration, then runs the daemon until SIGINT
-/// or SIGTERM. An invalid configuration fails before anything starts.
+/// Resolves and creates the data root, takes its single-instance lock, loads the configuration,
+/// then runs the daemon until SIGINT or SIGTERM. A second daemon on the same data root and an
+/// invalid configuration fail before anything starts.
 pub fn run(home: Option<&Path>, _args: &ServeArgs) -> anyhow::Result<()> {
     let root = DataRoot::from_env(home)?;
     root.create_layout()?;
+    let lock = InstanceLock::acquire(&root)?;
     let config = Config::load(&root)?;
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("cannot start the async runtime")?
-        .block_on(serve(root, config))
+        .block_on(serve(root, config, lock))
 }
 
-async fn serve(root: DataRoot, config: Config) -> anyhow::Result<()> {
+async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Result<()> {
+    let started_at = jiff::Timestamp::now();
     let shutdown = CancellationToken::new();
     shutdown::cancel_on_signal(shutdown.clone()).context("cannot install signal handlers")?;
 
@@ -67,6 +72,8 @@ async fn serve(root: DataRoot, config: Config) -> anyhow::Result<()> {
         },
         None => None,
     };
+    // A fresh admin token and the admin socket (a stale one is safe to replace: we hold the lock).
+    let admin_listener = AdminListener::bind(&root, &lock)?;
     // Startup recovery, then every registered channel's events. The last step that can fail:
     // recovery changes state and resumed turns run, so nothing may abort startup after it.
     let sessions = runtime
@@ -110,9 +117,22 @@ async fn serve(root: DataRoot, config: Config) -> anyhow::Result<()> {
     };
     let mut http_server =
         tokio::spawn(async move { tokio::try_join!(main_server, proxy_server).map(|_| ()) });
+    let admin = AdminService::new(AdminOptions {
+        config: config.clone(),
+        store: runtime.store.clone(),
+        sandbox: sandbox.clone(),
+        started_at,
+        channels: Arc::new(sessions.clone()),
+        // Plugin supervision (TASKS.md 2.17) and the web channel's login links (2.23) plug in
+        // here once they exist; until then those RPCs answer UNAVAILABLE.
+        plugins: None,
+        login_links: None,
+        clock: Arc::new(SystemClock),
+    });
+    let admin_server = tokio::spawn(admin_listener.serve(admin, shutdown.clone()));
     // Every configured plugin channel; one that fails to launch is logged and stays pending. A
     // shutdown during startup abandons the launches still running (killing their plugins).
-    let plugins = PluginHost::new(Launcher::new(root.clone(), giles_exe, sandbox));
+    let plugins = PluginHost::new(Launcher::new(root.clone(), giles_exe, sandbox.map(drop)));
     tokio::select! {
         () = plugins.launch_all(&config) => {}
         () = shutdown.cancelled() => {}
@@ -141,6 +161,7 @@ async fn serve(root: DataRoot, config: Config) -> anyhow::Result<()> {
         // The server only returns on shutdown; stop everything else with it.
         shutdown.cancel();
         plugins.stop_all(STOP_GRACE).await;
+        stop_admin(admin_server).await;
         result.context("the HTTP server panicked")??;
         anyhow::bail!("the HTTP server stopped unexpectedly");
     }
@@ -149,18 +170,31 @@ async fn serve(root: DataRoot, config: Config) -> anyhow::Result<()> {
     // the plugins.
     sessions.closed().await;
     plugins.stop_all(STOP_GRACE).await;
+    stop_admin(admin_server).await;
     info!("giles stopped");
+    // Held until here, so a new core can't start while this one still runs plugins.
+    drop(lock);
     Ok(())
+}
+
+/// Waits for the admin server, which stops with the shutdown token (and removes its socket and
+/// token file). A failure only gets logged: the core is stopping anyway.
+async fn stop_admin(server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>) {
+    match server.await {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => warn!(error = %err, "the admin server failed"),
+        Err(err) => warn!(error = %err, "the admin server panicked"),
+    }
 }
 
 /// Checks and logs whether this host can sandbox plugins (PLAN section 12.1). Only a warning:
 /// unsandboxed instances still start, and the plugin host refuses each sandboxed one with this
-/// error.
-fn check_sandbox() -> Result<(), String> {
+/// error. The admin service's `Status` reports the result.
+fn check_sandbox() -> Result<HostReport, String> {
     match sandbox::check_host() {
         Ok(report) => {
             info!(%report, "plugin sandbox available");
-            Ok(())
+            Ok(report)
         }
         Err(err) => {
             warn!(

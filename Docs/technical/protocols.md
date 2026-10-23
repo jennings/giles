@@ -26,7 +26,8 @@ client.
 `ResetSession`, `CreateLoginLink`, `UsageReport`, and `Backup`. The user and pairing RPCs of PLAN
 section 8.7 belong to multi-user support and are added when it is built. Beyond PLAN section 8.7's
 sketch, `StatusResponse` also reports the host's sandbox (`SandboxHost`) and every configured
-channel with its last status (`ChannelInstance`), so built-in channels show up too.
+channel with its last status (`ChannelInstance`), so built-in channels show up too. The core's side
+is described in [Admin Service](admin.md).
 
 ## Conventions
 

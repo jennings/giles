@@ -361,6 +361,46 @@ fn busy_http_listen_fails_at_startup() {
     assert!(!stderr.contains("giles started"), "{stderr}");
 }
 
+#[test]
+fn one_daemon_per_root_with_a_private_admin_socket_and_token() {
+    let env = Env::new();
+    let home = env.path("home");
+    write_config(&home, MINIMAL_CONFIG);
+    let daemon = Daemon::start(env.command(&["serve", "--home", home.to_str().unwrap()]));
+    let socket = home.join("run/admin.sock");
+    let token_file = home.join("run/admin.token");
+    assert_eq!(mode(&socket), 0o600);
+    assert_eq!(mode(&token_file), 0o600);
+    let token = fs::read_to_string(&token_file).unwrap();
+    assert_eq!(token.len(), 64, "{token}");
+    assert_eq!(mode(&home.join("run/giles.lock")), 0o600);
+
+    // A second daemon on the same root fails before touching anything, naming the first.
+    let output = env
+        .command(&["serve", "--home", home.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let pid = daemon.child.id();
+    assert!(
+        stderr.contains("giles is already running") && stderr.contains(&format!("pid {pid}")),
+        "{stderr}"
+    );
+    assert!(socket.exists(), "the running daemon's socket is left alone");
+    assert_eq!(fs::read_to_string(&token_file).unwrap(), token);
+
+    let (status, log) = daemon.stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+    assert!(!socket.exists() && !token_file.exists(), "removed at exit");
+
+    // The lock went with the process: the next start works and gets a new token.
+    let daemon = Daemon::start(env.command(&["serve", "--home", home.to_str().unwrap()]));
+    assert_ne!(fs::read_to_string(&token_file).unwrap(), token);
+    let (status, log) = daemon.stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+}
+
 #[cfg(feature = "provider-anthropic")]
 #[test]
 fn a_component_that_cannot_be_built_fails_with_the_file_and_key() {

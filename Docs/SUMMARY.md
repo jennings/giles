@@ -33,6 +33,7 @@
 - [HTTP Server](technical/http.md)
 - [Web Channel](technical/web-channel.md)
 - [gRPC Protocols](technical/protocols.md)
+- [Admin Service](technical/admin.md)
 - [Configuration](technical/config.md)
 - [Identity and Routing](technical/identity-and-routing.md)
 - [Sessions and Turns](technical/sessions.md)

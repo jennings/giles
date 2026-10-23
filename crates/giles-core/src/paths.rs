@@ -322,6 +322,12 @@ impl DataRoot {
         self.run_dir().join("admin.token")
     }
 
+    /// `run/giles.lock`, mode 0600: the running core holds an exclusive `flock` on it, so only
+    /// one core uses a data root at a time. It holds that core's pid.
+    pub fn lock_file(&self) -> PathBuf {
+        self.run_dir().join("giles.lock")
+    }
+
     /// `run/pids/`: plugin pid files (section 7.4).
     pub fn pids_dir(&self) -> PathBuf {
         self.run_dir().join("pids")
@@ -659,6 +665,7 @@ mod tests {
         );
         assert_eq!(r.backups_dir(), Path::new("/g/backups"));
         assert_eq!(r.admin_token_file(), Path::new("/g/run/admin.token"));
+        assert_eq!(r.lock_file(), Path::new("/g/run/giles.lock"));
         assert_eq!(r.pid_file("irc").unwrap(), Path::new("/g/run/pids/irc.pid"));
         assert_eq!(
             r.sandbox_spec_file("irc").unwrap(),

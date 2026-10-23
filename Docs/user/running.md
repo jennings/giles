@@ -40,6 +40,10 @@ It runs until it receives SIGINT (Ctrl-C) or SIGTERM, then shuts down and exits 
 shutdown takes too long, a second Ctrl-C or SIGTERM makes it exit at once with status 130. Any other
 non-zero status means it failed to start; the error is printed on standard error.
 
+Only one `giles serve` can use a data root at a time. A second one exits at once with
+`giles is already running with the data root ... as pid <pid>`; stop the first one, or give the
+second its own data root.
+
 Messages are saved as they arrive, so stopping Giles loses none. If it stops while an agent is
 answering, that answer is not resumed: at the next start Giles says "Interrupted by a restart;
 resend if needed." in the conversation, as soon as that channel is up. Messages still waiting for
@@ -88,7 +92,8 @@ On start, `giles serve` creates any missing directories of the layout, readable 
   plugins/          plugin binaries
   data/             the database, attachments, and plugin state
   backups/          backups and pre-upgrade snapshots
-  run/              runtime files: the admin socket and token, plugin pid files and sandbox specs
+  run/              runtime files: the admin socket and token, the lock, plugin pid files and
+                    sandbox specs
   cache/            caches Giles can rebuild
 ```
 

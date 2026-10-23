@@ -12,7 +12,7 @@ publish = false
 [features]
 default = ["channel-web", "provider-anthropic", "provider-openai"]
 # The built-in web channel (`channels::web`): chat pages, live output, login.
-channel-web = ["dep:giles-plugin-sdk"]
+channel-web = []
 # The built-in Anthropic Messages API provider (`providers::anthropic`).
 provider-anthropic = ["dep:base64"]
 # The built-in OpenAI-compatible Chat Completions provider (`providers::openai`).
@@ -26,7 +26,9 @@ base64 = { version = "0.22.1", optional = true }
 bytes.workspace = true
 croner = { version = "4.0.2", default-features = false, features = ["jiff"] }
 futures.workspace = true
-giles-plugin-sdk = { workspace = true, optional = true }
+# The proto <-> domain conversions the admin service shares with plugins, and the web channel's
+# renderer.
+giles-plugin-sdk = { workspace = true, default-features = false }
 giles-proto.workspace = true
 giles-store.workspace = true
 giles-types.workspace = true
@@ -35,6 +37,8 @@ getrandom = "0.4.3"
 # The one-shot connector to a plugin's end of the socket pair (`plugin_host`).
 hyper-util.workspace = true
 jiff = { workspace = true, features = ["tz-system", "tzdb-zoneinfo", "tzdb-bundle-always"] }
+# `google.protobuf.Timestamp` in the admin service.
+prost-types.workspace = true
 reqwest.workspace = true
 rmcp = { version = "3.7.0", default-features = false, features = ["client", "transport-async-rw", "transport-streamable-http-client-reqwest"] }
 serde.workspace = true

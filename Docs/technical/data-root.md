@@ -38,6 +38,7 @@ environment.
   run/                DataRoot::run_dir()           mode 0700
     admin.sock        DataRoot::admin_socket()      unless it falls back (below)
     admin.token       DataRoot::admin_token_file()
+    giles.lock        DataRoot::lock_file()         flock held by the running core
     proxy.sock        DataRoot::proxy_socket()      unless it falls back (below)
     pids/             DataRoot::pids_dir()
       <instance>.pid  DataRoot::pid_file(name)
@@ -84,7 +85,8 @@ $TMPDIR/giles-<16 hex digits>/proxy.sock
 - The name is the 64-bit FNV-1a hash of the absolute, normalized root path. It is a fixed algorithm
   (unlike Rust's `DefaultHasher`), so the daemon and any `giles` CLI, even from another release,
   derive the same directory from the same `GILES_HOME` without coordinating.
-- Only the sockets move. `run/admin.token` and `run/pids/` stay in the data root.
+- Only the sockets move. `run/admin.token`, `run/giles.lock`, and `run/pids/` stay in the data
+  root.
 - The temporary directory may be shared with other users (`/tmp`), and the name is predictable, so
   `create_layout` creates the directory with mode 0700 and, if it already exists, accepts it only if
   it is a real directory (not a symlink) owned by the owner of `run/`. It then resets its mode to
