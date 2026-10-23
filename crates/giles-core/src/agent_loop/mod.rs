@@ -161,33 +161,24 @@ impl AgentLoop {
     }
 
     /// Rebuilds `session`'s `system` from the files as they are now (a fresh memory snapshot),
-    /// keeping its tools, and caches the result: for compaction (TASKS.md 2.10, PLAN section
-    /// 6.7). Without a cached prefix (after a restart) the tools are taken fresh too.
+    /// keeping `current`'s tools (fixed for the session's life), and caches the result: for
+    /// compaction (PLAN section 6.7).
     ///
     /// # Errors
     ///
-    /// As [`prompt::assemble`].
+    /// As [`prompt::build_system`].
     pub async fn rebuild_prompt(
         &self,
         session: &Session,
         agent: &AgentConfig,
+        current: &SessionPrompt,
     ) -> Result<Arc<SessionPrompt>, PromptError> {
-        let key = session.key();
-        let cached_tools = key.as_ref().and_then(|key| {
-            lock(&self.prompts)
-                .get(key)
-                .filter(|(id, _)| *id == session.id)
-                .map(|(_, prompt)| prompt.tools.clone())
+        let tools = current.tools.clone();
+        let prompt = Arc::new(SessionPrompt {
+            system: prompt::build_system(&self.registry, agent, session, &tools).await?,
+            tools,
         });
-        let prompt = match cached_tools {
-            Some(tools) => SessionPrompt {
-                system: prompt::build_system(&self.registry, agent, session, &tools).await?,
-                tools,
-            },
-            None => prompt::assemble(&self.registry, agent, session).await?,
-        };
-        let prompt = Arc::new(prompt);
-        self.remember(key, session.id, prompt.clone());
+        self.remember(session.key(), session.id, prompt.clone());
         Ok(prompt)
     }
 

@@ -912,7 +912,10 @@ async fn rebuilding_refreshes_system_and_keeps_the_tools() {
     )
     .unwrap();
     h.registry.tools().remove_toolset(&name("github"));
-    let rebuilt = agent_loop.rebuild_prompt(&h.session, agent).await.unwrap();
+    let rebuilt = agent_loop
+        .rebuild_prompt(&h.session, agent, &first)
+        .await
+        .unwrap();
     assert!(rebuilt.system_text().contains("Tea at five."));
     assert!(Arc::ptr_eq(&first.tools, &rebuilt.tools));
     // Later turns use the rebuilt prompt.

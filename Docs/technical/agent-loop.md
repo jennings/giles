@@ -92,9 +92,10 @@ first request after the restart misses and writes a new cache entry; the session
 prefix. Storing the prefix would avoid that one miss but freeze tools the registry may no longer
 serve, so v1 recomputes.
 
-`rebuild_prompt(session, agent)` re-reads the files into a new `system`, keeps the cached tools
-(tools are fixed for the session's life), and replaces the cache entry. Compaction (TASKS.md 2.10)
-calls it after writing a summary; the turn then has to use the returned prompt.
+`rebuild_prompt(session, agent, current)` re-reads the files into a new `system`, keeps `current`'s
+tools (tools are fixed for the session's life, also for an isolated job run, which has no cache
+entry), and replaces the cache entry. Compaction (TASKS.md 2.10) calls it after writing a summary;
+the turn then has to use the returned prompt.
 
 ## Messages
 
