@@ -162,15 +162,36 @@ impl ApprovalPresenter for ChannelPresenter {
     }
 }
 
-/// Who asks for approvals and answers them: the requester in the session's conversation.
+/// Sends approval prompts to a user who isn't in the turn's conversation: a job turn's delivery
+/// user, through the outbox (PLAN sections 6.4, 6.11). Answers still come through the normal
+/// path, from the target's conversation.
+#[async_trait]
+pub trait PromptOutbox: fmt::Debug + Send + Sync {
+    /// Queues `markdown`, the prompt of approval `code`, to expire after `timeout` (when the
+    /// approval does).
+    ///
+    /// # Errors
+    ///
+    /// The prompt couldn't be queued; the request is then denied at once.
+    async fn send(&self, code: &str, markdown: &str, timeout: Duration) -> Result<(), String>;
+
+    /// Approval `code` ended: withdraws its prompt if it hasn't gone out yet. Must not block.
+    fn withdraw(&self, code: &str);
+}
+
+/// Who asks for approvals and answers them: the requester in the session's conversation, or
+/// for a job with `ask_to = "deliver_to"`, the delivery user in their DM.
 #[derive(Debug, Clone)]
 pub struct ApprovalTarget {
     /// The conversation's session key; replies are accepted only from it.
     pub key: SessionKey,
     /// The user who answers.
     pub user: UserId,
-    /// Where the prompt goes.
+    /// That conversation: where the prompt goes (unless `outbox` is set) and where answers to
+    /// replies about closed or unknown codes go.
     pub reply: Reply,
+    /// Set for a job turn: the prompt goes through it instead of `reply` and the presenter.
+    pub outbox: Option<Arc<dyn PromptOutbox>>,
 }
 
 impl ApprovalTarget {
@@ -300,8 +321,16 @@ impl ApprovalBoard {
     fn close(&self, code: &str, why: Closing, outcome: ApprovalOutcome) {
         let closed = lock(&self.state).close(code, why);
         if let Some(pending) = closed {
-            self.presenter
-                .resolved(&pending.target.reply, code, outcome);
+            self.resolved(&pending.target, code, outcome);
+        }
+    }
+
+    /// Approval `code` of `target` ended with `outcome`: its prompt is withdrawn from the
+    /// outbox, or the presenter is told.
+    fn resolved(&self, target: &ApprovalTarget, code: &str, outcome: ApprovalOutcome) {
+        match &target.outbox {
+            Some(outbox) => outbox.withdraw(code),
+            None => self.presenter.resolved(&target.reply, code, outcome),
         }
     }
 
@@ -331,13 +360,12 @@ impl ApprovalBoard {
                         "approval denied by a new message"
                     );
                     let _ = pending.decide.send(Decision::DenyBy(said.to_owned()));
-                    resolved.push((pending.target.reply, code));
+                    resolved.push((pending.target, code));
                 }
             }
         }
-        for (reply, code) in resolved {
-            self.presenter
-                .resolved(&reply, &code, ApprovalOutcome::Denied);
+        for (target, code) in resolved {
+            self.resolved(&target, &code, ApprovalOutcome::Denied);
         }
     }
 }
@@ -481,16 +509,16 @@ impl crate::sessions::Approvals for ApprovalBoard {
                     for code in same {
                         if let Some(other) = state.close(&code, Closing::Answered) {
                             let _ = other.decide.send(Decision::Allow);
-                            resolved.push((other.target.reply, code, outcome));
+                            resolved.push((other.target, code, outcome));
                         }
                     }
                 }
                 let _ = pending.decide.send(decision);
-                resolved.push((pending.target.reply, code, outcome));
+                resolved.push((pending.target, code, outcome));
             }
         }
-        for (reply, code, outcome) in resolved {
-            self.presenter.resolved(&reply, &code, outcome);
+        for (target, code, outcome) in resolved {
+            self.resolved(&target, &code, outcome);
         }
         match respond {
             Some((reply, text)) => send_text(&reply, &text).await,
@@ -598,21 +626,24 @@ impl TurnApprovals {
     }
 
     /// The approvals of `turn` of `agent`: its `ask` globs and `approval_timeout`, answered by
-    /// the requester in the session's conversation. A job session's turn is unattended.
-    /// TASKS.md 3.2: job runs in a DM session must be unattended too, unless the job sets
-    /// `ask_to = "deliver_to"`, and then the target is the delivery user's DM.
+    /// the requester in the session's conversation. A job run (PLAN section 6.4) is answered
+    /// only by the target the scheduler set (`ask_to = "deliver_to"`), else it's unattended, in
+    /// a job session or a DM alike.
     pub fn for_turn(board: Arc<ApprovalBoard>, agent: &AgentConfig, turn: &Turn) -> Self {
         let target = match (
+            &turn.job,
             &turn.session.kind,
             turn.session.key(),
             &turn.requester,
             &turn.reply,
         ) {
-            (SessionKind::Job, ..) => None,
-            (_, Some(key), Some(user), Some(reply)) => Some(ApprovalTarget {
+            (Some(job), ..) => job.approvals.clone(),
+            (None, SessionKind::Job, ..) => None,
+            (None, _, Some(key), Some(user), Some(reply)) => Some(ApprovalTarget {
                 key,
                 user: user.clone(),
                 reply: reply.clone(),
+                outbox: None,
             }),
             _ => None,
         };
@@ -712,14 +743,18 @@ impl TurnApprovals {
         info!(tool, code, question, "approval requested");
         let markdown = prompt(&code);
         let waited = tokio::time::timeout(self.timeout, async {
-            if let Err(error) = self
-                .board
-                .presenter
-                .present(&target.reply, &code, &markdown)
-                .await
-            {
+            let shown = match &target.outbox {
+                Some(outbox) => outbox.send(&code, &markdown, self.timeout).await,
+                None => self
+                    .board
+                    .presenter
+                    .present(&target.reply, &code, &markdown)
+                    .await
+                    .map_err(|error| error.to_string()),
+            };
+            if let Err(error) = shown {
                 warn!(tool, code, %error, "cannot send an approval prompt; denied");
-                return Waited::Unsent(error.to_string());
+                return Waited::Unsent(error);
             }
             match decided.await {
                 Ok(decision) => Waited::Decided(decision),

@@ -6,7 +6,8 @@ use futures::StreamExt;
 use giles_store::{InboxId, SessionKind, Slot, UsageRecord};
 use giles_types::{
     Block, CacheRetention, CallContext, ChannelConversation, CompletionEvent, CompletionRequest,
-    GenerationParams, Message, MessageMeta, Role, StopReason, Usage,
+    ConversationKind, ConversationRef, GenerationParams, Message, MessageMeta, Role, StopReason,
+    Usage,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
@@ -155,20 +156,26 @@ async fn drive(agent_loop: &AgentLoop, turn: &Turn) -> Result<TurnOutcome, TurnE
         .get(&session.agent)
         .ok_or_else(|| TurnError::UnknownAgent(session.agent.to_string()))?;
 
-    // The messages are part of the transcript however the turn ends.
+    // The messages (a job run's prompt) are part of the transcript however the turn ends.
     let tz = history::message_timezone(&config, agent);
-    let messages = turn
-        .messages
-        .iter()
-        .map(|message| user_message(message, turn.requester.as_ref(), &tz))
-        .collect();
+    let messages = match &turn.job {
+        Some(job) => vec![job.prompt.clone()],
+        None => turn
+            .messages
+            .iter()
+            .map(|message| user_message(message, turn.requester.as_ref(), &tz))
+            .collect(),
+    };
     agent_loop
         .store
         .append_messages(session.id, messages)
         .await?;
 
     let mut prompt = agent_loop.session_prompt(session, agent).await?;
-    let model = agent_loop.registry.agent_model(agent)?;
+    let model = match turn.job.as_ref().and_then(|job| job.model.as_ref()) {
+        Some(model) => agent_loop.registry.resolve_model(model)?,
+        None => agent_loop.registry.agent_model(agent)?,
+    };
     // The model's context window (compaction) and media types, looked up once per turn.
     let Some(model_info) = or_cancel(&turn.cancel, agent_loop.models.get(&model, &config)).await
     else {
@@ -192,15 +199,17 @@ async fn drive(agent_loop: &AgentLoop, turn: &Turn) -> Result<TurnOutcome, TurnE
         turn,
     ));
     let mut output = agent_loop.output_for(turn);
+    // Job runs, in a job session or a DM, aren't human-paced (PLAN sections 6.3, 6.7).
+    let job = turn.job.is_some() || session.kind == SessionKind::Job;
     let params = GenerationParams {
-        cache_retention: match session.kind {
-            // Job runs aren't human-paced (PLAN section 6.7).
-            SessionKind::Job => CacheRetention::Short,
-            _ => CacheRetention::Long,
+        cache_retention: if job {
+            CacheRetention::Short
+        } else {
+            CacheRetention::Long
         },
         ..GenerationParams::default()
     };
-    let cap = iteration_cap(agent, session.kind);
+    let cap = iteration_cap(agent, job);
     // Requests made with tools offered.
     let mut iterations = 0_u32;
     // Set once the cap is hit: the next request is the turn's last, with no tools offered.
@@ -328,13 +337,13 @@ async fn drive(agent_loop: &AgentLoop, turn: &Turn) -> Result<TurnOutcome, TurnE
     }
 }
 
-/// The most requests with tools offered that one turn of an agent's session of `kind` may make
-/// (PLAN section 6.3): `max_iterations_jobs` for job sessions, `max_iterations` (none by default)
-/// for the others.
-fn iteration_cap(agent: &AgentConfig, kind: SessionKind) -> Option<u32> {
-    match kind {
-        SessionKind::Job => Some(agent.max_iterations_jobs),
-        _ => agent.max_iterations,
+/// The most requests with tools offered that one turn of an agent may make (PLAN section 6.3):
+/// `max_iterations_jobs` for a job run, `max_iterations` (none by default) for the others.
+fn iteration_cap(agent: &AgentConfig, job: bool) -> Option<u32> {
+    if job {
+        Some(agent.max_iterations_jobs)
+    } else {
+        agent.max_iterations
     }
 }
 
@@ -552,12 +561,24 @@ struct CallContexts {
     turn: Arc<TurnContext>,
 }
 
-/// The turn as toolsets see it.
+/// The turn as toolsets see it. A `dm` job run is in the session's (direct) conversation.
 fn call_context(turn: &Turn) -> CallContext {
-    let conversation = match (&turn.session.channel, turn.messages.first()) {
-        (Some(channel), Some(first)) => Some(ChannelConversation {
+    let conversation = match (
+        &turn.session.channel,
+        turn.messages.first(),
+        &turn.session.conversation,
+    ) {
+        (Some(channel), Some(first), _) => Some(ChannelConversation {
             channel: channel.clone(),
             conversation: first.message.conversation.clone(),
+        }),
+        (Some(channel), None, Some(id)) if turn.job.is_some() => Some(ChannelConversation {
+            channel: channel.clone(),
+            conversation: ConversationRef {
+                id: id.clone(),
+                kind: ConversationKind::Direct,
+                title: None,
+            },
         }),
         _ => None,
     };

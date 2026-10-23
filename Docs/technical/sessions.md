@@ -12,7 +12,8 @@ The agent loop plugs in as a `TurnRunner`; the decision before anything is store
 | `SessionHold`            | Exclusive use of a session between its turns: `session`, `cancel`; released on drop |
 | `SessionsOptions`        | Store, `Router`, per-agent `AgentPolicy`, `ChannelLookup`, `TurnRunner`, `Approvals`, `Clock` |
 | `TurnRunner`             | `async fn run_turn(&self, turn: Turn) -> TurnOutcome`; the agent loop implements it |
-| `Turn`                   | `session`, `requester`, `messages: Vec<TurnMessage>`, `busy_mode`, `cancel`, `steering`, `reply` |
+| `Turn`                   | `session`, `requester`, `messages: Vec<TurnMessage>`, `busy_mode`, `cancel`, `steering`, `reply`, `job` |
+| `JobTurn`                | A job run's `prompt` message, `model`, and approval target (the scheduler builds it) |
 | `Steering`               | The requester's messages during a turn: `changed`, `take` (`detached` for tests) |
 | `Reply`                  | The session's conversation: `instance`, `conversation`, `channel`, `send` |
 | `Approvals`              | `is_pending` (for `classify`) and `answer`; `approvals::ApprovalBoard` in the daemon, `NoPendingApprovals` for tests |

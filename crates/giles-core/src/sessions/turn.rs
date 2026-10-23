@@ -6,14 +6,15 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use giles_store::{InboxEntry, InboxId, Session, SessionId, Store};
 use giles_types::{
-    Channel, ChannelEvent, ConversationId, Error, EventId, InboundMessage, MediaRef, MessageId,
-    OutboundMessage, SendTarget, Timestamp, UserId,
+    Channel, ChannelEvent, ConversationId, Error, EventId, InboundMessage, MediaRef, Message,
+    MessageId, OutboundMessage, SendTarget, Timestamp, UserId,
 };
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use super::{ChannelLookup, lock};
-use crate::config::BusyMode;
+use crate::approvals::ApprovalTarget;
+use crate::config::{BusyMode, ModelRef};
 
 /// Runs turns. The agent loop (TASKS.md 2.4) implements it.
 #[async_trait]
@@ -36,15 +37,16 @@ pub enum TurnOutcome {
     Failed(String),
 }
 
-/// One turn: a batch of queued messages from one requester in one session (PLAN section 6.3).
+/// One turn: a batch of queued messages from one requester in one session (PLAN section 6.3),
+/// or a job run (PLAN section 6.11).
 #[derive(Debug)]
 pub struct Turn {
     /// The session, as loaded when the turn started.
     pub session: Session,
-    /// The sender of the turn's messages, who decides which tools are allowed and answers
-    /// approvals.
+    /// The sender of the turn's messages (a runtime job's creator), who decides which tools are
+    /// allowed and answers approvals. `None` for a config job.
     pub requester: Option<UserId>,
-    /// The messages that started the turn, oldest first. Never empty.
+    /// The messages that started the turn, oldest first. Empty only for a job run.
     pub messages: Vec<TurnMessage>,
     /// The agent's `busy_mode`: whether the agent loop takes [`steering`](Self::steering)
     /// messages at tool-batch boundaries.
@@ -53,9 +55,26 @@ pub struct Turn {
     pub cancel: CancellationToken,
     /// The requester's new messages during the turn.
     pub steering: Steering,
-    /// Where the turn's replies go: its session's conversation. `None` for a session with no
-    /// conversation (an isolated job run).
+    /// Where the turn's replies go: its session's conversation. `None` for job runs, whose reply
+    /// the scheduler delivers, and for a session with no conversation.
     pub reply: Option<Reply>,
+    /// Set for a job run, which the scheduler starts: its prompt stands in for `messages`.
+    pub job: Option<JobTurn>,
+}
+
+/// What makes a turn a job run (PLAN section 6.11). The agent loop stores the prompt as the
+/// turn's user message, uses the job's model, the jobs' iteration cap, and short cache
+/// retention, and asks for approvals only through `approvals`.
+#[derive(Debug, Clone)]
+pub struct JobTurn {
+    /// The job's prompt as a user message, from
+    /// [`history::job_message`](crate::agent_loop::history::job_message).
+    pub prompt: Message,
+    /// The job's model; `None`: the agent's.
+    pub model: Option<ModelRef>,
+    /// Who answers approvals of `ask` tools; `None`: nobody, so they're denied as unattended
+    /// (PLAN section 6.4).
+    pub approvals: Option<ApprovalTarget>,
 }
 
 /// An inbound message of a turn.

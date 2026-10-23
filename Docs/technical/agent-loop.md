@@ -18,6 +18,7 @@ model stops asking for tools. The session code that hands it turns is in
 | `output::output_for`          | Picks a turn's sink: `ChannelOutput`, or none for an isolated job  |
 | `ChannelOutput`               | Sends assistant text through `Turn::reply`: `blocks` or `deltas`   |
 | `history::user_message`       | An inbound message's stored form, with its time prefix             |
+| `history::job_message`        | A job run's prompt as a `User` message, with the time it fired      |
 | `history::request_messages`   | A request's messages from `Store::load_history`                    |
 | `prompt::SessionPrompt`       | A session's `system` blocks, `Arc<SessionTools>`, and `Arc<SkillSet>` |
 | `prompt::SessionTools`        | The registry's tool snapshot filtered by the `tools` allowlist     |
@@ -162,12 +163,13 @@ reference of the media block right after it.
 1. Fills any slot an earlier turn left empty (a crash, or a failed fill) with `interrupted`, so
    this turn's synthetic results (`store.fill_empty_slots` fills the whole session) can't relabel
    it; looks up the session's agent in the configuration; stores the turn's messages in one
-   `append_messages`; gets the session's prefix; resolves the model (`Registry::agent_model`, the
-   first in `models`) and looks up its `ModelInfo` (above, Media).
+   `append_messages` (a job run's prompt instead, below); gets the session's prefix; resolves the
+   model (`Registry::agent_model`, the first in `models`, or a job's `model`) and looks up its
+   `ModelInfo` (above, Media).
 2. Loads the history and compacts it if the request would be near the model's context window
    (below, Compaction). Builds a `CompletionRequest`: the model id, the prefix's `system` and
-   tools, the history, and `cache_retention` `Long` (`Short` for job sessions, which aren't
-   human-paced). Other generation settings are left to the provider.
+   tools, the history, and `cache_retention` `Long` (`Short` for job runs and job sessions, which
+   aren't human-paced). Other generation settings are left to the provider.
 3. Streams the response. Every event goes to the `OutputSink`; `BlockStop` blocks are collected in
    order, the last `Usage` wins, and `Stop` ends it. One `usage` row is recorded per request once
    its stream has started (provider instance, model, agent, requester, session, tokens, `fallback`
@@ -227,17 +229,25 @@ an error ends mid-batch leaves them queued, and they start the next turn.
 ### Iteration Caps
 
 An iteration is one request with the session's tools offered. A turn's cap is the agent's
-`max_iterations_jobs` (default 25) in a job session and `max_iterations` (default none: `/stop` is
-the brake) otherwise. When the response to the request that reaches the cap asks for tools, none of
-them runs: every slot gets `iteration limit`, and the turn makes one more request, the same but
-with no tools, so the model tells the user where it stopped (§6.3: a turn never stops silently).
-That last request misses the provider's cached prefix, since the tools are part of it. Its response
-ends the turn: any calls it asks for anyway get `iteration limit` too (logged). So a capped turn
-makes at most cap + 1 requests and runs tools at most cap − 1 times. A response at the cap that
-asks for no tools just ends the turn, as always.
+`max_iterations_jobs` (default 25) for a job run (a `Turn::job`, or any turn in a job session) and
+`max_iterations` (default none: `/stop` is the brake) otherwise. When the response to the request
+that reaches the cap asks for tools, none of them runs: every slot gets `iteration limit`, and the
+turn makes one more request, the same but with no tools, so the model tells the user where it
+stopped (§6.3: a turn never stops silently). That last request misses the provider's cached prefix,
+since the tools are part of it. Its response ends the turn: any calls it asks for anyway get
+`iteration limit` too (logged). So a capped turn makes at most cap + 1 requests and runs tools at
+most cap − 1 times. A response at the cap that asks for no tools just ends the turn, as always.
 
-The cap goes by session kind: a job run with `session = "dm"` (TASKS.md 3.2) runs in a direct
-session, so the scheduler has to mark such turns for the jobs cap to apply to them.
+### Job Runs
+
+The scheduler (§6.11) starts a job run as a `Turn` with `job: Some(JobTurn { prompt, model,
+approvals })`, no `messages`, detached steering, and no `reply`: in a fresh job session for an
+`isolated` job, or in the user's DM session (held between its turns) for a `dm` job. The agent loop
+stores `prompt` (built with `history::job_message`) as the turn's user message, uses the job's
+`model` if set, the jobs' iteration cap and short cache retention even in a DM, and asks for
+approvals only through `approvals` (unattended when `None`, see [Approvals](approvals.md)). Its
+output goes nowhere: the scheduler reads the reply back from the transcript and delivers it. Tool
+calls see the DM as the call's conversation.
 
 ## Compaction
 

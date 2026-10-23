@@ -590,6 +590,7 @@ fn turn(reply: Option<Reply>) -> Turn {
         cancel: CancellationToken::new(),
         steering: Steering::detached(),
         reply,
+        job: None,
     }
 }
 

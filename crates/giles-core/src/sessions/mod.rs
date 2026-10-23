@@ -35,7 +35,7 @@ use crate::registry::Registry;
 use crate::router::{Routed, Router};
 
 pub use inbound::ChannelStatusRecord;
-pub use turn::{Reply, Steering, Turn, TurnMessage, TurnOutcome, TurnRunner};
+pub use turn::{JobTurn, Reply, Steering, Turn, TurnMessage, TurnOutcome, TurnRunner};
 
 /// How long inbox rows are kept as dedupe keys after they were received (PLAN section 8.5).
 pub const DEDUPE_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);

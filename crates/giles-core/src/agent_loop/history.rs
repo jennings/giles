@@ -98,6 +98,19 @@ pub fn user_message(message: &TurnMessage, sender: Option<&UserId>, tz: &TimeZon
     }
 }
 
+/// The stored form of a job run's prompt `text` (PLAN section 6.11), which the scheduler writes:
+/// a `User` message starting with the time the job fired (`at`) like any user message, from
+/// `sender` (a runtime job's creator; `None` for a config job).
+pub fn job_message(text: &str, at: Timestamp, sender: Option<&UserId>, tz: &TimeZone) -> Message {
+    let mut meta = MessageMeta::new(at);
+    meta.sender = sender.cloned();
+    Message {
+        role: Role::User,
+        content: vec![Block::text(format!("{} {text}", time_prefix(at, tz)))],
+        meta,
+    }
+}
+
 /// The messages a request carries: the summary, if any, as a leading `User` message, then every
 /// later message. An empty slot (only possible if filling it failed) is sent as an
 /// `interrupted` error result, so the request still pairs every `ToolUse` with a result.

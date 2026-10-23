@@ -209,6 +209,7 @@ async fn run_turn(
         busy_mode: policy.busy_mode,
         cancel,
         steering,
+        job: None,
     };
     info!(session = %id, agent = %turn.session.agent, messages = turn.messages.len(), "turn started");
 

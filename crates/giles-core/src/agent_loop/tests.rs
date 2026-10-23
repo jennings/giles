@@ -454,6 +454,7 @@ impl Harness {
             cancel: cancel.clone(),
             steering: Steering::detached(),
             reply: Reply::for_session(&self.session, self.registry.clone()),
+            job: None,
         };
         (turn, cancel)
     }
@@ -1147,6 +1148,175 @@ async fn a_job_turn_denies_ask_tools_as_unattended() {
     );
     assert!(toolset_calls(&h).is_empty());
     assert!(h.sent().is_empty());
+}
+
+/// A job run in the harness's session: `text` as its prompt, fired at [`now`].
+fn job_turn(
+    h: &Harness,
+    text: &str,
+    model: Option<&str>,
+    approvals: Option<crate::approvals::ApprovalTarget>,
+) -> (Turn, CancellationToken) {
+    let tz = jiff::tz::TimeZone::get("America/Los_Angeles").unwrap();
+    let cancel = CancellationToken::new();
+    let turn = Turn {
+        session: h.session.clone(),
+        requester: None,
+        messages: Vec::new(),
+        busy_mode: BusyMode::Steer,
+        cancel: cancel.clone(),
+        steering: Steering::detached(),
+        reply: None,
+        job: Some(crate::sessions::JobTurn {
+            prompt: history::job_message(text, now(), None, &tz),
+            model: model.map(|m| m.parse().unwrap()),
+            approvals,
+        }),
+    };
+    (turn, cancel)
+}
+
+#[tokio::test]
+async fn a_job_run_in_a_dm_stores_its_prompt_and_uses_its_model_and_the_jobs_limits() {
+    let mut h = Harness::with_agent(
+        "models = [\"anthropic/test-model\"]\ntools = [\"github__*\"]\n\
+         max_iterations_jobs = 1\n",
+    )
+    .await;
+    let ollama = Arc::new(FakeProvider::default());
+    h.registry
+        .register_provider(&name("ollama"), ollama.clone())
+        .unwrap();
+    ollama.push(one_call(1));
+    ollama.push(text("Nothing to report."));
+    let (turn, _) = job_turn(&h, "Check in.", Some("ollama/qwen3:8b"), None);
+    assert_eq!(h.agent_loop().run_turn(turn).await, TurnOutcome::Completed);
+
+    // The DM session (no job session) still gets the jobs' cap and short retention.
+    assert!(h.provider.requests().is_empty());
+    let requests = ollama.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].model, "qwen3:8b");
+    assert!(
+        requests
+            .iter()
+            .all(|r| r.params.cache_retention == CacheRetention::Short)
+    );
+    assert!(requests[1].tools.is_empty());
+    assert!(toolset_calls(&h).is_empty());
+    let transcript = h.transcript().await;
+    assert_eq!(
+        transcript[0],
+        Some((
+            Role::User,
+            vec![Block::text("[Thu 2026-10-22 14:00 PDT] Check in.")]
+        ))
+    );
+    assert_eq!(transcript[2], result("t1", "iteration limit", true));
+    assert_eq!(
+        transcript[3],
+        assistant(vec![Block::text("Nothing to report.")])
+    );
+    // The reply is the scheduler's to deliver, not sent into the conversation.
+    assert!(h.sent().is_empty());
+}
+
+/// Records the prompts a job's approval target queues and the codes withdrawn.
+#[derive(Debug, Default)]
+struct FakePromptOutbox {
+    sent: Mutex<Vec<(String, String, std::time::Duration)>>,
+    withdrawn: Mutex<Vec<String>>,
+    queued: Notify,
+}
+
+#[async_trait]
+impl crate::approvals::PromptOutbox for FakePromptOutbox {
+    async fn send(
+        &self,
+        code: &str,
+        markdown: &str,
+        timeout: std::time::Duration,
+    ) -> std::result::Result<(), String> {
+        self.sent
+            .lock()
+            .unwrap()
+            .push((code.to_owned(), markdown.to_owned(), timeout));
+        self.queued.notify_one();
+        Ok(())
+    }
+
+    fn withdraw(&self, code: &str) {
+        self.withdrawn.lock().unwrap().push(code.to_owned());
+    }
+}
+
+#[tokio::test]
+async fn a_job_run_asks_only_its_approval_target_through_the_outbox() {
+    use crate::sessions::Approvals as _;
+
+    let mut h = Harness::with_agent(
+        "models = [\"anthropic/test-model\"]\ntools = [\"github__*\"]\n\
+         ask = [\"github__list_issues\"]\n",
+    )
+    .await;
+    let board = Arc::new(ApprovalBoard::default());
+    let agent_loop = Arc::new(AgentLoop::new(
+        h.registry.clone(),
+        h.store.clone(),
+        Arc::new(FixedClock),
+        Arc::new(PolicyDispatcher::new(h.registry.clone())),
+        board.clone(),
+    ));
+
+    // Without a target, even in a DM: denied as unattended, nothing asked.
+    h.provider.push(one_call(1));
+    h.provider.push(text("I wasn't allowed."));
+    let (turn, _) = job_turn(&h, "Check the issues.", None, None);
+    assert_eq!(agent_loop.run_turn(turn).await, TurnOutcome::Completed);
+    assert_eq!(
+        h.transcript().await[2],
+        result("t1", crate::approvals::UNATTENDED_RESULT, true)
+    );
+    assert!(h.sent().is_empty());
+
+    // With `ask_to`: the prompt goes through the outbox, the answer comes from the DM.
+    let outbox = Arc::new(FakePromptOutbox::default());
+    let key = h.session.key().unwrap();
+    let target = crate::approvals::ApprovalTarget {
+        key: key.clone(),
+        user: owner(),
+        reply: Reply::for_session(&h.session, h.registry.clone()).unwrap(),
+        outbox: Some(outbox.clone()),
+    };
+    h.provider.push(one_call(2));
+    h.provider.push(text("Listed."));
+    let (turn, _) = job_turn(&h, "Check the issues.", None, Some(target));
+    let running = tokio::spawn({
+        let agent_loop = agent_loop.clone();
+        async move { agent_loop.run_turn(turn).await }
+    });
+    outbox.queued.notified().await;
+    let (code, markdown, timeout) = outbox.sent.lock().unwrap()[0].clone();
+    assert!(markdown.contains("github__list_issues"), "{markdown}");
+    assert_eq!(timeout, crate::config::DEFAULT_APPROVAL_TIMEOUT);
+    assert!(h.sent().is_empty(), "the prompt went into the conversation");
+    let to = crate::router::Routed {
+        session: key,
+        user: owner(),
+    };
+    assert!(board.is_pending(&to, Some(&code)));
+    board
+        .answer(
+            to,
+            crate::commands::ApprovalReply {
+                answer: crate::commands::Answer::Yes,
+                code: Some(code.clone()),
+            },
+        )
+        .await;
+    assert_eq!(running.await.unwrap(), TurnOutcome::Completed);
+    assert_eq!(toolset_calls(&h), ["t2"]);
+    assert_eq!(*outbox.withdrawn.lock().unwrap(), [code]);
 }
 
 /// A response asking for one `list_issues` call, `t<n>`.

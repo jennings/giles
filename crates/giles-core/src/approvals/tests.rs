@@ -153,6 +153,7 @@ impl Setup {
                 key: session.key().unwrap(),
                 user: owner(),
                 reply: Reply::for_session(&session, lookup).unwrap(),
+                outbox: None,
             }),
         ))
     }
@@ -319,6 +320,93 @@ async fn an_expired_request_is_denied_and_reported() {
     assert_eq!(waiting.await.unwrap(), Err(EXPIRED_RESULT.to_owned()));
     assert_eq!(s.outcomes(), [(code, ApprovalOutcome::Expired)]);
     assert!(!approvals.has_pending());
+}
+
+/// Queues prompts (or refuses to), records withdrawals.
+#[derive(Debug, Default)]
+struct Outbox {
+    refuse: bool,
+    queued: Mutex<Vec<(String, String, Duration)>>,
+    withdrawn: Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl PromptOutbox for Outbox {
+    async fn send(&self, code: &str, markdown: &str, timeout: Duration) -> Result<(), String> {
+        if self.refuse {
+            return Err("no channel for the identity".to_owned());
+        }
+        self.queued
+            .lock()
+            .unwrap()
+            .push((code.to_owned(), markdown.to_owned(), timeout));
+        Ok(())
+    }
+
+    fn withdraw(&self, code: &str) {
+        self.withdrawn.lock().unwrap().push(code.to_owned());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_job_targets_prompts_go_through_the_outbox_and_are_withdrawn_when_they_end() {
+    let s = Setup::new();
+    let for_outbox = |outbox: Arc<Outbox>| {
+        let session = session(1, "owner");
+        let lookup = Arc::new(Lookup {
+            channel: s.channel.clone(),
+            registered: true,
+        });
+        Arc::new(TurnApprovals::new(
+            s.board.clone(),
+            session.id,
+            vec!["ask__*".to_owned()],
+            Duration::from_secs(600),
+            Some(ApprovalTarget {
+                key: session.key().unwrap(),
+                user: owner(),
+                reply: Reply::for_session(&session, lookup).unwrap(),
+                outbox: Some(outbox),
+            }),
+        ))
+    };
+
+    // Queued with the approval's timeout, not sent into the conversation; the presenter isn't
+    // told how it ended, the outbox withdraws the prompt.
+    let outbox = Arc::new(Outbox::default());
+    let approvals = for_outbox(outbox.clone());
+    let waiting = ask(&approvals, "ask__run");
+    settle().await;
+    let (code, markdown, timeout) = outbox.queued.lock().unwrap()[0].clone();
+    assert!(markdown.contains(&format!("`yes {code}`")), "{markdown}");
+    assert_eq!(timeout, Duration::from_secs(600));
+    assert!(s.sent().is_empty());
+    let me = routed("owner", "owner");
+    assert!(s.board.is_pending(&me, Some(&code)));
+    s.board.answer(me, reply(Answer::Yes, Some(&code))).await;
+    assert_eq!(waiting.await.unwrap(), Ok(true));
+    assert_eq!(*outbox.withdrawn.lock().unwrap(), [code]);
+    assert!(s.outcomes().is_empty());
+
+    // Expired: withdrawn too.
+    let waiting = ask(&approvals, "ask__run");
+    settle().await;
+    let code = outbox.queued.lock().unwrap()[1].0.clone();
+    tokio::time::sleep(Duration::from_secs(600)).await;
+    assert_eq!(waiting.await.unwrap(), Err(EXPIRED_RESULT.to_owned()));
+    assert_eq!(outbox.withdrawn.lock().unwrap().last(), Some(&code));
+
+    // A prompt that can't be queued denies the call at once.
+    let refusing = for_outbox(Arc::new(Outbox {
+        refuse: true,
+        ..Outbox::default()
+    }));
+    assert_eq!(
+        refusing.approve_call("ask__run", &json!({})).await,
+        Err(format!(
+            "{DENIED_RESULT} (the approval request could not be sent: no channel for the identity)"
+        ))
+    );
 }
 
 #[tokio::test(start_paused = true)]

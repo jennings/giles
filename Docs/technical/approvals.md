@@ -10,7 +10,8 @@ while it says an approval is pending ([Identity and Routing](identity-and-routin
 | ----------------------- | ----------------------------------------------------------------------- |
 | `ApprovalBoard`         | Every pending approval, in memory; implements `sessions::Approvals`     |
 | `TurnApprovals`         | One turn's side: `approve_call`, `answer_question`, `has_pending`, `deny_pending` |
-| `ApprovalTarget`        | Who answers: session key, user, and the `Reply` the prompt goes to      |
+| `ApprovalTarget`        | Who answers: session key, user, the `Reply` the prompt goes to, and for jobs a `PromptOutbox` |
+| `PromptOutbox`          | Sends a job turn's prompts through the outbox (`send`) and withdraws them (`withdraw`) |
 | `ApprovalPresenter`     | Shows a prompt (`present`) and its outcome (`resolved`)                 |
 | `ChannelPresenter`      | The daemon's: web chats get buttons, other channels the text (`TextPresenter`) |
 | `ApprovalOutcome`       | `Allowed`, `AllowedForSession`, `Denied`, `Expired`                     |
@@ -32,8 +33,8 @@ such, not asked about), `approve_call(tool, input)`:
 
 - runs it at once unless `tool` matches an `ask` glob (the same globs as `tools`), or `yes!`
   allowed that tool earlier in this session;
-- denies it with `denied (unattended)` if nobody attends the turn: a job session's turn, or one
-  without a requester or conversation;
+- denies it with `denied (unattended)` if nobody attends the turn: a job run without `ask_to`, a
+  job session's turn, or one without a requester or conversation;
 - otherwise registers a pending approval, shows the prompt, and waits for the answer.
 
 The wait sits before the call's deadline (`tokio::time::timeout`), so it doesn't use the deadline
@@ -54,10 +55,15 @@ running. A denial is the call's error result:
 A restart forgets every pending approval: nothing is stored, and startup recovery fills the
 call's slot with `interrupted`.
 
-Jobs (TASKS.md 3.1, 3.2): every ask in a job session is denied now. A job run with `session =
-"dm"` runs in a direct session, so the scheduler has to build that turn's `TurnApprovals` with no
-target (unattended), or, when the job sets `ask_to = "deliver_to"`, with the delivery user's DM as
-the `ApprovalTarget` (prompt sent through the outbox), and only if their role allows the tool.
+Jobs (§6.11): a job run (`Turn::job`) is answered only by the target the scheduler puts in its
+`JobTurn::approvals`, in a job session or a DM alike; without one every `ask` is `denied
+(unattended)`. With `ask_to = "deliver_to"` the target is the delivery user in their DM (session
+key and `Reply` of that conversation), with a `PromptOutbox`: the prompt is queued through it for
+the user's default identity instead of being sent into a conversation, expiring after
+`approval_timeout`, and when the approval ends (answered, expired, denied, cancelled) the board
+calls `withdraw` instead of telling the presenter, so a prompt still waiting in the outbox is
+removed. Replies come through the normal path, from the DM. v1 has no roles, so the delivery user
+may approve any tool.
 
 ## Prompts
 
