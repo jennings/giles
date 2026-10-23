@@ -1,0 +1,38 @@
+/* The Giles web interface. Served at a content-hashed path: any change here changes its URL. */
+
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  line-height: 1.5;
+}
+
+body {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 0 1rem;
+}
+
+header {
+  padding: 0.75rem 0;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+}
+
+header a {
+  font-weight: bold;
+  color: inherit;
+  text-decoration: none;
+}
+
+/* htmx's request indicator. htmx normally injects these rules as an inline <style>, which the
+   Content-Security-Policy forbids, so the layout turns that off (includeIndicatorStyles). */
+.htmx-indicator {
+  opacity: 0;
+  visibility: hidden;
+}
+
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 200ms ease-in;
+}

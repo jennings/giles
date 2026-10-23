@@ -2,6 +2,7 @@
 
 pub mod config;
 mod front_matter;
+pub mod http;
 pub mod memory;
 pub mod paths;
 pub mod providers;

@@ -15,7 +15,9 @@ default = ["provider-anthropic"]
 provider-anthropic = ["dep:base64", "dep:reqwest", "dep:webpki-root-certs"]
 
 [dependencies]
+askama = "0.16.1"
 async-trait.workspace = true
+axum = "0.8.9"
 base64 = { version = "0.22.1", optional = true }
 bytes.workspace = true
 croner = { version = "4.0.2", default-features = false, features = ["jiff"] }
@@ -32,7 +34,8 @@ serde_path_to_error = "0.1.20"
 sha2.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "rt"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
+tokio-util.workspace = true
 toml.workspace = true
 tracing.workspace = true
 url = "2.5.8"
@@ -45,7 +48,6 @@ libc.workspace = true
 workspace = true
 
 [dev-dependencies]
-axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 prost.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "time"] }

@@ -23,6 +23,7 @@
 - [Plugin Transport](technical/plugin-transport.md)
 - [Plugin Sandbox](technical/sandbox.md)
 - [Rendering Model Output](technical/rendering.md)
+- [HTTP Server](technical/http.md)
 - [gRPC Protocols](technical/protocols.md)
 - [Configuration](technical/config.md)
 - [Skills and Memory Files](technical/skills-and-memory.md)
