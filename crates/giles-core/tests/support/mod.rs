@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -18,6 +19,7 @@ use giles_types::{
     Role, Timestamp, Usage,
 };
 use serde_json::Value;
+use socket2::{Domain, Socket, Type};
 
 /// A request the test server received.
 #[derive(Debug, Clone)]
@@ -79,6 +81,19 @@ impl Reply {
 pub fn fixture(dir: &str, name: &str) -> Vec<u8> {
     let path = format!("{}/tests/fixtures/{dir}/{name}", env!("CARGO_MANIFEST_DIR"));
     std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
+/// A loopback address that refuses connections for as long as the returned socket lives.
+///
+/// The socket is bound but never listened on, so connects to the address are refused, and no
+/// other socket can take the port while it is held. Keep the socket alive until the test is done.
+pub fn refused_address() -> (Socket, SocketAddr) {
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+    socket
+        .bind(&SocketAddr::from(([127, 0, 0, 1], 0)).into())
+        .unwrap();
+    let addr = socket.local_addr().unwrap().as_socket().unwrap();
+    (socket, addr)
 }
 
 type Responder = Arc<dyn Fn(&Recorded) -> Reply + Send + Sync>;

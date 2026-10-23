@@ -60,6 +60,7 @@ prost.workspace = true
 rmcp = { version = "3.7.0", default-features = false, features = ["elicitation", "server", "transport-io", "transport-streamable-http-server"] }
 # Fault injection into the database in the sessions tests.
 rusqlite.workspace = true
+socket2 = "0.6.5"
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "test-util", "time"] }
 tonic.workspace = true
 tonic-health = "0.14.6"

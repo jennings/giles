@@ -171,11 +171,21 @@ async fn a_wrong_or_missing_token_is_rejected() {
     }
 }
 
+/// A loopback address that refuses connections for as long as the returned socket lives. The
+/// socket is bound but never listened on, so no other socket can take the port.
+fn refused_address() -> (socket2::Socket, std::net::SocketAddr) {
+    let socket = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+    socket
+        .bind(&std::net::SocketAddr::from(([127, 0, 0, 1], 0)).into())
+        .unwrap();
+    let addr = socket.local_addr().unwrap().as_socket().unwrap();
+    (socket, addr)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unreachable_server_is_unavailable() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
-    drop(listener);
+    let (_reserved, addr) = refused_address();
+    let url = format!("http://{addr}/mcp");
     match McpToolset::connect_http("remote", &server(&url, Some(TOKEN))).await {
         Err(error @ Error::Unavailable { .. }) => assert!(error.is_retryable()),
         other => panic!("expected Unavailable, got {other:?}"),

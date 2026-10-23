@@ -487,9 +487,8 @@ async fn non_event_stream_success_is_an_error() {
 
 #[tokio::test]
 async fn connection_refused_is_unavailable() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    drop(listener);
+    let (_reserved, addr) = support::refused_address();
+    let url = format!("http://{addr}");
     let mut config = AnthropicConfig::new(ApiKey::new("k"));
     config.base_url = url;
     let provider = AnthropicProvider::new(config, Arc::new(Media::default())).unwrap();
