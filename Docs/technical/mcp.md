@@ -8,7 +8,7 @@ server and implements the `giles_types::Toolset` trait, so the rest of the core 
 
 | Constructor                                         | Transport                                       |
 | --------------------------------------------------- | ----------------------------------------------- |
-| `McpToolset::connect_stdio(instance, cmd, secrets)` | Spawns a `tokio::process::Command`, stdio pipes |
+| `McpToolset::connect_stdio(instance, cmd, secrets, trampoline)` | Spawns a `tokio::process::Command`, stdio pipes |
 | `McpToolset::connect_http(instance, &server)`       | Streamable HTTP, optional bearer token          |
 | `McpToolset::connect_io(instance, rd, wr)`          | An open byte stream pair (in-process servers)   |
 
@@ -42,10 +42,10 @@ for it, so task 2.20's supervision can tell a trampoline failure (exit 125, 126,
 `connect_stdio` takes a prepared `Command` and the secrets to scrub, and replaces the command's
 stdin, stdout, and stderr with pipes. `DirectCommand { program, args, env, cwd }` builds the
 direct, unsandboxed command (`command()`: a cleared environment plus the daemon's `PATH` and the
-configured `env`, whose values are `config::Secret`s) and its secrets (`secrets()`). Task 2.19
-builds its own `Command` instead, running the server through the sandbox trampoline
+configured `env`, whose values are `config::Secret`s) and its secrets (`secrets()`). The toolset
+launcher builds its own `Command` instead, running the server through the sandbox trampoline
 (`giles sandbox-exec <spec> -- <command>`), and passes it to the same constructor with the
-instance's `env` values.
+instance's `env` values ([Toolsets](toolsets.md)).
 
 - **Stderr** is read line by line, scrubbed, and logged at `info` with target
   `giles_core::mcp::stderr` inside the `mcp{instance=...}` span, so
@@ -61,7 +61,10 @@ instance's `env` values.
   the runtime is already gone.
 - Failing to spawn, the server exiting during the handshake, and no answer in time are all
   `Error::Unavailable`. If the server exited, the message ends with its status, e.g.
-  `(server process: exit status: 125)`.
+  `(server process: exit status: 125)`. The last argument, `trampoline`, says the command runs the
+  sandbox trampoline: then an exit that `sandbox::is_trampoline_failure` recognizes (125, or 71
+  from macOS `sandbox-exec`) is `Error::InvalidRequest` with the same message, since the
+  trampoline failed before running the server and retrying won't help.
 
 ### Streamable HTTP
 
@@ -150,14 +153,13 @@ are sent unchanged; copying blobs into a stdio server's `TMPDIR` is task 2.21.
 | JSON-RPC `-32600`, `-32601`, `-32602` (e.g. unknown tool) | `InvalidRequest`, server's message |
 | Any other JSON-RPC error                                 | `Other`, server's message          |
 | No common protocol version                               | `InvalidRequest`                   |
+| Sandbox trampoline failed (stdio with `trampoline`, exit 125, or 71 on macOS) | `InvalidRequest` |
 
 Messages start with `MCP server <instance>:` and have the instance's secrets scrubbed. A tool that
 fails by its own account (`isError: true`) is a normal `Result` event, not an error.
 
 ## Staged Work
 
-- 2.19: launch stdio servers through the sandbox trampoline (a `Command` passed to
-  `connect_stdio`).
 - 2.20: start toolsets at boot, restart with backoff, the tool discovery cache, idle stop.
 - 2.21: media in and out of tools, toolset skill directories, elicitation as approval requests.
 
@@ -173,8 +175,10 @@ fails by its own account (`isError: true`) is a normal `Result` event, not an er
   stdout, so this target has `harness = false` and its `main` runs the tests. It checks stderr
   logging with an echoed `env` secret redacted, cancellation reaching the child, a crash and the
   exit status from `closed()`, the exit status in a failed handshake's message (a child that exits
-  with 125), that dropping the toolset kills a server that ignores stdin closing, and that the
-  server's own child dies with it, whether the toolset is dropped or the server crashes.
+  with 125: `Unavailable` for a plain command, `InvalidRequest` when it stands for the sandbox
+  trampoline, while another status stays `Unavailable`), that dropping the toolset kills a server
+  that ignores stdin closing, and that the server's own child dies with it, whether the toolset is
+  dropped or the server crashes.
 - over streamable HTTP (`tests/mcp_http.rs`): `rmcp`'s `StreamableHttpService` in `axum` on
   `127.0.0.1`, behind a middleware that requires the bearer token. It checks listing, progress, and
   cancellation with the right token; rejection of a wrong, missing, or forbidden one (the 403 body

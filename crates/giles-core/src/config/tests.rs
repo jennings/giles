@@ -610,6 +610,13 @@ fn toolset_rules() {
         ("deadline = \"5\"", "deadline", "invalid duration"),
         ("deadline = \"0s\"", "deadline", "longer than 0s"),
         ("idle_stop = \"0ms\"", "idle_stop", "longer than 0s"),
+        ("env = { HOME = \"x\" }", "env.HOME", "HOME is set by Giles"),
+        ("env = { PATH = \"x\" }", "env.PATH", "PATH is set by Giles"),
+        (
+            "env = { GILES_PLUGIN_DATA = \"x\" }",
+            "env.GILES_PLUGIN_DATA",
+            "is set by Giles",
+        ),
         (
             "skills = [\"/ok\", \"relative\"]",
             "skills[1]",

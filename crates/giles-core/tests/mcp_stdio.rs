@@ -66,12 +66,14 @@ fn main() {
         a_crashed_server_takes_its_process_group,
         a_missing_command_is_unavailable,
         a_failed_start_reports_the_exit_status,
+        a_trampoline_failure_is_not_retryable,
     );
 }
 
 /// The child: the test server on stdio. It prints its secret to stderr first. With
 /// `GILES_MCP_TEST_SERVER=linger` it doesn't exit when stdin closes, so only a kill stops it; with
-/// `exit125` it exits with 125 at once, like a failing sandbox trampoline; with `with-sleeper` it
+/// `exit<N>` it exits with status N at once (`exit125`: like a failing sandbox trampoline); with
+/// `with-sleeper` it
 /// starts a `sleep` child first (in its process group) and prints `sleeper pid <pid>`.
 // The sleeper is meant to outlive any wait: only its process group's death ends it.
 #[allow(clippy::zombie_processes)]
@@ -81,8 +83,8 @@ fn serve() {
         "the secret is {}",
         std::env::var(SECRET_ENV).unwrap_or_default()
     );
-    if mode == "exit125" {
-        std::process::exit(125);
+    if let Some(code) = mode.strip_prefix("exit") {
+        std::process::exit(code.parse().unwrap());
     }
     if mode == "with-sleeper" {
         let sleeper = std::process::Command::new("/bin/sleep")
@@ -153,6 +155,15 @@ async fn connect_with(instance: &str, mode: &str) -> McpToolset {
 }
 
 async fn try_connect(instance: &str, mode: &str) -> giles_types::Result<McpToolset> {
+    try_connect_with(instance, mode, false).await
+}
+
+/// Connects to the server in `mode`, as if `command` ran the sandbox trampoline if `trampoline`.
+async fn try_connect_with(
+    instance: &str,
+    mode: &str,
+    trampoline: bool,
+) -> giles_types::Result<McpToolset> {
     let mut server = DirectCommand::new(std::env::current_exe().unwrap());
     server
         .env
@@ -160,7 +171,7 @@ async fn try_connect(instance: &str, mode: &str) -> giles_types::Result<McpTools
     server
         .env
         .insert(SECRET_ENV.to_owned(), Secret::new(SECRET.to_owned()));
-    McpToolset::connect_stdio(instance, server.command(), server.secrets()).await
+    McpToolset::connect_stdio(instance, server.command(), server.secrets(), trampoline).await
 }
 
 async fn call(toolset: &McpToolset, name: &str, input: Value) -> ToolCallHandle {
@@ -322,7 +333,7 @@ async fn a_crashed_server_takes_its_process_group(log: &Log) {
 
 async fn a_missing_command_is_unavailable(_log: &Log) {
     let server = DirectCommand::new("/nonexistent/giles-mcp-server");
-    match McpToolset::connect_stdio("missing", server.command(), server.secrets()).await {
+    match McpToolset::connect_stdio("missing", server.command(), server.secrets(), false).await {
         Err(Error::Unavailable { message, .. }) => {
             assert!(
                 message.starts_with("MCP server missing: can't start"),
@@ -334,10 +345,37 @@ async fn a_missing_command_is_unavailable(_log: &Log) {
 }
 
 async fn a_failed_start_reports_the_exit_status(_log: &Log) {
+    // A plain command exiting 125 is the server's own failure: worth retrying.
     match try_connect("child-125", "exit125").await {
         Err(Error::Unavailable { message, .. }) => {
             assert!(
                 message.ends_with("(server process: exit status: 125)"),
+                "{message}"
+            );
+        }
+        other => panic!("expected Unavailable, got {other:?}"),
+    }
+}
+
+async fn a_trampoline_failure_is_not_retryable(_log: &Log) {
+    // Through the sandbox trampoline, 125 means it failed before running the server.
+    match try_connect_with("trampoline-125", "exit125", true).await {
+        Err(error @ Error::InvalidRequest(_)) => {
+            assert!(!error.is_retryable());
+            assert!(
+                error
+                    .to_string()
+                    .ends_with("(server process: exit status: 125)"),
+                "{error}"
+            );
+        }
+        other => panic!("expected InvalidRequest, got {other:?}"),
+    }
+    // A crash during the handshake with another status stays retryable.
+    match try_connect_with("trampoline-crash", "exit3", true).await {
+        Err(Error::Unavailable { message, .. }) => {
+            assert!(
+                message.ends_with("(server process: exit status: 3)"),
                 "{message}"
             );
         }

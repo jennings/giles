@@ -1,8 +1,8 @@
 //! The MCP client: a [`Toolset`] over one MCP server, using `rmcp` (PLAN sections 7.10, 8.6).
 //!
 //! Doc: `Docs/technical/mcp.md`. Each [`McpToolset`] is one connection, made ready by the
-//! `initialize` handshake. Staged parts: sandboxed launch is task 2.19, lifecycle and the tool
-//! cache 2.20, and media, skills, and elicitation 2.21.
+//! `initialize` handshake; [`crate::toolsets`] launches stdio servers in their sandbox. Staged
+//! parts: lifecycle and the tool cache are task 2.20, and media, skills, and elicitation 2.21.
 
 mod client;
 mod convert;
@@ -39,6 +39,7 @@ use self::convert::Origin;
 pub use self::http::HttpServer;
 pub use self::stdio::{DirectCommand, STDERR_TARGET};
 use crate::config::Secret;
+use crate::sandbox;
 
 /// How long a server has to answer `initialize`.
 pub const INIT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -77,7 +78,8 @@ impl std::fmt::Debug for McpToolset {
 
 impl McpToolset {
     /// Spawns a stdio server and connects to it. `command` is spawned as given (see
-    /// [`DirectCommand::command`], or the sandbox trampoline's command from task 2.19), with
+    /// [`DirectCommand::command`], or the sandbox trampoline's command from
+    /// [`ToolsetLauncher`](crate::toolsets::ToolsetLauncher)), with
     /// stdin, stdout, and stderr replaced by pipes. Returns once the server has answered
     /// `initialize`.
     ///
@@ -87,10 +89,14 @@ impl McpToolset {
     ///
     /// Failing to spawn is [`Error::Unavailable`], and so is the server exiting or not answering
     /// within [`INIT_TIMEOUT`]; the message then includes the exit status if the server exited.
+    /// With `trampoline` (`command` runs the sandbox trampoline), an exit that
+    /// [`sandbox::is_trampoline_failure`] recognizes is [`Error::InvalidRequest`] instead:
+    /// retrying won't help.
     pub async fn connect_stdio(
         instance: impl Into<String>,
         command: tokio::process::Command,
         secrets: Vec<Secret>,
+        trampoline: bool,
     ) -> Result<Self> {
         let origin = Arc::new(Origin {
             instance: instance.into(),
@@ -109,6 +115,7 @@ impl McpToolset {
         let child = Child {
             guard: spawned.guard,
             exit: spawned.exit,
+            trampoline,
         };
         connect(origin, span, (spawned.stdout, spawned.stdin), Some(child)).await
     }
@@ -176,6 +183,8 @@ impl McpToolset {
 struct Child {
     guard: stdio::ChildGuard,
     exit: watch::Receiver<Option<ExitStatus>>,
+    /// Launched through the sandbox trampoline, whose failures exit with a known status.
+    trampoline: bool,
 }
 
 /// The exit status, waiting up to `grace` for it.
@@ -237,23 +246,31 @@ where
         ),
     };
     let (error, grace) = failure;
-    let status = match &child {
-        Some(child) => exit_status(&child.exit, grace).await,
-        None => None,
+    let Some(child) = &child else {
+        return Err(error);
     };
-    Err(match (error, status) {
-        (
-            Error::Unavailable {
-                message,
-                retry_after,
-            },
-            Some(status),
-        ) => Error::Unavailable {
-            message: format!("{message} (server process: {status})"),
+    let (
+        Some(status),
+        Error::Unavailable {
+            message,
             retry_after,
         },
-        (error, _) => error,
-    })
+    ) = (exit_status(&child.exit, grace).await, &error)
+    else {
+        return Err(error);
+    };
+    let message = format!("{message} (server process: {status})");
+    Err(
+        if child.trampoline && sandbox::is_trampoline_failure(status) {
+            // The sandbox trampoline failed: retrying won't help.
+            Error::InvalidRequest(message)
+        } else {
+            Error::Unavailable {
+                message,
+                retry_after: *retry_after,
+            }
+        },
+    )
 }
 
 /// A transport that reports when the connection ends: the server hung up (`receive` returns

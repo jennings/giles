@@ -30,6 +30,7 @@
 - [Plugin Sandbox](technical/sandbox.md)
 - [Plugin Host](technical/plugin-host.md)
 - [MCP Client](technical/mcp.md)
+- [Toolsets](technical/toolsets.md)
 - [Rendering Model Output](technical/rendering.md)
 - [HTTP Server](technical/http.md)
 - [Web Channel](technical/web-channel.md)

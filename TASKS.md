@@ -228,7 +228,7 @@ The five tracks run in parallel.
 
 ### Track D: Toolsets (MCP)
 
-- [ ] **2.19 Sandboxed stdio toolsets** (§7.10). Resolve `command` with the operator's `PATH` and
+- [x] **2.19 Sandboxed stdio toolsets** (§7.10). Resolve `command` with the operator's `PATH` and
   add its install prefix to the read and execute grants; launch through the trampoline with
   network off unless granted. **Needs:** 1.12, 1.6.
 - [ ] **2.20 Toolset lifecycle and cache** (§7.5, §7.6, §7.9). Start every toolset at boot;

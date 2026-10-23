@@ -28,8 +28,9 @@ with `"unsandboxed": true`, PLAN section 12's per-instance opt-out, which logs a
 `giles_core::sandbox::exec(spec, command)`, called by the subcommand:
 
 1. Load the spec (`Spec::load`): parse the JSON (unknown fields are errors) and validate it.
-2. Check the command: it must be an absolute path. The core resolves it first (2.19 resolves a
-   toolset's `command` with the operator's `PATH`), so the file granted is the file run.
+2. Check the command: it must be an absolute path. The core resolves it first (the toolset
+   launcher resolves a toolset's `command` with the operator's `PATH`, [Toolsets](toolsets.md)),
+   so the file granted is the file run.
 3. Check that the data directory is a directory and not a symbolic link (`lstat`; see
    [Writable roots and links](#writable-roots-and-links)), and create `tmp/` in it (mode 0700) if
    missing.
@@ -75,9 +76,9 @@ therefore checks the command first (exists, is a regular file, `access(X_OK)`) a
 or 127 like the Linux path. A 71 remains possible when applying fails, when the profile itself
 forbids the `exec` (a script whose interpreter has no `execute` grant), or when the command
 changes between the check and the `exec`. Supervision treats it like 125:
-`sandbox::is_trampoline_failure(status)` is true for 125, and on macOS for 71; the plugin host uses
-it to tell a launch that retrying won't fix. (`sandbox-exec` exits 65 for a profile it can't parse,
-which would be a bug in the generator.)
+`sandbox::is_trampoline_failure(status)` is true for 125, and on macOS for 71; the plugin host and
+the MCP client (for stdio toolsets) use it to tell a launch that retrying won't fix.
+(`sandbox-exec` exits 65 for a profile it can't parse, which would be a bug in the generator.)
 
 ## File Descriptors
 
@@ -139,9 +140,10 @@ Validation (`Spec::validate`, no filesystem access):
 
 The spec is the trampoline's input, not configuration. 1.1 parses the `sandbox = { ... }` grants in
 `giles.toml` and rejects grants that overlap `GILES_HOME` or the plugin directories (PLAN section
-12.4). The plugin host and 2.19 build the spec from those grants plus the per-kind defaults:
-`network` defaults to `true` for providers and channels and to `false` for stdio toolsets, and 2.19
-adds a toolset's install prefix to `read` and `execute`. The spec's own defaults are the most
+12.4). The plugin host and the toolset launcher build the spec from those grants plus the
+per-kind defaults: `network` defaults to `true` for providers and channels and to `false` for
+stdio toolsets, and the toolset launcher adds a toolset's install prefixes to `read` and `execute`
+([Toolsets](toolsets.md#grants)). The spec's own defaults are the most
 restrictive values, so a field the core forgets denies rather than allows. The config's
 `sandbox.unix` list goes to `unix` unchanged.
 

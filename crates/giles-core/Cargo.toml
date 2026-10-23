@@ -84,3 +84,8 @@ tracing-subscriber = { workspace = true, features = ["fmt"] }
 [[test]]
 name = "mcp_stdio"
 harness = false
+
+# Runs the MCP test server through the sandbox trampoline, both being the test binary itself.
+[[test]]
+name = "toolsets"
+harness = false

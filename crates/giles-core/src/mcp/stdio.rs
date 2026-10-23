@@ -22,8 +22,9 @@ pub const STDERR_TARGET: &str = "giles_core::mcp::stderr";
 ///
 /// [`DirectCommand::command`] builds the [`Command`] that
 /// [`McpToolset::connect_stdio`](super::McpToolset::connect_stdio) runs, and
-/// [`DirectCommand::secrets`] the values to scrub from its output. Task 2.19 builds its own
-/// `Command` instead, wrapping the server in the sandbox trampoline (`giles sandbox-exec`).
+/// [`DirectCommand::secrets`] the values to scrub from its output.
+/// [`ToolsetLauncher`](crate::toolsets::ToolsetLauncher) builds its own `Command` instead,
+/// wrapping the server in the sandbox trampoline (`giles sandbox-exec`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectCommand {
     /// The server executable, an absolute path (PLAN section 7.10).

@@ -202,6 +202,30 @@ A toolset is an MCP server. It runs one of three ways:
 
 Toolsets have no `config` table: a stdio server is configured through its `args`.
 
+Giles looks a stdio server's `command` up on its own `$PATH` and runs it in the
+[sandbox](#sandbox), granting it read and execute access to the command's install prefix: the
+directory above `bin/` (`/opt/homebrew` for `/opt/homebrew/bin/mcp-server-filesystem`, or a Python
+virtual environment), else the command's own directory. If the command is a script, its
+interpreter gets the same, including one found through `#!/usr/bin/env node`, and the server's
+`PATH` is those directories followed by `/usr/bin:/bin`. A prefix that is your home directory (or
+contains it) or would contain the data root narrows to the command's directory: `~/bin/server`
+gets `~/bin`, never `~`.
+
+A prefix grants everything under it: all of `/opt/homebrew` (including its `etc` and `var`) for a
+Homebrew command, all of `~/.local` for `~/.local/bin/server`, all of `~/.cargo` (including
+`credentials.toml`) for `~/.cargo/bin/server`. To keep a server away from those, install it in a
+prefix of its own, such as a Python virtual environment or `npm install --prefix`. And don't give
+any toolset a `write` grant on an interpreter's installation (a Node or Python directory): another
+toolset runs that interpreter.
+
+- Install servers ahead of time. `npx -y` or `uvx` at run time need the network and writable
+  package caches, which the sandbox doesn't grant.
+- A server that needs the network needs a grant, such as `sandbox = { network = ["tcp:443"] }`.
+- The server's environment is its `env` plus `LANG` from Giles, `HOME` and `TMPDIR` inside its data
+  directory, the `PATH` above, and `GILES_PLUGIN_DATA` (its data directory); nothing else from
+  Giles' environment reaches it. `env` can't set `HOME`, `TMPDIR`, `PATH`, or
+  `GILES_PLUGIN_DATA`.
+
 ```toml
 [toolset.files]
 command = "/opt/homebrew/bin/mcp-server-filesystem"

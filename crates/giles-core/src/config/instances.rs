@@ -20,6 +20,7 @@ use super::sandbox::{self, Grants, Protected, RawSandbox};
 use super::secrets::{Resolver, Secret};
 use super::units::{ByteSize, HumanDuration};
 use crate::paths::DataRoot;
+use crate::sandbox::DERIVED_ENV;
 
 /// The largest blob the core fetches from a plugin when the instance sets no `max_blob`: 50 MiB
 /// (PLAN section 8.3).
@@ -616,6 +617,12 @@ impl Ctx<'_> {
                 let at = path.key(name);
                 if name.is_empty() || name.contains(['=', '\0']) {
                     return Err(self.err(at, "invalid environment variable name"));
+                }
+                if DERIVED_ENV.contains(&name.as_str()) {
+                    return Err(self.err(
+                        at,
+                        format!("{name} is set by Giles (the server's data directory or PATH)"),
+                    ));
                 }
                 Ok((name.clone(), self.resolver.value(self.file, &at, value)?))
             })

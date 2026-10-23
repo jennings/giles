@@ -680,7 +680,7 @@ async fn read_line(stdout: &mut BufReader<ChildStdout>) -> io::Result<Option<Str
 
 /// Creates the data directory and its `tmp/` (mode 0700), and refuses a data directory that is a
 /// symbolic link, as the trampoline does.
-fn prepare_data_dir(data_dir: &Path) -> Result<(), LaunchError> {
+pub(crate) fn prepare_data_dir(data_dir: &Path) -> Result<(), LaunchError> {
     fn prepare(action: &'static str, path: &Path) -> impl FnOnce(io::Error) -> LaunchError {
         let path = path.to_path_buf();
         move |source| LaunchError::Prepare {
@@ -708,7 +708,7 @@ fn prepare_data_dir(data_dir: &Path) -> Result<(), LaunchError> {
 }
 
 /// Writes `contents` to `path` atomically with mode 0600.
-fn write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
+pub(crate) fn write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
     use std::io::Write as _;
     let dir = path
         .parent()
