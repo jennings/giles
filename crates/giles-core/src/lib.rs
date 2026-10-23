@@ -24,6 +24,7 @@ pub mod registry;
 pub mod router;
 pub mod runtime;
 pub mod sandbox;
+pub mod scheduler;
 pub mod sessions;
 pub mod skills;
 mod stderr_lines;

@@ -267,7 +267,7 @@ other and with the rest of this phase.
 - [x] **3.1 Outbox** (§6.11, §8.5). Proactive sends addressed to an identity via `recipient`,
   retried with backoff until accepted; rows expire (approval prompts with their approval, everything
   else after 24 h) and are logged with instance, recipient, and kind. **Needs:** 2.1, 1.2.
-- [ ] **3.2 Scheduler** (§6.4, §6.11). `croner`; config jobs from `agent.toml`;
+- [x] **3.2 Scheduler** (§6.4, §6.11). `croner`; config jobs from `agent.toml`;
   `session = "isolated"` (fresh context, memory snapshot, `dm_excerpt`) and `"dm"` (its own queued
   turn in the owner's default DM); `idle_only`, `active_hours`, job `model`, `prompt` or
   `prompt_file`; timezone precedence; `NO_REPLY` sends and stores nothing, other replies go through

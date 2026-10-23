@@ -13,6 +13,7 @@ use crate::outbox::Outbox;
 use crate::paths::DataRoot;
 use crate::registry::{Registry, RegistryError};
 use crate::router::Router;
+use crate::scheduler::{JobChanges, OutboxDelivery, Scheduler, SchedulerOptions};
 use crate::sessions::{
     AgentPolicy, Approvals, Clock, Sessions, SessionsOptions, SystemClock, TurnRunner,
 };
@@ -64,6 +65,8 @@ pub struct Runtime {
     /// Proactive sends to identities (PLAN section 6.11): job replies, approval prompts of job
     /// turns, login codes. Its sender starts with [`start_outbox`](Self::start_outbox).
     pub outbox: Outbox,
+    /// Tells the scheduler that runtime jobs changed (the `schedule` tool).
+    pub jobs: JobChanges,
 }
 
 impl Runtime {
@@ -94,6 +97,7 @@ impl Runtime {
             store,
             blobs,
             registry,
+            jobs: JobChanges::default(),
         };
         core_tools::register(&runtime)?;
         Ok(runtime)
@@ -145,5 +149,32 @@ impl Runtime {
             sessions.attach_channel(name, component, channel);
         }
         Ok(sessions)
+    }
+
+    /// Starts the scheduler (PLAN section 6.11): config and runtime jobs, running their turns on
+    /// `runner` through `sessions` and sending their replies and approval prompts through the
+    /// outbox to the owner's default identity. Start it after the outbox and the session
+    /// manager; it stops when `shutdown` is cancelled ([`Scheduler::closed`] waits for it).
+    pub fn start_scheduler(
+        &self,
+        sessions: Sessions,
+        runner: Arc<dyn TurnRunner>,
+        shutdown: CancellationToken,
+    ) -> Scheduler {
+        Scheduler::start(
+            SchedulerOptions {
+                store: self.store.clone(),
+                registry: self.registry.clone(),
+                sessions,
+                runner,
+                delivery: Arc::new(OutboxDelivery::new(
+                    self.outbox.clone(),
+                    self.config.owner.clone(),
+                )),
+                changes: self.jobs.clone(),
+                clock: Arc::new(SystemClock),
+            },
+            shutdown,
+        )
     }
 }

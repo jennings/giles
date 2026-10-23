@@ -102,13 +102,12 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     let approvals = Arc::new(ApprovalBoard::new(Arc::new(ChannelPresenter::new(
         runtime.registry.clone(),
     ))));
+    let runner = Arc::new(AgentLoop::from_runtime(&runtime, approvals.clone()));
     let sessions = runtime
-        .start_sessions(
-            Arc::new(AgentLoop::from_runtime(&runtime, approvals.clone())),
-            approvals,
-            shutdown.clone(),
-        )
+        .start_sessions(runner.clone(), approvals, shutdown.clone())
         .await?;
+    // Config and runtime jobs; their replies and approval prompts go through the outbox.
+    let scheduler = runtime.start_scheduler(sessions.clone(), runner, shutdown.clone());
     let builder = http::RouterBuilder::new();
     #[cfg(feature = "channel-web")]
     let builder = match &web {
@@ -210,8 +209,9 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
         anyhow::bail!("the HTTP server stopped unexpectedly");
     }
     http_server.await.context("the HTTP server panicked")??;
-    // Running turns are cancelled with the token; wait for them, the channel pumps, and the
-    // outbox's sender, then stop the plugins and their supervision, and the toolsets.
+    // Running turns and job runs are cancelled with the token; wait for them, the channel pumps,
+    // and the outbox's sender, then stop the plugins and their supervision, and the toolsets.
+    scheduler.closed().await;
     sessions.closed().await;
     runtime.outbox.closed().await;
     plugins.stop_all().await;

@@ -4,7 +4,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use giles_store::{InboxEntry, InboxId, Session, SessionId, Store};
+use giles_store::{InboxEntry, InboxId, Session, SessionId, SessionKey, Store};
 use giles_types::{
     Channel, ChannelEvent, ConversationId, Error, EventId, InboundMessage, MediaRef, Message,
     MessageId, OutboundMessage, SendTarget, Timestamp, UserId,
@@ -271,6 +271,15 @@ impl Reply {
             instance: session.channel.clone()?,
             conversation: session.conversation.clone()?,
         })
+    }
+
+    /// The conversation of session key `key`.
+    pub(crate) fn for_key(key: &SessionKey, channels: Arc<dyn ChannelLookup>) -> Self {
+        Self {
+            channels,
+            instance: key.channel.clone(),
+            conversation: key.conversation.clone(),
+        }
     }
 
     /// The channel instance.

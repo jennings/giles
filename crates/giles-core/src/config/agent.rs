@@ -9,7 +9,7 @@ use croner::parser::{CronParser, Seconds, Year};
 use giles_types::AgentId;
 use jiff::civil::Time;
 use jiff::tz::TimeZone;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::error::{ConfigError, KeyPath};
 use super::giles::parse_timezone;
@@ -100,7 +100,7 @@ pub struct Job {
 }
 
 /// Which session a job runs in.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum JobSession {
@@ -180,8 +180,13 @@ fn parse_hhmm(text: &str) -> Option<Time> {
     Time::new(h.parse().ok()?, m.parse().ok()?, 0, 0).ok()
 }
 
-/// Parses a five-field cron pattern (no seconds or years).
-pub(crate) fn parse_cron(pattern: &str) -> Result<Cron, String> {
+/// Parses a five-field cron pattern (minute, hour, day of month, month, day of week; no seconds
+/// or years), as config and runtime jobs take it.
+///
+/// # Errors
+///
+/// The reason, if `pattern` is not valid.
+pub fn parse_cron(pattern: &str) -> Result<Cron, String> {
     CronParser::builder()
         .seconds(Seconds::Disallowed)
         .year(Year::Disallowed)

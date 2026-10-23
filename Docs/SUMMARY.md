@@ -42,6 +42,7 @@
 - [Agent Loop](technical/agent-loop.md)
 - [Approvals](technical/approvals.md)
 - [Outbox](technical/outbox.md)
+- [Scheduler](technical/scheduler.md)
 - [Skills and Memory Files](technical/skills-and-memory.md)
 - [WhatsApp Spike](technical/whatsapp-spike.md)
 

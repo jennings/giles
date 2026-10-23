@@ -444,6 +444,18 @@ Exactly one of `prompt` and `prompt_file` is required. A `prompt_file` must exis
 and be a relative path inside the agent's directory. Schedules and `active_hours` use the owner's
 time zone, else the agent's, else the system's.
 
+How jobs run:
+
+- A reply of exactly `NO_REPLY` sends nothing and leaves nothing behind. Any other reply is sent to
+  your default identity (retried until its channel is up) and added to your DM with the agent on
+  that identity, so you can answer it there.
+- A `"dm"` job runs as its own turn in that DM, after any turn already running there; until you
+  have messaged the agent on that identity it runs like an `isolated` job.
+- Times missed while Giles was stopped are made up by one run when it starts. A time outside
+  `active_hours` is skipped.
+- With `ask_to`, approval prompts are sent to your default identity; answer them in your DM there.
+  Before you have a DM with the agent, `ask` tools are denied.
+
 ## Full Example
 
 This configuration, with `GITHUB_TOKEN` set in Giles' environment, is checked by Giles' test suite,

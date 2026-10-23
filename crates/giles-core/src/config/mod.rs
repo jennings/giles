@@ -33,7 +33,7 @@ use crate::paths::DataRoot;
 
 pub use agent::{
     ActiveHours, AgentConfig, AskTo, BusyMode, DEFAULT_APPROVAL_TIMEOUT,
-    DEFAULT_MAX_ITERATIONS_JOBS, DEFAULT_MEMORY_CAP, Job, JobPrompt, JobSession,
+    DEFAULT_MAX_ITERATIONS_JOBS, DEFAULT_MEMORY_CAP, Job, JobPrompt, JobSession, parse_cron,
 };
 pub use discovery::{discover_plugin, find_program};
 pub use error::{ConfigError, KeyPath, Position, Segment};
