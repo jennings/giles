@@ -29,7 +29,7 @@ use std::io;
 use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 
 use tracing::warn;
 
@@ -53,6 +53,21 @@ pub const EXIT_CANNOT_EXECUTE: u8 = 126;
 
 /// The trampoline's exit status when the command doesn't exist.
 pub const EXIT_NOT_FOUND: u8 = 127;
+
+/// macOS `sandbox-exec`'s exit status when it can't apply the profile or `exec` the command
+/// (`EX_OSERR`; see `Docs/technical/sandbox.md`), treated like [`EXIT_TRAMPOLINE_FAILED`].
+pub const EXIT_SANDBOX_EXEC_FAILED: u8 = 71;
+
+/// Whether `status`, of a command launched through the trampoline, means the trampoline failed
+/// before running it: [`EXIT_TRAMPOLINE_FAILED`], or on macOS [`EXIT_SANDBOX_EXEC_FAILED`].
+/// Retrying won't help until the configuration or the host changes. A command that itself exits
+/// with these is indistinguishable, as with `env(1)`.
+pub fn is_trampoline_failure(status: ExitStatus) -> bool {
+    status.code().is_some_and(|code| {
+        code == i32::from(EXIT_TRAMPOLINE_FAILED)
+            || cfg!(target_os = "macos") && code == i32::from(EXIT_SANDBOX_EXEC_FAILED)
+    })
+}
 
 /// Why the trampoline didn't run the command.
 #[derive(Debug, thiserror::Error)]
@@ -414,5 +429,20 @@ mod tests {
             (EXIT_TRAMPOLINE_FAILED, EXIT_CANNOT_EXECUTE, EXIT_NOT_FOUND),
             (125, 126, 127)
         );
+    }
+
+    #[test]
+    fn trampoline_failures_are_125_and_on_macos_71() {
+        use std::os::unix::process::ExitStatusExt as _;
+        let exit = |code: i32| std::process::ExitStatus::from_raw(code << 8);
+        assert!(is_trampoline_failure(exit(125)));
+        assert_eq!(is_trampoline_failure(exit(71)), cfg!(target_os = "macos"));
+        for code in [0, 1, 126, 127] {
+            assert!(!is_trampoline_failure(exit(code)), "{code}");
+        }
+        // Killed by a signal: no exit code.
+        assert!(!is_trampoline_failure(std::process::ExitStatus::from_raw(
+            9
+        )));
     }
 }

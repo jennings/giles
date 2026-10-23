@@ -63,7 +63,7 @@ use crate::config::{
 use crate::identity::{NamespaceError, validate_namespace};
 use crate::paths::{DataRoot, PathsError};
 use crate::registry::Registry;
-use crate::sandbox::{self, EXIT_TRAMPOLINE_FAILED, SpecError, TMP_DIR_NAME};
+use crate::sandbox::{self, SpecError, TMP_DIR_NAME};
 use crate::sessions::Sessions;
 
 /// How long a plugin has to print its handshake line (PLAN section 7.4).
@@ -94,10 +94,6 @@ const STDERR_DRAIN: Duration = Duration::from_secs(1);
 
 /// The longest handshake line read; anything longer is malformed.
 const MAX_HANDSHAKE_LINE: u64 = 256;
-
-/// `sandbox-exec`'s exit status when it can't apply the profile or `exec` the command (`EX_OSERR`;
-/// `Docs/technical/sandbox.md`), treated like [`EXIT_TRAMPOLINE_FAILED`].
-const EXIT_SANDBOX_EXEC_FAILED: i32 = 71;
 
 /// A launch failed. Every message is safe to log: plugin-provided text has the instance's secrets
 /// and the token scrubbed.
@@ -634,16 +630,12 @@ enum EarlyExit {
 }
 
 fn classify_exit(status: ExitStatus, sandboxed: bool) -> EarlyExit {
-    match status.code() {
-        Some(EXIT_NO_SHARED_PROTOCOL) => EarlyExit::NoSharedProtocol,
-        Some(code)
-            if sandboxed
-                && (code == i32::from(EXIT_TRAMPOLINE_FAILED)
-                    || cfg!(target_os = "macos") && code == EXIT_SANDBOX_EXEC_FAILED) =>
-        {
-            EarlyExit::Sandbox
-        }
-        _ => EarlyExit::Other,
+    if status.code() == Some(EXIT_NO_SHARED_PROTOCOL) {
+        EarlyExit::NoSharedProtocol
+    } else if sandboxed && sandbox::is_trampoline_failure(status) {
+        EarlyExit::Sandbox
+    } else {
+        EarlyExit::Other
     }
 }
 

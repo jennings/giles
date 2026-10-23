@@ -9,7 +9,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use super::process::signal_group;
+use crate::process_group::signal_group;
 
 /// How long to wait for a killed orphan to disappear before launching anyway.
 const ORPHAN_EXIT_WAIT: Duration = Duration::from_secs(5);

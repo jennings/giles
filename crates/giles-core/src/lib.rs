@@ -15,6 +15,7 @@ pub mod memory;
 pub mod net;
 pub mod paths;
 pub mod plugin_host;
+mod process_group;
 pub mod providers;
 pub mod registry;
 pub mod router;

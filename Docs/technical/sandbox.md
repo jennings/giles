@@ -59,7 +59,7 @@ constants in `giles_core::sandbox`, and `SandboxError::exit_code` maps an error 
 | 126    | `EXIT_CANNOT_EXECUTE`    | `exec` found the command but couldn't run it (e.g. not executable) |
 | 127    | `EXIT_NOT_FOUND`         | `exec` didn't find the command                               |
 | 2      |                          | Command-line usage error (from `clap`); a core bug           |
-| 71     |                          | macOS: `sandbox-exec` couldn't apply the profile or `exec` the command (below) |
+| 71     | `EXIT_SANDBOX_EXEC_FAILED` | macOS: `sandbox-exec` couldn't apply the profile or `exec` the command (below) |
 | other  |                          | The plugin's own exit status                                 |
 
 A 125 means configuration or host trouble: restarting with backoff won't fix it, so supervision
@@ -74,8 +74,10 @@ it) or can't `exec` the command (`sandbox-exec: execvp() of '...' failed: ...`).
 therefore checks the command first (exists, is a regular file, `access(X_OK)`) and fails with 126
 or 127 like the Linux path. A 71 remains possible when applying fails, when the profile itself
 forbids the `exec` (a script whose interpreter has no `execute` grant), or when the command
-changes between the check and the `exec`. Supervision treats it like 125. (`sandbox-exec` exits 65
-for a profile it can't parse, which would be a bug in the generator.)
+changes between the check and the `exec`. Supervision treats it like 125:
+`sandbox::is_trampoline_failure(status)` is true for 125, and on macOS for 71; the plugin host uses
+it to tell a launch that retrying won't fix. (`sandbox-exec` exits 65 for a profile it can't parse,
+which would be a bug in the generator.)
 
 ## File Descriptors
 
