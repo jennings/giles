@@ -8,7 +8,7 @@ The agent loop plugs in as a `TurnRunner`; the decision before anything is store
 
 | Item                     | What it is                                                              |
 | ------------------------ | ----------------------------------------------------------------------- |
-| `Sessions`               | The manager: `start`, `attach_channel`, `stop`, `is_running`, `channel_status(es)` |
+| `Sessions`               | The manager: `start`, `attach_channel`, `stop`, `is_running`, `channel_status(es)`, `closed` |
 | `SessionsOptions`        | Store, `Router`, per-agent `AgentPolicy`, `ChannelLookup`, `TurnRunner`, `Approvals`, `Clock` |
 | `TurnRunner`             | `async fn run_turn(&self, turn: Turn) -> TurnOutcome`; the agent loop implements it |
 | `Turn`                   | `session`, `requester`, `messages: Vec<TurnMessage>`, `busy_mode`, `cancel`, `steering`, `reply` |
@@ -17,6 +17,22 @@ The agent loop plugs in as a `TurnRunner`; the decision before anything is store
 | `Approvals`              | `is_pending` (for `classify`) and `answer`; `NoPendingApprovals` until approvals land |
 | `ChannelLookup`          | Instance name to the registered channel; implemented by `Registry`      |
 | `ChannelStatusRecord`    | A channel's latest `ChannelStatus` and when it arrived                  |
+
+## Wiring
+
+`giles serve` calls `Runtime::start_sessions(runner, approvals, shutdown)` after `Runtime::start`
+and binding the HTTP listener: it's the last startup step that can fail, since recovery changes
+state and resumed turns start running.
+It builds the `Router` from `[owner]` and `[[routes]]` and the `AgentPolicy` map (`busy_mode`,
+`idle_reset`) from the agents, runs `Sessions::start` (recovery, then resume, then the prune task),
+and attaches every channel registered so far. The plugin host attaches each plugin channel with
+`Sessions::attach_channel(instance, component, channel)` after registering it; attaching an
+instance again (a restarted plugin) stops the earlier pump after its current event.
+
+After the HTTP server has drained at shutdown, `serve` awaits `Sessions::closed()`, which waits for
+every task the manager spawned (pumps, drivers, turns, pruning) to stop.
+
+Until the agent loop exists, `serve` passes a runner that logs and fails every turn.
 
 ## The Inbound Pipeline
 
@@ -94,7 +110,8 @@ instance at that moment; `Reply::channel()` exposes its `info().output` for stre
 
 At shutdown every turn's `cancel` fires (it's a child of the shutdown token). A turn that still
 returns `Completed` has its rows finished; otherwise the driver stops without finishing them, so
-they're still `started` at the next start and recovery tells the requester.
+they're still `started` at the next start and recovery tells the requester. `Sessions::closed()`
+returns once every runner has returned.
 
 ## Startup Recovery
 

@@ -4,11 +4,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use giles_store::{BlobStore, Store};
+use tokio_util::sync::CancellationToken;
 
 use crate::blobs::BlobMedia;
 use crate::config::Config;
 use crate::paths::DataRoot;
 use crate::registry::{Registry, RegistryError};
+use crate::router::Router;
+use crate::sessions::{AgentPolicy, Approvals, Sessions, SessionsOptions, SystemClock, TurnRunner};
 
 /// Startup failed.
 #[derive(Debug, thiserror::Error)]
@@ -33,6 +36,9 @@ pub enum StartError {
     /// A configured component couldn't be built.
     #[error(transparent)]
     Registry(#[from] RegistryError),
+    /// Startup recovery of the sessions failed (PLAN section 6.3).
+    #[error("cannot recover the sessions: {0}")]
+    Sessions(#[source] giles_store::Error),
 }
 
 /// The running core's shared state.
@@ -77,5 +83,38 @@ impl Runtime {
             blobs,
             registry: Arc::new(registry),
         })
+    }
+
+    /// Starts the session manager: runs startup recovery, resumes queued messages, and starts
+    /// consuming the events of every channel registered so far. Turns run on `runner`; approval
+    /// replies go to `approvals`. Channels registered later (plugins) are attached with
+    /// [`Sessions::attach_channel`]. Everything stops when `shutdown` is cancelled.
+    ///
+    /// # Errors
+    ///
+    /// [`StartError::Sessions`] if recovery fails.
+    pub async fn start_sessions(
+        &self,
+        runner: Arc<dyn TurnRunner>,
+        approvals: Arc<dyn Approvals>,
+        shutdown: CancellationToken,
+    ) -> Result<Sessions, StartError> {
+        let options = SessionsOptions {
+            store: self.store.clone(),
+            router: Router::new(&self.config.owner, &self.config.routes),
+            agents: AgentPolicy::from_config(&self.config),
+            channels: self.registry.clone(),
+            runner,
+            approvals,
+            clock: Arc::new(SystemClock),
+        };
+        let sessions = Sessions::start(options, shutdown)
+            .await
+            .map_err(StartError::Sessions)?;
+        for (name, channel) in self.registry.channels() {
+            let component = self.config.channels[&name].component.clone();
+            sessions.attach_channel(name, component, channel);
+        }
+        Ok(sessions)
     }
 }

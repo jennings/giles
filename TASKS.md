@@ -145,7 +145,7 @@ The five tracks run in parallel.
   unauthenticated senders, identities not in `[owner]`, and group conversations; match the sender
   or any alias; enforce the identity-namespace prefix; ordered routes, first match wins; intercept
   `/new`, `/stop`, and approval replies after routing, before the agent. **Needs:** 1.1.
-- [ ] **2.3 Inbox and sessions** (§6.2, §6.3, §8.5). Store each event in `inbox` with
+- [x] **2.3 Inbox and sessions** (§6.2, §6.3, §8.5). Store each event in `inbox` with
   (instance, event id) dedupe, then ack; prune dedupe keys after 30 days; session key (agent,
   instance, conversation); at most one turn per session with an inbox-backed queue; consecutive
   messages from one person form one turn; `/new`; `idle_reset`; startup recovery (empty result

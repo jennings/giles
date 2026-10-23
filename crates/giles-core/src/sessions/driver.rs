@@ -140,7 +140,10 @@ async fn run_turn(
     info!(session = %id, agent = %turn.session.agent, messages = turn.messages.len(), "turn started");
 
     let runner = inner.runner.clone();
-    let outcome = tokio::spawn(async move { runner.run_turn(turn).await }).await;
+    let outcome = inner
+        .tasks
+        .spawn(async move { runner.run_turn(turn).await })
+        .await;
     if let Some(live) = lock(&inner.live).get_mut(&id) {
         live.turn = None;
     }

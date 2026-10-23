@@ -865,7 +865,9 @@ async fn shutdown_cancels_turns_and_leaves_their_rows_for_recovery() {
     h.ack().await;
     let turn = h.turn().await;
     h.shutdown.cancel();
-    h.settle().await;
+    tokio::time::timeout(WAIT, h.sessions.closed())
+        .await
+        .expect("tasks still running after shutdown");
     assert!(turn.done.is_closed());
     assert_eq!(h.state(turn.rows[0]).await, InboxState::Started);
 }

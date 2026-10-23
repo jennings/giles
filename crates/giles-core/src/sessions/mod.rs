@@ -26,6 +26,7 @@ use async_trait::async_trait;
 use giles_store::{SessionId, SessionKey, Store};
 use giles_types::{AgentId, Channel, Timestamp, UserId};
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 use crate::commands::{ApprovalReply, NoPendingApprovals};
 use crate::config::{AgentConfig, BusyMode, Config, InstanceName};
@@ -209,10 +210,11 @@ impl Sessions {
             notices: Mutex::default(),
             pumps: Mutex::default(),
             statuses: Mutex::default(),
+            tasks: TaskTracker::new(),
         });
         recovery::recover(&inner).await?;
         recovery::resume(&inner).await?;
-        tokio::spawn(recovery::prune_loop(inner.clone()));
+        inner.tasks.spawn(recovery::prune_loop(inner.clone()));
         Ok(Self { inner })
     }
 
@@ -233,7 +235,7 @@ impl Sessions {
             old.cancel();
         }
         recovery::send_pending_notices(&self.inner, instance.as_str(), channel.clone());
-        tokio::spawn(inbound::pump(
+        self.inner.tasks.spawn(inbound::pump(
             self.inner.clone(),
             instance,
             component,
@@ -264,6 +266,14 @@ impl Sessions {
             .get(&session)
             .is_some_and(|live| live.turn.is_some())
     }
+
+    /// Waits until every task of the session manager has stopped: channel pumps, drivers, turns,
+    /// and the prune task. Call it after cancelling the shutdown token; it waits as long as a
+    /// runner ignores [`Turn::cancel`].
+    pub async fn closed(&self) {
+        self.inner.tasks.close();
+        self.inner.tasks.wait().await;
+    }
 }
 
 /// Locks a std mutex, ignoring poisoning: the guarded maps stay consistent across a panic
@@ -288,6 +298,8 @@ struct Inner {
     /// The stop token of each attached channel's pump.
     pumps: Mutex<HashMap<InstanceName, CancellationToken>>,
     statuses: Mutex<BTreeMap<InstanceName, ChannelStatusRecord>>,
+    /// Every task spawned, so shutdown can wait for them.
+    tasks: TaskTracker,
 }
 
 /// A session with a driver task.
@@ -336,7 +348,7 @@ impl Inner {
                     dirty: true,
                     ..Live::default()
                 });
-                tokio::spawn(driver::drive(self.clone(), session));
+                self.tasks.spawn(driver::drive(self.clone(), session));
             }
         }
     }

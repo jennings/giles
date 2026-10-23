@@ -4,11 +4,14 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context;
+use async_trait::async_trait;
+use giles_core::commands::NoPendingApprovals;
 use giles_core::config::Config;
 use giles_core::http;
 use giles_core::paths::DataRoot;
 use giles_core::runtime::Runtime;
 use giles_core::sandbox;
+use giles_core::sessions::{Turn, TurnOutcome, TurnRunner};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -42,12 +45,21 @@ async fn serve(root: DataRoot, config: Config) -> anyhow::Result<()> {
     check_sandbox();
     // The database, the blob store, and every component the configuration names.
     let config = Arc::new(config);
-    let _runtime = Runtime::start(root.clone(), config.clone()).await?;
+    let runtime = Runtime::start(root.clone(), config.clone()).await?;
 
     let listener = http::bind(config.core.http_listen).await?;
     let http_addr = listener
         .local_addr()
         .context("cannot read the HTTP listener's address")?;
+    // Startup recovery, then every registered channel's events. The last step that can fail:
+    // recovery changes state and resumed turns run, so nothing may abort startup after it.
+    let sessions = runtime
+        .start_sessions(
+            Arc::new(NoAgentLoop),
+            Arc::new(NoPendingApprovals),
+            shutdown.clone(),
+        )
+        .await?;
     let app = http::RouterBuilder::new().build();
     let mut http_server = tokio::spawn(http::serve(listener, app, shutdown.clone()));
 
@@ -82,6 +94,8 @@ async fn serve(root: DataRoot, config: Config) -> anyhow::Result<()> {
         .await
         .context("the HTTP server panicked")?
         .context("the HTTP server failed")?;
+    // Running turns are cancelled with the token; wait for them and the channel pumps.
+    sessions.closed().await;
     info!("giles stopped");
     Ok(())
 }
@@ -96,5 +110,21 @@ fn check_sandbox() {
             error = %err,
             "plugin sandbox unavailable on this host; sandboxed plugins will not start",
         ),
+    }
+}
+
+/// The turn runner until the agent loop exists (TASKS.md 2.4 replaces it): every turn is logged
+/// and fails, so inbound messages are stored and acked but not answered.
+struct NoAgentLoop;
+
+#[async_trait]
+impl TurnRunner for NoAgentLoop {
+    async fn run_turn(&self, turn: Turn) -> TurnOutcome {
+        warn!(
+            session = %turn.session.id,
+            agent = %turn.session.agent,
+            "no agent loop yet; the message is not answered"
+        );
+        TurnOutcome::Failed("the agent loop is not built yet".to_owned())
     }
 }

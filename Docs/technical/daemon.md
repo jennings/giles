@@ -46,13 +46,19 @@ to stderr, with ANSI colors only when stderr is a terminal. The filter is `GILES
 6. Start the core runtime (`giles_core::runtime::Runtime::start`, [Registry](registry.md)): open
    the database and the blob store, build the registry from the configuration, and log what is
    registered (`registry ready`) and each instance still pending. Any error ends the process.
-7. Bind the HTTP listener on `core.http_listen` (a busy address fails startup here) and start the
-   HTTP server on its own task ([HTTP Server](http.md#lifecycle)).
-8. Log `giles started` with the root, admin socket path, HTTP URL, and instance and agent counts,
+7. Bind the HTTP listener on `core.http_listen` (a busy address fails startup here).
+8. Start the sessions (`Runtime::start_sessions`, [Sessions and Turns](sessions.md)): recover from
+   an earlier crash or shutdown (interrupted turns), resume queued messages, and consume the events
+   of every registered channel. Until the agent loop exists, turns are logged and not answered.
+   This is the last step that can fail: recovery changes state and resumed turns start running, so
+   nothing after it may abort startup. Then start the HTTP server on its own task
+   ([HTTP Server](http.md#lifecycle)).
+9. Log `giles started` with the root, admin socket path, HTTP URL, and instance and agent counts,
    plus a warning if the sockets use the `$TMPDIR` fallback.
-9. Wait until the shutdown token is cancelled, then await the HTTP server (it drains open requests
-   for up to 5 s), log `giles stopped`, and exit with status 0. If the HTTP server stops on its own
-   first, cancel the token and exit with an error.
+10. Wait until the shutdown token is cancelled, then await the HTTP server (it drains open requests
+    for up to 5 s) and the sessions (`Sessions::closed`: running turns are cancelled, channel
+    pumps stop between events), log `giles stopped`, and exit with status 0. If the HTTP server
+    stops on its own first, cancel the token and exit with an error.
 
 The shutdown signal is a `tokio_util::sync::CancellationToken`. The first SIGINT or SIGTERM cancels
 it. Subsystems added later take a clone (or a `child_token()`), stop when it is cancelled, and are

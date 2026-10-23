@@ -41,6 +41,11 @@ It runs until it receives SIGINT (Ctrl-C) or SIGTERM, then shuts down and exits 
 shutdown takes too long, a second Ctrl-C or SIGTERM makes it exit at once with status 130. Any other
 non-zero status means it failed to start; the error is printed on standard error.
 
+Messages are saved as they arrive, so stopping Giles loses none. If it stops while an agent is
+answering, that answer is not resumed: at the next start Giles says "Interrupted by a restart;
+resend if needed." in the conversation, as soon as that channel is up. Messages still waiting for
+an answer are answered after the restart.
+
 ## The Web Interface
 
 `giles serve` also runs a web server, by default on `http://127.0.0.1:8080/`. The `giles started`

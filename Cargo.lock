@@ -826,6 +826,7 @@ name = "giles"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "giles-core",
  "libc",
@@ -2646,6 +2647,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",

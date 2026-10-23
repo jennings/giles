@@ -132,9 +132,10 @@ pub(super) fn send_pending_notices(inner: &Arc<Inner>, instance: &str, channel: 
     let Some(notices) = lock(&inner.notices).remove(instance) else {
         return;
     };
-    let inner = inner.clone();
+    let task_inner = inner.clone();
     let instance = instance.to_owned();
-    tokio::spawn(async move {
+    inner.tasks.spawn(async move {
+        let inner = task_inner;
         for notice in notices {
             if !deliver(&*channel, &instance, &notice).await {
                 keep(&inner, instance.clone(), notice);
