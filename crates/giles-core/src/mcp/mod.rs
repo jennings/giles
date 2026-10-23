@@ -55,7 +55,7 @@ const CALL_EVENT_BUFFER: usize = 16;
 
 /// One MCP server as a [`Toolset`].
 ///
-/// Dropping it closes the connection; a stdio server is killed.
+/// Dropping it closes the connection; a stdio server is killed with its whole process group.
 pub struct McpToolset {
     origin: Arc<Origin>,
     service: RunningService<RoleClient, ClientState>,

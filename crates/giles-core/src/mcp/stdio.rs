@@ -11,6 +11,7 @@ use tokio::sync::{oneshot, watch};
 use tracing::Instrument;
 
 use crate::config::Secret;
+use crate::process_group;
 use crate::stderr_lines;
 
 /// The `tracing` target of a stdio server's stderr lines, so an operator can filter them
@@ -79,17 +80,18 @@ pub(crate) struct Spawned {
     pub(crate) exit: watch::Receiver<Option<ExitStatus>>,
 }
 
-/// Kills the server when dropped.
+/// Kills the server's process group when dropped.
 ///
 /// A supervisor task owns the child: it logs and publishes the exit status if the server stops by
-/// itself, and kills and reaps it when this guard is dropped. If the runtime is gone by then,
-/// `kill_on_drop` still kills the child.
+/// itself, and kills its process group and reaps it when this guard is dropped. If the runtime is
+/// gone by then, `kill_on_drop` still kills the server itself.
 pub(crate) struct ChildGuard {
     _stop: oneshot::Sender<()>,
 }
 
-/// Spawns `command` with piped stdio. Stdin and stdout carry the MCP messages; stderr lines are
-/// logged under `span` at `info` with target [`STDERR_TARGET`], with `secrets` scrubbed.
+/// Spawns `command` with piped stdio, as the leader of a new process group. Stdin and stdout carry
+/// the MCP messages; stderr lines are logged under `span` at `info` with target
+/// [`STDERR_TARGET`], with `secrets` scrubbed.
 pub(crate) fn spawn(
     mut command: Command,
     span: &tracing::Span,
@@ -99,18 +101,22 @@ pub(crate) fn spawn(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .process_group(0)
         .kill_on_drop(true);
     let mut child = command.spawn()?;
+    let pid = child
+        .id()
+        .ok_or_else(|| io::Error::other("the server exited before it could be tracked"))?;
     let (Some(stdin), Some(stdout), Some(stderr)) =
         (child.stdin.take(), child.stdout.take(), child.stderr.take())
     else {
         return Err(io::Error::other("the child's stdio wasn't piped"));
     };
-    tracing::debug!(parent: span, pid = child.id(), "started MCP server");
+    tracing::debug!(parent: span, pid, "started MCP server");
     tokio::spawn(log_stderr(stderr, secrets).instrument(span.clone()));
     let (stop, stopped) = oneshot::channel();
     let (exited, exit) = watch::channel(None);
-    tokio::spawn(supervise(child, stopped, exited).instrument(span.clone()));
+    tokio::spawn(supervise(child, pid, stopped, exited).instrument(span.clone()));
     Ok(Spawned {
         stdout,
         stdin,
@@ -119,28 +125,51 @@ pub(crate) fn spawn(
     })
 }
 
+/// Owns the server `child` (pid `pid`, also its process group id) until it exits or `stop` is
+/// dropped. Either way the rest of its process group gets `SIGKILL` while the server is still
+/// unreaped, so the group id can't belong to anyone else yet, and then the server is reaped.
 async fn supervise(
     mut child: Child,
+    pid: u32,
     stop: oneshot::Receiver<()>,
     exited: watch::Sender<Option<ExitStatus>>,
 ) {
     tokio::select! {
-        status = child.wait() => match status {
-            Ok(status) => {
-                if status.success() {
-                    tracing::info!("MCP server exited");
-                } else {
-                    tracing::warn!(%status, "MCP server exited");
-                }
-                exited.send_replace(Some(status));
+        result = process_group::wait_exited(pid) => {
+            match result {
+                Ok(()) => kill_group(pid),
+                Err(error) => tracing::warn!(%error, "waiting for the MCP server failed"),
             }
-            Err(error) => tracing::warn!(%error, "waiting for the MCP server failed"),
+            match child.wait().await {
+                Ok(status) => {
+                    if status.success() {
+                        tracing::info!("MCP server exited");
+                    } else {
+                        tracing::warn!(%status, "MCP server exited");
+                    }
+                    exited.send_replace(Some(status));
+                }
+                Err(error) => tracing::warn!(%error, "waiting for the MCP server failed"),
+            }
         },
         // The guard was dropped (the sender never sends).
-        _ = stop => match child.kill().await {
-            Ok(()) => tracing::debug!("stopped MCP server"),
-            Err(error) => tracing::warn!(%error, "killing the MCP server failed"),
+        _ = stop => {
+            kill_group(pid);
+            // In case the group couldn't be signalled.
+            let _ = child.start_kill();
+            match child.wait().await {
+                Ok(_) => tracing::debug!("stopped MCP server"),
+                Err(error) => tracing::warn!(%error, "reaping the MCP server failed"),
+            }
         },
+    }
+}
+
+/// `SIGKILL` to the server's process group; best effort (macOS answers `EPERM` for a group whose
+/// only member is the exited, unreaped server).
+fn kill_group(pid: u32) {
+    if let Err(error) = process_group::signal_group(pid, libc::SIGKILL) {
+        tracing::debug!(pid, %error, "cannot kill the MCP server's process group");
     }
 }
 

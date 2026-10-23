@@ -62,6 +62,8 @@ fn main() {
         cancellation_reaches_the_child,
         a_crashed_server_is_unavailable,
         dropping_the_toolset_kills_the_child,
+        dropping_the_toolset_kills_its_process_group,
+        a_crashed_server_takes_its_process_group,
         a_missing_command_is_unavailable,
         a_failed_start_reports_the_exit_status,
     );
@@ -69,7 +71,10 @@ fn main() {
 
 /// The child: the test server on stdio. It prints its secret to stderr first. With
 /// `GILES_MCP_TEST_SERVER=linger` it doesn't exit when stdin closes, so only a kill stops it; with
-/// `exit125` it exits with 125 at once, like a failing sandbox trampoline.
+/// `exit125` it exits with 125 at once, like a failing sandbox trampoline; with `with-sleeper` it
+/// starts a `sleep` child first (in its process group) and prints `sleeper pid <pid>`.
+// The sleeper is meant to outlive any wait: only its process group's death ends it.
+#[allow(clippy::zombie_processes)]
 fn serve() {
     let mode = std::env::var(SERVER_ENV).unwrap_or_default();
     eprintln!(
@@ -78,6 +83,16 @@ fn serve() {
     );
     if mode == "exit125" {
         std::process::exit(125);
+    }
+    if mode == "with-sleeper" {
+        let sleeper = std::process::Command::new("/bin/sleep")
+            .arg("300")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        eprintln!("sleeper pid {}", sleeper.id());
     }
     let linger = mode == "linger";
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -245,26 +260,64 @@ async fn a_crashed_server_is_unavailable(log: &Log) {
     assert_eq!(status.and_then(|status| status.code()), Some(3));
 }
 
-async fn dropping_the_toolset_kills_the_child(_log: &Log) {
-    let toolset = connect_with("child-drop", "linger").await;
-    let pid = result_text(call(&toolset, "pid", no_input()).await).await;
-    let alive = || {
-        std::process::Command::new("kill")
-            .args(["-0", &pid])
-            .stderr(std::process::Stdio::null())
-            .status()
-            .unwrap()
-            .success()
-    };
-    assert!(alive());
-    drop(toolset);
+/// Whether process `pid` exists (a zombie counts until its parent reaps it).
+fn alive(pid: &str) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", pid])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+async fn wait_gone(pid: &str, what: &str) {
     tokio::time::timeout(WAIT, async {
-        while alive() {
+        while alive(pid) {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .expect("the child outlived the toolset");
+    .unwrap_or_else(|_| panic!("{what}"));
+}
+
+/// The pid of the `sleep` child that the `with-sleeper` server of `instance` logged.
+async fn sleeper_pid(log: &Log, instance: &str) -> String {
+    let prefix = format!("mcp{{instance={instance}}}: {STDERR_TARGET}: sleeper pid ");
+    log.wait_for(&prefix).await;
+    let contents = log.contents();
+    let start = contents.find(&prefix).unwrap() + prefix.len();
+    contents[start..].lines().next().unwrap().trim().to_owned()
+}
+
+async fn dropping_the_toolset_kills_the_child(_log: &Log) {
+    let toolset = connect_with("child-drop", "linger").await;
+    let pid = result_text(call(&toolset, "pid", no_input()).await).await;
+    assert!(alive(&pid));
+    drop(toolset);
+    wait_gone(&pid, "the child outlived the toolset").await;
+}
+
+async fn dropping_the_toolset_kills_its_process_group(log: &Log) {
+    let toolset = connect_with("group-drop", "with-sleeper").await;
+    let sleeper = sleeper_pid(log, "group-drop").await;
+    assert!(alive(&sleeper));
+    drop(toolset);
+    wait_gone(&sleeper, "the server's child outlived the toolset").await;
+}
+
+async fn a_crashed_server_takes_its_process_group(log: &Log) {
+    let toolset = connect_with("group-crash", "with-sleeper").await;
+    let sleeper = sleeper_pid(log, "group-crash").await;
+    assert!(alive(&sleeper));
+    let mut handle = call(&toolset, "exit", json!({"code": 4})).await;
+    assert!(matches!(next(&mut handle).await, Some(Err(_))));
+    let status = tokio::time::timeout(WAIT, toolset.closed())
+        .await
+        .expect("closed() never resolved");
+    assert_eq!(status.and_then(|status| status.code()), Some(4));
+    // The toolset still exists; the server's exit alone took its child.
+    wait_gone(&sleeper, "the crashed server's child survived").await;
+    drop(toolset);
 }
 
 async fn a_missing_command_is_unavailable(_log: &Log) {

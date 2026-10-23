@@ -52,11 +52,13 @@ instance's `env` values.
   `GILES_LOG=giles_core::mcp::stderr=warn` silences chatty servers. Lines are cut at 4 KiB (marked
   `…`); a cut line that ends in the first bytes of a secret has that end redacted too. Invalid
   UTF-8 is replaced.
-- **The child** is owned by a supervisor task. If the server exits by itself the task logs and
-  publishes the exit status (`closed()` returns it); when the `McpToolset` is dropped it kills and
-  reaps the child right away, without waiting for the server to notice its stdin closing.
-  `kill_on_drop` backs this up if the runtime is already gone. Only the direct child is killed; a
-  server that forks its own children relies on them exiting when their pipes close.
+- **The child** runs as the leader of its own process group and is owned by a supervisor task. If
+  the server exits by itself the task logs and publishes the exit status (`closed()` returns it);
+  when the `McpToolset` is dropped it kills the server right away, without waiting for it to notice
+  its stdin closing. Either way the whole process group gets `SIGKILL` before the server is reaped
+  (while its pid still reserves the group id), so children a server started die with it, as for
+  plugins ([Plugin Host](plugin-host.md)). `kill_on_drop` backs this up for the server itself if
+  the runtime is already gone.
 - Failing to spawn, the server exiting during the handshake, and no answer in time are all
   `Error::Unavailable`. If the server exited, the message ends with its status, e.g.
   `(server process: exit status: 125)`.
@@ -171,7 +173,8 @@ fails by its own account (`isError: true`) is a normal `Result` event, not an er
   stdout, so this target has `harness = false` and its `main` runs the tests. It checks stderr
   logging with an echoed `env` secret redacted, cancellation reaching the child, a crash and the
   exit status from `closed()`, the exit status in a failed handshake's message (a child that exits
-  with 125), and that dropping the toolset kills a server that ignores stdin closing.
+  with 125), that dropping the toolset kills a server that ignores stdin closing, and that the
+  server's own child dies with it, whether the toolset is dropped or the server crashes.
 - over streamable HTTP (`tests/mcp_http.rs`): `rmcp`'s `StreamableHttpService` in `axum` on
   `127.0.0.1`, behind a middleware that requires the bearer token. It checks listing, progress, and
   cancellation with the right token; rejection of a wrong, missing, or forbidden one (the 403 body
