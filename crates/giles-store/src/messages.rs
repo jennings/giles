@@ -416,6 +416,28 @@ impl Store {
         .await
     }
 
+    /// The seq of the session's last message, 0 if it has none.
+    pub async fn last_seq(&self, session: SessionId) -> Result<i64> {
+        self.read(move |conn| last_seq(conn, session)).await
+    }
+
+    /// Deletes every message after `after_seq` and every summary that covers one of them, in one
+    /// transaction: a job run in a DM session that replied `NO_REPLY` leaves nothing behind (PLAN
+    /// 6.11). Returns how many messages were deleted.
+    pub async fn truncate_messages(&self, session: SessionId, after_seq: i64) -> Result<u64> {
+        self.write(move |conn| {
+            conn.prepare_cached(
+                "DELETE FROM summaries WHERE session_id = ?1 AND through_seq > ?2",
+            )?
+            .execute(params![session, after_seq])?;
+            let deleted = conn
+                .prepare_cached("DELETE FROM messages WHERE session_id = ?1 AND seq > ?2")?
+                .execute(params![session, after_seq])?;
+            Ok(deleted as u64)
+        })
+        .await
+    }
+
     /// Stores a summary of messages `from_seq..=through_seq`. The range must be non-empty,
     /// start at 1 or later, end at or before the last message, and not separate an assistant
     /// message from its slots (the message after `through_seq` can't be a slot); otherwise
@@ -775,6 +797,57 @@ pub(crate) mod tests {
         let seqs: Vec<_> = tail.iter().map(|m| m.seq).collect();
         assert_eq!(seqs, [4, 5]);
         assert_eq!(store.recent_messages(s, 10).await.unwrap().len(), 5);
+    }
+
+    #[tokio::test]
+    async fn truncating_drops_later_messages_and_the_summaries_covering_them() {
+        let (_dir, store) = store().await;
+        let s = session(&store, "c1").await;
+        let other = session(&store, "c2").await;
+        assert_eq!(store.last_seq(s).await.unwrap(), 0);
+        let messages = (1..=3).map(|i| user(&format!("m{i}"), i)).collect();
+        store.append_messages(s, messages).await.unwrap();
+        store
+            .append_messages(other, vec![user("keep", 1)])
+            .await
+            .unwrap();
+        let kept = store
+            .insert_summary(s, 1, 2, "first two", at(9))
+            .await
+            .unwrap();
+        assert_eq!(store.last_seq(s).await.unwrap(), 3);
+        // A job turn: its prompt, a tool call with its result, and the reply.
+        store
+            .append_messages(
+                s,
+                vec![
+                    user("job", 10),
+                    assistant(vec![tool_use("a")], 11),
+                    assistant(vec![text("NO_REPLY")], 12),
+                ],
+            )
+            .await
+            .unwrap();
+        // seq 4 the prompt, 5 the tool call, 6 its slot, 7 the reply.
+        store
+            .insert_summary(s, 1, 6, "too far", at(13))
+            .await
+            .unwrap();
+
+        assert_eq!(store.truncate_messages(s, 3).await.unwrap(), 4);
+        let history = store.load_history(s).await.unwrap();
+        assert_eq!(history.summary, Some(kept));
+        let seqs: Vec<_> = history.messages.iter().map(|m| m.seq).collect();
+        assert_eq!(seqs, [3]);
+        assert_eq!(store.last_seq(s).await.unwrap(), 3);
+        // Other sessions are untouched.
+        assert_eq!(store.last_seq(other).await.unwrap(), 1);
+        // Appending continues right after the cut.
+        let appended = store
+            .append_messages(s, vec![user("next", 20)])
+            .await
+            .unwrap();
+        assert_eq!(appended[0].seq, 4);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

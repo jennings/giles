@@ -238,6 +238,44 @@ impl Store {
         .await
     }
 
+    /// Deletes the session with its messages and summaries (an isolated job run that replied
+    /// `NO_REPLY`, PLAN 6.11). Inbox and usage rows keep their data with the session cleared.
+    /// Returns `false` if it didn't exist.
+    pub async fn delete_session(&self, id: SessionId) -> Result<bool> {
+        self.write(move |conn| {
+            Ok(conn
+                .prepare_cached("DELETE FROM sessions WHERE id = ?1")?
+                .execute([id])?
+                == 1)
+        })
+        .await
+    }
+
+    /// The direct session of `user` with `agent` on one of the channel `instances` with the
+    /// newest activity (last message, else start), open or ended: where a job finds the user's
+    /// DM (PLAN 6.11).
+    pub async fn latest_direct_session(
+        &self,
+        agent: AgentId,
+        user: UserId,
+        instances: Vec<String>,
+    ) -> Result<Option<Session>> {
+        let instances = serde_json::to_string(&instances)?;
+        self.read(move |conn| {
+            let mut stmt = conn.prepare_cached(&format!(
+                "SELECT * FROM ({SELECT} WHERE s.agent = ?1 AND s.kind = 'direct'
+                    AND s.user_id = ?2 AND s.channel IN (SELECT value FROM json_each(?3))) q
+                 ORDER BY coalesce(q.last_message_at, q.started_at) DESC, q.id DESC LIMIT 1"
+            ))?;
+            query_opt(
+                &mut stmt,
+                params![agent.as_str(), user.as_str(), instances],
+                from_row,
+            )
+        })
+        .await
+    }
+
     /// Sessions with their message counts, newest activity (last message, else start) first:
     /// only `agent`'s if set, and only open ones unless `include_ended`.
     pub async fn list_sessions(
@@ -423,6 +461,95 @@ pub(crate) mod tests {
             ids(store.list_sessions(Some(jeeves), true).await.unwrap()),
             [c3.id, c1.id, c2.id]
         );
+    }
+
+    #[tokio::test]
+    async fn latest_direct_session_picks_the_newest_activity_on_the_instances() {
+        use crate::messages::tests::user;
+
+        let (_dir, store) = store().await;
+        let jeeves = AgentId::new("jeeves").unwrap();
+        let latest = |instances: &[&str]| {
+            let store = store.clone();
+            let instances = instances.iter().map(|i| (*i).to_owned()).collect();
+            let jeeves = jeeves.clone();
+            async move {
+                store
+                    .latest_direct_session(jeeves, owner().unwrap(), instances)
+                    .await
+                    .unwrap()
+                    .map(|s| s.id)
+            }
+        };
+        assert_eq!(latest(&["whatsapp"]).await, None);
+        // An ended session with the newest message beats an open one that is quieter.
+        let (old, _) = store
+            .open_session(key("c1"), SessionKind::Direct, owner(), at(0))
+            .await
+            .unwrap();
+        store
+            .append_messages(old.id, vec![user("late", 50)])
+            .await
+            .unwrap();
+        store.end_session(old.id, at(51)).await.unwrap();
+        let (quiet, _) = store
+            .open_session(key("c2"), SessionKind::Direct, owner(), at(10))
+            .await
+            .unwrap();
+        // Not candidates: another user's DM, a job session, another instance, another agent.
+        store
+            .open_session(
+                key("c3"),
+                SessionKind::Direct,
+                UserId::new("ann").ok(),
+                at(60),
+            )
+            .await
+            .unwrap();
+        store
+            .create_job_session(jeeves.clone(), owner(), at(70))
+            .await
+            .unwrap();
+        let mut irc = key("c4");
+        irc.channel = "irc".into();
+        let (irc, _) = store
+            .open_session(irc, SessionKind::Direct, owner(), at(80))
+            .await
+            .unwrap();
+        let mut other_agent = key("c5");
+        other_agent.agent = AgentId::new("bunter").unwrap();
+        store
+            .open_session(other_agent, SessionKind::Direct, owner(), at(90))
+            .await
+            .unwrap();
+
+        assert_eq!(latest(&["whatsapp"]).await, Some(old.id));
+        assert_eq!(latest(&["whatsapp", "irc"]).await, Some(irc.id));
+        assert_eq!(latest(&[]).await, None);
+        store
+            .append_messages(quiet.id, vec![user("now", 100)])
+            .await
+            .unwrap();
+        assert_eq!(latest(&["whatsapp", "irc"]).await, Some(quiet.id));
+    }
+
+    #[tokio::test]
+    async fn deleting_a_session_takes_its_messages() {
+        use crate::messages::tests::user;
+
+        let (_dir, store) = store().await;
+        let job = store
+            .create_job_session(AgentId::new("jeeves").unwrap(), owner(), at(0))
+            .await
+            .unwrap();
+        store
+            .append_messages(job.id, vec![user("prompt", 1)])
+            .await
+            .unwrap();
+        assert!(store.delete_session(job.id).await.unwrap());
+        assert!(!store.delete_session(job.id).await.unwrap());
+        assert_eq!(store.session(job.id).await.unwrap(), None);
+        assert_eq!(store.last_seq(job.id).await.unwrap(), 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

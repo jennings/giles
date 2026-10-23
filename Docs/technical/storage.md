@@ -102,6 +102,8 @@ instance, conversation id). Isolated job runs get keyless `job` sessions.
 | `end_session`         | Sets `ended_at` (`/new`, idle reset, end of a job run); `false` if already ended. The next `open_session` for the key starts a new session. |
 | `open_sessions`       | Every open session, oldest first.                                     |
 | `list_sessions`       | Sessions with their message counts (`SessionSummary`), newest activity (last message, else start) first; optionally one agent's, optionally with ended ones (admin `ListSessions`). |
+| `latest_direct_session` | The direct session of a user with an agent on one of the given channel instances with the newest activity, open or ended: where a job finds the user's DM (PLAN 6.11). |
+| `delete_session`      | Deletes a session with its messages and summaries; inbox and usage rows keep theirs with the session cleared (an isolated job run that replied `NO_REPLY`). |
 
 `Session::last_message_at` is the `created_at` of the session's last message, for `idle_reset`.
 
@@ -126,6 +128,8 @@ adapters merge consecutive `User` messages where an API requires alternating rol
 | `fill_all_empty_slots` | Startup recovery: the same for every session (`interrupted`); returns the sessions affected, so the core can tell each requester. |
 | `load_history`         | The newest summary (highest `through_seq`) and every message after it. Empty slots come back as `Entry::EmptySlot`. |
 | `recent_messages`      | The last N messages in order (a job's `dm_excerpt`).                 |
+| `last_seq`             | The seq of the last message, 0 if none.                              |
+| `truncate_messages`    | Deletes the messages after a seq and the summaries covering any of them (a `dm` job run that replied `NO_REPLY`). |
 | `insert_summary`       | Stores a compaction summary of `from_seq..=through_seq`; rejects empty ranges, ranges past the last message, and a cut between a `ToolUse` and its slots. |
 
 The store doesn't decide when to compact or what a synthetic result says; the agent loop does
