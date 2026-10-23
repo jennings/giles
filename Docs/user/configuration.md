@@ -336,8 +336,8 @@ Files in `agents/` and directories whose names start with `.` are ignored.
 | `compaction_model`    | `models`        | The model that summarizes old history when a session gets long    |
 | `tools`               | `[]`            | Tools the agent may use: globs over tool names, e.g. `"github__*"`, `"memory*"` |
 | `ask`                 | `[]`            | Globs of tools that need your approval before each call           |
-| `max_iterations`      | no limit        | Model requests per interactive turn                               |
-| `max_iterations_jobs` | `25`            | Model requests per job turn                                       |
+| `max_iterations`      | no limit        | Model requests with tools per interactive turn: tools run after at most N−1 of them, then one final request without tools |
+| `max_iterations_jobs` | `25`            | The same for job turns                                            |
 | `busy_mode`           | `"steer"`       | New messages during a turn: `"steer"` shows them to the model at the next tool step; `"queue"` keeps them for the next turn |
 | `memory_cap`          | `2200`          | Characters per memory file the agent writes                       |
 | `approval_timeout`    | `"10m"`         | How long an approval request waits before it is denied            |
@@ -348,7 +348,9 @@ Tool names are `<instance>__<tool>` for toolsets and bare for the core tools (`m
 `memory_search`, `load_skill`, `schedule`, `send_attachment`). A call to a tool the agent isn't
 allowed, or one its toolset no longer offers, fails with `tool unavailable` and nothing runs.
 
-`/stop` ends a turn with no iteration limit.
+When a turn reaches its iteration limit, the tools the model asked for in that last request don't
+run; Giles makes one more request without tools, so the model tells you where it stopped. `/stop`
+ends a turn with no iteration limit.
 
 ### `[[jobs]]`
 

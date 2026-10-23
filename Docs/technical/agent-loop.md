@@ -132,8 +132,9 @@ request stays valid.
 4. Stores the assistant message (`meta` provider, model, usage) with one slot per `ToolUse` in one
    transaction, then hands it to the sink. An empty response stores nothing and ends the turn.
 5. No `ToolUse`: the turn is `Completed`. `Stop(MaxTokens)`: every slot gets `truncated`, nothing
-   runs, and the turn is `Completed`. Otherwise the calls go to the `ToolDispatcher`, each slot
-   filled as its output arrives (a call the dispatcher never answers gets `skipped`).
+   runs, and the turn is `Completed`. At the iteration cap (below), every slot gets `iteration
+   limit` and nothing runs. Otherwise the calls go to the `ToolDispatcher`, each slot filled as its
+   output arrives (a call the dispatcher never answers gets `skipped`).
 6. The tool-batch boundary hook runs (below), then back to 2.
 
 Ends other than completion:
@@ -150,6 +151,21 @@ Ends other than completion:
 - **Panicked**: `AgentLoop::run_turn` catches a panic of the turn's future and handles it like a
   failure: empty slots get `interrupted`, the notice is `Sorry, something went wrong: the turn
   stopped unexpectedly.`, and it returns `Failed("the turn panicked: <message>")`.
+
+### Iteration Caps
+
+An iteration is one request with the session's tools offered. A turn's cap is the agent's
+`max_iterations_jobs` (default 25) in a job session and `max_iterations` (default none: `/stop` is
+the brake) otherwise. When the response to the request that reaches the cap asks for tools, none of
+them runs: every slot gets `iteration limit`, and the turn makes one more request, the same but
+with no tools, so the model tells the user where it stopped (§6.3: a turn never stops silently).
+That last request misses the provider's cached prefix, since the tools are part of it. Its response
+ends the turn: any calls it asks for anyway get `iteration limit` too (logged). So a capped turn
+makes at most cap + 1 requests and runs tools at most cap − 1 times. A response at the cap that
+asks for no tools just ends the turn, as always.
+
+The cap goes by session kind: a job run with `session = "dm"` (TASKS.md 3.2) runs in a direct
+session, so the scheduler has to mark such turns for the jobs cap to apply to them.
 
 ## Tool Dispatch
 

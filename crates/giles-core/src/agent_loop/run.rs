@@ -7,13 +7,17 @@ use giles_types::{
     GenerationParams, Message, MessageMeta, Role, StopReason, Usage,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use super::dispatch::{ToolBatch, ToolRequest};
 use super::history::{self, request_messages, user_message};
 use super::output::OutputSink;
 use super::prompt::{PromptError, SessionPrompt};
-use super::{AgentLoop, CANCELLED_RESULT, NOTICE_TIMEOUT, SKIPPED_RESULT, TRUNCATED_RESULT};
+use super::{
+    AgentLoop, CANCELLED_RESULT, ITERATION_LIMIT_RESULT, NOTICE_TIMEOUT, SKIPPED_RESULT,
+    TRUNCATED_RESULT,
+};
+use crate::config::AgentConfig;
 use crate::registry::{RegistryError, ResolvedModel};
 use crate::sessions::{INTERRUPTED_RESULT, Turn, TurnOutcome};
 
@@ -169,6 +173,11 @@ async fn drive(agent_loop: &AgentLoop, turn: &Turn) -> Result<TurnOutcome, TurnE
         },
         ..GenerationParams::default()
     };
+    let cap = iteration_cap(agent, session.kind);
+    // Requests made with tools offered.
+    let mut iterations = 0_u32;
+    // Set once the cap is hit: the next request is the turn's last, with no tools offered.
+    let mut last = false;
 
     loop {
         if turn.cancel.is_cancelled() {
@@ -179,9 +188,16 @@ async fn drive(agent_loop: &AgentLoop, turn: &Turn) -> Result<TurnOutcome, TurnE
             model: model.model.clone(),
             system: prompt.system.clone(),
             messages: request_messages(history),
-            tools: prompt.tools.specs(),
+            tools: if last {
+                Vec::new()
+            } else {
+                prompt.tools.specs()
+            },
             params: params.clone(),
         };
+        if !last {
+            iterations += 1;
+        }
         let response = match receive(agent_loop, turn, &model, request, output.as_mut()).await? {
             Received::Complete(response) => response,
             Received::Cancelled => {
@@ -229,6 +245,21 @@ async fn drive(agent_loop: &AgentLoop, turn: &Turn) -> Result<TurnOutcome, TurnE
                 .await?;
             return Ok(TurnOutcome::Completed);
         }
+        if last || cap.is_some_and(|cap| iterations >= cap) {
+            // None of the calls runs. At the cap, one more request without tools lets the model
+            // say where it stopped; after that request the turn ends whatever it asked for.
+            agent_loop
+                .store
+                .fill_empty_slots(session.id, ITERATION_LIMIT_RESULT, agent_loop.clock.now())
+                .await?;
+            if last {
+                warn!(session = %session.id, "the model asked for tools in a request without any");
+                return Ok(TurnOutcome::Completed);
+            }
+            debug!(session = %session.id, iterations, "the turn hit its iteration limit");
+            last = true;
+            continue;
+        }
 
         if !run_tools(agent_loop, turn, &prompt, &context, calls, &slots).await? {
             fill_empty_slots(agent_loop, turn, CANCELLED_RESULT).await;
@@ -246,6 +277,16 @@ async fn drive(agent_loop: &AgentLoop, turn: &Turn) -> Result<TurnOutcome, TurnE
                 .append_messages(session.id, messages)
                 .await?;
         }
+    }
+}
+
+/// The most requests with tools offered that one turn of an agent's session of `kind` may make
+/// (PLAN section 6.3): `max_iterations_jobs` for job sessions, `max_iterations` (none by default)
+/// for the others.
+fn iteration_cap(agent: &AgentConfig, kind: SessionKind) -> Option<u32> {
+    match kind {
+        SessionKind::Job => Some(agent.max_iterations_jobs),
+        _ => agent.max_iterations,
     }
 }
 

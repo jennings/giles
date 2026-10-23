@@ -1075,3 +1075,141 @@ async fn a_job_turn_uses_short_retention_sends_nothing_and_is_not_cached() {
     };
     assert!(system(&requests[1]).contains("Tea at five."));
 }
+
+/// A response asking for one `list_issues` call, `t<n>`.
+fn one_call(n: usize) -> Script {
+    response(
+        vec![tool_use(&format!("t{n}"), "github__list_issues", json!({}))],
+        StopReason::ToolUse,
+    )
+}
+
+/// The ids of the calls the toolset got.
+fn toolset_calls(h: &Harness) -> Vec<String> {
+    h.toolset
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(call, _)| call.id.clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn an_interactive_turn_has_no_iteration_limit_by_default() {
+    let mut h = Harness::new().await;
+    for n in 1..=30 {
+        h.provider.push(one_call(n));
+    }
+    h.provider.push(text("Done."));
+    let (turn, _) = h.turn(&["Keep going"]);
+    assert_eq!(h.agent_loop().run_turn(turn).await, TurnOutcome::Completed);
+
+    assert_eq!(toolset_calls(&h).len(), 30);
+    let requests = h.provider.requests();
+    assert_eq!(requests.len(), 31);
+    assert!(requests.iter().all(|r| !r.tools.is_empty()));
+}
+
+#[tokio::test]
+async fn at_max_iterations_the_calls_get_iteration_limit_and_a_last_request_has_no_tools() {
+    let mut h = Harness::with_agent(
+        "models = [\"anthropic/test-model\"]\ntools = [\"github__*\"]\nmax_iterations = 2\n",
+    )
+    .await;
+    h.provider.push(one_call(1));
+    h.provider.push(response(
+        vec![
+            Block::text("Two more."),
+            tool_use("t2", "github__list_issues", json!({})),
+            tool_use("t3", "github__list_issues", json!({})),
+        ],
+        StopReason::ToolUse,
+    ));
+    h.provider
+        .push(text("I listed the issues once and stopped there."));
+    let (turn, _) = h.turn(&["List them all"]);
+    assert_eq!(h.agent_loop().run_turn(turn).await, TurnOutcome::Completed);
+
+    // The first request's call ran; the second's didn't.
+    assert_eq!(toolset_calls(&h), ["t1"]);
+    let transcript = h.transcript().await;
+    assert_eq!(
+        transcript[4..],
+        [
+            result("t2", "iteration limit", true),
+            result("t3", "iteration limit", true),
+            assistant(vec![Block::text(
+                "I listed the issues once and stopped there."
+            )]),
+        ]
+    );
+    let requests = h.provider.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(!requests[1].tools.is_empty());
+    assert!(requests[2].tools.is_empty());
+    // The last request still carries the whole history, unanswered calls included.
+    assert_eq!(requests[2].messages.len(), 6);
+    assert_eq!(
+        h.sent(),
+        ["Two more.", "I listed the issues once and stopped there."]
+    );
+    assert_eq!(h.usage_requests().await, 3);
+}
+
+#[tokio::test]
+async fn calls_asked_for_in_the_last_request_do_not_run_and_the_turn_ends() {
+    let mut h = Harness::with_agent(
+        "models = [\"anthropic/test-model\"]\ntools = [\"github__*\"]\nmax_iterations = 1\n",
+    )
+    .await;
+    h.provider.push(one_call(1));
+    h.provider.push(response(
+        vec![
+            Block::text("Stopped before listing."),
+            tool_use("t2", "github__list_issues", json!({})),
+        ],
+        StopReason::ToolUse,
+    ));
+    let (turn, _) = h.turn(&["List"]);
+    assert_eq!(h.agent_loop().run_turn(turn).await, TurnOutcome::Completed);
+
+    assert!(toolset_calls(&h).is_empty());
+    let transcript = h.transcript().await;
+    assert_eq!(transcript[2], result("t1", "iteration limit", true));
+    assert_eq!(transcript[4], result("t2", "iteration limit", true));
+    assert_eq!(h.provider.requests().len(), 2);
+    assert_eq!(h.sent(), ["Stopped before listing."]);
+}
+
+#[tokio::test]
+async fn a_job_turn_stops_at_25_iterations_by_default() {
+    let mut h = Harness::new().await;
+    h.session = h
+        .store
+        .create_job_session(AgentId::new(AGENT).unwrap(), Some(owner()), now())
+        .await
+        .unwrap();
+    for n in 1..=25 {
+        h.provider.push(one_call(n));
+    }
+    h.provider.push(text("Stopped at the limit."));
+    let (turn, _) = h.turn(&["Check everything"]);
+    assert_eq!(h.agent_loop().run_turn(turn).await, TurnOutcome::Completed);
+
+    let ran = toolset_calls(&h);
+    assert_eq!(ran.len(), 24);
+    assert_eq!(ran.last().map(String::as_str), Some("t24"));
+    let requests = h.provider.requests();
+    assert_eq!(requests.len(), 26);
+    assert!(requests[..25].iter().all(|r| !r.tools.is_empty()));
+    assert!(requests[25].tools.is_empty());
+    let transcript = h.transcript().await;
+    assert_eq!(
+        transcript[transcript.len() - 2..],
+        [
+            result("t25", "iteration limit", true),
+            assistant(vec![Block::text("Stopped at the limit.")]),
+        ]
+    );
+}

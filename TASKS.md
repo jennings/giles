@@ -160,7 +160,7 @@ The five tracks run in parallel.
   store each assistant message with its N result slots in one transaction; loop until no tool use;
   `Stop(MaxTokens)` gives `truncated`; one `usage` row per request. Snapshot test of the rendered
   `system` and tool list. **Needs:** 2.1, 2.3, 1.10, 1.11, and 1.8 or 1.9.
-- [ ] **2.5 Tool dispatch and policy** (§6.3, §6.4). Tool list fixed per session from the agent's
+- [x] **2.5 Tool dispatch and policy** (§6.3, §6.4). Tool list fixed per session from the agent's
   allowlist globs and enforced at call time; "tool unavailable" for tools no longer served; calls
   in model order, consecutive parallel-safe calls (read-only core tools, `parallel = true`
   toolsets) up to 8 at once, others as barriers; per-toolset `deadline`; synthetic results;

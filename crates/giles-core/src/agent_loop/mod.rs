@@ -55,6 +55,9 @@ pub const TRUNCATED_RESULT: &str = "truncated";
 /// The result of a call the dispatcher finished without answering.
 pub const SKIPPED_RESULT: &str = "skipped";
 
+/// The result of every call of the response that hit the turn's iteration cap (PLAN section 6.3).
+pub const ITERATION_LIMIT_RESULT: &str = "iteration limit";
+
 /// How long a failure notice may take to send before it's given up (logged).
 pub const NOTICE_TIMEOUT: Duration = Duration::from_secs(10);
 
