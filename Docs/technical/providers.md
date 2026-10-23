@@ -105,8 +105,10 @@ the daemon. It returns only bytes, because the media type is already in the `Med
 accepted types are `image/jpeg`, `image/png`, `image/gif`, `image/webp`, and `application/pdf`
 (`anthropic::MEDIA_TYPES`). An `Image`, `Audio`, or `Document` block whose type isn't one of them is
 sent as its text reference, `[media:<id> <name> <type>]`, so a stray unsupported attachment never
-makes every later request fail (PLAN section 5). The core is expected to leave out media the model
-doesn't accept, by `ModelInfo::accepts`, when it builds the turn (2.4); this is the backstop.
+makes every later request fail (PLAN section 5), unless the part before it already is that
+reference (the agent loop stores one before each media block), so it isn't repeated. The agent
+loop leaves out media the model doesn't accept, by `ModelInfo::accepts` (`media::keep_accepted`,
+[Agent Loop](agent-loop.md#media)); this is the backstop when the model isn't listed.
 
 ### Request mapping
 
@@ -339,8 +341,9 @@ error.
 | `application/pdf`     | `file` with `filename` (`Document.name`, the media name, or `<id>.pdf`) |
 | anything undeclared   | `text` with the reference `[media:<id> <name> <type>]`, no bytes read   |
 
-The part follows the media type, whatever the block variant. As for Anthropic, the core is expected
-to filter media by `ModelInfo::accepts`; this is the backstop.
+The part follows the media type, whatever the block variant. As for Anthropic, a fallback reference
+right after the same stored reference isn't repeated, and the agent loop filters media by
+`ModelInfo::accepts` ([Agent Loop](agent-loop.md#media)); this is the backstop.
 
 ### Request mapping
 
@@ -364,8 +367,10 @@ user messages, though, every tool result is sent first, because the `tool` messa
 assistant's `tool_calls` must follow it directly. The run becomes its `tool` messages, then one
 `user` message with the relocated media (each part preceded by its reference text, so the model can
 tie it to the `tool` message that names it), then the run's other content. `tool` messages hold
-only text (PLAN section 5), hence the relocation. A `ToolUse` in a user message, a `ToolResult` in
-an assistant message, and anything but text and media in a tool result are `Error::InvalidRequest`.
+only text (PLAN section 5), hence the relocation. A media block's reference isn't added to the
+`tool` text when the text right before it already is that reference (the agent loop stores one
+there). A `ToolUse` in a user message, a `ToolResult` in an assistant message, and anything but
+text and media in a tool result are `Error::InvalidRequest`.
 
 Generation parameters depend on the dialect:
 

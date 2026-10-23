@@ -24,6 +24,7 @@ use tracing::debug;
 use super::prompt::SessionTools;
 use crate::approvals::TurnApprovals;
 use crate::config::{Config, DEFAULT_TOOL_DEADLINE};
+use crate::media::{SessionMedia, input_media};
 use crate::registry::{Registry, ToolTarget};
 
 #[cfg(test)]
@@ -67,6 +68,9 @@ pub struct ToolBatch {
     pub tools: Arc<SessionTools>,
     /// The turn, for toolsets and core tools.
     pub context: CallContext,
+    /// The media the session can refer to: a call's `{"$media": "<id>"}` inputs must be among
+    /// them.
+    pub media: Arc<SessionMedia>,
     /// Fired when the requester sent a new message the model should read first (`busy_mode =
     /// "steer"`): calls not started by then get [`SKIPPED_FOR_MESSAGE_RESULT`] and none starts
     /// any more; running calls finish.
@@ -153,6 +157,9 @@ impl CallPolicy {
 ///   [`ToolCallEvent::Result`] is the output. In v1 there are no roles, so the session's tools
 ///   (the agent's allowlist) are the whole policy; with roles, "not permitted for <user>" goes
 ///   here.
+/// - Each `{"$media": "<id>"}` in the input must name media of the session
+///   ([`ToolBatch::media`]); the call's [`ToolCall::media`] lists them for the toolset to hand
+///   over (PLAN section 5). An unknown id is the call's error result, and nothing runs.
 /// - A call to a tool matching the agent's `ask` globs then waits for approval
 ///   ([`TurnApprovals::approve_call`]); a denial is its error result. The wait doesn't count
 ///   against the deadline, and the checks above run again once it's approved, since the tool
@@ -188,6 +195,7 @@ impl ToolDispatcher for PolicyDispatcher {
             calls,
             tools,
             context,
+            media,
             skip,
             approvals,
         } = batch;
@@ -201,6 +209,7 @@ impl ToolDispatcher for PolicyDispatcher {
                 let tools = tools.clone();
                 let context = context.clone();
                 let approvals = approvals.clone();
+                let media = media.clone();
                 Scheduled {
                     index,
                     parallel: policy.parallel,
@@ -208,6 +217,10 @@ impl ToolDispatcher for PolicyDispatcher {
                         let mut target = match resolve_call(&registry, &tools, &call.name) {
                             Ok(target) => target,
                             Err(output) => return output,
+                        };
+                        let call_media = match input_media(&call.input, &media) {
+                            Ok(found) => found,
+                            Err(error) => return ToolOutput::error(error),
                         };
                         match approvals.approve_call(&call.name, &call.input).await {
                             Err(denied) => return ToolOutput::error(denied),
@@ -223,7 +236,7 @@ impl ToolDispatcher for PolicyDispatcher {
                             id: call.id,
                             name: bare,
                             input: call.input,
-                            media: Vec::new(),
+                            media: call_media,
                         };
                         let running = run_call(toolset, request, &call.name, context, &approvals);
                         match tokio::time::timeout(policy.deadline, running).await {

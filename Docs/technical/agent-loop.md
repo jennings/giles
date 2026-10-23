@@ -98,13 +98,13 @@ calls it after writing a summary; the turn then has to use the returned prompt.
 
 ## Messages
 
-Each inbound message is stored as a `User` message whose single text block starts with a time
+Each inbound message is stored as a `User` message whose first text block starts with a time
 prefix, `[Thu 2026-10-22 14:03 PDT]` (`%a %Y-%m-%d %H:%M %Z`), then a space and the text (just the
 prefix when the text is empty). The time is the channel's `sent_at`, else when the core received
 it, shown in `[owner] timezone`, else the agent's `timezone`, else the system's. The prefix is
 part of the stored text, so every later request renders the message identically and `memory_search`
 snippets carry the date. `meta.at` is when the core received it (it drives `idle_reset`), and
-`meta.sender` the requester.
+`meta.sender` the requester. Attachments follow the text (below, Media).
 
 A request's messages come from `Store::load_history`, reloaded before each request: the newest
 summary, if any, as a leading `User` message (`Summary of the earlier conversation:` and the text),
@@ -112,6 +112,42 @@ then every later message. Filled slots are `User` messages with one `ToolResult`
 can't normally reach a request (a turn fills its slots before the next request, and startup
 recovery fills leftovers); if one does, it's sent as an `interrupted` error result, logged, so the
 request stays valid.
+
+### Media
+
+`giles_core::media` holds the rules (§5). Every media block the model sees is named by its
+reference, a text block stored right before it: `[media:<id> <name> <type>]`, or `[media:<id>
+<type>]` without a name (`media::reference`). The name and type come from channels and tools, so
+control characters become spaces and `[`/`]` become `(`/`)`: a name can't end the reference early
+or forge another. The id is how the model refers to the media later: `send_attachment`, and
+`{"$media": "<id>"}` in a tool input.
+
+- **Inbound**: each of `InboundMessage::attachments` (already in the blob store) is stored after the
+  text as its reference and its block (`media::attachment`): `image/*` is `Image`, `audio/*` is
+  `Audio`, anything else a `Document` with the attachment's name.
+- **Tool results**: when a slot is filled, each media block of the result that doesn't already
+  follow its reference gets one (`media::with_references`).
+- **Requests**: once a turn's history holds media, the turn looks up the model's `ModelInfo`
+  (`Provider::list_models`, the entry whose id is the agent's model id) and keeps it for the rest
+  of the turn; turns without media never list. The agent loop keeps each answer in memory for its
+  life. A failed or slow listing (10 s) is logged and retried 5 minutes later; `/stop` and
+  shutdown cut the wait short. Every media block, in messages and in tool results, whose type
+  `ModelInfo::accepts` refuses is left out of the request (`media::keep_accepted`): its stored
+  reference stays (one takes its place if there is none), so an unsupported type reaches the
+  model only as text and can't make every later request fail. The transcript keeps the blocks, so
+  a later model that accepts them gets them. Without a `ModelInfo` (the provider doesn't list the
+  model, e.g. an alias, or listing failed) every block is sent and the provider's own declared
+  types decide (§5); a provider that turns a block into its reference skips it when the stored
+  reference is right before it.
+- **Media inputs**: `media::SessionMedia` is every media block of the request's history, by id.
+  The dispatcher resolves each `{"$media": "<id>"}` object (exactly that one key) anywhere in a
+  toolset call's input against it and puts the media in `ToolCall::media` (each once, in order of
+  appearance), for the toolset to hand over (2.21). An id the session doesn't have, or a
+  non-string value, is the call's error result (`unknown media <id>`) before any approval or
+  call, so a call can't reach a blob the session never saw.
+
+The web chat shows attachments themselves, so its transcript leaves out a text block that is the
+reference of the media block right after it.
 
 ## Turns
 
@@ -198,11 +234,12 @@ session, so the scheduler has to mark such turns for the jobs cap to apply to th
 
 ## Tool Dispatch
 
-`ToolDispatcher::dispatch(ToolBatch { calls, tools, context, skip, approvals })` returns a stream
-of `(index, ToolOutput { content, is_error })`, one per call, in any order. Dropping it must
+`ToolDispatcher::dispatch(ToolBatch { calls, tools, context, media, skip, approvals })` returns a
+stream of `(index, ToolOutput { content, is_error })`, one per call, in any order. Dropping it must
 cancel the calls still running. `context` is the `CallContext`: agent, requester, and the
-session's channel conversation. `skip` is the steering signal above; `approvals` the turn's
-`TurnApprovals`, built once per turn by `TurnApprovals::for_turn`.
+session's channel conversation. `media` is the session's media (above). `skip` is the steering
+signal above; `approvals` the turn's `TurnApprovals`, built once per turn by
+`TurnApprovals::for_turn`.
 
 `PolicyDispatcher` is the daemon's (§6.3, §6.4). It doesn't spawn: the stream drives the calls, so
 a call starts only while the agent loop polls it, and dropping the stream drops every running
@@ -241,9 +278,9 @@ Then a call to a tool matching the agent's `ask` globs waits for approval
 (`TurnApprovals::approve_call`, [Approvals](approvals.md)); a denial is its error result. The wait
 doesn't count against the deadline, and the checks run again once it's approved.
 
-Once allowed, it calls the toolset with the bare name, the input, and no media, and the first
-`ToolCallEvent::Result` is the output; a `call` error, an `Err` event, or a stream that ends
-without a result becomes an error result with the error's text. Progress is logged. A
+Once allowed, it calls the toolset with the bare name, the input, and the media the input refers
+to, and the first `ToolCallEvent::Result` is the output; a `call` error, an `Err` event, or a stream
+that ends without a result becomes an error result with the error's text. Progress is logged. A
 `ToolCallEvent::ApprovalRequest` (MCP elicitation) is asked through
 `TurnApprovals::answer_question` and answered on the handle's `answers`; that wait is part of the
 call.
@@ -306,8 +343,6 @@ the channel shows as cut off.
 
 ## Seams for Later Tasks
 
-- **2.9, media**: inbound attachments into `history::user_message`, `ModelInfo::accepts` filtering,
-  `ToolCall::media`.
 - **2.10, compaction**: `AgentLoop::rebuild_prompt`, and the summary rendering in
   `history::request_messages`.
 - **2.11, 2.12, core tools**: a core-tool arm in the dispatcher in place of `tool unavailable`.

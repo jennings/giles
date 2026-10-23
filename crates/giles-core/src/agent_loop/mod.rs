@@ -24,6 +24,7 @@
 pub mod dispatch;
 pub mod glob;
 pub mod history;
+mod models;
 pub mod output;
 pub mod prompt;
 mod run;
@@ -85,6 +86,7 @@ pub struct AgentLoop {
     dispatcher: Arc<dyn ToolDispatcher>,
     approvals: Arc<ApprovalBoard>,
     prompts: Mutex<HashMap<SessionKey, (SessionId, Arc<SessionPrompt>)>>,
+    models: models::ModelInfos,
 }
 
 impl fmt::Debug for AgentLoop {
@@ -119,6 +121,7 @@ impl AgentLoop {
             dispatcher,
             approvals,
             prompts: Mutex::default(),
+            models: models::ModelInfos::default(),
         }
     }
 

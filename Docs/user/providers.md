@@ -29,8 +29,9 @@ Notes:
 
 - Prompt caching is always on. The system prompt and the conversation are cached for 1 hour in
   chats and 5 minutes in scheduled jobs. Cache reads and writes are recorded in usage.
-- Images (JPEG, PNG, GIF, WebP) and PDFs are sent to the model. Other attachments reach it only as
-  a text reference.
+- Images (JPEG, PNG, GIF, WebP) and PDFs are sent to the model. When the model id is one the
+  Models API lists (not an alias such as `claude-sonnet-4-5`), Giles also leaves out the types it
+  says the model can't take. Other attachments reach it only as a text reference.
 - A `temperature` is sent only to Claude 4.6 and 4.5 models, and only with an `anthropic_version`
   before `2026-10-21`: newer models and API versions reject it, so Giles leaves it out there and the
   model uses its default.

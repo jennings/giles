@@ -222,6 +222,7 @@ impl Setup {
                 requester: None,
                 conversation: None,
             },
+            media: Arc::default(),
             skip,
             approvals: Arc::new(approvals),
         })

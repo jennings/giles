@@ -6,7 +6,7 @@ use futures::StreamExt;
 use giles_store::{InboxId, SessionKind, Slot, UsageRecord};
 use giles_types::{
     Block, CacheRetention, CallContext, ChannelConversation, CompletionEvent, CompletionRequest,
-    GenerationParams, Message, MessageMeta, Role, StopReason, Usage,
+    GenerationParams, Message, MessageMeta, ModelInfo, Role, StopReason, Usage,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
@@ -21,6 +21,7 @@ use super::{
 };
 use crate::approvals::TurnApprovals;
 use crate::config::{AgentConfig, BusyMode};
+use crate::media::{self, SessionMedia};
 use crate::registry::{RegistryError, ResolvedModel};
 use crate::sessions::{INTERRUPTED_RESULT, Turn, TurnMessage, TurnOutcome};
 
@@ -166,6 +167,8 @@ async fn drive(agent_loop: &AgentLoop, turn: &Turn) -> Result<TurnOutcome, TurnE
 
     let prompt = agent_loop.session_prompt(session, agent).await?;
     let model = agent_loop.registry.agent_model(agent)?;
+    // The model's media types, looked up once the history holds media, then kept for the turn.
+    let mut model_info: Option<Option<Arc<ModelInfo>>> = None;
     let context = call_context(turn);
     let approvals = Arc::new(TurnApprovals::for_turn(
         agent_loop.approvals.clone(),
@@ -192,10 +195,24 @@ async fn drive(agent_loop: &AgentLoop, turn: &Turn) -> Result<TurnOutcome, TurnE
             return Ok(TurnOutcome::Cancelled);
         }
         let history = agent_loop.store.load_history(session.id).await?;
+        let mut messages = request_messages(history);
+        let media = Arc::new(SessionMedia::from_messages(&messages));
+        if !media.is_empty() {
+            if model_info.is_none() {
+                let lookup = agent_loop.models.get(&model, &config);
+                let Some(info) = or_cancel(&turn.cancel, lookup).await else {
+                    return Ok(TurnOutcome::Cancelled);
+                };
+                model_info = Some(info);
+            }
+            if let Some(Some(info)) = &model_info {
+                media::keep_accepted(&mut messages, &|media_type| info.accepts(media_type));
+            }
+        }
         let request = CompletionRequest {
             model: model.model.clone(),
             system: prompt.system.clone(),
-            messages: request_messages(history),
+            messages,
             tools: if last {
                 Vec::new()
             } else {
@@ -270,7 +287,7 @@ async fn drive(agent_loop: &AgentLoop, turn: &Turn) -> Result<TurnOutcome, TurnE
         }
 
         let denied = match run_tools(
-            agent_loop, turn, &prompt, &context, &approvals, calls, &slots,
+            agent_loop, turn, &prompt, &context, &approvals, media, calls, &slots,
         )
         .await?
         {
@@ -389,8 +406,9 @@ enum BatchEnd {
     Done { denied: bool },
 }
 
-/// Runs the calls of one assistant message, filling each slot as its result arrives. The
-/// requester's new messages are only looked at here
+/// Runs the calls of one assistant message, filling each slot as its result arrives (each media
+/// block of a result after its reference, [`media::with_references`]). The requester's new
+/// messages are only looked at here
 /// ([`Steering::peek`](crate::sessions::Steering::peek)); they join the turn at the boundary, so
 /// a turn stopped before then leaves them queued for the next one.
 ///
@@ -399,12 +417,14 @@ enum BatchEnd {
 /// - In either mode, a message that arrives while an approval of the turn waits denies every
 ///   waiting approval ("Not approved. The user said: ..."). Messages already queued when the
 ///   batch started, or seen while no approval waited, don't.
+#[allow(clippy::too_many_arguments)]
 async fn run_tools(
     agent_loop: &AgentLoop,
     turn: &Turn,
     prompt: &SessionPrompt,
     context: &CallContext,
     approvals: &Arc<TurnApprovals>,
+    media: Arc<SessionMedia>,
     calls: Vec<ToolRequest>,
     slots: &[Slot],
 ) -> Result<BatchEnd, TurnError> {
@@ -424,6 +444,7 @@ async fn run_tools(
         calls,
         tools: prompt.tools.clone(),
         context: context.clone(),
+        media,
         skip: skip.clone(),
         approvals: approvals.clone(),
     });
@@ -467,7 +488,7 @@ async fn run_tools(
                     .store
                     .fill_slot(
                         slot.id,
-                        output.content,
+                        media::with_references(output.content),
                         output.is_error,
                         agent_loop.clock.now(),
                     )

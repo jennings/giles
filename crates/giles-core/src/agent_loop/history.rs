@@ -6,6 +6,7 @@ use giles_types::{Block, Message, MessageMeta, Role, Timestamp, UserId};
 use jiff::tz::TimeZone;
 
 use crate::config::{AgentConfig, Config};
+use crate::media;
 use crate::sessions::{INTERRUPTED_RESULT, TurnMessage};
 
 /// How the time prefix is formatted (`jiff` strftime): `[Thu 2026-10-22 14:03 PDT]`.
@@ -69,9 +70,10 @@ pub fn strip_time_prefix(text: &str) -> &str {
 }
 
 /// The stored form of an inbound message: a `User` message whose text starts with the time it
-/// was sent (`sent_at`, else when the core received it). The prefix is part of the stored text,
-/// so the transcript renders the same on every later request and the cache prefix holds.
-/// `meta.at` is when the core received it (it drives `idle_reset`).
+/// was sent (`sent_at`, else when the core received it), then each attachment as its media
+/// reference and its `Image`, `Audio`, or `Document` block ([`media::attachment`]). The prefix
+/// is part of the stored text, so the transcript renders the same on every later request and
+/// the cache prefix holds. `meta.at` is when the core received it (it drives `idle_reset`).
 pub fn user_message(message: &TurnMessage, sender: Option<&UserId>, tz: &TimeZone) -> Message {
     let sent = message.message.sent_at.unwrap_or(message.received_at);
     let prefix = time_prefix(sent, tz);
@@ -81,11 +83,17 @@ pub fn user_message(message: &TurnMessage, sender: Option<&UserId>, tz: &TimeZon
     } else {
         format!("{prefix} {text}")
     };
+    let attachments = &message.message.attachments;
+    let mut content = Vec::with_capacity(1 + 2 * attachments.len());
+    content.push(Block::text(text));
+    for attachment in attachments {
+        content.extend(media::attachment(attachment.clone()));
+    }
     let mut meta = MessageMeta::new(message.received_at);
     meta.sender = sender.cloned();
     Message {
         role: Role::User,
-        content: vec![Block::text(text)],
+        content,
         meta,
     }
 }
@@ -194,6 +202,37 @@ mod tests {
         let message = user_message(&turn_message("", None), None, &TimeZone::UTC);
         assert_eq!(message.content, [Block::text("[Thu 2026-10-22 21:03 UTC]")]);
         assert_eq!(message.meta.sender, None);
+    }
+
+    #[test]
+    fn attachments_follow_the_text_each_after_its_reference() {
+        let media = |byte: u8, media_type: &str, name: Option<&str>| giles_types::MediaRef {
+            id: giles_types::MediaId::from_digest([byte; 32]),
+            media_type: media_type.to_owned(),
+            size: 10,
+            name: name.map(str::to_owned),
+        };
+        let photo = media(1, "image/jpeg", Some("cat.jpg"));
+        let voice = media(2, "audio/ogg", None);
+        let report = media(3, "application/pdf", Some("q3.pdf"));
+        let mut inbound = turn_message("", None);
+        inbound.message.attachments = vec![photo.clone(), voice.clone(), report.clone()];
+        let message = user_message(&inbound, None, &TimeZone::UTC);
+        assert_eq!(
+            message.content,
+            [
+                Block::text("[Thu 2026-10-22 21:03 UTC]"),
+                Block::text(format!("[media:{} cat.jpg image/jpeg]", photo.id)),
+                Block::Image { media: photo },
+                Block::text(format!("[media:{} audio/ogg]", voice.id)),
+                Block::Audio { media: voice },
+                Block::text(format!("[media:{} q3.pdf application/pdf]", report.id)),
+                Block::Document {
+                    media: report,
+                    name: Some("q3.pdf".to_owned()),
+                },
+            ]
+        );
     }
 
     #[test]

@@ -178,7 +178,7 @@ The five tracks run in parallel.
 - [x] **2.8 Output delivery** (§6.9). `deltas` channels get streamed text; `blocks` channels get
   chunks flushed at paragraph boundaries outside code fences and at message end; reasoning and tool
   blocks never reach channels. **Needs:** 2.4. Parallel with 2.5–2.7.
-- [ ] **2.9 Media in turns** (§5). Inbound attachments become `Image`/`Audio`/`Document` blocks with
+- [x] **2.9 Media in turns** (§5). Inbound attachments become `Image`/`Audio`/`Document` blocks with
   `[media:<id> <name> <type>]` references; media types a provider doesn't accept reach the model
   only as the reference. **Needs:** 2.4, 1.3.
 - [ ] **2.10 Compaction** (§6.8). Near the model's context limit, summarize older history with

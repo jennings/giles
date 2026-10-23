@@ -108,7 +108,7 @@ async fn messages_json(messages: Vec<Message>, media: &dyn MediaSource) -> Resul
     for message in messages {
         let mut content = Vec::with_capacity(message.content.len());
         for block in message.content {
-            if let Some(block) = block_json(block, media).await? {
+            if let Some(block) = block_json(block, media, content.last()).await? {
                 content.push(block);
             }
         }
@@ -136,8 +136,13 @@ async fn messages_json(messages: Vec<Message>, media: &dyn MediaSource) -> Resul
 }
 
 /// One message content block, or `None` for a block that isn't sent: empty text, reasoning
-/// without an Anthropic signature, and `Opaque` data of another API family.
-async fn block_json(block: Block, media: &dyn MediaSource) -> Result<Option<Value>> {
+/// without an Anthropic signature, `Opaque` data of another API family, and the reference of
+/// unsupported media when `previous` (the part before it) already is that reference.
+async fn block_json(
+    block: Block,
+    media: &dyn MediaSource,
+    previous: Option<&Value>,
+) -> Result<Option<Value>> {
     Ok(match block {
         Block::ToolUse { id, name, input } => Some(json!({
             "type": "tool_use", "id": id, "name": name, "input": input,
@@ -152,7 +157,7 @@ async fn block_json(block: Block, media: &dyn MediaSource) -> Result<Option<Valu
             result.insert("tool_use_id".into(), tool_use_id.into());
             let mut blocks = Vec::with_capacity(content.len());
             for block in content {
-                if let Some(block) = content_json(block, media).await? {
+                if let Some(block) = content_json(block, media, blocks.last()).await? {
                     blocks.push(block);
                 }
             }
@@ -187,42 +192,51 @@ async fn block_json(block: Block, media: &dyn MediaSource) -> Result<Option<Valu
             Some(data)
         }
         Block::Opaque(_) => None,
-        other => content_json(other, media).await?,
+        other => content_json(other, media, previous).await?,
     })
 }
 
-/// A block that may appear anywhere, including inside a tool result: text and media.
-async fn content_json(block: Block, media: &dyn MediaSource) -> Result<Option<Value>> {
-    Ok(match block {
-        Block::Text { text } if text.is_empty() => None,
-        Block::Text { text } => Some(json!({"type": "text", "text": text})),
+/// A block that may appear anywhere, including inside a tool result: text and media. `None` for
+/// empty text and for the reference of unsupported media that `previous` already is.
+async fn content_json(
+    block: Block,
+    media: &dyn MediaSource,
+    previous: Option<&Value>,
+) -> Result<Option<Value>> {
+    match block {
+        Block::Text { text } if text.is_empty() => Ok(None),
+        Block::Text { text } => Ok(Some(json!({"type": "text", "text": text}))),
         Block::Image { media: media_ref } | Block::Audio { media: media_ref } => {
-            Some(media_json(media_ref, None, media).await?)
+            media_json(media_ref, None, media, previous).await
         }
         Block::Document {
             media: media_ref,
             name,
-        } => Some(media_json(media_ref, name, media).await?),
-        other => {
-            return Err(Error::InvalidRequest(format!(
-                "a tool result can only contain text and media, not {:?}",
-                other.kind()
-            )));
-        }
-    })
+        } => media_json(media_ref, name, media, previous).await,
+        other => Err(Error::InvalidRequest(format!(
+            "a tool result can only contain text and media, not {:?}",
+            other.kind()
+        ))),
+    }
 }
 
 /// An image or PDF as a base64 block, by media type whatever the block variant. Any other type
 /// becomes its text reference `[media:<id> <name> <type>]`, so an unsupported attachment can't
-/// make the request fail (PLAN section 5).
+/// make the request fail (PLAN section 5), unless `previous` already is that reference (the agent
+/// loop stores one before each media block): then `None`.
 async fn media_json(
     media_ref: MediaRef,
     title: Option<String>,
     media: &dyn MediaSource,
-) -> Result<Value> {
+    previous: Option<&Value>,
+) -> Result<Option<Value>> {
     let essence = wire::media_essence(&media_ref.media_type);
     if !MEDIA_TYPES.contains(&essence.as_str()) {
-        return Ok(json!({"type": "text", "text": crate::media::reference(&media_ref)}));
+        let reference = crate::media::reference(&media_ref);
+        let repeated = previous.is_some_and(|previous| {
+            previous["type"] == "text" && previous["text"].as_str() == Some(reference.as_str())
+        });
+        return Ok((!repeated).then(|| json!({"type": "text", "text": reference})));
     }
     let data = BASE64.encode(media.read(&media_ref).await?);
     let source = json!({"type": "base64", "media_type": essence, "data": data});
@@ -231,9 +245,9 @@ async fn media_json(
         if let Some(title) = title {
             document["title"] = title.into();
         }
-        Ok(document)
+        Ok(Some(document))
     } else {
-        Ok(json!({"type": "image", "source": source}))
+        Ok(Some(json!({"type": "image", "source": source})))
     }
 }
 
@@ -496,6 +510,45 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, Error::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn a_stored_reference_is_not_repeated_for_unsupported_media() {
+        let ogg = media_ref(1, "audio/ogg", Some("voice.ogg"));
+        let csv = media_ref(2, "text/csv", None);
+        let reference = crate::media::reference(&ogg);
+        let messages = vec![message(
+            Role::User,
+            vec![
+                Block::text("listen"),
+                Block::text(reference.clone()),
+                Block::Audio { media: ogg.clone() },
+                // Without a stored reference, the provider's own stands in.
+                Block::ToolResult {
+                    tool_use_id: "t".into(),
+                    content: vec![
+                        Block::text(reference.clone()),
+                        Block::Audio { media: ogg },
+                        Block::Document {
+                            media: csv.clone(),
+                            name: None,
+                        },
+                    ],
+                    is_error: false,
+                },
+            ],
+        )];
+        let body = build(request("m", messages)).await;
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        let texts: Vec<&str> = content.iter().filter_map(|b| b["text"].as_str()).collect();
+        assert_eq!(texts, ["listen", reference.as_str()]);
+        let result: Vec<&str> = content[2]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(result, [reference.clone(), crate::media::reference(&csv)]);
     }
 
     #[tokio::test]

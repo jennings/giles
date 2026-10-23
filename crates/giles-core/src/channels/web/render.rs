@@ -10,6 +10,7 @@ use tracing::error;
 
 use super::hub::Live;
 use crate::agent_loop::history;
+use crate::media;
 
 /// Media types `/blobs/<id>` shows inline (and the page shows as `<img>`): raster images only, the
 /// same set the renderer accepts as `data:` images. Everything else is a download.
@@ -199,8 +200,10 @@ pub(super) fn out_of_band(fragment: &str) -> String {
 
 /// The text and media of a stored message as the chat shows it: text blocks joined by blank lines,
 /// and images and documents. A user message's time prefix (`[Thu 2026-10-22 14:03 PDT] `, added
-/// for the model by the agent loop) is left out. Tool calls, tool results, reasoning, and provider
-/// data never reach the page (PLAN section 6.9). `None` if nothing is left to show.
+/// for the model by the agent loop) is left out, and so is each media reference stored before its
+/// media (`[media:<id> <name> <type>]`, [`media::attachment`]): the page shows the media itself.
+/// Tool calls, tool results, reasoning, and provider data never reach the page (PLAN section
+/// 6.9). `None` if nothing is left to show.
 fn visible(role: Role, content: &[Block]) -> Option<(String, Vec<&MediaRef>)> {
     if content
         .iter()
@@ -210,8 +213,9 @@ fn visible(role: Role, content: &[Block]) -> Option<(String, Vec<&MediaRef>)> {
     }
     let mut texts = Vec::new();
     let mut media = Vec::new();
-    for block in content {
+    for (index, block) in content.iter().enumerate() {
         match block {
+            Block::Text { text } if is_reference_of(text, content.get(index + 1)) => {}
             Block::Text { text } if role == Role::User && texts.is_empty() => {
                 texts.push(history::strip_time_prefix(text));
             }
@@ -226,6 +230,18 @@ fn visible(role: Role, content: &[Block]) -> Option<(String, Vec<&MediaRef>)> {
         return None;
     }
     Some((texts.join("\n\n"), media))
+}
+
+/// Whether `text` is the media reference of `next`, the block after it.
+fn is_reference_of(text: &str, next: Option<&Block>) -> bool {
+    match next {
+        Some(
+            Block::Image { media: m }
+            | Block::Audio { media: m }
+            | Block::Document { media: m, .. },
+        ) => text == media::reference(m),
+        _ => false,
+    }
 }
 
 /// The stored transcript as message elements, with a marker where a new session (`/new`, idle
@@ -531,6 +547,25 @@ mod tests {
             "assistant text is kept: {}",
             items[2]
         );
+    }
+
+    #[test]
+    fn history_shows_attachments_without_their_references() {
+        let photo = media("image/png", Some("cat.png"));
+        let reference = crate::media::reference(&photo);
+        let mut content = vec![text("[Thu 2026-10-22 14:03 PDT] look")];
+        content.extend(crate::media::attachment(photo));
+        let rows = vec![
+            row(1, 1, Role::User, content),
+            // A reference not followed by its media is text the model wrote.
+            row(1, 2, Role::Assistant, vec![text(&reference)]),
+        ];
+        let items = history(&rows);
+        assert_eq!(items.len(), 2, "{items:#?}");
+        assert!(items[0].contains("<p>look</p>"), "{}", items[0]);
+        assert!(items[0].contains("<img"), "{}", items[0]);
+        assert!(!items[0].contains("[media:"), "{}", items[0]);
+        assert!(items[1].contains("[media:"), "{}", items[1]);
     }
 
     fn at(secs: i64) -> Timestamp {

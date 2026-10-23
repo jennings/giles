@@ -3,7 +3,7 @@
 
 use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -12,9 +12,9 @@ use giles_store::{Entry, InboxId, Session, SessionKey, SessionKind, Store};
 use giles_types::{
     AgentId, Block, BlockKind, CacheRetention, CallContext, Channel, ChannelEvent, ChannelInfo,
     CompletionEvent, CompletionRequest, ConversationId, ConversationKind, ConversationRef, Error,
-    EventId, InboundMessage, Message, MessageId, ModelInfo, NativeId, OutboundMessage, OutputMode,
-    Provider, Result, Role, Skill, SkillSummary, StopReason, Timestamp, ToolCall, ToolCallEvent,
-    ToolCallHandle, ToolSpec, Toolset, Usage, UserId,
+    EventId, InboundMessage, MediaRef, Message, MessageId, ModelInfo, NativeId, OutboundMessage,
+    OutputMode, Provider, Result, Role, Skill, SkillSummary, StopReason, Timestamp, ToolCall,
+    ToolCallEvent, ToolCallHandle, ToolSpec, Toolset, Usage, UserId,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -57,6 +57,12 @@ struct FakeProvider {
     scripts: Mutex<VecDeque<Script>>,
     requests: Mutex<Vec<CompletionRequest>>,
     requested: Notify,
+    /// What `list_models` answers.
+    models: Mutex<Vec<ModelInfo>>,
+    /// How many times `list_models` was called.
+    listed: AtomicUsize,
+    /// Whether `list_models` fails.
+    listing_fails: AtomicBool,
 }
 
 impl FakeProvider {
@@ -72,7 +78,11 @@ impl FakeProvider {
 #[async_trait]
 impl Provider for FakeProvider {
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
-        Ok(Vec::new())
+        self.listed.fetch_add(1, Ordering::SeqCst);
+        if self.listing_fails.load(Ordering::SeqCst) {
+            return Err(Error::unavailable("the model list is down"));
+        }
+        Ok(self.models.lock().unwrap().clone())
     }
 
     async fn complete(
@@ -212,21 +222,28 @@ impl Toolset for FakeToolset {
                 })
                 .boxed()
             }
-            _ => stream::iter([
-                Ok(ToolCallEvent::Progress {
-                    progress: 1.0,
-                    total: None,
-                    message: None,
-                }),
-                Ok(ToolCallEvent::Result {
-                    content: vec![Block::text(format!(
-                        "{} ran with {}",
-                        call.name, call.input
-                    ))],
-                    is_error: false,
-                }),
-            ])
-            .boxed(),
+            // Answers with its input, and each media input as an image.
+            _ => {
+                let mut content = vec![Block::text(format!(
+                    "{} ran with {}",
+                    call.name, call.input
+                ))];
+                content.extend(call.media.iter().map(|media| Block::Image {
+                    media: media.clone(),
+                }));
+                stream::iter([
+                    Ok(ToolCallEvent::Progress {
+                        progress: 1.0,
+                        total: None,
+                        message: None,
+                    }),
+                    Ok(ToolCallEvent::Result {
+                        content,
+                        is_error: false,
+                    }),
+                ])
+                .boxed()
+            }
         };
         Ok(ToolCallHandle { events, answers })
     }
@@ -1267,5 +1284,256 @@ async fn a_blocks_channel_gets_a_reply_in_paragraphs_in_order() {
             "- one\n\n- two",
             "That's all."
         ]
+    );
+}
+
+fn media_ref(byte: u8, media_type: &str, name: Option<&str>) -> MediaRef {
+    MediaRef {
+        id: giles_types::MediaId::from_digest([byte; 32]),
+        media_type: media_type.to_owned(),
+        size: 3,
+        name: name.map(str::to_owned),
+    }
+}
+
+/// The model the harness's agent uses, accepting `media_types`.
+fn test_model(media_types: &[&str]) -> ModelInfo {
+    ModelInfo {
+        id: "test-model".to_owned(),
+        display_name: None,
+        context_window: None,
+        max_output_tokens: None,
+        media_types: media_types.iter().map(|&t| t.to_owned()).collect(),
+        reasoning: false,
+    }
+}
+
+/// `media` as stored: its reference, then its block.
+fn attached(media: &MediaRef) -> Vec<Block> {
+    crate::media::attachment(media.clone()).to_vec()
+}
+
+fn reference(media: &MediaRef) -> Block {
+    Block::text(crate::media::reference(media))
+}
+
+#[tokio::test]
+async fn attachments_reach_the_model_as_content_only_if_it_accepts_their_type() {
+    let mut h = Harness::new().await;
+    *h.provider.models.lock().unwrap() = vec![
+        // Not the agent's model: ignored.
+        ModelInfo {
+            id: "other-model".to_owned(),
+            ..test_model(&["audio/ogg"])
+        },
+        test_model(&["image/png", "application/pdf"]),
+    ];
+    let png = media_ref(1, "image/png", Some("cat.png"));
+    let jpeg = media_ref(2, "image/jpeg", None);
+    let ogg = media_ref(3, "audio/ogg", Some("voice.ogg"));
+    let pdf = media_ref(4, "application/pdf", Some("q3.pdf"));
+    let csv = media_ref(5, "text/csv", Some("q3.csv"));
+    h.provider.push(text("Lovely cat."));
+    let (mut turn, _) = h.turn(&["Look"]);
+    turn.messages[0].message.attachments = vec![
+        png.clone(),
+        jpeg.clone(),
+        ogg.clone(),
+        pdf.clone(),
+        csv.clone(),
+    ];
+    assert_eq!(h.agent_loop().run_turn(turn).await, TurnOutcome::Completed);
+
+    // Stored: every attachment as its reference and its block.
+    let mut stored = vec![Block::text(format!("{PREFIX} Look"))];
+    for media in [&png, &jpeg, &ogg, &pdf, &csv] {
+        stored.extend(attached(media));
+    }
+    assert_eq!(h.transcript().await[0], Some((Role::User, stored)));
+
+    // Sent: the accepted ones as content, the others as their references alone.
+    let mut sent = vec![Block::text(format!("{PREFIX} Look"))];
+    sent.extend(attached(&png));
+    sent.push(reference(&jpeg));
+    sent.push(reference(&ogg));
+    sent.extend(attached(&pdf));
+    sent.push(reference(&csv));
+    assert_eq!(h.provider.requests()[0].messages[0].content, sent);
+    assert_eq!(h.provider.listed.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn media_is_filtered_the_same_after_a_restart_and_models_are_listed_once() {
+    let mut h = Harness::new().await;
+    *h.provider.models.lock().unwrap() = vec![test_model(&["image/png"])];
+    let png = media_ref(1, "image/png", None);
+    let wav = media_ref(2, "audio/wav", None);
+    h.provider.push(text("Noted."));
+    h.provider.push(text("Still here."));
+    h.provider.push(text("Yes."));
+    let agent_loop = h.agent_loop();
+    let (mut turn, _) = h.turn(&["Here"]);
+    turn.messages[0].message.attachments = vec![png.clone(), wav.clone()];
+    assert_eq!(agent_loop.run_turn(turn).await, TurnOutcome::Completed);
+    let (turn, _) = h.turn(&["Again?"]);
+    assert_eq!(agent_loop.run_turn(turn).await, TurnOutcome::Completed);
+    assert_eq!(h.provider.listed.load(Ordering::SeqCst), 1);
+
+    // A new agent loop (a restart) reads the stored media back and filters it the same way.
+    let (turn, _) = h.turn(&["Sure?"]);
+    assert_eq!(h.agent_loop().run_turn(turn).await, TurnOutcome::Completed);
+    assert_eq!(h.provider.listed.load(Ordering::SeqCst), 2);
+    let requests = h.provider.requests();
+    let mut first = vec![Block::text(format!("{PREFIX} Here"))];
+    first.extend(attached(&png));
+    first.push(reference(&wav));
+    for request in &requests {
+        assert_eq!(request.messages[0].content, first);
+    }
+    assert_eq!(requests[2].messages.len(), 5);
+}
+
+#[tokio::test]
+async fn without_the_models_info_every_attachment_is_sent_for_the_provider_to_judge() {
+    let mut h = Harness::new().await;
+    let ogg = media_ref(3, "audio/ogg", None);
+    h.provider.push(text("Heard."));
+    let (mut turn, _) = h.turn(&[""]);
+    turn.messages[0].message.attachments = vec![ogg.clone()];
+    assert_eq!(h.agent_loop().run_turn(turn).await, TurnOutcome::Completed);
+    let mut sent = vec![Block::text(PREFIX)];
+    sent.extend(attached(&ogg));
+    assert_eq!(h.provider.requests()[0].messages[0].content, sent);
+}
+
+#[tokio::test]
+async fn models_are_listed_only_once_media_appears_and_a_failure_waits_to_retry() {
+    let mut h = Harness::new().await;
+    h.provider.listing_fails.store(true, Ordering::SeqCst);
+    let agent_loop = h.agent_loop();
+    // No media: no listing.
+    h.provider.push(text("Hello."));
+    let (turn, _) = h.turn(&["Hi"]);
+    assert_eq!(agent_loop.run_turn(turn).await, TurnOutcome::Completed);
+    assert_eq!(h.provider.listed.load(Ordering::SeqCst), 0);
+
+    // Listing fails: every attachment is sent for the provider to judge.
+    let ogg = media_ref(3, "audio/ogg", None);
+    h.provider.push(text("Heard."));
+    let (mut turn, _) = h.turn(&["Listen"]);
+    turn.messages[0].message.attachments = vec![ogg.clone()];
+    assert_eq!(agent_loop.run_turn(turn).await, TurnOutcome::Completed);
+    let mut sent = vec![Block::text(format!("{PREFIX} Listen"))];
+    sent.extend(attached(&ogg));
+    assert_eq!(h.provider.requests()[1].messages[2].content, sent);
+    assert_eq!(h.provider.listed.load(Ordering::SeqCst), 1);
+
+    // Within the retry window the next turn doesn't list again.
+    h.provider.push(text("Still heard."));
+    let (turn, _) = h.turn(&["Again"]);
+    assert_eq!(agent_loop.run_turn(turn).await, TurnOutcome::Completed);
+    assert_eq!(h.provider.listed.load(Ordering::SeqCst), 1);
+    assert_eq!(h.provider.requests()[2].messages[2].content, sent);
+}
+
+#[tokio::test]
+async fn an_unknown_media_input_is_refused_before_asking_for_approval() {
+    let mut h = Harness::with_agent(
+        "models = [\"anthropic/test-model\"]\ntools = [\"github__*\"]\n\
+         ask = [\"github__list_issues\"]\n",
+    )
+    .await;
+    let unknown = media_ref(9, "image/png", None);
+    h.provider.push(response(
+        vec![tool_use(
+            "t1",
+            "github__list_issues",
+            json!({"file": {"$media": unknown.id.as_str()}}),
+        )],
+        StopReason::ToolUse,
+    ));
+    h.provider.push(text("That file is gone."));
+    let (turn, _) = h.turn(&["Chart"]);
+    // An approval prompt would wait for an answer that never comes.
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        h.agent_loop().run_turn(turn),
+    )
+    .await
+    .expect("no approval was asked");
+    assert_eq!(outcome, TurnOutcome::Completed);
+    assert_eq!(
+        h.transcript().await[2],
+        result("t1", &format!("unknown media `{}`", unknown.id), true)
+    );
+    assert!(toolset_calls(&h).is_empty());
+    assert_eq!(h.sent(), ["That file is gone."]);
+}
+
+#[tokio::test]
+async fn tools_take_session_media_by_id_and_their_media_results_get_references() {
+    let mut h = Harness::new().await;
+    *h.provider.models.lock().unwrap() = vec![test_model(&[])];
+    let png = media_ref(1, "image/png", Some("chart.png"));
+    let unknown = media_ref(9, "image/png", None);
+    h.provider.push(response(
+        vec![
+            tool_use(
+                "t1",
+                "github__list_issues",
+                json!({"file": {"$media": png.id.as_str()}}),
+            ),
+            tool_use(
+                "t2",
+                "github__list_issues",
+                json!({"file": {"$media": unknown.id.as_str()}}),
+            ),
+        ],
+        StopReason::ToolUse,
+    ));
+    h.provider.push(text("Done."));
+    let (mut turn, _) = h.turn(&["Chart"]);
+    turn.messages[0].message.attachments = vec![png.clone()];
+    assert_eq!(h.agent_loop().run_turn(turn).await, TurnOutcome::Completed);
+
+    // The toolset got the media the input names; the unknown id never reached it.
+    let calls = h.toolset.calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0.media, std::slice::from_ref(&png));
+
+    let ran = format!(
+        "list_issues ran with {}",
+        json!({"file": {"$media": png.id.as_str()}})
+    );
+    let transcript = h.transcript().await;
+    assert_eq!(
+        transcript[2],
+        Some((
+            Role::User,
+            vec![Block::ToolResult {
+                tool_use_id: "t1".to_owned(),
+                content: vec![
+                    Block::text(ran.clone()),
+                    reference(&png),
+                    Block::Image { media: png.clone() }
+                ],
+                is_error: false,
+            }]
+        ))
+    );
+    assert_eq!(
+        transcript[3],
+        result("t2", &format!("unknown media `{}`", unknown.id), true)
+    );
+
+    // A model that takes no media gets the result's reference alone.
+    let second = &h.provider.requests()[1];
+    assert_eq!(
+        second.messages[2].content,
+        [Block::ToolResult {
+            tool_use_id: "t1".to_owned(),
+            content: vec![Block::text(ran), reference(&png)],
+            is_error: false,
+        }]
     );
 }

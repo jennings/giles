@@ -240,12 +240,17 @@ async fn user_json(
             Block::Text { text } if text.is_empty() => {}
             Block::Text { text } => parts.push(text_part(text)),
             Block::Image { media: media_ref } | Block::Audio { media: media_ref } => {
-                parts.push(media_or_reference(&media_ref, None, media).await?);
+                let part = media_or_reference(&media_ref, None, media, parts.last()).await?;
+                parts.extend(part);
             }
             Block::Document {
                 media: media_ref,
                 name,
-            } => parts.push(media_or_reference(&media_ref, name.as_deref(), media).await?),
+            } => {
+                let part =
+                    media_or_reference(&media_ref, name.as_deref(), media, parts.last()).await?;
+                parts.extend(part);
+            }
             // Reasoning and provider data belong to assistant messages.
             Block::Reasoning { .. } | Block::Opaque(_) => {}
             other => {
@@ -266,21 +271,30 @@ async fn user_json(
     Ok(())
 }
 
+/// `media_ref` as a content part if the model takes its type, else its reference, unless
+/// `previous` (the part before it) already is that reference (the agent loop stores one before
+/// each media block): then `None`.
 async fn media_or_reference(
     media_ref: &MediaRef,
     name: Option<&str>,
     media: &Media<'_>,
-) -> Result<Value> {
-    Ok(match media.part(media_ref, name).await? {
-        Some(part) => part,
-        None => text_part(crate::media::reference(media_ref)),
-    })
+    previous: Option<&Value>,
+) -> Result<Option<Value>> {
+    if let Some(part) = media.part(media_ref, name).await? {
+        return Ok(Some(part));
+    }
+    let reference = crate::media::reference(media_ref);
+    let repeated = previous.is_some_and(|previous| {
+        previous["type"] == "text" && previous["text"].as_str() == Some(reference.as_str())
+    });
+    Ok((!repeated).then(|| text_part(reference)))
 }
 
 /// A tool result as a `tool` message. Its text is the result's text blocks, joined by blank
-/// lines, with each media block as its reference; `tool` messages hold only text, so media the
-/// model accepts is moved to `run.relocated`, after its reference. An error result is prefixed
-/// with `Error: ` (the API has no error flag).
+/// lines, with each media block as its reference (unless the text before it already is that
+/// reference, as the agent loop stores it); `tool` messages hold only text, so media the model
+/// accepts is moved to `run.relocated`, after its reference. An error result is prefixed with
+/// `Error: ` (the API has no error flag).
 async fn tool_json(
     tool_use_id: String,
     content: Vec<Block>,
@@ -310,7 +324,9 @@ async fn tool_json(
             run.relocated.push(text_part(reference.clone()));
             run.relocated.push(part);
         }
-        texts.push(reference);
+        if texts.last() != Some(&reference) {
+            texts.push(reference);
+        }
     }
     let text = texts.join("\n\n");
     let text = match (is_error, text.is_empty()) {
@@ -652,6 +668,57 @@ mod tests {
         assert_eq!(
             build(request("m", messages)).await["messages"][0]["content"],
             "Error: no such file"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stored_reference_is_not_repeated_in_the_tool_message() {
+        let png = media_ref(1, "image/png", None);
+        let media = Media(HashMap::from([(
+            png.id.clone(),
+            Bytes::from_static(b"png"),
+        )]));
+        let png_ref = crate::media::reference(&png);
+        let messages = vec![message(
+            Role::User,
+            vec![tool_result(
+                "t",
+                vec![Block::text(png_ref.clone()), Block::Image { media: png }],
+                false,
+            )],
+        )];
+        let body = body(request("m", messages), &config(Dialect::OpenAi), &media)
+            .await
+            .unwrap();
+        assert_eq!(body["messages"][0]["content"], json!(png_ref));
+        assert_eq!(body["messages"][1]["content"][0]["text"], json!(png_ref));
+    }
+
+    #[tokio::test]
+    async fn a_stored_reference_is_not_repeated_for_unsupported_media() {
+        let ogg = media_ref(1, "audio/ogg", None);
+        let csv = media_ref(2, "text/csv", None);
+        let ogg_ref = crate::media::reference(&ogg);
+        let messages = vec![message(
+            Role::User,
+            vec![
+                Block::text("listen"),
+                Block::text(ogg_ref.clone()),
+                Block::Audio { media: ogg },
+                // Without a stored reference, the provider's own stands in.
+                Block::Document {
+                    media: csv.clone(),
+                    name: None,
+                },
+            ],
+        )];
+        assert_eq!(
+            build(request("m", messages)).await["messages"][0]["content"],
+            json!([
+                {"type": "text", "text": "listen"},
+                {"type": "text", "text": ogg_ref},
+                {"type": "text", "text": crate::media::reference(&csv)},
+            ])
         );
     }
 
