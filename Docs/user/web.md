@@ -16,9 +16,10 @@ only one web channel. Its `config` table is optional; its keys are under
 [Logging In](#logging-in). An unknown key is an error.
 
 Web senders are identities in the `web` namespace. For messages you send from the browser to reach
-an agent, `[owner] identities` must list your web identity, `web:owner`. Messages are routed like
-any other channel's ([Configuration](configuration.md)): a `[[routes]]` rule can match
-`channel = "web"`.
+an agent, `[owner] identities` must list your web identity, `web:owner`. Messages in a chat
+started with **New chat** are routed like any other channel's ([Configuration](configuration.md)):
+a `[[routes]]` rule can match `channel = "web"`. A chat started for a particular agent
+([Chats](#chats)) always goes to that agent and needs no route.
 
 ## Chats
 
@@ -26,6 +27,11 @@ The home page lists your chats, most recently active first, each titled with the
 first message. **New chat** opens an empty chat; it appears in the list once you've sent a message
 in it. Each chat is its own conversation with its own history, the way each WhatsApp chat is
 (`/new` in a chat starts a fresh session in the same chat, shown as "New session").
+
+To talk to a particular agent, pick it under **Chat with** on the chat list and press **Start**.
+The list has every configured agent, and that chat always goes to the agent you picked, whatever
+`[[routes]]` say. The chat list and the chat page show which agent such a chat is with. If that
+agent is later removed from the configuration, its chats can't be opened any more.
 
 A chat page shows the conversation so far (the last 200 messages) and a box to write in. Replies
 appear as the agent writes them, without reloading. Formatting is Markdown. Links open other sites;

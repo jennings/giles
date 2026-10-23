@@ -52,7 +52,7 @@ pub use pages::WebApp;
 pub use proxy::{ProxyError, ProxyListener};
 
 pub(crate) use super::chat_ids::random_hex;
-pub use super::chat_ids::{COMPONENT, is_chat_id, new_chat_id};
+pub use super::chat_ids::{COMPONENT, chat_agent, is_chat_id, new_agent_chat_id, new_chat_id};
 
 /// How many posted messages may wait for the core to take them before posting fails.
 pub const MAX_PENDING: usize = 256;

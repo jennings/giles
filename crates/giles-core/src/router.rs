@@ -3,13 +3,16 @@
 //! agent's session. Design: `Docs/technical/identity-and-routing.md`.
 
 use std::fmt;
+use std::sync::Arc;
 
 use giles_store::SessionKey;
 use giles_types::{AgentId, ConversationKind, ConversationRef, EventId, InboundMessage, UserId};
 
+use crate::channels::chat_ids;
 use crate::commands::{self, CoreCommand, PendingApprovals};
 use crate::config::{InstanceName, OwnerConfig, Route};
 use crate::identity::{self, NamespaceError, OwnerIdentities};
+use crate::sessions::AgentPolicies;
 
 /// The channel instance an event came from.
 #[derive(Debug, Clone, Copy)]
@@ -63,6 +66,8 @@ pub enum DropReason {
     UnknownSender,
     /// No `[[routes]]` rule matches the conversation.
     NoRoute,
+    /// A web chat started with an agent that isn't configured (any more).
+    UnknownAgent(AgentId),
 }
 
 impl fmt::Display for DropReason {
@@ -73,23 +78,39 @@ impl fmt::Display for DropReason {
             DropReason::Unauthenticated => f.write_str("sender not authenticated"),
             DropReason::UnknownSender => f.write_str("sender is not an [owner] identity"),
             DropReason::NoRoute => f.write_str("no route matches the conversation"),
+            DropReason::UnknownAgent(agent) => {
+                write!(f, "the chat's agent `{agent}` isn't configured")
+            }
         }
     }
 }
 
-/// The owner's identities and the ordered `[[routes]]`.
-#[derive(Debug, Clone)]
+/// The owner's identities, the ordered `[[routes]]`, and the agents that exist now.
+#[derive(Clone)]
 pub struct Router {
     owner: OwnerIdentities,
     routes: Vec<Route>,
+    agents: Arc<dyn AgentPolicies>,
+}
+
+impl fmt::Debug for Router {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Router")
+            .field("owner", &self.owner)
+            .field("routes", &self.routes)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Router {
-    /// A router for `[owner]` and `[[routes]]` (`Config::owner`, `Config::routes`).
-    pub fn new(owner: &OwnerConfig, routes: &[Route]) -> Self {
+    /// A router for `[owner]` and `[[routes]]` (`Config::owner`, `Config::routes`). `agents`
+    /// says which agents exist now, for web chats started with a chosen agent (in the daemon, the
+    /// running configuration, so an agent created in the web UI is reachable at once).
+    pub fn new(owner: &OwnerConfig, routes: &[Route], agents: Arc<dyn AgentPolicies>) -> Self {
         Self {
             owner: OwnerIdentities::new(owner),
             routes: routes.to_vec(),
+            agents,
         }
     }
 
@@ -115,9 +136,11 @@ impl Router {
 
     /// Decides what to do with `message`, event `event` from `source`. Checks, in order: the
     /// channel's identity namespace, the conversation kind, sender authentication, the owner's
-    /// identities, then the route. A routed message is then a core command if it has no
-    /// attachments and parses as one ([`commands::parse`]), with `pending` deciding whether a
-    /// `yes`/`no` answers an approval; otherwise an ordinary message.
+    /// identities, then the agent: a web chat started with a chosen agent
+    /// ([`chat_ids::chat_agent`]) goes to that agent if it exists, ahead of every route; any
+    /// other conversation goes to its [route](Self::route). A routed message is then a core
+    /// command if it has no attachments and parses as one ([`commands::parse`]), with `pending`
+    /// deciding whether a `yes`/`no` answers an approval; otherwise an ordinary message.
     ///
     /// Drops are logged with the instance, event, and reason (and the sender identity where it
     /// explains the drop), never the message text.
@@ -162,12 +185,20 @@ impl Router {
         if !self.owner.is_owner(source.identity_namespace, message) {
             return Err(DropReason::UnknownSender);
         }
-        let agent = self
-            .route(source.instance, &message.conversation)
-            .ok_or(DropReason::NoRoute)?;
+        let chosen = (source.component == chat_ids::COMPONENT)
+            .then(|| chat_ids::chat_agent(message.conversation.id.as_str()))
+            .flatten();
+        let agent = match chosen {
+            Some(agent) if self.agents.policy(&agent).is_some() => agent,
+            Some(agent) => return Err(DropReason::UnknownAgent(agent)),
+            None => self
+                .route(source.instance, &message.conversation)
+                .ok_or(DropReason::NoRoute)?
+                .clone(),
+        };
         Ok(Routed {
             session: SessionKey {
-                agent: agent.clone(),
+                agent,
                 channel: source.instance.to_string(),
                 conversation: message.conversation.id.clone(),
             },
@@ -207,7 +238,7 @@ fn log_drop(
             %reason,
             "dropped inbound message"
         ),
-        DropReason::NoRoute => tracing::info!(
+        DropReason::NoRoute | DropReason::UnknownAgent(_) => tracing::info!(
             instance,
             %event,
             conversation = message.conversation.id.as_str(),
@@ -220,12 +251,19 @@ fn log_drop(
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::collections::HashMap;
 
     use giles_types::{ConversationId, MediaId, MediaRef, NativeId};
 
     use super::*;
     use crate::commands::{Answer, ApprovalReply, NoPendingApprovals};
     use crate::config::Identity;
+    use crate::sessions::AgentPolicy;
+
+    /// No agents: the routes alone decide.
+    fn no_agents() -> Arc<dyn AgentPolicies> {
+        Arc::new(HashMap::<AgentId, AgentPolicy>::new())
+    }
 
     fn instance(name: &str) -> InstanceName {
         InstanceName::new(name).unwrap()
@@ -284,6 +322,7 @@ mod tests {
                 route(Some("irc-libera"), None, Some("#giles"), "butler"),
                 route(None, None, None, "jeeves"),
             ],
+            no_agents(),
         )
     }
 
@@ -381,6 +420,7 @@ mod tests {
         let router = Router::new(
             &owner_config(&["whatsapp:+15551234567"]),
             &[route(Some("irc-libera"), None, None, "jeeves")],
+            no_agents(),
         );
         for text in ["hi", "/new", "/stop", "yes"] {
             let got = classify(
@@ -398,6 +438,7 @@ mod tests {
         let router = Router::new(
             &owner_config(&["whatsapp:123456789@lid"]),
             &[route(None, None, None, "jeeves")],
+            no_agents(),
         );
         let mut m = message(OWNER_PHONE, "hi");
         assert_eq!(
@@ -452,6 +493,7 @@ mod tests {
                 route(None, None, None, "fallback"),
                 route(Some("web"), None, None, "never"),
             ],
+            no_agents(),
         );
         let conv = |id: &str, kind| ConversationRef {
             id: ConversationId::new(id).unwrap(),
@@ -480,8 +522,65 @@ mod tests {
                 "{inst} {conversation:?}"
             );
         }
-        let none = Router::new(&owner_config(&["web:owner"]), &[]);
+        let none = Router::new(&owner_config(&["web:owner"]), &[], no_agents());
         assert_eq!(none.route(&web, &conv("chat-1", direct)), None);
+    }
+
+    #[test]
+    fn a_web_chat_started_with_an_agent_goes_to_it_ahead_of_routes() {
+        let agents = HashMap::from([(AgentId::new("bunter").unwrap(), AgentPolicy::default())]);
+        let router = Router::new(
+            &owner_config(&["web:owner", "whatsapp:+15551234567"]),
+            &[route(None, None, None, "jeeves")],
+            Arc::new(agents),
+        );
+        let web: Source = ("chat", chat_ids::COMPONENT, "web");
+        let hex = "0123456789abcdef0123456789abcdef";
+        let in_chat = |source: Source, chat: &str, text: &str| {
+            let mut m = message("owner", text);
+            if source.1 == "whatsapp" {
+                m.sender = NativeId::new(OWNER_PHONE).unwrap();
+            }
+            m.conversation.id = ConversationId::new(chat).unwrap();
+            classify(&router, source, &m, &NoPendingApprovals)
+        };
+        let bunter = format!("bunter.{hex}");
+        assert_eq!(
+            in_chat(web, &bunter, "hi"),
+            Inbound::Message(routed("bunter", "chat", &bunter))
+        );
+        // Commands act on the chosen agent's session too.
+        assert_eq!(
+            in_chat(web, &bunter, "/new"),
+            Inbound::Command {
+                to: routed("bunter", "chat", &bunter),
+                command: CoreCommand::New,
+            }
+        );
+        // A plain chat follows the routes.
+        assert_eq!(
+            in_chat(web, hex, "hi"),
+            Inbound::Message(routed("jeeves", "chat", hex))
+        );
+        // An agent that doesn't exist isn't replaced by a routed one.
+        let gone = format!("gone.{hex}");
+        assert_eq!(
+            in_chat(web, &gone, "hi"),
+            Inbound::Drop(DropReason::UnknownAgent(AgentId::new("gone").unwrap()))
+        );
+        // Only web chats choose their agent: elsewhere such an id is just a conversation id.
+        let whatsapp: Source = ("whatsapp", "whatsapp", "whatsapp");
+        assert_eq!(
+            in_chat(whatsapp, &bunter, "hi"),
+            Inbound::Message(routed("jeeves", "whatsapp", &bunter))
+        );
+        // Ownership is still checked first.
+        let mut stranger = message("stranger", "hi");
+        stranger.conversation.id = ConversationId::new(&bunter).unwrap();
+        assert_eq!(
+            classify(&router, web, &stranger, &NoPendingApprovals),
+            Inbound::Drop(DropReason::UnknownSender)
+        );
     }
 
     #[test]

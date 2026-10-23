@@ -4,7 +4,7 @@
 
 {% block content %}
 <div class="chat" hx-headers='{"X-CSRF-Token": "{{ csrf }}"}' hx-ext="sse" sse-connect="/chats/{{ chat }}/events?after={{ cursor }}">
-<p class="page-head"><a href="/">All chats</a></p>
+<p class="page-head"><a href="/">All chats</a>{% if let Some(agent) = agent %} <span class="detail">with {{ agent }}</span>{% endif %}</p>
 <p id="chat-notice" class="notice" hidden></p>
 <div id="messages" class="messages" sse-swap="message" hx-swap="beforeend">
 {%- if truncated %}

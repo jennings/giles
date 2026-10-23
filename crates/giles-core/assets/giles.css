@@ -76,6 +76,13 @@ button,
   white-space: nowrap;
 }
 
+/* "Chat with <agent>" on the chat list. */
+.agent-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 /* A chat: its messages, then the form. */
 .messages {
   display: flex;

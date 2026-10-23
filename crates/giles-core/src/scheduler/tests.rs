@@ -253,7 +253,11 @@ impl Harness {
         let sessions = Sessions::start(
             SessionsOptions {
                 store: store.clone(),
-                router: Router::new(&config.owner, &config.routes),
+                router: Router::new(
+                    &config.owner,
+                    &config.routes,
+                    Arc::new(registry.live_config().clone()),
+                ),
                 agents: Arc::new(registry.live_config().clone()),
                 channels: registry.clone(),
                 runner: runner.clone(),

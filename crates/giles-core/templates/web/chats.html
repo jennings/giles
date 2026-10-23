@@ -14,12 +14,23 @@
 </form>
 {%- endif %}
 </div>
+{%- if !agents.is_empty() %}
+<form class="agent-picker" method="get" action="/chats/new">
+<label for="agent">Chat with</label>
+<select id="agent" name="agent">
+{%- for agent in agents %}
+<option value="{{ agent.id }}">{{ agent.label }}</option>
+{%- endfor %}
+</select>
+<button type="submit">Start</button>
+</form>
+{%- endif %}
 {%- if chats.is_empty() %}
 <p>No chats yet. Start one with <a href="/chats/new">New chat</a>.</p>
 {%- else %}
 <ul class="chats">
 {%- for chat in chats %}
-<li><a href="/chats/{{ chat.id }}">{{ chat.title }}</a> <time datetime="{{ chat.active_at }}">{{ chat.active }}</time></li>
+<li><a href="/chats/{{ chat.id }}">{{ chat.title }}</a>{% if let Some(agent) = chat.agent %} <span class="detail">{{ agent }}</span>{% endif %} <time datetime="{{ chat.active_at }}">{{ chat.active }}</time></li>
 {%- endfor %}
 </ul>
 {%- endif %}

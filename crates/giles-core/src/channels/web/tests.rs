@@ -33,8 +33,8 @@ use crate::config::{Identity, OwnerConfig, Route};
 use crate::http::RouterBuilder;
 use crate::router::Router as MessageRouter;
 use crate::sessions::{
-    AgentPolicy, ChannelLookup, Sessions, SessionsOptions, SystemClock, Turn, TurnOutcome,
-    TurnRunner,
+    AgentPolicies, AgentPolicy, ChannelLookup, Sessions, SessionsOptions, SystemClock, Turn,
+    TurnOutcome, TurnRunner,
 };
 
 mod admin;
@@ -69,6 +69,51 @@ fn owner_config(identities: &[&str]) -> OwnerConfig {
     }
 }
 
+/// The agents every test configuration has: `jeeves` (named "Jeeves") and `bunter`.
+const AGENTS: [(&str, &str); 2] = [
+    (
+        "jeeves",
+        "name = \"Jeeves\"\nmodels = [\"fake/test-model\"]\n",
+    ),
+    ("bunter", "models = [\"fake/test-model\"]\n"),
+];
+
+/// Writes a configuration under `dir` for an owner with `identities`: a provider `fake`, a web
+/// channel, and [`AGENTS`]; then loads it.
+fn load_config(dir: &std::path::Path, identities: &[&str]) -> crate::config::Config {
+    let root = crate::paths::DataRoot::new(dir, &dir.join("tmp")).unwrap();
+    let default = format!("{:?}", identities[0]);
+    let identities = identities
+        .iter()
+        .map(|id| format!("{id:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    std::fs::write(
+        root.config_file(),
+        format!(
+            "[owner]\nidentities = [{identities}]\ndefault = {default}\n\
+             [provider.fake]\ncomponent = \"openai\"\n\
+             config = {{ base_url = \"http://127.0.0.1:9/v1\" }}\n\
+             [channel.web]\n"
+        ),
+    )
+    .unwrap();
+    for (agent, toml) in AGENTS {
+        let agent_dir = root.agents_dir().join(agent);
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("agent.toml"), toml).unwrap();
+    }
+    crate::config::Config::load_with(
+        &root,
+        &crate::config::LoadOptions {
+            env: &|_| None,
+            giles_exe: None,
+            ..crate::config::LoadOptions::default()
+        },
+    )
+    .unwrap_or_else(|e| panic!("{e}"))
+}
+
 /// A web channel with `config`, for an owner with `identities`.
 async fn env_with(config: WebConfig, identities: &[&str]) -> Env {
     let dir = tempfile::tempdir().unwrap();
@@ -83,10 +128,12 @@ async fn env_with(config: WebConfig, identities: &[&str]) -> Env {
         "0.0.0.0:8080".parse().unwrap(),
     ));
     let shutdown = CancellationToken::new();
+    let live = crate::config::LiveConfig::new(Arc::new(load_config(dir.path(), identities)));
     let app = WebApp::new(
         channel.clone(),
         store.clone(),
         blobs.clone(),
+        live,
         shutdown.clone(),
     );
     Env {
@@ -1031,6 +1078,10 @@ impl TurnRunner for EchoRunner {
 async fn a_posted_message_reaches_the_agent_and_the_reply_reaches_the_page() {
     let env = env().await;
     let owner_identity = Identity::new("web:owner").unwrap();
+    let agents: Arc<dyn AgentPolicies> = Arc::new(HashMap::from([(
+        AgentId::new("jeeves").unwrap(),
+        AgentPolicy::default(),
+    )]));
     let router = MessageRouter::new(
         &OwnerConfig {
             identities: vec![owner_identity.clone()],
@@ -1043,15 +1094,13 @@ async fn a_posted_message_reaches_the_agent_and_the_reply_reaches_the_page() {
             conversation: None,
             agent: AgentId::new("jeeves").unwrap(),
         }],
+        agents.clone(),
     );
     let sessions = Sessions::start(
         SessionsOptions {
             store: env.store.clone(),
             router,
-            agents: Arc::new(HashMap::from([(
-                AgentId::new("jeeves").unwrap(),
-                AgentPolicy::default(),
-            )])),
+            agents,
             channels: Arc::new(Lookup(env.channel.clone())),
             runner: Arc::new(EchoRunner {
                 store: env.store.clone(),
@@ -1960,4 +2009,89 @@ async fn the_agent_loop_streams_a_reply_live_to_the_page() {
 
     env.shutdown.cancel();
     sessions.closed().await;
+}
+
+/// The owner may start a chat with any configured agent; the chat keeps it (TASKS.md 5.1).
+#[tokio::test]
+async fn a_chat_can_be_started_with_any_agent_and_keeps_it() {
+    let env = env().await;
+    let list = body_text(env.get("/").await).await;
+    for option in [
+        r#"<option value="bunter">bunter</option>"#,
+        r#"<option value="jeeves">Jeeves (jeeves)</option>"#,
+    ] {
+        assert!(list.contains(option), "{option}\n{list}");
+    }
+
+    let response = env.get("/chats/new?agent=jeeves").await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let location = response.headers()[LOCATION].to_str().unwrap().to_owned();
+    let id = location.strip_prefix("/chats/").unwrap();
+    assert_eq!(chat_agent(id), Some(AgentId::new("jeeves").unwrap()));
+    let page = body_text(env.get(&location).await).await;
+    assert!(
+        page.contains(r#"<span class="detail">with Jeeves (jeeves)</span>"#),
+        "{page}"
+    );
+    let response = env
+        .htmx_post(&format!("{location}/messages"), "text=hello")
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let pending = env.pending().await;
+    let Some(ChannelEvent::Message { message, .. }) = pending.last() else {
+        panic!("{pending:?}");
+    };
+    assert_eq!(message.conversation.id.as_str(), id);
+
+    // Without an agent (or with an empty choice) the chat is routed as before.
+    for path in ["/chats/new", "/chats/new?agent="] {
+        let response = env.get(path).await;
+        let location = response.headers()[LOCATION].to_str().unwrap();
+        let plain = location.strip_prefix("/chats/").unwrap();
+        assert!(
+            is_chat_id(plain) && chat_agent(plain).is_none(),
+            "{location}"
+        );
+    }
+
+    // An agent that isn't configured: nothing to start, open, or post to.
+    let gone = format!("/chats/gone.{}", chat());
+    for path in [
+        "/chats/new?agent=gone",
+        "/chats/new?agent=Jeeves",
+        gone.as_str(),
+    ] {
+        let response = env.get(path).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+    }
+    let response = env
+        .htmx_post(&format!("{gone}/messages"), "text=hello")
+        .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    // Only the message to Jeeves is waiting.
+    assert_eq!(env.pending_texts().await, ["hello"]);
+
+    // Someone other than the owner is offered no agent and can't pick one.
+    let guest = WebUser {
+        user: UserId::new("guest").unwrap(),
+        sender: NativeId::new("guest").unwrap(),
+        csrf: CSRF.into(),
+        login: auth::Login::Test,
+    };
+    let list = body_text(
+        env.request(Some(guest.clone()), Method::GET, "/", &[], None)
+            .await,
+    )
+    .await;
+    assert!(!list.contains("agent-picker"), "{list}");
+    let response = env
+        .request(
+            Some(guest),
+            Method::GET,
+            "/chats/new?agent=jeeves",
+            &[],
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }

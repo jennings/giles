@@ -20,7 +20,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use futures::{Stream, StreamExt, stream};
 use giles_store::{BlobStore, Store};
-use giles_types::{ConversationId, MediaId};
+use giles_types::{AgentId, ConversationId, MediaId};
 use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
 use tokio_util::io::ReaderStream;
@@ -29,8 +29,12 @@ use tracing::error;
 
 use super::auth::{WebUser, check_csrf};
 use super::hub::{Event, Subscription};
-use super::{ApprovalAnswer, Busy, WebChannel, is_approval_code, is_chat_id, new_chat_id, render};
+use super::{
+    ApprovalAnswer, Busy, WebChannel, chat_agent, is_approval_code, is_chat_id, new_agent_chat_id,
+    new_chat_id, render,
+};
 use crate::agent_loop::history;
+use crate::config::{Config, LiveConfig};
 use crate::http::{self, RouterBuilder};
 use crate::identity;
 use crate::runtime::Runtime;
@@ -58,6 +62,8 @@ pub(super) struct Inner {
     pub(super) channel: Arc<WebChannel>,
     pub(super) store: Store,
     pub(super) blobs: BlobStore,
+    /// The running configuration: the agents a chat can be started with.
+    pub(super) agents: LiveConfig,
     pub(super) clock: Arc<dyn Clock>,
     pub(super) shutdown: CancellationToken,
 }
@@ -71,15 +77,24 @@ impl fmt::Debug for WebApp {
 }
 
 impl WebApp {
-    /// The pages of `channel`, reading history from `store` and attachments from `blobs`. Event
-    /// streams end when `shutdown` is cancelled.
+    /// The pages of `channel`, reading history from `store`, attachments from `blobs`, and the
+    /// agents a chat can be started with from `agents`. Event streams end when `shutdown` is
+    /// cancelled.
     pub fn new(
         channel: Arc<WebChannel>,
         store: Store,
         blobs: BlobStore,
+        agents: LiveConfig,
         shutdown: CancellationToken,
     ) -> Self {
-        Self::with_clock(channel, store, blobs, Arc::new(SystemClock), shutdown)
+        Self::with_clock(
+            channel,
+            store,
+            blobs,
+            agents,
+            Arc::new(SystemClock),
+            shutdown,
+        )
     }
 
     /// [`new`](Self::new) with another time source.
@@ -87,6 +102,7 @@ impl WebApp {
         channel: Arc<WebChannel>,
         store: Store,
         blobs: BlobStore,
+        agents: LiveConfig,
         clock: Arc<dyn Clock>,
         shutdown: CancellationToken,
     ) -> Self {
@@ -95,6 +111,7 @@ impl WebApp {
                 channel,
                 store,
                 blobs,
+                agents,
                 clock,
                 shutdown,
             }),
@@ -109,6 +126,7 @@ impl WebApp {
             channel,
             runtime.store.clone(),
             runtime.blobs.clone(),
+            runtime.registry.live_config().clone(),
             shutdown,
         );
         tokio::spawn(app.clone().expire_sessions());
@@ -227,9 +245,41 @@ fn chat_title(first_text: Option<&str>) -> String {
     }
 }
 
+/// How pages name an agent: `Name (id)`, or just the id when `agent.toml` sets no name.
+pub(super) fn agent_label(config: &Config, agent: &AgentId) -> String {
+    match config.agents.get(agent).and_then(|a| a.name.as_deref()) {
+        Some(name) => format!("{name} ({agent})"),
+        None => agent.to_string(),
+    }
+}
+
+/// An agent the chat list offers to start a chat with.
+struct AgentChoice {
+    id: String,
+    label: String,
+}
+
+/// The agents `user` may start a chat with, by id. v1 has one user, the owner, who may use every
+/// agent; with roles (PLAN section 3.1) this is where a member's `agents` globs apply.
+fn agent_choices(config: &Config, user: &WebUser) -> Vec<AgentChoice> {
+    if user.user != identity::owner() {
+        return Vec::new();
+    }
+    config
+        .agents
+        .keys()
+        .map(|id| AgentChoice {
+            id: id.to_string(),
+            label: agent_label(config, id),
+        })
+        .collect()
+}
+
 struct ChatItem {
     id: String,
     title: String,
+    /// The agent the chat was started with, if one was chosen.
+    agent: Option<String>,
     active: String,
     active_at: String,
 }
@@ -238,11 +288,13 @@ struct ChatItem {
 #[template(path = "web/chats.html")]
 struct ChatsPage {
     chats: Vec<ChatItem>,
+    agents: Vec<AgentChoice>,
     /// Set for a cookie login: the page shows a logout button.
     logout_csrf: Option<String>,
 }
 
-/// `GET /`: the user's chats, most recently active first.
+/// `GET /`: the user's chats, most recently active first, and the agents a new chat can be
+/// started with.
 async fn chats(State(app): State<WebApp>, user: WebUser) -> Response {
     let channel = app.inner.channel.instance().as_str();
     let listed = match app
@@ -254,31 +306,86 @@ async fn chats(State(app): State<WebApp>, user: WebUser) -> Response {
         Ok(listed) => listed,
         Err(err) => return internal_error("cannot list the web chats", &err),
     };
+    let config = app.inner.agents.get();
     let chats = listed
         .into_iter()
         .filter(|c| is_chat_id(c.conversation.as_str()))
         .map(|c| ChatItem {
             id: c.conversation.to_string(),
             title: chat_title(c.first_text.as_deref()),
+            agent: chat_agent(c.conversation.as_str()).map(|agent| agent_label(&config, &agent)),
             active: c.last_active_at.strftime("%Y-%m-%d %H:%M UTC").to_string(),
             active_at: c.last_active_at.to_string(),
         })
         .collect();
     http::render(&ChatsPage {
         chats,
+        agents: agent_choices(&config, &user),
         logout_csrf: user.can_log_out().then(|| user.csrf.clone()),
     })
 }
 
-/// `GET /chats/new`: a fresh chat id. Nothing is stored until the first message.
-async fn new_chat(_: WebUser) -> Redirect {
-    Redirect::to(&format!("/chats/{}", new_chat_id()))
+#[derive(Debug, Deserialize)]
+struct NewChatQuery {
+    #[serde(default)]
+    agent: Option<String>,
+}
+
+/// `GET /chats/new`: a fresh chat id, routed by `[[routes]]`; with `?agent=<id>`, a chat with
+/// that agent ([`new_agent_chat_id`]), which must be one the user may start a chat with. Nothing
+/// is stored until the first message.
+async fn new_chat(
+    State(app): State<WebApp>,
+    user: WebUser,
+    Query(query): Query<NewChatQuery>,
+) -> Response {
+    let Some(agent) = query.agent.filter(|a| !a.is_empty()) else {
+        return Redirect::to(&format!("/chats/{}", new_chat_id())).into_response();
+    };
+    let config = app.inner.agents.get();
+    let Some(choice) = agent_choices(&config, &user)
+        .into_iter()
+        .find(|choice| choice.id == agent)
+    else {
+        return no_such_agent(&agent);
+    };
+    let agent = AgentId::new(choice.id).expect("a configured agent id");
+    Redirect::to(&format!("/chats/{}", new_agent_chat_id(&agent))).into_response()
+}
+
+/// 404 for a chat with an agent that isn't configured (or that the user may not use).
+fn no_such_agent(agent: &str) -> Response {
+    error_page(
+        StatusCode::NOT_FOUND,
+        "No such agent",
+        &format!("There is no agent `{agent}` to chat with."),
+    )
+}
+
+/// For a chat started with an agent: the agent's label, or the agent as the error if `user` may
+/// not use it (it isn't configured). `Ok(None)` for a chat routed by `[[routes]]`.
+fn chosen_agent(
+    app: &WebApp,
+    user: &WebUser,
+    chat: &ConversationId,
+) -> Result<Option<String>, AgentId> {
+    let Some(agent) = chat_agent(chat.as_str()) else {
+        return Ok(None);
+    };
+    let config = app.inner.agents.get();
+    agent_choices(&config, user)
+        .into_iter()
+        .find(|choice| choice.id == agent.as_str())
+        .map(|choice| Some(choice.label))
+        .ok_or(agent)
 }
 
 #[derive(Template)]
 #[template(path = "web/chat.html")]
 struct ChatPage<'a> {
     title: &'a str,
+    /// The agent the chat was started with, if one was chosen.
+    agent: Option<String>,
     chat: &'a str,
     csrf: &'a str,
     cursor: String,
@@ -299,6 +406,10 @@ struct ChatPage<'a> {
 async fn chat_page(State(app): State<WebApp>, user: WebUser, Path(chat): Path<String>) -> Response {
     let Some(chat) = chat_id(&chat) else {
         return not_found();
+    };
+    let agent = match chosen_agent(&app, &user, &chat) {
+        Ok(agent) => agent,
+        Err(agent) => return no_such_agent(agent.as_str()),
     };
     let channel = &app.inner.channel;
     let hub = channel.hub(&chat);
@@ -344,6 +455,7 @@ async fn chat_page(State(app): State<WebApp>, user: WebUser, Path(chat): Path<St
     );
     http::render(&ChatPage {
         title: "Chat",
+        agent,
         chat: chat.as_str(),
         csrf: &user.csrf,
         cursor: channel.hubs.cursor(snapshot.seq),
@@ -372,6 +484,9 @@ async fn post_message(
     let Some(chat) = chat_id(&chat) else {
         return not_found();
     };
+    if let Err(agent) = chosen_agent(&app, &user, &chat) {
+        return no_such_agent(agent.as_str());
+    }
     if let Err(rejected) = check_csrf(&user, &headers, form.csrf.as_deref()) {
         return rejected.into_response();
     }
@@ -430,6 +545,9 @@ async fn post_approval(
     let Some(chat) = chat_id(&chat) else {
         return not_found();
     };
+    if let Err(agent) = chosen_agent(&app, &user, &chat) {
+        return no_such_agent(agent.as_str());
+    }
     if let Err(rejected) = check_csrf(&user, &headers, form.csrf.as_deref()) {
         return rejected.into_response();
     }

@@ -129,10 +129,11 @@ impl Runtime {
         shutdown: CancellationToken,
     ) -> Result<Sessions, StartError> {
         let config = self.registry.config();
+        let agents = Arc::new(self.registry.live_config().clone());
         let options = SessionsOptions {
             store: self.store.clone(),
-            router: Router::new(&config.owner, &config.routes),
-            agents: Arc::new(self.registry.live_config().clone()),
+            router: Router::new(&config.owner, &config.routes, agents.clone()),
+            agents,
             channels: self.registry.clone(),
             runner,
             approvals,

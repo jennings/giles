@@ -310,6 +310,7 @@ impl Setup {
     async fn start(self) -> Harness {
         let (turns_tx, turns) = mpsc::unbounded_channel();
         let identities = vec![Identity::new(format!("{INSTANCE}:{OWNER}")).unwrap()];
+        let agents: Arc<dyn AgentPolicies> = Arc::new(HashMap::from([(agent(), self.policy)]));
         let router = Router::new(
             &OwnerConfig {
                 default: identities[0].clone(),
@@ -322,13 +323,14 @@ impl Setup {
                 conversation: None,
                 agent: agent(),
             }],
+            agents.clone(),
         );
         let shutdown = CancellationToken::new();
         let sessions = Sessions::start(
             SessionsOptions {
                 store: self.store.clone(),
                 router,
-                agents: Arc::new(HashMap::from([(agent(), self.policy)])),
+                agents,
                 channels: Arc::new(Lookup {
                     channel: self.channel.clone(),
                     registered: self.registered,

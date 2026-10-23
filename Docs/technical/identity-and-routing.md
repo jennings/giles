@@ -15,7 +15,7 @@ handle it as a core command, or hand it to an agent's session ([Plan](../PLAN.md
 ## The Decision
 
 ```rust
-let router = Router::new(&config.owner, &config.routes);
+let router = Router::new(&config.owner, &config.routes, agents);
 let source = ChannelSource { instance, component, identity_namespace };
 match router.classify(&source, &event_id, &message, &pending_approvals) {
     Inbound::Drop(reason) => { /* already logged; ack the event and forget it */ }
@@ -34,7 +34,9 @@ match router.classify(&source, &event_id, &message, &pending_approvals) {
 3. `Unauthenticated`: `sender_authenticated` is false. This runs before any identity lookup, so a
    forged sender learns nothing (§3.3).
 4. `UnknownSender`: neither `sender` nor any `sender_aliases` entry is an `[owner]` identity.
-5. `NoRoute`: no `[[routes]]` rule matches.
+5. `UnknownAgent`: a web chat started with a chosen agent names one that isn't configured (see
+   [Routing](#routing)).
+6. `NoRoute`: no `[[routes]]` rule matches.
 
 A message that passes is `Routed { session: SessionKey { agent, channel, conversation }, user }`.
 If it has no attachments and `commands::parse` recognizes its text, it's `Inbound::Command`;
@@ -49,8 +51,9 @@ on a session, and the session key includes the routed agent. They still never re
 `classify` logs every drop with the instance, the event id, and the reason, never the text. Levels:
 `warn` for an invalid namespace and for unauthenticated senders (a misbehaving channel or a forgery
 attempt), `info` for unknown senders (with `<namespace>:<sender>` and the alias count, so the
-operator can add a missing identity) and for unrouted conversations (with the conversation id), and
-`debug` for group conversations, which an IRC channel can produce on every line.
+operator can add a missing identity) and for unrouted conversations and chats with an unknown
+agent (with the conversation id), and `debug` for group conversations, which an IRC channel can
+produce on every line.
 
 ## The Owner
 
@@ -98,6 +101,17 @@ than building and hashing the joined strings.
 set key matches: `channel` (the instance name), `kind`, and `conversation` (the id exactly as the
 channel reports it). A rule with no keys besides `agent` matches everything. Config loading has
 already checked that each rule's channel instance and agent exist.
+
+A web chat can be started with a chosen agent (the chat list's picker, TASKS.md 5.1). Its chat id,
+which is the conversation id, is then `<agent>.<32 hex digits>` instead of 32 hex digits
+(`channels::chat_ids`: `new_agent_chat_id`, `chat_agent`). For an event from the `web` component
+with such an id, `classify` takes that agent ahead of every route, if `agents` (an
+`AgentPolicies`, in the daemon the running `LiveConfig`) has it; otherwise the message is dropped
+as `UnknownAgent`, never sent to a routed agent instead. The rule is only for the web component:
+on any other channel such an id is an ordinary conversation id. Because `agents` is the running
+configuration, an agent created in the web UI is reachable at once, with no route for it. Only the
+owner gets past the sender check, and the web pages offer only the agents the user may use (v1:
+the owner may use all of them).
 
 ## Core Commands
 

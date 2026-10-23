@@ -25,8 +25,8 @@ Neither half touches the agent loop: posted messages go through the normal inbou
 
 | Route                          | Does                                                             |
 | ------------------------------ | ---------------------------------------------------------------- |
-| `GET /`                        | The user's chats on this instance, most recently active first.  |
-| `GET /chats/new`               | 303 to `/chats/<new id>`; nothing is stored until a message.    |
+| `GET /`                        | The user's chats on this instance, most recently active first, and the agent picker. |
+| `GET /chats/new`               | 303 to `/chats/<new id>`; nothing is stored until a message. `?agent=<id>`: a chat with that agent. |
 | `GET /chats/<id>`              | The transcript, live messages, pending prompts, and the form.   |
 | `POST /chats/<id>/messages`    | Posts `text` as the user (CSRF-checked).                         |
 | `POST /chats/<id>/approvals`   | An approval button: posts `<answer> <code>` (CSRF-checked).      |
@@ -40,10 +40,26 @@ Neither half touches the agent loop: posted messages go through the normal inbou
 | `POST /admin/plugins/<i>/restart` | Restarts plugin instance `<i>` (CSRF-checked), 303 back.      |
 
 Every route except the two login routes needs a `WebUser` (below); without one it's a 401 page
-saying how to log in. A chat id is 128 random bits as 32 lowercase hex digits (`new_chat_id`,
-`is_chat_id`), and is the conversation id (PLAN section 10): web chats are created by the user.
-Any other id in a path is a 404. A chat is `ConversationKind::Direct`; v1 has one user, so every
-chat is the owner's.
+saying how to log in. A chat id is 128 random bits as 32 lowercase hex digits (`new_chat_id`), or
+`<agent>.<32 hex digits>` for a chat started with a chosen agent (`new_agent_chat_id`); either is
+the conversation id (PLAN section 10): web chats are created by the user. `is_chat_id` accepts
+both, and any other id in a path is a 404. A chat is `ConversationKind::Direct`; v1 has one user,
+so every chat is the owner's. The chat id helpers are in `channels::chat_ids`, outside the
+feature, because the router reads them.
+
+### Choosing an Agent
+
+A plain chat goes to whichever agent `[[routes]]` picks. The chat list also has a picker, a `GET`
+form to `/chats/new?agent=<id>`, listing the agents the user may start a chat with
+(`agent_choices`, read from the running configuration, `WebApp`'s `LiveConfig`, so an agent added
+while Giles runs is offered at once). v1 has one user, the owner, who may
+use every agent; with roles (PLAN section 3.1), that function is where a member's `agents` globs
+apply. The chat it opens has the id `<agent>.<hex>`, and the router sends its messages to that
+agent ahead of every route ([Identity and Routing](identity-and-routing.md#routing)), so a new
+agent needs no route. A chat's page shows its agent ("with Jeeves (jeeves)"), and so does the chat
+list. If the agent isn't configured (any more), or the user may not use it, `/chats/new?agent=`,
+the chat page, and both POSTs answer 404 "No such agent" (and the router would drop the message
+anyway).
 
 ## Who Is Asking
 
