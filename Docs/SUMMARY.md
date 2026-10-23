@@ -21,6 +21,7 @@
 - [The `giles` Binary](technical/daemon.md)
 - [Data Root](technical/data-root.md)
 - [Storage](technical/storage.md)
+- [Registry](technical/registry.md)
 - [Plugin Transport](technical/plugin-transport.md)
 - [Plugin Sandbox](technical/sandbox.md)
 - [MCP Client](technical/mcp.md)
