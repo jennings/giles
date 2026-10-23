@@ -13,6 +13,7 @@ use serde::Deserialize;
 use url::{Host, Url};
 
 use super::error::{ConfigError, KeyPath};
+use super::hash::ConfigHash;
 use super::names::{Builtins, Component, InstanceName, Kind, invalid_name_reason, is_valid_name};
 use super::plugin_config::PluginConfig;
 use super::sandbox::{self, Grants, Protected, RawSandbox};
@@ -37,6 +38,8 @@ pub struct ProviderInstance {
     pub component: String,
     /// The `config` table for the component.
     pub config: PluginConfig,
+    /// The hash of the instance's table as written (PLAN section 7.9).
+    pub config_hash: ConfigHash,
 }
 
 /// A `[channel.<instance>]`.
@@ -55,6 +58,8 @@ pub struct ChannelInstance {
     pub max_blob: u64,
     /// The `config` table for the component.
     pub config: PluginConfig,
+    /// The hash of the instance's table as written, for the `Describe` cache (PLAN section 7.9).
+    pub config_hash: ConfigHash,
 }
 
 /// Where a channel runs.
@@ -141,6 +146,8 @@ pub struct ToolsetInstance {
     pub parallel: bool,
     /// Skill directories the toolset offers (absolute paths).
     pub skills: Vec<PathBuf>,
+    /// The hash of the instance's table as written, for the tool-list cache (PLAN section 7.9).
+    pub config_hash: ConfigHash,
 }
 
 /// How the core reaches a toolset.
@@ -280,7 +287,12 @@ impl Ctx<'_> {
         PluginConfig::from_toml(self.file, &path.key("config"), config, self.resolver)
     }
 
-    pub fn provider(&self, name: &str, raw: RawProvider) -> Result<ProviderInstance, ConfigError> {
+    pub fn provider(
+        &self,
+        name: &str,
+        raw: RawProvider,
+        config_hash: ConfigHash,
+    ) -> Result<ProviderInstance, ConfigError> {
         let (name, path) = self.name(Kind::Provider, name)?;
         let component = match self.component(Kind::Provider, &path, &name, raw.component)? {
             Component::BuiltIn { name } => name,
@@ -300,10 +312,16 @@ impl Ctx<'_> {
             config: self.config(&path, raw.config)?,
             name,
             component,
+            config_hash,
         })
     }
 
-    pub fn channel(&self, name: &str, raw: RawChannel) -> Result<ChannelInstance, ConfigError> {
+    pub fn channel(
+        &self,
+        name: &str,
+        raw: RawChannel,
+        config_hash: ConfigHash,
+    ) -> Result<ChannelInstance, ConfigError> {
         let (name, path) = self.name(Kind::Channel, name)?;
         let component = self.component(Kind::Channel, &path, &name, raw.component)?;
         let runtime = match (&component, raw.address) {
@@ -350,10 +368,16 @@ impl Ctx<'_> {
             name,
             runtime,
             max_blob,
+            config_hash,
         })
     }
 
-    pub fn toolset(&self, name: &str, raw: RawToolset) -> Result<ToolsetInstance, ConfigError> {
+    pub fn toolset(
+        &self,
+        name: &str,
+        raw: RawToolset,
+        config_hash: ConfigHash,
+    ) -> Result<ToolsetInstance, ConfigError> {
         let (name, path) = self.name(Kind::Toolset, name)?;
         let transport = if let Some(url) = raw.url {
             let why = "on a remote toolset (one with `url`)";
@@ -423,6 +447,7 @@ impl Ctx<'_> {
             deadline,
             parallel: raw.parallel.unwrap_or(false),
             skills,
+            config_hash,
         })
     }
 

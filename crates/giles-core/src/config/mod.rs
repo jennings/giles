@@ -11,6 +11,7 @@ mod agent;
 mod discovery;
 mod error;
 mod giles;
+mod hash;
 mod instances;
 mod model;
 mod names;
@@ -37,6 +38,7 @@ pub use agent::{
 pub use discovery::{discover_plugin, find_program};
 pub use error::{ConfigError, KeyPath, Position, Segment};
 pub use giles::{CoreConfig, DEFAULT_HTTP_LISTEN, Identity, OwnerConfig, Route};
+pub use hash::ConfigHash;
 pub use instances::{
     Auth, ChannelInstance, ChannelRuntime, DEFAULT_MAX_BLOB, DEFAULT_TOOL_DEADLINE, Launch,
     OAuthClientCredentials, Program, ProviderInstance, Remote, Sandbox, StdioServer,
@@ -134,6 +136,16 @@ impl Config {
         source: &str,
     ) -> Result<Self, ConfigError> {
         let mut raw: giles::RawGiles = parse_toml(file, source)?;
+        // The same document as plain TOML, for hashing each instance's table as written.
+        let document: toml::Table =
+            toml::from_str(source).map_err(|e| ConfigError::syntax(file, source, &e))?;
+        let hash = |kind: Kind, name: &str| {
+            let table = document
+                .get(kind.as_str())
+                .and_then(|kind| kind.get(name))
+                .and_then(toml::Value::as_table);
+            ConfigHash::of(table.unwrap_or(&toml::Table::new()))
+        };
         let core = raw.core();
         let owner = raw.owner(file)?;
         let secrets = secrets::Secrets::load(&root.secrets_file())?;
@@ -173,17 +185,17 @@ impl Config {
         };
         let mut providers = BTreeMap::new();
         for (name, instance) in std::mem::take(&mut raw.provider) {
-            let instance = ctx.provider(&name, instance)?;
+            let instance = ctx.provider(&name, instance, hash(Kind::Provider, &name))?;
             providers.insert(instance.name.clone(), instance);
         }
         let mut channels = BTreeMap::new();
         for (name, instance) in std::mem::take(&mut raw.channel) {
-            let instance = ctx.channel(&name, instance)?;
+            let instance = ctx.channel(&name, instance, hash(Kind::Channel, &name))?;
             channels.insert(instance.name.clone(), instance);
         }
         let mut toolsets = BTreeMap::new();
         for (name, instance) in std::mem::take(&mut raw.toolset) {
-            let instance = ctx.toolset(&name, instance)?;
+            let instance = ctx.toolset(&name, instance, hash(Kind::Toolset, &name))?;
             toolsets.insert(instance.name.clone(), instance);
         }
 

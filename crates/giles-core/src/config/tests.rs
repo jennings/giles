@@ -1619,3 +1619,91 @@ fn grants_must_not_write_where_binaries_live() {
     )
     .unwrap_or_else(|e| panic!("{e}"));
 }
+
+#[test]
+fn config_hashes_follow_the_instance_table_as_written() {
+    let hashes = |giles_toml: &str, secrets: &str| {
+        let home = Home::new(&format!("{MINIMAL}{giles_toml}"));
+        home.secrets(secrets, 0o600);
+        let config = home.load_ok();
+        (
+            config.providers["anthropic"].config_hash,
+            config.channels["libera"].config_hash,
+            config.toolsets["files"].config_hash,
+        )
+    };
+    let base = hashes(
+        r##"
+[provider.anthropic]
+config = { api_key = { secret = "anthropic" } }
+
+[channel.libera]
+component = "irc"
+sandbox = { network = ["tcp:6697"] }
+config = { server = "irc.libera.chat:6697", channels = ["#giles"] }
+
+[toolset.files]
+command = "/bin/files"
+args = ["/docs"]
+env = { TOKEN = { secret = "files" } }
+"##,
+        "anthropic = \"one\"\nfiles = \"two\"\n",
+    );
+
+    // Reordered, reformatted, other instances added, and different secret values: same hashes.
+    let same = hashes(
+        r##"
+[toolset.files]   # comment
+env.TOKEN.secret = "files"
+args = [ "/docs", ]
+command = '/bin/files'
+
+[toolset.other]
+command = "/bin/other"
+
+[channel.libera.config]
+channels = ["#giles"]
+server = "irc.libera.chat:6697"
+
+[channel.libera]
+component = "irc"
+sandbox.network = ["tcp:6697"]
+
+[provider.anthropic.config.api_key]
+secret = "anthropic"
+"##,
+        "anthropic = \"changed\"\nfiles = \"changed too\"\n",
+    );
+    assert_eq!(same, base);
+
+    // A changed value changes that instance's hash and no other.
+    let changed = hashes(
+        r##"
+[provider.anthropic]
+config = { api_key = { secret = "anthropic" } }
+
+[channel.libera]
+component = "irc"
+sandbox = { network = ["tcp:6697"] }
+config = { server = "irc.libera.chat:6697", channels = ["#giles", "#rust"] }
+
+[toolset.files]
+command = "/bin/files"
+args = ["/docs"]
+env = { TOKEN = { secret = "files" } }
+"##,
+        "anthropic = \"one\"\nfiles = \"two\"\n",
+    );
+    assert_eq!(changed.0, base.0);
+    assert_ne!(changed.1, base.1);
+    assert_eq!(changed.2, base.2);
+}
+
+#[test]
+fn an_empty_instance_table_has_the_empty_table_hash() {
+    let config = Home::new(&format!("{MINIMAL}[channel.web]\n")).load_ok();
+    assert_eq!(
+        config.channels["web"].config_hash,
+        ConfigHash::of(&toml::Table::new())
+    );
+}

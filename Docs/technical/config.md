@@ -184,6 +184,36 @@ since the core itself adds a stdio server's install prefix to its read grants (P
 plugin host and stdio launcher should call `discover_plugin` and `find_program` rather than
 searching themselves, so what is launched is what was checked.
 
+## Instance Config Hash
+
+Every instance carries `config_hash: ConfigHash`, the "hash of the instance config taken before
+secrets are resolved" in the tool discovery cache key (PLAN section 7.9). It covers the whole
+`[<kind>.<instance>]` table as written, core keys and `config` alike, with references hashed as the
+reference (`{ secret = "github" }`), not the value. So changing a secret's value doesn't refresh
+the cache, renaming the secret does, and the hash never depends on or reveals a secret.
+
+The file is parsed a second time as a plain `toml::Table` and each instance's table is hashed with
+a canonical encoding, so the hash is the same for every way of writing the same TOML value: key
+order, inline versus standard tables, dotted keys, quoting, comments, whitespace, and number
+spelling. Version 1 of the algorithm is SHA-256 (`sha2`) over the domain tag
+`giles-config-hash-v1\n` followed by:
+
+| Value    | Encoding                                                                   |
+| -------- | -------------------------------------------------------------------------- |
+| string   | `s`, byte length (u64 LE), UTF-8 bytes                                     |
+| integer  | `i`, i64 LE                                                                |
+| float    | `f`, IEEE 754 bits (u64 LE); `-0.0` as `0.0`, every NaN as `0x7ff8000000000000` |
+| boolean  | `b`, one byte 0 or 1                                                       |
+| datetime | `d`, then its TOML text as a string                                        |
+| array    | `a`, item count (u64 LE), each item                                        |
+| table    | `t`, entry count (u64 LE), then each entry in byte order of keys: key as a string, value |
+
+Every value starts with a type tag and every variable-length part with its length, so different
+values can't encode to the same bytes. Keys are sorted explicitly, since `toml::Table` keeps
+insertion order if any crate in the build enables toml's `preserve_order`. Two pinned test vectors,
+computed independently from this table, guard the algorithm; changing it needs a new domain tag.
+`ConfigHash` displays as 64 lowercase hex digits.
+
 ## Values
 
 | Value       | Parser                     | Notes                                               |
