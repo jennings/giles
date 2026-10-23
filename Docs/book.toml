@@ -13,3 +13,5 @@ create-missing = false
 
 [output.html]
 git-repository-url = "https://github.com/jennings/giles"
+# The site is served under `/giles/` (http://jennings.io/giles/); the 404 page needs the base path.
+site-url = "/giles/"

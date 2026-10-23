@@ -57,7 +57,7 @@ Sequential, except 0.2 and 0.3, which can run in parallel after 0.1.
     `ApprovalAnswer`, `SkillSummary`, `Skill`.
   - Traits `Provider`, `Channel`, `Toolset` via `async_trait`; public enums `#[non_exhaustive]`;
     `thiserror` errors.
-- [ ] **0.6 Publish the book to GitHub Pages** (added by the owner). Move `mdbook build` (and the
+- [x] **0.6 Publish the book to GitHub Pages** (added by the owner). Move `mdbook build` (and the
   Markdown lint) out of `ci.yml` into its own GitHub Actions workflow that builds `Docs/` and, on
   pushes to `main`, deploys it to GitHub Pages; pull requests only build it. **Needs:** 0.2, 0.3.
 

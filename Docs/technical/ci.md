@@ -1,10 +1,12 @@
 # Continuous Integration
 
-GitHub Actions runs `.github/workflows/ci.yml` on every push to `main` and on every pull request.
-A newer push to the same pull request cancels the run in progress. Each push to `main` runs in its
-own concurrency group, so every `main` commit gets a finished run.
+GitHub Actions runs two workflows on every push to `main` and on every pull request:
+`.github/workflows/ci.yml` checks the code, and `.github/workflows/docs.yml` checks the
+documentation and publishes the book. In both, a newer push to the same pull request cancels the
+run in progress, and each push to `main` runs in its own concurrency group, so every `main` commit
+gets a finished run.
 
-## Jobs
+## CI jobs
 
 **Rust** runs on `ubuntu-latest` and `macos-latest`, the two platforms Giles supports. Each runner
 installs the toolchain pinned in `rust-toolchain.toml` (`rustup toolchain install` with no argument
@@ -20,19 +22,9 @@ cargo test --workspace --locked
 `--locked` fails the build if `Cargo.lock` is out of date instead of silently updating it, and `-D
 warnings` turns the workspace lints (see [Cargo Workspace](workspace.md)) into errors.
 
-**Docs** runs on `ubuntu-latest`. It installs prebuilt binaries of pinned versions of `rumdl` (with
-the `rvben/rumdl` action) and mdBook (the official release archive from GitHub), then runs:
-
-```sh
-rumdl check .
-mdbook build Docs
-```
-
-`rumdl` reads `.config/rumdl.toml` (100-column lines, reflowed). The tool versions are set once, in
-the workflow's `env` block (`RUMDL_VERSION`, `MDBOOK_VERSION`); update them there.
-
-**Protobuf** runs on `ubuntu-latest`. It installs a pinned `buf` (`BUF_VERSION`, with the
-`bufbuild/buf-action` action in setup-only mode) and runs, from the repository root:
+**Protobuf** runs on `ubuntu-latest`. It installs a pinned `buf` (`BUF_VERSION`, set in the
+workflow's `env` block, with the `bufbuild/buf-action` action in setup-only mode) and runs, from the
+repository root:
 
 ```sh
 buf lint
@@ -45,6 +37,30 @@ buf breaking --against ".git#ref=$BASE"
 full history so the base is available. If the base has no `buf.yaml` (the push that added the first
 contracts, or a new branch), there is nothing to compare against and the step only logs a notice.
 See [gRPC Protocols](protocols.md) for the rules.
+
+## Docs jobs
+
+**Build** runs on `ubuntu-latest`. It installs prebuilt binaries of pinned versions of `rumdl` (with
+the `rvben/rumdl` action) and mdBook (the official release archive from GitHub), then runs:
+
+```sh
+rumdl check .
+mdbook build Docs
+```
+
+`rumdl` reads `.config/rumdl.toml` (100-column lines, reflowed) and lints every Markdown file in the
+repository, not only the book, so the workflow is not path-filtered. The tool versions are set once,
+in the workflow's `env` block (`RUMDL_VERSION`, `MDBOOK_VERSION`); update them there. On a push to
+`main`, the job also uploads `Docs/book/` as the Pages artifact (`actions/upload-pages-artifact`);
+pull requests stop after the build.
+
+**Deploy** runs only on pushes to `main`, after Build. It publishes the artifact with
+`actions/deploy-pages` to the `github-pages` environment; it is the only job with the `pages: write`
+and `id-token: write` permissions (the rest of both workflows get `contents: read`). Deployments
+share the `pages` concurrency group without cancelling, so they run one at a time in push order.
+The repository's Pages source must be set to "GitHub Actions". The site is served at
+<http://jennings.io/giles/>, so `Docs/book.toml` sets `site-url = "/giles/"`, the base path mdBook
+needs for its 404 page.
 
 ## Running the checks locally
 
