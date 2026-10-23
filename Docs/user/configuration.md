@@ -358,6 +358,11 @@ When a turn reaches its iteration limit, the tools the model asked for in that l
 run; Giles makes one more request without tools, so the model tells you where it stopped. `/stop`
 ends a turn with no iteration limit.
 
+With `busy_mode = "steer"`, a message you send while the agent is running tools reaches it as soon
+as the tools already running finish: tool calls it asked for but hadn't started yet are skipped
+(the model is told "Skipped to read a new message") so it can read your message first. With
+`"queue"`, the agent finishes what it's doing and answers your message in a new turn.
+
 ### `[[jobs]]`
 
 Scheduled prompts. Each job's output is sent to the owner's default identity, unless the reply is

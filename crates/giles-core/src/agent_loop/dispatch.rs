@@ -5,8 +5,9 @@
 //! the calls still running (dropping a [`giles_types::ToolCallHandle`]'s events cancels the
 //! call). [`PolicyDispatcher`] is the daemon's: it checks each call against the session's tools
 //! and the registry when the call starts, runs consecutive parallel-safe calls together (at most
-//! [`MAX_PARALLEL_CALLS`] at once) and every other call alone, and drops a call at its toolset's
-//! deadline. 2.11 and 2.12 add the core tools.
+//! [`MAX_PARALLEL_CALLS`] at once) and every other call alone, drops a call at its toolset's
+//! deadline, and stops starting calls once the batch's `skip` signal fires (`busy_mode =
+//! "steer"`). 2.11 and 2.12 add the core tools.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -17,6 +18,7 @@ use futures::stream::{self, BoxStream, FuturesUnordered};
 use futures::{FutureExt, StreamExt};
 use giles_types::{Block, CallContext, ToolCall, ToolCallEvent};
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use super::prompt::SessionTools;
@@ -33,6 +35,10 @@ pub const TOOL_UNAVAILABLE: &str = "tool unavailable";
 /// How a call dropped at its deadline is answered: `timed out after <deadline>` (PLAN section
 /// 6.3).
 pub const TIMED_OUT_RESULT: &str = "timed out";
+
+/// The result of a call that hadn't started when the requester sent a new message in `steer`
+/// mode (PLAN section 6.3).
+pub const SKIPPED_FOR_MESSAGE_RESULT: &str = "Skipped to read a new message";
 
 /// The most parallel-safe calls that run at once (PLAN section 6.3).
 pub const MAX_PARALLEL_CALLS: usize = 8;
@@ -60,6 +66,10 @@ pub struct ToolBatch {
     pub tools: Arc<SessionTools>,
     /// The turn, for toolsets and core tools.
     pub context: CallContext,
+    /// Fired when the requester sent a new message the model should read first (`busy_mode =
+    /// "steer"`): calls not started by then get [`SKIPPED_FOR_MESSAGE_RESULT`] and none starts
+    /// any more; running calls finish.
+    pub skip: CancellationToken,
 }
 
 /// A tool's result, for its slot.
@@ -141,6 +151,8 @@ impl CallPolicy {
 ///   here.
 /// - A call still running at its deadline is dropped, which cancels it at the toolset, and gets
 ///   `timed out after <deadline>`.
+/// - Once [`ToolBatch::skip`] fires, no call starts any more: each one still waiting gets
+///   [`SKIPPED_FOR_MESSAGE_RESULT`] at once, and the running ones finish.
 /// - Progress events are logged. Approval requests are denied, since nothing answers them before
 ///   TASKS.md 2.7 (the handle's `answers` sender is dropped, which denies them).
 pub struct PolicyDispatcher {
@@ -167,6 +179,7 @@ impl ToolDispatcher for PolicyDispatcher {
             calls,
             tools,
             context,
+            skip,
         } = batch;
         let config = self.registry.config();
         let calls = calls
@@ -195,7 +208,7 @@ impl ToolDispatcher for PolicyDispatcher {
                 }
             })
             .collect();
-        schedule(calls)
+        schedule(calls, skip)
     }
 }
 
@@ -221,12 +234,18 @@ struct Scheduled {
 
 /// Runs `calls` in order, the parallel-safe ones together (up to [`MAX_PARALLEL_CALLS`]) and
 /// every other one alone, yielding `(index, output)` as each finishes. A call starts when the
-/// stream is polled and there's room for it; dropping the stream drops every running call.
-fn schedule(calls: Vec<Scheduled>) -> BoxStream<'static, (usize, ToolOutput)> {
+/// stream is polled and there's room for it; dropping the stream drops every running call. Once
+/// `skip` fires, every call still waiting is answered with [`SKIPPED_FOR_MESSAGE_RESULT`] at
+/// once, and the running ones finish.
+fn schedule(
+    calls: Vec<Scheduled>,
+    skip: CancellationToken,
+) -> BoxStream<'static, (usize, ToolOutput)> {
     let scheduler = Scheduler {
         waiting: calls.into(),
         running: FuturesUnordered::new(),
         barrier: false,
+        skip,
     };
     stream::unfold(scheduler, |mut scheduler| async move {
         let next = scheduler.next().await?;
@@ -240,11 +259,16 @@ struct Scheduler {
     running: FuturesUnordered<BoxFuture<'static, (usize, ToolOutput)>>,
     /// Whether the call running is a barrier (it runs alone).
     barrier: bool,
+    /// Once fired, no call starts any more.
+    skip: CancellationToken,
 }
 
 impl Scheduler {
-    /// Starts every waiting call that may start now.
+    /// Starts every waiting call that may start now. This is the one place a call starts.
     fn start(&mut self) {
+        if self.skip.is_cancelled() {
+            return;
+        }
         while let Some(next) = self.waiting.front() {
             let room = self.running.is_empty()
                 || (!self.barrier && next.parallel && self.running.len() < MAX_PARALLEL_CALLS);
@@ -265,10 +289,26 @@ impl Scheduler {
         }
     }
 
-    /// The next call to finish, or `None` once every call has.
+    /// The next call to finish (or to be skipped), or `None` once every call has.
     async fn next(&mut self) -> Option<(usize, ToolOutput)> {
-        self.start();
-        self.running.next().await
+        loop {
+            if self.skip.is_cancelled()
+                && let Some(skipped) = self.waiting.pop_front()
+            {
+                drop(skipped.call);
+                return Some((skipped.index, ToolOutput::error(SKIPPED_FOR_MESSAGE_RESULT)));
+            }
+            self.start();
+            // With calls waiting, a skip must answer them without waiting for the running ones.
+            if self.waiting.is_empty() || self.skip.is_cancelled() {
+                return self.running.next().await;
+            }
+            tokio::select! {
+                biased;
+                next = self.running.next() => return next,
+                () = self.skip.cancelled() => {}
+            }
+        }
     }
 }
 

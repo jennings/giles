@@ -136,7 +136,8 @@ request stays valid.
    runs, and the turn is `Completed`. At the iteration cap (below), every slot gets `iteration
    limit` and nothing runs. Otherwise the calls go to the `ToolDispatcher`, each slot filled as its
    output arrives (a call the dispatcher never answers gets `skipped`).
-6. The tool-batch boundary hook runs (below), then back to 2.
+6. At the tool-batch boundary the requester's new messages may join the turn (below, Turn
+   Control); they're stored after the tool results. Then back to 2.
 
 Ends other than completion:
 
@@ -144,6 +145,7 @@ Ends other than completion:
   stream, a delivery, or a tool: a response being streamed is dropped unstored; the dispatcher's
   stream is dropped, which drops each running call's events stream and so cancels it at the
   toolset (MCP `notifications/cancelled`); every empty slot gets `cancelled`. Returns `Cancelled`.
+  `crates/giles-core/tests/turn_control.rs` checks this end to end through the session manager.
 - **Failed**: an unknown agent, no usable model, an unreadable prompt file, a database error, or a
   provider error (refused, an `Err` in the stream, or a stream ending without `Stop`). Empty slots
   get `interrupted`, and the requester gets a notice within 10 s: `Sorry, the model request failed:
@@ -152,6 +154,25 @@ Ends other than completion:
 - **Panicked**: `AgentLoop::run_turn` catches a panic of the turn's future and handles it like a
   failure: empty slots get `interrupted`, the notice is `Sorry, something went wrong: the turn
   stopped unexpectedly.`, and it returns `Failed("the turn panicked: <message>")`.
+
+### Turn Control
+
+New messages from the requester during a turn follow the agent's `busy_mode` (§6.3). The session
+code queues them in the inbox and wakes `Turn::steering` ([Sessions and Turns](sessions.md)). While
+a batch runs the agent loop only looks at them (`Steering::peek`, rows stay `queued`); it takes
+them into the turn (`Steering::take`) only at the tool-batch boundary. So a turn that `/stop` or
+an error ends mid-batch leaves them queued, and they start the next turn.
+
+- **`steer`** (default): while a batch runs, a wake-up of `Steering::changed` peeks at the
+  requester's queued messages. If there are any (a wake-up can be spurious), it fires the batch's
+  `skip` signal: every call that hasn't started gets `Skipped to read a new message`
+  (`SKIPPED_FOR_MESSAGE_RESULT`), and the calls already running finish. A message that arrived
+  while the model was still answering skips the whole batch before any call starts, since the
+  model asked for those calls without having read it. At the boundary (every slot filled, the
+  next request not built yet) `at_batch_boundary` takes every queued requester message, and they
+  are stored as separate `User` messages, with their time prefixes, after the tool results. A
+  response without tool calls ends the turn; messages that arrived during it start the next one.
+- **`queue`**: no message joins a running turn; each starts the next one.
 
 ### Iteration Caps
 
@@ -170,15 +191,17 @@ session, so the scheduler has to mark such turns for the jobs cap to apply to th
 
 ## Tool Dispatch
 
-`ToolDispatcher::dispatch(ToolBatch { calls, tools, context })` returns a stream of `(index,
+`ToolDispatcher::dispatch(ToolBatch { calls, tools, context, skip })` returns a stream of `(index,
 ToolOutput { content, is_error })`, one per call, in any order. Dropping it must cancel the calls
 still running. `context` is the `CallContext`: agent, requester, and the session's channel
-conversation.
+conversation. `skip` is the steering signal above.
 
 `PolicyDispatcher` is the daemon's (§6.3, §6.4). It doesn't spawn: the stream drives the calls, so
 a call starts only while the agent loop polls it, and dropping the stream drops every running
 call's future, its events stream with it, which cancels the call at the toolset (MCP
-`notifications/cancelled`). Calls not yet started never start.
+`notifications/cancelled`). Calls not yet started never start. `Scheduler::start` is the one place
+a call starts; once `skip` has fired it starts nothing, and each waiting call is answered with
+`Skipped to read a new message` right away, without waiting for the running ones.
 
 ### Order and Parallelism
 
@@ -268,14 +291,6 @@ the channel shows as cut off.
 
 ## Seams for Later Tasks
 
-- **2.6, steering**: `AgentLoop::at_batch_boundary(turn)` runs after every slot of a batch is
-  filled and before the next request; the messages it returns are stored after the tool results.
-  It returns none, so the requester's new messages stay queued and start the next turn. 2.6 takes
-  them there with `turn.steering.take()` in `steer` mode. To skip unstarted calls it hands the
-  dispatcher a signal in `ToolBatch` (e.g. from `Steering::changed()`): `Scheduler::start` in
-  `dispatch.rs` is the one place a call starts, so once the signal fires it stops starting calls
-  and answers each waiting one with `Skipped to read a new message` (still one output per call),
-  while running calls finish.
 - **2.7, approvals**: the gate goes in the per-call future built in `PolicyDispatcher::dispatch`,
   after the call-time checks and before `tokio::time::timeout`, so waiting for an answer doesn't
   use up the call's deadline; a denial is that call's output. A barrier call waiting for approval

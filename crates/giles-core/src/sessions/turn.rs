@@ -167,6 +167,27 @@ impl Steering {
         }
     }
 
+    /// The requester's queued messages in this session, oldest first, without taking them:
+    /// their rows stay `queued`, so a turn that ends before it [`take`](Self::take)s them (a
+    /// `/stop`) leaves them for the next one. Empty when detached.
+    ///
+    /// # Errors
+    ///
+    /// A database error.
+    pub async fn peek(&self) -> Result<Vec<TurnMessage>, giles_store::Error> {
+        let Some(shared) = &self.shared else {
+            return Ok(Vec::new());
+        };
+        Ok(shared
+            .store
+            .inbox_queued(shared.session)
+            .await?
+            .iter()
+            .filter(|entry| entry.user == shared.requester)
+            .filter_map(TurnMessage::from_entry)
+            .collect())
+    }
+
     /// Takes the requester's queued messages in this session, oldest first, and makes them part
     /// of the turn. Empty when detached, nothing is queued, or the turn has ended.
     ///

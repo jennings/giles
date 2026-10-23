@@ -8,10 +8,15 @@
 //! run its tools through the [`ToolDispatcher`] filling each slot, and repeat until the model
 //! stops asking for tools. Every provider request records one `usage` row.
 //!
-//! Seams for later tasks: [`ToolDispatcher`] (the [`PolicyDispatcher`] runs calls; 2.6 skips
-//! unstarted calls, 2.7 gates calls on approval, 2.11/2.12 add core tools),
-//! [`AgentLoop::rebuild_prompt`] (2.10 compaction), and the tool-batch boundary hook
-//! `at_batch_boundary` (2.6 steering).
+//! Turn control (PLAN section 6.3): `/stop` cancels [`Turn::cancel`], which drops the running
+//! request or the dispatcher's stream (cancelling every running call at its toolset) and fills
+//! the unanswered slots with `cancelled`. With `busy_mode = "steer"` the requester's new
+//! messages join the turn after the current tool batch, and calls of the batch that haven't
+//! started are skipped.
+//!
+//! Seams for later tasks: [`ToolDispatcher`] (the [`PolicyDispatcher`] runs calls; 2.7 gates
+//! calls on approval, 2.11/2.12 add core tools) and [`AgentLoop::rebuild_prompt`] (2.10
+//! compaction).
 
 pub mod dispatch;
 pub mod glob;
@@ -34,13 +39,14 @@ use futures::FutureExt;
 use giles_store::{Session, SessionId, SessionKey, Store};
 
 pub use dispatch::{
-    CallPolicy, MAX_PARALLEL_CALLS, PARALLEL_SAFE_CORE_TOOLS, PolicyDispatcher, TIMED_OUT_RESULT,
-    TOOL_UNAVAILABLE, ToolBatch, ToolDispatcher, ToolOutput, ToolRequest,
+    CallPolicy, MAX_PARALLEL_CALLS, PARALLEL_SAFE_CORE_TOOLS, PolicyDispatcher,
+    SKIPPED_FOR_MESSAGE_RESULT, TIMED_OUT_RESULT, TOOL_UNAVAILABLE, ToolBatch, ToolDispatcher,
+    ToolOutput, ToolRequest,
 };
 pub use output::{ChannelOutput, OutputSink};
 pub use prompt::{PromptError, SessionPrompt, SessionTools};
 
-use crate::config::AgentConfig;
+use crate::config::{AgentConfig, BusyMode};
 use crate::registry::Registry;
 use crate::runtime::Runtime;
 use crate::sessions::{Clock, SystemClock, Turn, TurnMessage, TurnOutcome, TurnRunner};
@@ -186,12 +192,14 @@ impl AgentLoop {
 
     /// The tool-batch boundary (PLAN section 6.3): every slot of the last batch is filled and
     /// the next request isn't built yet. The messages returned are stored after the tool
-    /// results, so the model sees them. TASKS.md 2.6 takes the requester's new messages here
-    /// (`turn.steering.take()` when `turn.busy_mode` is `steer`). Until then none join a
-    /// running turn: they stay queued and start the next turn, as in `queue` mode.
+    /// results, so the model sees them. With `busy_mode = "steer"` these are the requester's
+    /// queued messages; with `"queue"` none join the running turn: they stay queued and start
+    /// the next turn.
     async fn at_batch_boundary(&self, turn: &Turn) -> Vec<TurnMessage> {
-        let _ = turn;
-        Vec::new()
+        match turn.busy_mode {
+            BusyMode::Steer => run::take_steering(turn).await,
+            BusyMode::Queue => Vec::new(),
+        }
     }
 }
 

@@ -166,7 +166,7 @@ The five tracks run in parallel.
   toolsets) up to 8 at once, others as barriers; per-toolset `deadline`; synthetic results;
   iteration caps (`max_iterations`, `max_iterations_jobs` default 25) with a final no-tools
   request. **Needs:** 2.4.
-- [ ] **2.6 Turn control** (§6.3). `/stop` cancels the turn and the cancellation reaches toolsets
+- [x] **2.6 Turn control** (§6.3). `/stop` cancels the turn and the cancellation reaches toolsets
   and plugins; `busy_mode = "steer"` (requester's new messages appended at tool-batch boundaries,
   unstarted calls get "Skipped to read a new message") and `"queue"`. **Needs:** 2.5.
 - [ ] **2.7 Approvals** (§6.4). `ask` globs; prompt with a short code and injection-safe rendering

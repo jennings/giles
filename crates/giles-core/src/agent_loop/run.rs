@@ -17,9 +17,9 @@ use super::{
     AgentLoop, CANCELLED_RESULT, ITERATION_LIMIT_RESULT, NOTICE_TIMEOUT, SKIPPED_RESULT,
     TRUNCATED_RESULT,
 };
-use crate::config::AgentConfig;
+use crate::config::{AgentConfig, BusyMode};
 use crate::registry::{RegistryError, ResolvedModel};
-use crate::sessions::{INTERRUPTED_RESULT, Turn, TurnOutcome};
+use crate::sessions::{INTERRUPTED_RESULT, Turn, TurnMessage, TurnOutcome};
 
 /// The longest provider error text a failure notice shows, in characters.
 const MAX_NOTICE_ERROR_CHARS: usize = 300;
@@ -364,8 +364,12 @@ async fn record_usage(agent_loop: &AgentLoop, turn: &Turn, model: &ResolvedModel
     }
 }
 
-/// Runs the calls of one assistant message, filling each slot as its result arrives. Returns
-/// `false` if the turn was cancelled first: the calls still running are cancelled (the
+/// Runs the calls of one assistant message, filling each slot as its result arrives. With
+/// `busy_mode = "steer"`, once the requester has a new message queued the calls that haven't
+/// started yet are skipped (the dispatcher's `skip` signal); running calls finish. The message
+/// is only looked at here ([`Steering::peek`](crate::sessions::Steering::peek)): it joins the
+/// turn at the boundary, so a turn stopped before then leaves it queued for the next one.
+/// Returns `false` if the turn was cancelled first: the calls still running are cancelled (the
 /// dispatcher's stream is dropped) and their slots are left for the caller.
 async fn run_tools(
     agent_loop: &AgentLoop,
@@ -381,16 +385,30 @@ async fn run_tools(
             .map(|c| &c.id)
             .eq(slots.iter().map(|s| &s.tool_use_id))
     );
+    let steer = turn.busy_mode == BusyMode::Steer;
+    let skip = CancellationToken::new();
     let mut filled = vec![false; calls.len()];
     let mut outputs = agent_loop.dispatcher.dispatch(ToolBatch {
         calls,
         tools: prompt.tools.clone(),
         context: context.clone(),
+        skip: skip.clone(),
     });
     loop {
+        // `biased`: a message that arrived while the model was answering skips every call
+        // before one starts.
         let next = tokio::select! {
             biased;
             () = turn.cancel.cancelled() => return Ok(false),
+            () = turn.steering.changed(), if steer && !skip.is_cancelled() => {
+                // A wake-up may be spurious: skip only for a message actually queued.
+                let queued = peek_steering(turn).await;
+                if !queued.is_empty() {
+                    debug!(session = %turn.session.id, messages = queued.len(), "skipping unstarted calls to read a new message");
+                    skip.cancel();
+                }
+                continue;
+            }
             next = outputs.next() => next,
         };
         let Some((index, output)) = next else {
@@ -467,6 +485,30 @@ async fn fill_empty_slots(agent_loop: &AgentLoop, turn: &Turn, text: &str) {
         .await
     {
         error!(session = %turn.session.id, %error, "cannot fill the turn's empty slots");
+    }
+}
+
+/// The requester's queued messages, taken into the turn ([`crate::sessions::Steering::take`]).
+/// A database error is logged and takes nothing: the messages stay queued for the next turn.
+pub(super) async fn take_steering(turn: &Turn) -> Vec<TurnMessage> {
+    match turn.steering.take().await {
+        Ok(messages) => messages,
+        Err(error) => {
+            error!(session = %turn.session.id, %error, "cannot take the requester's new messages");
+            Vec::new()
+        }
+    }
+}
+
+/// The requester's queued messages, left queued ([`crate::sessions::Steering::peek`]). A
+/// database error is logged and reads nothing.
+async fn peek_steering(turn: &Turn) -> Vec<TurnMessage> {
+    match turn.steering.peek().await {
+        Ok(messages) => messages,
+        Err(error) => {
+            error!(session = %turn.session.id, %error, "cannot read the requester's new messages");
+            Vec::new()
+        }
     }
 }
 

@@ -177,6 +177,15 @@ impl Setup {
         allow: &[&str],
         calls: &[(&str, &str, Value)],
     ) -> BoxStream<'static, (usize, ToolOutput)> {
+        self.dispatch_with(allow, calls, CancellationToken::new())
+    }
+
+    fn dispatch_with(
+        &self,
+        allow: &[&str],
+        calls: &[(&str, &str, Value)],
+        skip: CancellationToken,
+    ) -> BoxStream<'static, (usize, ToolOutput)> {
         let calls = calls
             .iter()
             .map(|(id, name, input)| ToolRequest {
@@ -193,6 +202,7 @@ impl Setup {
                 requester: None,
                 conversation: None,
             },
+            skip,
         })
     }
 }
@@ -382,6 +392,46 @@ async fn dropping_the_stream_cancels_running_calls_and_starts_no_more() {
     log.sort();
     assert_eq!(log, ["drop a", "drop b", "start a", "start b"]);
     assert_eq!(s.probe.in_flight.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn after_the_skip_signal_waiting_calls_are_skipped_and_running_ones_finish() {
+    let s = Setup::new().await;
+    let calls = [
+        ("a", "par__run", json!({"ms": 100})),
+        ("b", "par__run", json!({"ms": 300})),
+        // Waits for `a` and `b`: skipped while they run.
+        ("c", "serial__run", json!({"ms": 1})),
+        ("d", "par__run", json!({"ms": 1})),
+    ];
+    let skip = CancellationToken::new();
+    let mut stream = s.dispatch_with(&["*"], &calls, skip.clone());
+    assert_eq!(stream.next().await, Some((0, ok("a done"))));
+    skip.cancel();
+    // The waiting calls are answered at once, before `b` finishes.
+    let skipped = ToolOutput::error(SKIPPED_FOR_MESSAGE_RESULT);
+    assert_eq!(stream.next().await, Some((2, skipped.clone())));
+    assert_eq!(stream.next().await, Some((3, skipped)));
+    assert_eq!(s.probe.log(), ["start a", "start b", "end a"]);
+    assert_eq!(stream.next().await, Some((1, ok("b done"))));
+    assert_eq!(stream.next().await, None);
+    assert_eq!(s.probe.log(), ["start a", "start b", "end a", "end b"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_skip_before_the_first_poll_starts_nothing() {
+    let s = Setup::new().await;
+    let calls = [
+        ("a", "serial__run", json!({"ms": 1})),
+        ("b", "par__run", json!({"ms": 1})),
+    ];
+    let skip = CancellationToken::new();
+    skip.cancel();
+    let results = outputs(s.dispatch_with(&["*"], &calls, skip), calls.len()).await;
+
+    let skipped = ToolOutput::error(SKIPPED_FOR_MESSAGE_RESULT);
+    assert_eq!(results, [skipped.clone(), skipped]);
+    assert!(s.probe.log().is_empty());
 }
 
 #[tokio::test]
