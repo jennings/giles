@@ -21,10 +21,16 @@ pub(crate) struct Migration {
 }
 
 /// Every migration, oldest first. The schema version is the length of this list.
-pub(crate) const MIGRATIONS: &[Migration] = &[Migration {
-    name: "0001_initial",
-    sql: include_str!("migrations/0001_initial.sql"),
-}];
+pub(crate) const MIGRATIONS: &[Migration] = &[
+    Migration {
+        name: "0001_initial",
+        sql: include_str!("migrations/0001_initial.sql"),
+    },
+    Migration {
+        name: "0002_blobs",
+        sql: include_str!("migrations/0002_blobs.sql"),
+    },
+];
 
 /// The schema version this binary writes.
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -237,6 +243,7 @@ mod tests {
             "job_runs",
             "usage",
             "web_sessions",
+            "blobs",
         ] {
             assert!(tables(&conn).iter().any(|t| t == table), "missing {table}");
         }

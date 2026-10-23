@@ -4,12 +4,16 @@
 //! clone the handle freely, and call its typed methods; callers never write SQL. The schema,
 //! concurrency model, and migrations are described in `Docs/technical/storage.md`.
 //!
+//! [`BlobStore`] is the content-addressed file store under `data/blobs/` (PLAN 11.5), with its
+//! metadata in the database.
+//!
 //! Conventions shared by every method:
 //!
 //! - Times are [`Timestamp`]s, stored as Unix milliseconds, so they come back truncated to the
 //!   millisecond. Methods that depend on the current time take it as a `now` argument.
 //! - Row ids ([`SessionId`] and friends) are opaque newtypes over SQLite rowids.
 
+mod blobs;
 mod db;
 mod error;
 mod inbox;
@@ -23,6 +27,7 @@ mod time;
 mod usage;
 mod web_sessions;
 
+pub use blobs::{Blob, BlobMeta, BlobReader, BlobStore, SweepGuard};
 pub use db::{OpenOptions, Store};
 pub use error::{BoxError, Error, Result};
 pub use inbox::{InboxEntry, InboxId, InboxState, NewInboxEvent};

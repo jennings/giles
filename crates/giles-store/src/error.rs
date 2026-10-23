@@ -42,6 +42,21 @@ pub enum Error {
     /// A stored value is malformed: an unknown enum string, an invalid id, a bad timestamp.
     #[error("corrupt row: {0}")]
     Corrupt(String),
+    /// A blob is larger than the caller's limit. Nothing was stored.
+    #[error("blob exceeds the {limit}-byte limit")]
+    TooLarge {
+        /// The limit in bytes.
+        limit: u64,
+    },
+    /// A blob's metadata exists but its file is missing or has the wrong size. Storing the same
+    /// content again repairs it.
+    #[error("blob {id} is damaged: {reason}")]
+    BlobDamaged {
+        /// The blob.
+        id: giles_types::MediaId,
+        /// What's wrong.
+        reason: String,
+    },
     /// A blocking task panicked or was cancelled by the runtime shutting down.
     #[error("blocking task failed: {0}")]
     Task(#[from] tokio::task::JoinError),

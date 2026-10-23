@@ -410,6 +410,43 @@ mod tests {
         assert_eq!(x, 7);
     }
 
+    #[tokio::test]
+    async fn a_version_1_database_upgrades_to_the_current_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("giles.db");
+        let v1 = Store::open_migrating(path.clone(), OpenOptions::new(), &migrate::MIGRATIONS[..1])
+            .await
+            .unwrap();
+        v1.write(|conn| {
+            conn.execute(
+                "INSERT INTO job_runs (agent, job, last_run_at) VALUES ('a', 'config:x', 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        drop(v1);
+
+        let seen = Arc::new(Mutex::new(None));
+        let record = seen.clone();
+        let options = OpenOptions::new().before_migrate(move |plan| {
+            *record.lock().unwrap() = Some((plan.from_version(), plan.to_version()));
+            Ok(())
+        });
+        let store = Store::open_with(&path, options).await.unwrap();
+        assert_eq!(*seen.lock().unwrap(), Some((1, crate::SCHEMA_VERSION)));
+        let (runs, blobs) = store
+            .read(|conn| {
+                let runs = conn.query_row("SELECT count(*) FROM job_runs", [], |r| r.get(0))?;
+                let blobs = conn.query_row("SELECT count(*) FROM blobs", [], |r| r.get(0))?;
+                Ok((runs, blobs))
+            })
+            .await
+            .unwrap();
+        assert_eq!((runs, blobs), (1_i64, 0_i64));
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_reads_and_writes_never_surface_busy() {
         let dir = tempfile::tempdir().unwrap();

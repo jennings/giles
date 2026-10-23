@@ -1,8 +1,9 @@
 # Storage
 
-The crate `giles-store` owns the SQLite database, `data/giles.db` (PLAN section 11.4). The core
-opens it once with `Store::open(data_root.database_file())` and calls typed methods on the cloneable
-`Store` handle; no other crate writes SQL.
+The crate `giles-store` owns the SQLite database, `data/giles.db` (PLAN section 11.4), and the
+blob store under `data/blobs/` (PLAN 11.5). The core opens the database once with
+`Store::open(data_root.database_file())` and calls typed methods on the cloneable `Store` handle;
+no other crate writes SQL.
 
 ## Connections and Concurrency
 
@@ -62,9 +63,10 @@ changes are new files.
 - Row ids are opaque newtypes (`SessionId`, ...) over SQLite rowids.
 - Agent, user, channel instance, and conversation ids are stored as their string forms.
 
-## Schema (version 1)
+## Schema (version 2)
 
-`crates/giles-store/src/migrations/0001_initial.sql` is the authority; this is its outline.
+The files in `crates/giles-store/src/migrations/` are the authority (`0001_initial.sql` has every
+table but `blobs`, which `0002_blobs.sql` adds); this is their outline.
 
 | Table          | Columns and rules                                                                    |
 | -------------- | ------------------------------------------------------------------------------------ |
@@ -78,6 +80,7 @@ changes are new files.
 | `job_runs`     | (`agent`, `job`) to `last_run_at`; `job` is `config:<id>` or `runtime:<jobs.id>`.      |
 | `usage`        | `at`, `provider`, `model`, `agent`, `user_id`, `session_id`, four token counts, `fallback`. |
 | `web_sessions` | `token_hash` (SHA-256 of the cookie token), `user_id`, `created_at`, `expires_at`.     |
+| `blobs`        | `id` (hex SHA-256), `size`, `media_type`, `name`, `created_at`, `stored_at` (latest put). |
 
 `identities` and `pairings` are deferred with multi-user support (PLAN 1.1, D49) and don't exist
 yet.
@@ -220,3 +223,60 @@ and keeps only the hash, so a database copy can't be replayed as a login. The to
 at least 128 bits of entropy, so a plain hash suffices. `web_session_create` (`Conflict` on a token
 collision), `web_session(token, now)` (only unexpired sessions), `web_session_delete` (logout), and
 `web_sessions_expire(now)`. The 30-day lifetime is the caller's `expires_at`.
+
+## Blob Store
+
+`BlobStore` keeps attachments and tool media as content-addressed files (PLAN 11.5). The core opens
+it once with `BlobStore::open(data_root.blobs_dir(), store)`; it takes the directory from the caller
+and its metadata lives in the database.
+
+```text
+data/blobs/sha256/
+  tmp/                    puts in progress; emptied when the store opens
+  2c/
+    2cf24dba...938b9824   one file per blob, named by its full hex SHA-256
+```
+
+- **Sharding.** Files sit in 256 directories named by the first two hex digits of the digest, so no
+  directory grows past a few thousand entries for any realistic store, and listing for the sweep
+  stays cheap, without the extra lookups of a deeper tree. Directories are created with mode 0700
+  and files with 0600.
+- **Put.** `put(reader, limit, meta, now)` streams an `AsyncRead` into a temp file in
+  `sha256/tmp/` (same filesystem, so the final rename is atomic) while hashing it. Past `limit`
+  bytes it stops with `Error::TooLarge`. Callers pass the smaller of the instance's `max_blob` and a
+  transfer header's `size` (PLAN 8.3). The temp file is fsynced and renamed to its final name, and
+  the shard directory is fsynced (and `sha256/` too when the shard directory is new), so a stored
+  blob survives a power loss. The rename always replaces an existing copy of the same content: that
+  costs a directory fsync per put, but a copy damaged in place (even one with the right size) is
+  repaired by storing the content again, and readers with the old file open keep reading it. The
+  temp file is deleted when a put fails or its future is dropped, and leftovers from a crash are
+  deleted at open.
+- **Metadata.** A `blobs` row (id, size, media type, name, `created_at`, `stored_at`) is upserted
+  after the file is in place. Metadata is a table, not sidecar files, so the sweep (task 4.2) can
+  find unreferenced, old blobs with SQL, and a row and its file can't disagree about anything but
+  existence. Media type and name are those of the first put; the returned `MediaRef`
+  (`id = MediaId::from_digest`) carries the caller's own, since it describes that attachment.
+  `stored_at` moves forward on every put, so content that's being sent again isn't swept as old.
+- **Get.** `get(id)` returns the stored `MediaRef` and a `BlobReader`, or `None` for an unknown id.
+  A missing file or one of the wrong size is `Error::BlobDamaged`; storing the same content again
+  repairs it. The reader hashes as it goes, and the read that reaches the end fails with
+  `InvalidData` if the content doesn't match its id, so a consumer that reads to the end never
+  accepts damaged bytes. `stat(id)` returns the metadata alone.
+
+Concurrent puts of the same content need no lock among themselves: each writes its own temp file, a
+rename over an existing file is atomic, and the row upsert is idempotent. Hashing runs on the async
+task between reads, one 64 KiB chunk at a time, which takes well under a millisecond per chunk, so
+a put never holds a runtime thread for long.
+
+The sweep (task 4.2) must follow two rules:
+
+- **Lock.** It holds `BlobStore::lock_for_sweep()` (an exclusive `tokio::sync::RwLock` guard)
+  while it decides what to delete and deletes it. Each put holds the shared side from just before
+  its rename until its row is written. Without it, a sweep could delete a file whose row a put is
+  about to write, or delete an old row and file just as a put of the same content commits, leaving
+  a row without a file. Puts keep streaming into temp files while the sweep runs; only their commit
+  waits.
+- **Grace period for rowless files.** A file without a row is left by a crash, or by a put
+  cancelled between its rename and its row. It's garbage only once its mtime is older than 48 hours
+  (the same grace as unreferenced blobs, PLAN 11.5). Every put renames a fresh file into place, so
+  the mtime is the time of the latest put.
