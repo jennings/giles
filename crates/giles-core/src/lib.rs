@@ -15,4 +15,5 @@ pub mod registry;
 pub mod router;
 pub mod runtime;
 pub mod sandbox;
+pub mod sessions;
 pub mod skills;

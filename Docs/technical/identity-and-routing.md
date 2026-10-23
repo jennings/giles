@@ -124,4 +124,5 @@ It's implemented for closures of that shape and by `NoPendingApprovals`. With no
 approval a bare reply answers when several wait is the approvals code's decision.
 
 The commands' effects belong to the inbox and sessions code (`/new`), turn control (`/stop`), and
-approvals (replies).
+approvals (replies); [Sessions and Turns](sessions.md) records each command's event id as a dedupe
+key before acting on it, so a redelivered command acts once.

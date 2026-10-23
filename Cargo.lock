@@ -856,6 +856,7 @@ dependencies = [
  "prost",
  "reqwest",
  "rmcp",
+ "rusqlite",
  "serde",
  "serde-saphyr",
  "serde_json",

@@ -11,6 +11,11 @@ message; surrounding spaces and capitalization don't matter (`/New` and `Yes` wo
 | `yes! <code>`              | Allow it, and allow that tool for the rest of the session            |
 | `no <code>`                | Deny it                                                              |
 
+If the agent is still answering when you send `/new`, that answer (and any messages you sent before
+`/new`) finishes in the old session; only later messages start the fresh one. `/stop` when the agent
+isn't doing anything has no effect. It stops only the current turn: messages still waiting for the
+agent are answered next.
+
 Approval prompts look like "Allow `shell__exec` (`rm -rf ./build`)? Reply `yes 4821` or `no 4821`."
 You can leave out the code (`yes`) when only one request is waiting; otherwise include it. `yes` and
 `no` count as approval replies only while a request is waiting for you in that conversation;
