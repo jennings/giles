@@ -190,7 +190,7 @@ A toolset is an MCP server. It runs one of three ways:
 | `component`   | stdio      | name      | The plugin to run when there's no `command`                   |
 | `args`        | stdio      | `[]`      | Arguments                                                     |
 | `env`         | stdio      | `{}`      | Environment variables to set, name to credential              |
-| `idle_stop`   | stdio      | off       | Stop the server after this long without calls (a duration); it restarts on the next call |
+| `idle_stop`   | stdio      | off       | Stop the server after this long without calls (a duration); its tools stay offered and it restarts on the next call |
 | `sandbox`     | stdio      |           | Extra sandbox grants ([Sandbox](#sandbox))                    |
 | `unsandboxed` | stdio      | `false`   | Run without a sandbox (logged as a warning at every launch)   |
 | `url`         | remote     |           | The server's `https://` (or `http://`) URL                    |
@@ -225,6 +225,15 @@ toolset runs that interpreter.
   directory, the `PATH` above, and `GILES_PLUGIN_DATA` (its data directory); nothing else from
   Giles' environment reaches it. `env` can't set `HOME`, `TMPDIR`, `PATH`, or
   `GILES_PLUGIN_DATA`.
+
+Giles starts every toolset when it starts, and keeps it running: a stdio server that crashes is
+restarted, and a remote server that can't be reached is retried, both with a growing delay
+([Installing and Running](running.md#running-the-daemon)). It remembers each toolset's list of tools
+in `<data root>/cache/toolsets/`, so a stdio server's tools are offered to the model even while the
+server is stopped (for `idle_stop`, or after a crash) and from the moment Giles starts, before the
+server answers. The remembered list is used only for the same program (by content) and the same
+`[toolset.<name>]` table, and every start of the server lists the tools afresh. A list the server
+changes while it runs reaches conversations that start afterwards.
 
 ```toml
 [toolset.files]

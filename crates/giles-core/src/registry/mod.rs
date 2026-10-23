@@ -379,7 +379,7 @@ impl Registry {
             .map(|t| Pending {
                 kind: Kind::Toolset,
                 name: t.name.clone(),
-                reason: "pending task 2.20 (toolset lifecycle)",
+                reason: "registered by the toolset host at startup",
             });
         channels.chain(toolsets).collect()
     }

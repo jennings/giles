@@ -14,6 +14,7 @@ use giles_core::plugin_host::{ChannelWiring, Launcher, PluginHost};
 use giles_core::runtime::Runtime;
 use giles_core::sandbox::{self, HostReport};
 use giles_core::sessions::SystemClock;
+use giles_core::toolsets::{ToolsetHost, ToolsetLauncher};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -53,6 +54,14 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     // The database, the blob store, and every component the configuration names.
     let config = Arc::new(config);
     let runtime = Runtime::start(root.clone(), config.clone()).await?;
+    // Every toolset, registered now with its cached tools (so resumed turns see them) and started
+    // in the background.
+    let toolsets = ToolsetHost::start(
+        ToolsetLauncher::new(root.clone(), giles_exe.clone(), sandbox.clone().map(drop)),
+        &runtime.registry,
+    )
+    .await;
+    runtime.registry.log_summary();
 
     let listener = http::bind(config.core.http_listen).await?;
     let http_addr = listener
@@ -127,9 +136,10 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     let mut http_server =
         tokio::spawn(async move { tokio::try_join!(main_server, proxy_server).map(|_| ()) });
     // Every configured plugin channel, supervised: registered and attached to the sessions as it
-    // comes up, relaunched with backoff when it fails. Startup waits for each first attempt; a
-    // shutdown during startup stops waiting, and `stop_all` abandons the launches still running
-    // (killing their plugins).
+    // comes up, relaunched with backoff when it fails. Startup waits for each first attempt and
+    // for every toolset's first start (a failed toolset retries in the background); a shutdown
+    // during startup stops waiting, and `stop_all` abandons the launches still running (killing
+    // their plugins).
     let wiring = ChannelWiring {
         registry: runtime.registry.clone(),
         sessions: sessions.clone(),
@@ -159,7 +169,7 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     });
     let admin_server = tokio::spawn(admin_listener.serve(admin, shutdown.clone()));
     tokio::select! {
-        () = plugins.start(&config) => {}
+        _ = async { tokio::join!(plugins.start(&config), toolsets.started()) } => {}
         () = shutdown.cancelled() => {}
     }
 
@@ -186,15 +196,17 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
         // The server only returns on shutdown; stop everything else with it.
         shutdown.cancel();
         plugins.stop_all().await;
+        toolsets.stop().await;
         stop_admin(admin_server).await;
         result.context("the HTTP server panicked")??;
         anyhow::bail!("the HTTP server stopped unexpectedly");
     }
     http_server.await.context("the HTTP server panicked")??;
     // Running turns are cancelled with the token; wait for them and the channel pumps, then stop
-    // the plugins and their supervision.
+    // the plugins and their supervision, and the toolsets.
     sessions.closed().await;
     plugins.stop_all().await;
+    toolsets.stop().await;
     stop_admin(admin_server).await;
     info!("giles stopped");
     // Held until here, so a new core can't start while this one still runs plugins.

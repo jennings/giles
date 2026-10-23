@@ -52,8 +52,10 @@ to stderr, with ANSI colors only when stderr is a terminal. The filter is `GILES
    plugin host refuses sandboxed instances with it. Find the `giles` binary itself, the sandbox
    trampoline (`std::env::current_exe`).
 6. Start the core runtime (`giles_core::runtime::Runtime::start`, [Registry](registry.md)): open
-   the database and the blob store, build the registry from the configuration, and log what is
-   registered (`registry ready`) and each instance still pending. Any error ends the process.
+   the database and the blob store and build the registry from the configuration. Any error ends
+   the process. Then register every toolset (`ToolsetHost::start`, [Toolsets](toolsets.md)), each
+   offering its cached tools, with its first start running in the background, and log what is
+   registered (`registry ready`) and each instance still pending.
 7. Bind the HTTP listener on `core.http_listen` (a busy address fails startup here). Then write a
    fresh admin token and bind the admin socket (`AdminListener::bind`, removing one a crash left).
 8. Start the sessions (`Runtime::start_sessions`, [Sessions and Turns](sessions.md)): recover from
@@ -63,19 +65,24 @@ to stderr, with ANSI colors only when stderr is a terminal. The filter is `GILES
    resumed turns start running, so nothing after it may abort startup. Then start the HTTP server
    on its own task ([HTTP Server](http.md#lifecycle)) and the admin service on another
    ([Admin Service](admin.md)), and start supervising every plugin channel (`PluginHost::start`,
-   [Plugin Host](plugin-host.md#supervision)), which waits for each one's first launch attempt
-   unless a shutdown signal arrives first. Each plugin is registered with the registry and attached
-   to the sessions as it comes up; one that fails is logged and relaunched with backoff, or once
-   its binary changes. The admin service reports supervision through `admin::PluginControl`.
+   [Plugin Host](plugin-host.md#supervision)), which waits for each one's first launch attempt,
+   while also waiting for every toolset's first start (`ToolsetHost::started`); both waits end if
+   a shutdown signal arrives first. Each plugin is registered with the registry and attached to
+   the sessions as it comes up; one that fails is logged and relaunched with backoff, or once its
+   binary changes. A toolset that fails to start is logged and retried with backoff
+   ([Toolsets](toolsets.md#lifecycle)). The admin service reports plugin supervision through
+   `admin::PluginControl`.
 9. Log `giles started` with the root, admin socket path, HTTP URL, and instance and agent counts,
    plus a warning if the sockets use the `$TMPDIR` fallback.
 10. Wait until the shutdown token is cancelled, then await the HTTP server (it drains open requests
     for up to 5 s) and the sessions (`Sessions::closed`: running turns are cancelled, channel
     pumps stop between events), then stop the plugins and their supervision
     (`PluginHost::stop_all`: `Shutdown`, then `SIGTERM`, then `SIGKILL` to each plugin's process
-    group), await the admin server (it drains for up to 5 s and removes its socket and token file),
-    log `giles stopped`, release the lock, and exit with status 0. If the HTTP server stops on its
-    own first, cancel the token, stop the plugins and the admin server, and exit with an error.
+    group) and the toolsets (`ToolsetHost::stop`: stdio servers' process groups killed, remote
+    connections closed), await the admin server (it drains for up to 5 s and removes its socket and
+    token file), log `giles stopped`, release the lock, and exit with status 0. If the HTTP server
+    stops on its own first, cancel the token, stop the plugins, the toolsets, and the admin server,
+    and exit with an error.
 
 The shutdown signal is a `tokio_util::sync::CancellationToken`. The first SIGINT or SIGTERM cancels
 it. Subsystems added later take a clone (or a `child_token()`), stop when it is cancelled, and are

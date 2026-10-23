@@ -1,8 +1,8 @@
 //! The MCP client: a [`Toolset`] over one MCP server, using `rmcp` (PLAN sections 7.10, 8.6).
 //!
 //! Doc: `Docs/technical/mcp.md`. Each [`McpToolset`] is one connection, made ready by the
-//! `initialize` handshake; [`crate::toolsets`] launches stdio servers in their sandbox. Staged
-//! parts: lifecycle and the tool cache are task 2.20, and media, skills, and elicitation 2.21.
+//! `initialize` handshake; [`crate::toolsets`] launches stdio servers in their sandbox and
+//! supervises every connection. Staged: media, skills, and elicitation are task 2.21.
 
 mod client;
 mod convert;
@@ -154,6 +154,15 @@ impl McpToolset {
     /// The instance name, for messages; tool names are bare.
     pub fn instance(&self) -> &str {
         &self.origin.instance
+    }
+
+    /// The version the server reported in `initialize` (`serverInfo.version`), part of the
+    /// tool-list cache key (PLAN section 7.9).
+    pub fn server_version(&self) -> Option<String> {
+        let info = self.peer().peer_info()?;
+        info.server_info
+            .as_ref()
+            .map(|server| server.version.clone())
     }
 
     /// Resolves once the connection has ended: the server hung up or exited, or the transport

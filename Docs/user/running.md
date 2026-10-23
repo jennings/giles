@@ -33,8 +33,17 @@ identities = ["web:owner"]
 
 Next it opens its database (`data/giles.db`, created on first start) and builds the components the
 configuration names. A provider or channel whose `config` it rejects stops startup with an error
-naming the file, line, and key. Channel plugins start next ([Plugins](#plugins)). Toolsets can't be
-started yet: each one is logged as `instance not started`.
+naming the file, line, and key. Channel plugins start next ([Plugins](#plugins)).
+
+Then it starts every toolset ([Configuration](configuration.md#toolsets)) and logs `giles started`
+once each has started or failed. A toolset that fails doesn't stop Giles: it's logged
+(`cannot start the toolset; retrying`, with the reason) and retried after 1 second, then 2, 4,
+and so on up to every 5 minutes, while everything else works. A stdio server that crashes later
+is restarted the same way. A remote server's tools are offered only while it's reachable; a stdio
+server's tools stay offered while it restarts, and calls to them fail until it's back. A failure
+that retrying can't fix, such as rejected credentials, a host that can't sandbox, or the sandbox
+refusing to start the server (its configuration or grants), is logged once and not retried until
+Giles restarts, and that toolset's tools are no longer offered.
 
 It runs until it receives SIGINT (Ctrl-C) or SIGTERM, then shuts down and exits with status 0. If
 shutdown takes too long, a second Ctrl-C or SIGTERM makes it exit at once with status 130. Any other

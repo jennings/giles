@@ -13,8 +13,10 @@ check has run ([The `giles` Binary](daemon.md#giles-serve-lifecycle)):
 2. Open the blob store, `data/blobs` (`BlobStore::open`).
 3. `Registry::from_config(root, config, media)` with `media` a `giles_core::blobs::BlobMedia` over
    the blob store.
-4. `Registry::log_summary()`: one `instance not started` line per pending instance, then
-   `registry ready` with the counts of providers, channels, toolsets, tools, and pending instances.
+
+`serve` then registers the toolsets (the [toolset host](toolsets.md#lifecycle)) and calls
+`Registry::log_summary()`: one `instance not started` line per pending instance, then
+`registry ready` with the counts of providers, channels, toolsets, tools, and pending instances.
 
 `Runtime` is `Clone` and holds `root`, `config`, `store`, `blobs`, and `registry: Arc<Registry>`.
 Errors are a `StartError` (`Store`, `Blobs`, `Registry`); `giles serve` prints it and exits.
@@ -53,7 +55,8 @@ Components built outside the registry are added with:
 - `register_channel(&InstanceName, Arc<dyn Channel>)`: plugin channels (the plugin host's
   `RemoteChannel`, see [Plugin Host](plugin-host.md#remotechannel)), remote channels (3.7), or a
   built-in constructed elsewhere.
-- `register_toolset(&InstanceName, Arc<dyn Toolset>).await`: MCP toolsets (2.20).
+- `register_toolset(&InstanceName, Arc<dyn Toolset>).await`: every MCP toolset, once at startup,
+  by the toolset host ([Toolsets](toolsets.md#lifecycle)).
 - `register_provider(&InstanceName, Arc<dyn Provider>)`: future provider plugins and fakes in
   tests.
 
@@ -64,8 +67,9 @@ take over. The maps sit behind `RwLock`s and lookups (`provider`, `channel`, `to
 `await`. Consuming a channel's events is the caller's job.
 
 `pending()` lists configured channels and toolsets with nothing registered, with what will start
-them (the plugin host once the plugin is up, or a task still to land); startup logs each as
-`instance not started`.
+them (the plugin host once the plugin is up, or a task still to land); `log_summary()` logs each as
+`instance not started`. Toolsets are never pending once `serve` has started the toolset host, which
+registers them all before the summary.
 
 `Registry::new(root, config)` makes an empty registry for tests, which register fakes.
 
@@ -96,8 +100,10 @@ aborts the previous object's watcher, and any update tagged with an old generati
 replaced object can't overwrite its successor's list. Watchers hold only a weak reference to the
 index and stop when it is dropped.
 
-`set_toolset_tools(instance, tools)` replaces an instance's list directly (the tool-list cache,
-2.20), with the same rules; `remove_toolset` removes it.
+`set_toolset_tools(instance, tools)` replaces an instance's list directly (tests use it to offer
+tools without a toolset object), with the same rules; `remove_toolset` removes it. The toolset
+host feeds the index through `register_toolset` instead: each instance's `ManagedToolset` reports
+the cached and fresh lists through `tool_changes` ([Toolsets](toolsets.md#lifecycle)).
 
 ## Skill Index
 

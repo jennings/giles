@@ -687,6 +687,44 @@ fn plugins_that_fail_to_launch_are_supervised_and_giles_runs() {
 }
 
 #[test]
+fn toolsets_that_fail_to_start_leave_giles_running_and_retrying() {
+    let env = Env::new();
+    let home = env.path("home");
+    let script = env.path("broken-server");
+    fs::write(
+        &script,
+        "#!/bin/sh\necho 'broken: no configuration' >&2\nexit 1\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    write_config(
+        &home,
+        &format!(
+            "{MINIMAL_CONFIG}\n[toolset.broken]\ncommand = \"{}\"\nunsandboxed = true\n\n\
+             [toolset.remote]\nurl = \"http://127.0.0.1:9/mcp\"\n",
+            script.display()
+        ),
+    );
+    let daemon = Daemon::start(env.command(&["serve", "--home", home.to_str().unwrap()]));
+    let (status, log) = daemon.stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+    assert!(
+        log.contains("mcp{instance=broken}: giles_core::mcp::stderr: broken: no configuration"),
+        "{log}"
+    );
+    for instance in ["broken", "remote"] {
+        let failed = log.lines().find(|line| {
+            line.contains(&format!("toolset{{instance={instance}}}"))
+                && line.contains("cannot start the toolset; retrying")
+        });
+        assert!(failed.is_some(), "{instance}\n{log}");
+    }
+    // Both were registered before the summary, so neither is pending.
+    assert!(!log.contains("instance not started"), "{log}");
+    assert!(log.contains("giles stopped"), "{log}");
+}
+
+#[test]
 fn a_shutdown_during_plugin_launch_kills_the_plugin_and_exits_promptly() {
     let env = Env::new();
     let home = env.path("home");

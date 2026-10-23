@@ -57,9 +57,10 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    /// Opens (and migrates) the database and the blob store under `root`, builds the registry
-    /// from `config` with built-in providers reading attachments from the blob store, and logs
-    /// what's registered and what's still pending. The data root's layout must exist.
+    /// Opens (and migrates) the database and the blob store under `root` and builds the registry
+    /// from `config` with built-in providers reading attachments from the blob store. The data
+    /// root's layout must exist. `serve` logs the registry's summary
+    /// ([`Registry::log_summary`]) once it has registered the toolsets.
     ///
     /// # Errors
     ///
@@ -75,7 +76,6 @@ impl Runtime {
             .map_err(|source| StartError::Blobs { path, source })?;
         let media = Arc::new(BlobMedia::new(blobs.clone()));
         let registry = Registry::from_config(root.clone(), config.clone(), media)?;
-        registry.log_summary();
         Ok(Self {
             root,
             config,

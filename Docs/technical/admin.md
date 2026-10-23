@@ -111,5 +111,5 @@ The built-in web channel implements `LoginLinks` (its `UnknownUser` becomes `Unk
 `PluginControl` ([Plugin Host](plugin-host.md#status)): `plugins()` maps each `PluginStatus` field
 for field (`Running { pid }` becomes `pid: Some(pid)`, and the version and `requested_grants` come
 from the live or cached `Describe` answer), and `restart` is `PluginHost::restart`. `serve` passes
-it as `plugins`. Toolsets aren't supervised yet (TASKS.md 2.20), so their lifecycle fields stay
-unset.
+it as `plugins`. Toolsets are supervised by the toolset host ([Toolsets](toolsets.md#lifecycle)),
+which doesn't report to the admin service yet, so their lifecycle fields stay unset.

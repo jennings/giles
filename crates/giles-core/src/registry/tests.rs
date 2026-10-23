@@ -409,7 +409,7 @@ fn plugin_instances_stay_pending_until_registered() {
     assert_eq!(pending[1].1, "mail");
     assert!(pending[1].2.contains("3.7"), "{pending:?}");
     assert_eq!(pending[2].0, Kind::Toolset);
-    assert!(pending[2].2.contains("2.20"), "{pending:?}");
+    assert!(pending[2].2.contains("toolset host"), "{pending:?}");
 
     let old = registry
         .register_channel(&name("libera"), Arc::new(FakeChannel::new()))

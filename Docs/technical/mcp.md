@@ -35,7 +35,8 @@ message, since server error messages and HTTP error bodies can echo a credential
 **Closing.** `McpToolset::closed()` resolves once the connection has ended (the server hung up or
 exited, or the transport failed). A transport wrapper reports the end when the server's stream ends
 or `rmcp`'s service loop drops it. For a stdio server it returns the exit status, waiting up to 2 s
-for it, so task 2.20's supervision can tell a trampoline failure (exit 125, 126, 127) from a crash.
+for it, so the [toolset host](toolsets.md#lifecycle) can report it (a sandbox trampoline failure
+exits with 125, 126, or 127).
 
 ### Stdio
 
@@ -106,7 +107,7 @@ core.
 initialization. Each notification bumps a counter; the stream re-reads the full list and yields it.
 Notifications that arrive while a list is being read coalesce into one more read. A failed re-read
 is logged and skipped, except a lost connection, which ends the stream; dropping the toolset also
-ends it. Caching the list (PLAN section 7.9) is task 2.20.
+ends it. The [toolset host](toolsets.md#tool-list-cache) caches the lists (PLAN section 7.9).
 
 **Calls.** `call` sends `tools/call` with the input object as `arguments` (`null` means none; any
 other non-object is `InvalidRequest`) and returns as soon as the request is queued. A task per call
@@ -160,7 +161,6 @@ fails by its own account (`isError: true`) is a normal `Result` event, not an er
 
 ## Staged Work
 
-- 2.20: start toolsets at boot, restart with backoff, the tool discovery cache, idle stop.
 - 2.21: media in and out of tools, toolset skill directories, elicitation as approval requests.
 
 ## Tests

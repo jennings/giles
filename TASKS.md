@@ -231,7 +231,7 @@ The five tracks run in parallel.
 - [x] **2.19 Sandboxed stdio toolsets** (§7.10). Resolve `command` with the operator's `PATH` and
   add its install prefix to the read and execute grants; launch through the trampoline with
   network off unless granted. **Needs:** 1.12, 1.6.
-- [ ] **2.20 Toolset lifecycle and cache** (§7.5, §7.6, §7.9). Start every toolset at boot;
+- [x] **2.20 Toolset lifecycle and cache** (§7.5, §7.6, §7.9). Start every toolset at boot;
   tool-list cache in `<root>/cache/` keyed on binary SHA-256, server version, and config hash;
   refresh on start and on `list_changed` (new sessions only); `idle_stop` with cached tools still
   offered and relaunch on the next call; an unreachable remote server leaves Giles degraded and

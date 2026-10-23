@@ -1,8 +1,9 @@
 # Toolsets
 
-Code: `crates/giles-core/src/toolsets/` (`giles_core::toolsets`). Design: PLAN section 7.10. A
-toolset is an MCP server; the [MCP client](mcp.md) is the connection, and this module decides
-how to reach each configured `[toolset.<instance>]`.
+Code: `crates/giles-core/src/toolsets/` (`giles_core::toolsets`). Design: PLAN sections 7.5, 7.6,
+7.9, and 7.10. A toolset is an MCP server; the [MCP client](mcp.md) is the connection, and this
+module decides how to reach each configured `[toolset.<instance>]` (`ToolsetLauncher`) and keeps it
+going for the life of the daemon (`ToolsetHost`).
 
 ## Connecting
 
@@ -32,7 +33,7 @@ the same lookup config loading uses to protect binary directories). Without `com
 `giles-toolset-<component>` is found in `<root>/plugins/`, then on `PATH`
 (`config::discover_plugin`). `ResolvedProgram` keeps both the path as found (`found`) and with
 links resolved (`program`). The trampoline runs `program`, so the file granted is the file run,
-and 2.20 keys the tool-list cache on its SHA-256.
+and the [tool-list cache](#tool-list-cache) is keyed on its SHA-256.
 
 ## Grants
 
@@ -104,12 +105,107 @@ Like a plugin launch ([Plugin Host](plugin-host.md)), without the gRPC parts:
 `env` may not set `HOME`, `TMPDIR`, `PATH`, or `GILES_PLUGIN_DATA`: the sandbox derives them
 (`sandbox::DERIVED_ENV`), and config loading refuses them.
 
+## Lifecycle
+
+`ToolsetHost::start(launcher, &registry)` runs in `serve` right after the registry is built
+([The `giles` Binary](daemon.md#giles-serve-lifecycle)). For each configured toolset it:
+
+1. Looks up the [tool-list cache](#tool-list-cache) (stdio servers only) and offers a hit at once.
+2. Registers a `ManagedToolset` with `Registry::register_toolset`, once, for the life of the
+   daemon. It never changes, so the dispatcher needs nothing beyond the registry.
+3. Spawns the instance's supervisor task (`toolsets/lifecycle.rs`, under a `toolset{instance}`
+   span), which owns the connection and makes the first start.
+
+`started()` waits for every first start to succeed or fail; `serve` waits for it alongside the
+plugin launches before logging `giles started`. `stop()` cancels the supervisors and waits for
+them, dropping every connection (a stdio server's process group is killed).
+
+`ManagedToolset` is the instance's face:
+
+- `list_tools` and `tool_changes` report what the supervisor offers (a `watch` channel), so the
+  registry's tool index follows the cache, each start, and each `list_changed`. As always, a new
+  list reaches new sessions only; a running session keeps its snapshot (PLAN section 6.4).
+- `call` asks the supervisor for the connection over a channel and calls it. The lease it gets
+  holds the connection and counts the call as in flight until the returned events are dropped, so
+  idle stop never cuts a call short.
+- Skills are empty until 2.21.
+
+The supervisor is a loop over four states:
+
+| State     | Leaves on                                     | A call                                  |
+| --------- | --------------------------------------------- | --------------------------------------- |
+| `Running` | the connection closing, idle stop, shutdown   | gets the connection                     |
+| `Idle`    | a call (relaunches, then answers it), shutdown | waits for the relaunch                  |
+| `Down`    | the retry time (starts again), shutdown       | fails at once: `Unavailable` with the reason and `retry_after` |
+| `Stopped` | (ends the task)                               | fails: Giles is stopping                |
+
+Every start lists the tools, offers them, and stores them in the cache. A start whose listing
+fails keeps offering the previous list.
+
+**Crashes and failed starts** (PLAN section 7.5): the server exiting (with its status), a lost
+connection, or a start that fails with a retryable error leads to `Down` with a restart after
+`RESTART_BACKOFF_MIN` (1 s), doubling up to `RESTART_BACKOFF_MAX` (5 min); a connection that lasted
+`HEALTHY_RESET` (10 min) starts the backoff over. A non-retryable failure (`InvalidRequest`: the
+host can't sandbox, the sandbox trampoline failed with 125 or macOS's 71, rejected credentials, no
+shared protocol) isn't retried until Giles restarts, and the instance's tools are withdrawn, cached
+or not: every call would fail. While a stdio server will be retried, its tools stay offered, and
+calls fail with the reason and when the next attempt is due, as for a server that's restarting.
+
+**Remote servers** (PLAN section 7.6): the same backoff, but while one is unreachable (at boot or
+later) its tools are withdrawn, so new sessions don't get them; sessions that already have them
+get `tool unavailable` from the dispatcher, which checks the live index. Giles runs degraded
+meanwhile: the other toolsets and everything else work. Remote servers never stop for idleness.
+
+**Idle stop** (`idle_stop`, stdio only): once no call has been in flight for `idle_stop` (counted
+from the end of the last call, or the start), the supervisor drops the connection, killing the
+server, and goes `Idle`. The tools stay offered (the in-memory list, the same one the cache
+holds), and the next call relaunches the server, which also refreshes the list. A server stopped
+for idleness didn't crash, so the restart backoff starts over at 1 s; otherwise a server whose
+`idle_stop` is under `HEALTHY_RESET` would never reset it.
+
+## Tool-List Cache
+
+`toolsets/cache.rs`, PLAN section 7.9: one JSON file per instance in `<root>/cache/toolsets/`
+(written atomically, mode 0600), holding the format version, the key, and the bare tool list:
+
+| Key part         | Stdio                                     | Remote         |
+| ---------------- | ----------------------------------------- | -------------- |
+| `source`         | `sha256:<hex>` of `program`               | the URL        |
+| `config_hash`    | `ToolsetInstance::config_hash` (before secrets are resolved, [Configuration](config.md)) | the same |
+| `server_version` | `serverInfo.version` from `initialize` (`McpToolset::server_version`) | the same |
+
+Every start stores the fresh list under the full key, and each `list_changed` stores the new list
+under the same key. The server version is only known once the server runs, so the lookup at boot
+matches `source` and `config_hash`: a different binary (an upgrade) or an edited instance table is
+a miss, and nothing is offered until the server answers. On a hit the cached tools are offered
+from registration on, while the server starts, and if that start fails they stay offered until a
+start succeeds. The version catches upgrades the binary hash can't see (an interpreted server whose
+launcher script doesn't change): the start that sees a new version re-lists and replaces the
+entry. Remote servers' lists are stored too, but never offered from the cache, since a down remote
+server's tools must not be (PLAN section 7.6). A missing, unreadable, or foreign-format file is a
+miss; a failed write is logged.
+
 ## Tests
 
 - Unit: shebang parsing, install prefixes, the plan for a linked script run by `env`, an
   interpreter link into another prefix, a prefix containing the data root, the home directory
   (never granted, also through a link and with the data root elsewhere), and a bundled plugin; the
-  spec built from a plan (credentials named, not written).
+  spec built from a plan (credentials named, not written); the cache (hit only for the stored
+  source and config hash, replaced by each store, 0600, damaged or foreign files ignored, the
+  digest).
+- Lifecycle (`toolsets/tests.rs`), with a fake connector and fake servers on paused time: boot
+  starts and registers every toolset and `stop` drops every connection; a cache hit is offered
+  before the server answers, then refreshed with the reported version; a changed binary or config
+  misses; idle stop waits for calls in flight, keeps the tools, resets the restart backoff, and the
+  next call relaunches; a remote server never idles; crash restarts at 1 s, then 2 s, and after
+  ten healthy minutes at 1 s again, with calls failing with `retry_after` meanwhile; an
+  unreachable remote server leaves the rest running, retries at 1, 2, and 4 s, and its tools come
+  and go with it; rejected credentials aren't retried; a stdio server whose start fails for good
+  withdraws its cached tools; `list_changed` reaches new snapshots and the cache, not running
+  sessions.
+- `crates/giles/tests/serve.rs`: a stdio toolset that exits and an unreachable remote one are
+  logged and retried, with their tools registered (nothing pending) and `giles` running and
+  stopping cleanly.
 - `crates/giles-core/tests/toolsets.rs` (`harness = false`): the test binary is both the
   trampoline and the server, found by name on a `PATH` through a link. It reports its environment,
   working directory, and a TCP connect to a local listener on stderr. Sandboxed (Seatbelt on
