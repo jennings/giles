@@ -325,3 +325,19 @@ other and with the rest of this phase.
 - [ ] **4.5 End-to-end tests.** Scripted tests of the whole daemon with a fake provider and the echo
   channel plugin: message to reply, tool call with approval, `/stop`, restart recovery, job
   delivery through the outbox. **Needs:** Phases 2 and 3.
+
+## Phase 5: Agent Management
+
+Added by the owner after the v1 plan.
+
+- [ ] **5.1 Agents in the web UI** (§8.7, §11.2, §11.3). Owner-only pages behind the web login:
+  - A list of agents.
+  - An agent's page shows its `agent.toml` and the files under `agents/<agent>/`: `SOUL.md`,
+    `MEMORY.md`, per-user and per-group memory, job prompt files, and skills. For now every file is
+    shown; once there are multiple users, a user sees only their own per-user memory for that agent.
+  - A CSRF-protected form creates an agent: it writes `agents/<agent>/agent.toml`, validated like
+    hand-written config and refusing an existing name, plus `SOUL.md`. The new agent can be used
+    without a restart; the rest of config reload stays deferred (D28).
+  - No secrets are shown.
+
+  **Needs:** 3.8.

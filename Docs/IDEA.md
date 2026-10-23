@@ -204,7 +204,8 @@ plugins.
 - Provider plugins.
 - More than one user, and group chats.
 - Model fallback.
-- Config reload and config editing from the web UI.
+- Config reload, and editing `giles.toml` from the web UI. (Creating agents in the web UI was added
+  later as task 5.1.)
 - MCP servers that only speak the deprecated HTTP+SSE transport.
 
 ## Decisions
