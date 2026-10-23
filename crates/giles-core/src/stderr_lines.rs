@@ -1,5 +1,5 @@
 //! A child process's stderr as log lines: split into bounded lines, with secrets scrubbed. Used for
-//! stdio MCP servers ([`crate::mcp`]).
+//! stdio MCP servers ([`crate::mcp`]) and launched plugins ([`crate::plugin_host`]).
 
 use tokio::io::{AsyncRead, AsyncReadExt};
 

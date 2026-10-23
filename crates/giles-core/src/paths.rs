@@ -337,6 +337,21 @@ impl DataRoot {
         Ok(self.pids_dir().join(format!("{instance}.pid")))
     }
 
+    /// `run/sandbox/`: the sandbox specs the plugin host writes for the trampoline (section 12.1).
+    pub fn sandbox_specs_dir(&self) -> PathBuf {
+        self.run_dir().join("sandbox")
+    }
+
+    /// `run/sandbox/<instance>.json`, mode 0600.
+    ///
+    /// # Errors
+    ///
+    /// [`PathsError::InvalidName`] if `instance` is not a valid name ([`is_valid_name`]).
+    pub fn sandbox_spec_file(&self, instance: &str) -> Result<PathBuf, PathsError> {
+        let instance = checked_name(instance)?;
+        Ok(self.sandbox_specs_dir().join(format!("{instance}.json")))
+    }
+
     /// `cache/`: the Describe and tool-list cache (section 7.9).
     pub fn cache_dir(&self) -> PathBuf {
         self.root.join("cache")
@@ -391,6 +406,7 @@ impl DataRoot {
             self.backups_dir(),
             self.run_dir(),
             self.pids_dir(),
+            self.sandbox_specs_dir(),
             self.cache_dir(),
         ] {
             builder.create(&dir).map_err(|source| PathsError::Io {
@@ -644,6 +660,10 @@ mod tests {
         assert_eq!(r.backups_dir(), Path::new("/g/backups"));
         assert_eq!(r.admin_token_file(), Path::new("/g/run/admin.token"));
         assert_eq!(r.pid_file("irc").unwrap(), Path::new("/g/run/pids/irc.pid"));
+        assert_eq!(
+            r.sandbox_spec_file("irc").unwrap(),
+            Path::new("/g/run/sandbox/irc.json")
+        );
         assert_eq!(r.cache_dir(), Path::new("/g/cache"));
         assert_eq!(r.admin_socket(), Path::new("/g/run/admin.sock"));
         assert_eq!(r.proxy_socket(), Path::new("/g/run/proxy.sock"));
@@ -787,6 +807,7 @@ mod tests {
             r.backups_dir(),
             r.run_dir(),
             r.pids_dir(),
+            r.sandbox_specs_dir(),
             r.cache_dir(),
         ] {
             assert!(dir.is_dir(), "{}", dir.display());

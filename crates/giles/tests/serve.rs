@@ -65,7 +65,14 @@ struct Daemon {
 }
 
 impl Daemon {
-    fn start(mut cmd: Command) -> Self {
+    fn start(cmd: Command) -> Self {
+        let mut daemon = Self::spawn(cmd);
+        daemon.wait_for_log("giles started");
+        daemon
+    }
+
+    /// Starts `giles` without waiting for `giles started`.
+    fn spawn(mut cmd: Command) -> Self {
         let mut child = cmd.spawn().unwrap();
         let stderr = child.stderr.take().unwrap();
         let (tx, lines) = mpsc::channel();
@@ -77,13 +84,11 @@ impl Daemon {
                 }
             }
         });
-        let mut daemon = Self {
+        Self {
             child,
             lines,
             log: Vec::new(),
-        };
-        daemon.wait_for_log("giles started");
-        daemon
+        }
     }
 
     fn wait_for_log(&mut self, needle: &str) {
@@ -142,6 +147,7 @@ fn assert_layout(root: &Path) {
         "backups",
         "run",
         "run/pids",
+        "run/sandbox",
         "cache",
     ] {
         assert!(root.join(dir).is_dir(), "missing {dir}");
@@ -379,4 +385,114 @@ fn a_component_that_cannot_be_built_fails_with_the_file_and_key() {
     assert!(stderr.contains("bogus"), "{stderr}");
     assert!(!stderr.contains("sk-secret-key"), "{stderr}");
     assert!(!stderr.contains("giles started"), "{stderr}");
+}
+
+/// Installs `body` as the `/bin/sh` plugin `giles-channel-<component>` in `home`.
+fn install_script_plugin(home: &Path, component: &str, body: &str) {
+    let plugins = home.join("plugins");
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&plugins)
+        .unwrap();
+    let path = plugins.join(format!("giles-channel-{component}"));
+    fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn plugins_that_fail_to_launch_stay_pending_and_giles_runs() {
+    let env = Env::new();
+    let home = env.path("home");
+    write_config(
+        &home,
+        &format!("{MINIMAL_CONFIG}\n[channel.flaky]\nunsandboxed = true\n\n[channel.boxed]\n"),
+    );
+    install_script_plugin(
+        &home,
+        "flaky",
+        "echo 'flaky: cannot reach the network' >&2; exit 1",
+    );
+    // Sandboxed, through the real trampoline: the sandbox has no `execute` grant for `/bin/sh`
+    // (macOS), isn't implemented (Linux until TASKS.md 2.13), or is unavailable on this host.
+    install_script_plugin(&home, "boxed", "exit 0");
+    let daemon = Daemon::start(env.command(&["serve", "--home", home.to_str().unwrap()]));
+    let (status, log) = daemon.stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+    // The plugin's stderr under the instance's span, the unsandboxed warning, and the failure.
+    assert!(
+        log.contains(
+            "plugin{instance=flaky}: giles_core::plugin_host::stderr: flaky: cannot reach the network"
+        ),
+        "{log}"
+    );
+    assert!(
+        log.contains(
+            "plugin{instance=flaky}: giles_core::plugin_host: running the plugin unsandboxed"
+        ),
+        "{log}"
+    );
+    for instance in ["flaky", "boxed"] {
+        let failed = log.lines().find(|line| {
+            line.contains("cannot launch the plugin; the instance stays pending")
+                && line.contains(&format!("instance={instance}"))
+        });
+        assert!(failed.is_some(), "{instance}\n{log}");
+    }
+    let boxed = log
+        .lines()
+        .find(|line| line.contains("stays pending") && line.contains("instance=boxed"))
+        .unwrap();
+    assert!(boxed.contains("retryable=false"), "{boxed}");
+    assert!(!home.join("run/pids/flaky.pid").exists());
+    assert!(!home.join("run/pids/boxed.pid").exists());
+}
+
+#[test]
+fn a_shutdown_during_plugin_launch_kills_the_plugin_and_exits_promptly() {
+    let env = Env::new();
+    let home = env.path("home");
+    write_config(
+        &home,
+        &format!("{MINIMAL_CONFIG}\n[channel.mute]\nunsandboxed = true\n"),
+    );
+    // Never prints a handshake line, so the launch would wait the full 10 s.
+    install_script_plugin(&home, "mute", "exec sleep 300");
+    let mut daemon = Daemon::spawn(env.command(&["serve", "--home", home.to_str().unwrap()]));
+    daemon.wait_for_log("plugin process started");
+    let started = daemon
+        .log
+        .iter()
+        .find(|l| l.contains("plugin process started"))
+        .unwrap();
+    let pid = started
+        .split("pid=")
+        .nth(1)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_owned();
+    let start = Instant::now();
+    let (status, log) = daemon.stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "{:?}\n{log}",
+        start.elapsed()
+    );
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let ps = Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid])
+            .output()
+            .unwrap();
+        let stat = String::from_utf8_lossy(&ps.stdout);
+        if stat.trim().is_empty() || stat.trim_start().starts_with('Z') {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the plugin {pid} still runs");
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!home.join("run/pids/mute.pid").exists());
 }

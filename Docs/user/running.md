@@ -86,7 +86,7 @@ On start, `giles serve` creates any missing directories of the layout, readable 
   plugins/          plugin binaries
   data/             the database, attachments, and plugin state
   backups/          backups and pre-upgrade snapshots
-  run/              runtime files: the admin socket and token, plugin pid files
+  run/              runtime files: the admin socket and token, plugin pid files and sandbox specs
   cache/            caches Giles can rebuild
 ```
 

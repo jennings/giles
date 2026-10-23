@@ -19,6 +19,8 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
+# The core's plugin host, which these tests launch the plugin through.
+giles-core.workspace = true
 giles-proto.workspace = true
 hyper-util.workspace = true
 libc.workspace = true
@@ -27,6 +29,11 @@ tokio = { workspace = true, features = ["net", "process"] }
 tonic.workspace = true
 tonic-health.workspace = true
 tower.workspace = true
+
+# Its own sandbox trampoline (see the file), so no libtest harness.
+[[test]]
+name = "host_sandbox"
+harness = false
 
 [lints]
 workspace = true

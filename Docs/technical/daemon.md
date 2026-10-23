@@ -42,7 +42,9 @@ to stderr, with ANSI colors only when stderr is a terminal. The filter is `GILES
    anything is logged, so a signal sent after the `giles started` line always takes the graceful
    path instead of killing the process.
 5. Check that the host can sandbox plugins (`giles_core::sandbox::check_host`, see
-   [Plugin Sandbox](sandbox.md#host-check)) and log the result; a failure is a warning for now.
+   [Plugin Sandbox](sandbox.md#host-check)) and log the result; a failure is a warning, and the
+   plugin host refuses sandboxed instances with it. Find the `giles` binary itself, the sandbox
+   trampoline (`std::env::current_exe`).
 6. Start the core runtime (`giles_core::runtime::Runtime::start`, [Registry](registry.md)): open
    the database and the blob store, build the registry from the configuration, and log what is
    registered (`registry ready`) and each instance still pending. Any error ends the process.
@@ -50,16 +52,20 @@ to stderr, with ANSI colors only when stderr is a terminal. The filter is `GILES
 8. Start the sessions (`Runtime::start_sessions`, [Sessions and Turns](sessions.md)): recover from
    an earlier crash or shutdown (interrupted turns), resume queued messages, and consume the events
    of every registered channel. Turns run on the agent loop (`AgentLoop::from_runtime`,
-   [Agent Loop](agent-loop.md)).
-   This is the last step that can fail: recovery changes state and resumed turns start running, so
-   nothing after it may abort startup. Then start the HTTP server on its own task
-   ([HTTP Server](http.md#lifecycle)).
+   [Agent Loop](agent-loop.md)). This is the last step that can fail: recovery changes state and
+   resumed turns start running, so nothing after it may abort startup. Then start the HTTP server
+   on its own task ([HTTP Server](http.md#lifecycle)), and launch every plugin channel concurrently
+   (`PluginHost::launch_all`, abandoned if a shutdown signal arrives first,
+   [Plugin Host](plugin-host.md#startup-and-shutdown)); a plugin that fails to launch is logged and
+   its instance stays pending.
 9. Log `giles started` with the root, admin socket path, HTTP URL, and instance and agent counts,
    plus a warning if the sockets use the `$TMPDIR` fallback.
 10. Wait until the shutdown token is cancelled, then await the HTTP server (it drains open requests
     for up to 5 s) and the sessions (`Sessions::closed`: running turns are cancelled, channel
-    pumps stop between events), log `giles stopped`, and exit with status 0. If the HTTP server
-    stops on its own first, cancel the token and exit with an error.
+    pumps stop between events), then stop the plugins (`PluginHost::stop_all`: `Shutdown`, then
+    `SIGTERM`, then `SIGKILL` to each plugin's process group), log `giles stopped`, and exit with
+    status 0. If the HTTP server stops on its own first, cancel the token, stop the plugins, and
+    exit with an error.
 
 The shutdown signal is a `tokio_util::sync::CancellationToken`. The first SIGINT or SIGTERM cancels
 it. Subsystems added later take a clone (or a `child_token()`), stop when it is cancelled, and are

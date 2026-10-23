@@ -41,6 +41,8 @@ environment.
     proxy.sock        DataRoot::proxy_socket()      unless it falls back (below)
     pids/             DataRoot::pids_dir()
       <instance>.pid  DataRoot::pid_file(name)
+    sandbox/          DataRoot::sandbox_specs_dir()
+      <instance>.json DataRoot::sandbox_spec_file(name)
   cache/              DataRoot::cache_dir()
 ```
 

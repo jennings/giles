@@ -352,7 +352,7 @@ impl Registry {
                 name: c.name.clone(),
                 reason: match c.runtime {
                     ChannelRuntime::Plugin(_) => {
-                        "pending tasks 2.16 (plugin launch) and 2.18 (RemoteChannel)"
+                        "launched by the plugin host; registering it is pending task 2.18 (RemoteChannel)"
                     }
                     ChannelRuntime::Remote(_) => "pending task 2.18 (RemoteChannel)",
                     ChannelRuntime::BuiltIn => "the built-in channel was not constructed",

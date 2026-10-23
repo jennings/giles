@@ -841,6 +841,7 @@ name = "giles-channel-echo"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "giles-core",
  "giles-plugin-sdk",
  "giles-proto",
  "hyper-util",
@@ -867,6 +868,7 @@ dependencies = [
  "bytes",
  "croner",
  "futures",
+ "getrandom 0.4.3",
  "giles-proto",
  "giles-store",
  "giles-types",

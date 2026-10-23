@@ -26,6 +26,7 @@
 - [Plugin Transport](technical/plugin-transport.md)
 - [Plugin SDK](technical/plugin-sdk.md)
 - [Plugin Sandbox](technical/sandbox.md)
+- [Plugin Host](technical/plugin-host.md)
 - [MCP Client](technical/mcp.md)
 - [Rendering Model Output](technical/rendering.md)
 - [HTTP Server](technical/http.md)

@@ -11,6 +11,7 @@ pub mod mcp;
 pub mod memory;
 pub mod net;
 pub mod paths;
+pub mod plugin_host;
 pub mod providers;
 pub mod registry;
 pub mod router;

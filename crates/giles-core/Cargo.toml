@@ -27,6 +27,10 @@ futures.workspace = true
 giles-proto.workspace = true
 giles-store.workspace = true
 giles-types.workspace = true
+# Per-launch plugin tokens and trace ids.
+getrandom = "0.4.3"
+# The one-shot connector to a plugin's end of the socket pair (`plugin_host`).
+hyper-util.workspace = true
 jiff = { workspace = true, features = ["tz-system", "tzdb-zoneinfo", "tzdb-bundle-always"] }
 reqwest.workspace = true
 rmcp = { version = "3.7.0", default-features = false, features = ["client", "transport-async-rw", "transport-streamable-http-client-reqwest"] }
@@ -37,9 +41,12 @@ serde_path_to_error = "0.1.20"
 sha2.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
 tokio-util = { workspace = true, features = ["rt"] }
 toml.workspace = true
+tonic.workspace = true
+tonic-health.workspace = true
+tower.workspace = true
 tracing.workspace = true
 url = "2.5.8"
 webpki-root-certs = "1.0.10"
@@ -54,7 +61,6 @@ libc.workspace = true
 workspace = true
 
 [dev-dependencies]
-hyper-util = { version = "0.1.21", features = ["tokio"] }
 prost.workspace = true
 # The MCP test server (tests/support/mcp_server.rs).
 rmcp = { version = "3.7.0", default-features = false, features = ["elicitation", "server", "transport-io", "transport-streamable-http-server"] }
@@ -62,10 +68,7 @@ rmcp = { version = "3.7.0", default-features = false, features = ["elicitation",
 rusqlite.workspace = true
 socket2 = "0.6.5"
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "test-util", "time"] }
-tonic.workspace = true
-tonic-health = "0.14.6"
 tonic-prost = "0.14.6"
-tower = { version = "0.5.3", default-features = false, features = ["util"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 
 # Runs the MCP test server as its own stdio child, so it can't use libtest (which prints to stdout).

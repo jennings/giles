@@ -371,7 +371,7 @@ fn plugin_instances_stay_pending_until_registered() {
     assert_eq!(pending.len(), 3, "{pending:?}");
     assert_eq!(pending[0].0, Kind::Channel);
     assert_eq!(pending[0].1, "libera");
-    assert!(pending[0].2.contains("2.16"), "{pending:?}");
+    assert!(pending[0].2.contains("plugin host"), "{pending:?}");
     assert_eq!(pending[1].1, "mail");
     assert!(pending[1].2.contains("2.18"), "{pending:?}");
     assert_eq!(pending[2].0, Kind::Toolset);

@@ -209,7 +209,7 @@ The five tracks run in parallel.
   events persisted in the data dir and resent when `Events` reopens; 16 MiB limits; `rustls` with
   bundled roots; publishable to crates.io. Includes a test-only echo channel plugin for
   integration tests. **Needs:** 1.4, 1.5.
-- [ ] **2.16 Plugin host: launch** (§7.3, §7.4, §11.6, §13.4). Discovery in `<root>/plugins/`, then
+- [x] **2.16 Plugin host: launch** (§7.3, §7.4, §11.6, §13.4). Discovery in `<root>/plugins/`, then
   `$PATH`; per-instance data dir and `TMPDIR`; socket pair, token, and scrubbed env; launch through
   the trampoline (`unsandboxed = true` bypasses it with a warning); handshake with a 10 s timeout;
   `Describe` with kind and name checks; `Configure` with resolved secrets; identity-namespace

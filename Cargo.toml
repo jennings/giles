@@ -51,8 +51,8 @@ tracing-subscriber = "0.3.23"
 # The Mozilla root certificates every Giles TLS client trusts instead of the OS store.
 webpki-root-certs = "1.0.10"
 
-# Shared test-only dependencies. `hyper-util` and `tower` make the one-shot connector a test uses
-# to reach a plugin over a socket pair.
+# `hyper-util` and `tower` make the one-shot connector that reaches a plugin over a socket pair (the
+# plugin host and tests).
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 tempfile = "3.27.0"
 tower = { version = "0.5.3", default-features = false, features = ["util"] }

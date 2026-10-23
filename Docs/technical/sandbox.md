@@ -54,9 +54,9 @@ and the `tracing` subscriber writes to stderr synchronously. Keep it that way.
 
 ## Exit Status
 
-Like `env(1)` and `chroot(1)`, so the plugin host (2.16) and supervision (2.17) can tell the
-trampoline's failures from the plugin's own exits without parsing stderr. The codes are constants
-in `giles_core::sandbox`, and `SandboxError::exit_code` maps an error to its code.
+Like `env(1)` and `chroot(1)`, so the [plugin host](plugin-host.md) and supervision (2.17) can tell
+the trampoline's failures from the plugin's own exits without parsing stderr. The codes are
+constants in `giles_core::sandbox`, and `SandboxError::exit_code` maps an error to its code.
 
 | Status | Constant                 | Meaning                                                      |
 | ------ | ------------------------ | ------------------------------------------------------------ |
@@ -93,9 +93,9 @@ plugin writes to it, reads stdin, and writes to stdout and stderr.
 ## Spec Format
 
 `giles_core::sandbox::Spec`, serialized as one JSON object. The spec is a file, not an argument,
-so it isn't limited by `ARG_MAX` or visible in `ps`. 2.16 should write it with `Spec::to_json`
-(which validates first) to a file outside every plugin's grants, e.g. `run/sandbox/<instance>.json`
-with mode 0600, and pass its path.
+so it isn't limited by `ARG_MAX` or visible in `ps`. The plugin host writes it with
+`Spec::to_json` (which validates first) to `run/sandbox/<instance>.json`, mode 0600, outside every
+plugin's grants, and passes its path ([Plugin Host](plugin-host.md#the-sandbox-spec)).
 
 ```json
 {
@@ -137,9 +137,9 @@ Validation (`Spec::validate`, no filesystem access):
 
 The spec is the trampoline's input, not configuration. 1.1 parses the `sandbox = { ... }` grants in
 `giles.toml` and rejects grants that overlap `GILES_HOME` or the plugin directories (PLAN section
-12.4). 2.16 and 2.19 build the spec from those grants plus the per-kind defaults: `network`
-defaults to `true` for providers and channels and to `false` for stdio toolsets, and 2.19 adds a
-toolset's install prefix to `read` and `execute`. The spec's own defaults are the most
+12.4). The plugin host and 2.19 build the spec from those grants plus the per-kind defaults:
+`network` defaults to `true` for providers and channels and to `false` for stdio toolsets, and 2.19
+adds a toolset's install prefix to `read` and `execute`. The spec's own defaults are the most
 restrictive values, so a field the core forgets denies rather than allows. The config's
 `sandbox.unix` list goes to `unix` unchanged.
 
@@ -276,9 +276,10 @@ the plugin from replacing the roots themselves. A Landlock grant on a directory 
 directory's own entry in its parent (removing or renaming it needs rights on the parent), so that
 last part may hold already; verify it with a test like `data_dir_cannot_be_swapped_for_a_link`.
 
-Note for 2.16 and 2.17: a plugin's children can outlive it, which is what makes the race above
-reachable. Stopping or restarting a plugin must kill its whole process tree (e.g. start it in its
-own process group and signal the group), not just the plugin's pid. A child can leave the group
+Note for 2.17: a plugin's children can outlive it, which is what makes the race above
+reachable. Stopping or restarting a plugin must kill its whole process tree, not just the plugin's
+pid; the plugin host starts each plugin in its own process group and signals the group
+([Plugin Host](plugin-host.md#the-process)). A child can leave the group
 with `setsid`, so a complete answer needs more (on Linux a cgroup; on macOS, e.g., a dedicated
 user per plugin); the resolution above doesn't depend on it.
 
@@ -381,7 +382,6 @@ when Giles itself runs inside a sandbox that forbids applying another; the error
 
 `giles serve` runs the check at startup, before `giles started`, and logs `plugin sandbox
 available` with the report, or a warning `plugin sandbox unavailable on this host; sandboxed
-plugins will not start` with the error. It's only a warning because no plugin is launched yet. The
-plugin host (2.16) should call `check_host` once at startup and, when any configured instance is
-sandboxed, refuse to launch those instances with this one error rather than letting each launch
-fail in the trampoline.
+plugins will not start` with the error. It's only a warning because unsandboxed instances can still
+start. `serve` hands the result to the [plugin host](plugin-host.md), which refuses each sandboxed
+instance with this one error rather than letting each launch fail in the trampoline.

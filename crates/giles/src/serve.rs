@@ -9,6 +9,7 @@ use giles_core::commands::NoPendingApprovals;
 use giles_core::config::Config;
 use giles_core::http;
 use giles_core::paths::DataRoot;
+use giles_core::plugin_host::{Launcher, PluginHost, STOP_GRACE};
 use giles_core::runtime::Runtime;
 use giles_core::sandbox;
 use tokio_util::sync::CancellationToken;
@@ -41,7 +42,9 @@ async fn serve(root: DataRoot, config: Config) -> anyhow::Result<()> {
              directory instead",
         );
     }
-    check_sandbox();
+    let sandbox = check_sandbox();
+    // The sandbox trampoline is this binary, run as `giles sandbox-exec`.
+    let giles_exe = std::env::current_exe().context("cannot find the giles binary")?;
     // The database, the blob store, and every component the configuration names.
     let config = Arc::new(config);
     let runtime = Runtime::start(root.clone(), config.clone()).await?;
@@ -61,6 +64,13 @@ async fn serve(root: DataRoot, config: Config) -> anyhow::Result<()> {
         .await?;
     let app = http::RouterBuilder::new().build();
     let mut http_server = tokio::spawn(http::serve(listener, app, shutdown.clone()));
+    // Every configured plugin channel; one that fails to launch is logged and stays pending. A
+    // shutdown during startup abandons the launches still running (killing their plugins).
+    let plugins = PluginHost::new(Launcher::new(root.clone(), giles_exe, sandbox));
+    tokio::select! {
+        () = plugins.launch_all(&config) => {}
+        () = shutdown.cancelled() => {}
+    }
 
     info!(
         version = env!("CARGO_PKG_VERSION"),
@@ -84,6 +94,7 @@ async fn serve(root: DataRoot, config: Config) -> anyhow::Result<()> {
     if let Some(result) = early_exit {
         // The server only returns on shutdown; stop everything else with it.
         shutdown.cancel();
+        plugins.stop_all(STOP_GRACE).await;
         result
             .context("the HTTP server panicked")?
             .context("the HTTP server failed")?;
@@ -93,21 +104,29 @@ async fn serve(root: DataRoot, config: Config) -> anyhow::Result<()> {
         .await
         .context("the HTTP server panicked")?
         .context("the HTTP server failed")?;
-    // Running turns are cancelled with the token; wait for them and the channel pumps.
+    // Running turns are cancelled with the token; wait for them and the channel pumps, then stop
+    // the plugins.
     sessions.closed().await;
+    plugins.stop_all(STOP_GRACE).await;
     info!("giles stopped");
     Ok(())
 }
 
-/// Logs whether this host can sandbox plugins (PLAN section 12.1). Only a warning for now: no
-/// plugin is launched yet. The plugin host (TASKS.md 2.16) turns a failure into one clear error
-/// when a configured instance needs the sandbox.
-fn check_sandbox() {
+/// Checks and logs whether this host can sandbox plugins (PLAN section 12.1). Only a warning:
+/// unsandboxed instances still start, and the plugin host refuses each sandboxed one with this
+/// error.
+fn check_sandbox() -> Result<(), String> {
     match sandbox::check_host() {
-        Ok(report) => info!(%report, "plugin sandbox available"),
-        Err(err) => warn!(
-            error = %err,
-            "plugin sandbox unavailable on this host; sandboxed plugins will not start",
-        ),
+        Ok(report) => {
+            info!(%report, "plugin sandbox available");
+            Ok(())
+        }
+        Err(err) => {
+            warn!(
+                error = %err,
+                "plugin sandbox unavailable on this host; sandboxed plugins will not start",
+            );
+            Err(err.to_string())
+        }
     }
 }
