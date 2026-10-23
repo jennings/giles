@@ -12,7 +12,8 @@ model stops asking for tools. The session code that hands it turns is in
 | `AgentLoop::session_prompt`   | The session's cached prefix, assembled at its first turn           |
 | `AgentLoop::rebuild_prompt`   | A fresh `system` for the session, same tools (compaction)          |
 | `ToolDispatcher`              | Runs one message's calls: `dispatch(ToolBatch) -> stream of (index, ToolOutput)` |
-| `SequentialDispatcher`        | The v1 dispatcher: one call at a time, in model order              |
+| `PolicyDispatcher`            | The daemon's dispatcher: call-time checks, parallel runs, deadlines |
+| `CallPolicy`                  | A call's `parallel` and `deadline`, from its toolset or the core tool list |
 | `OutputSink`                  | Receives a turn's streamed events and finished messages            |
 | `MessageOutput`               | Sends each finished message's text through `Turn::reply`           |
 | `history::user_message`       | An inbound message's stored form, with its time prefix             |
@@ -157,14 +158,47 @@ ToolOutput { content, is_error })`, one per call, in any order. Dropping it must
 still running. `context` is the `CallContext`: agent, requester, and the session's channel
 conversation.
 
-`SequentialDispatcher` (until TASKS.md 2.5) runs the calls one at a time in model order. A call
-gets the error result `tool unavailable` when the session doesn't offer the tool, the registry no
-longer serves it under that name and target (a toolset dropped it), it's a core tool (no core tool
-is implemented yet: 2.11, 2.12), or its toolset isn't registered. Otherwise it calls the toolset
-with the bare name, the input, and no media, and the first `ToolCallEvent::Result` is the output; a
-`call` error, an `Err` event, or a stream that ends without a result becomes an error result with
-the error's text. Progress is logged. The handle's `answers` sender is dropped at once, which
-denies any approval request (2.7 answers them).
+`PolicyDispatcher` is the daemon's (§6.3, §6.4). It doesn't spawn: the stream drives the calls, so
+a call starts only while the agent loop polls it, and dropping the stream drops every running
+call's future, its events stream with it, which cancels the call at the toolset (MCP
+`notifications/cancelled`). Calls not yet started never start.
+
+### Order and Parallelism
+
+Calls start in model order. Each has a `CallPolicy`:
+
+- A toolset tool takes its instance's `parallel` (default `false`) and `deadline` (default 5 m).
+- A core tool is parallel-safe if it only reads (`PARALLEL_SAFE_CORE_TOOLS`: `load_skill`,
+  `memory_search`), with the default deadline. MCP's `readOnlyHint` is ignored: it's untrusted
+  (§7.10).
+- A tool the session doesn't offer runs nothing, so it counts as parallel-safe and never holds up
+  another call.
+
+Consecutive parallel-safe calls run together, at most `MAX_PARALLEL_CALLS` (8) at once: when one
+finishes the next waiting one starts. Any other call is a barrier: it starts once everything
+before it has finished and runs alone, and the calls after it wait for it. So `[p1, p2, s, p3]`
+runs `p1` and `p2` together, then `s`, then `p3`.
+
+### Checks at Call Time
+
+When a call starts (not when the batch arrives, so a tool dropped meanwhile is caught), it gets the
+error result `tool unavailable` when the session doesn't offer the tool (outside the allowlist,
+or no such tool), the registry no longer serves it under that name and target (a toolset dropped
+it), it's a core tool (no core tool is implemented yet: 2.11, 2.12), or its toolset isn't
+registered. The session's tool list is the agent's allowlist (§6.4); v1 has no roles, so there is
+no second check by the requester's role. With roles, a forbidden call would get `not permitted for
+<user>` here, before it runs.
+
+Otherwise it calls the toolset with the bare name, the input, and no media, and the first
+`ToolCallEvent::Result` is the output; a `call` error, an `Err` event, or a stream that ends
+without a result becomes an error result with the error's text. Progress is logged. The handle's
+`answers` sender is dropped at once, which denies any approval request (2.7 answers them).
+
+### Deadlines
+
+The deadline covers the whole call, from `Toolset::call` to its result. A call still running at
+its deadline is dropped (cancelled at the toolset, as above) and gets the error result `timed out
+after <deadline>`, e.g. `timed out after 5m`; the batch goes on.
 
 ## Output
 
@@ -175,14 +209,19 @@ is stored either way. Isolated job runs have no `Reply` and send nothing.
 
 ## Seams for Later Tasks
 
-- **2.5, tool policy**: replace `SequentialDispatcher` (call-time allowlist and role checks,
-  parallel-safe runs, deadlines) and add iteration caps in the turn loop (`iteration limit`, final
-  no-tools request).
 - **2.6, steering**: `AgentLoop::at_batch_boundary(turn)` runs after every slot of a batch is
   filled and before the next request; the messages it returns are stored after the tool results.
   It returns none, so the requester's new messages stay queued and start the next turn. 2.6 takes
-  them there with `turn.steering.take()` in `steer` mode and makes the dispatcher skip unstarted
-  calls.
+  them there with `turn.steering.take()` in `steer` mode. To skip unstarted calls it hands the
+  dispatcher a signal in `ToolBatch` (e.g. from `Steering::changed()`): `Scheduler::start` in
+  `dispatch.rs` is the one place a call starts, so once the signal fires it stops starting calls
+  and answers each waiting one with `Skipped to read a new message` (still one output per call),
+  while running calls finish.
+- **2.7, approvals**: the gate goes in the per-call future built in `PolicyDispatcher::dispatch`,
+  after the call-time checks and before `tokio::time::timeout`, so waiting for an answer doesn't
+  use up the call's deadline; a denial is that call's output. A barrier call waiting for approval
+  holds up the calls after it, as it would while running. Mid-call elicitation arrives as
+  `ToolCallEvent::ApprovalRequest` in `run_call`, answered on the handle's `answers` sender.
 - **2.8, output**: `AgentLoop::output_for(turn)` picks the sink; `OutputSink::event` sees every
   streamed event and `message_aborted` is called when a streamed response is dropped.
 - **2.9, media**: inbound attachments into `history::user_message`, `ModelInfo::accepts` filtering,

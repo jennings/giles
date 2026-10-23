@@ -361,7 +361,7 @@ impl Harness {
 
     /// An agent loop over this harness (a new one simulates a restart).
     fn agent_loop(&self) -> AgentLoop {
-        self.agent_loop_with(Arc::new(SequentialDispatcher::new(self.registry.clone())))
+        self.agent_loop_with(Arc::new(PolicyDispatcher::new(self.registry.clone())))
     }
 
     fn agent_loop_with(&self, dispatcher: Arc<dyn ToolDispatcher>) -> AgentLoop {

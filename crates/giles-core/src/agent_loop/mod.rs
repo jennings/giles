@@ -8,9 +8,10 @@
 //! run its tools through the [`ToolDispatcher`] filling each slot, and repeat until the model
 //! stops asking for tools. Every provider request records one `usage` row.
 //!
-//! Seams for later tasks: [`ToolDispatcher`] (2.5 policy, ordering, parallelism, deadlines,
-//! iteration caps), [`OutputSink`] (2.8 streaming), [`AgentLoop::rebuild_prompt`] (2.10
-//! compaction), and the tool-batch boundary hook `at_batch_boundary` (2.6 steering).
+//! Seams for later tasks: [`ToolDispatcher`] (the [`PolicyDispatcher`] runs calls; 2.6 skips
+//! unstarted calls, 2.7 gates calls on approval, 2.11/2.12 add core tools), [`OutputSink`] (2.8
+//! streaming), [`AgentLoop::rebuild_prompt`] (2.10 compaction), and the tool-batch boundary hook
+//! `at_batch_boundary` (2.6 steering).
 
 pub mod dispatch;
 pub mod glob;
@@ -33,7 +34,8 @@ use futures::FutureExt;
 use giles_store::{Session, SessionId, SessionKey, Store};
 
 pub use dispatch::{
-    SequentialDispatcher, TOOL_UNAVAILABLE, ToolBatch, ToolDispatcher, ToolOutput, ToolRequest,
+    CallPolicy, MAX_PARALLEL_CALLS, PARALLEL_SAFE_CORE_TOOLS, PolicyDispatcher, TIMED_OUT_RESULT,
+    TOOL_UNAVAILABLE, ToolBatch, ToolDispatcher, ToolOutput, ToolRequest,
 };
 pub use output::{MessageOutput, OutputSink};
 pub use prompt::{PromptError, SessionPrompt, SessionTools};
@@ -104,13 +106,13 @@ impl AgentLoop {
     }
 
     /// The daemon's agent loop: the runtime's registry and store, the system clock, and the
-    /// [`SequentialDispatcher`].
+    /// [`PolicyDispatcher`].
     pub fn from_runtime(runtime: &Runtime) -> Self {
         Self::new(
             runtime.registry.clone(),
             runtime.store.clone(),
             Arc::new(SystemClock),
-            Arc::new(SequentialDispatcher::new(runtime.registry.clone())),
+            Arc::new(PolicyDispatcher::new(runtime.registry.clone())),
         )
     }
 

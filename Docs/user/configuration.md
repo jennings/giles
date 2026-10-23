@@ -190,8 +190,8 @@ A toolset is an MCP server. It runs one of three ways:
 | `url`         | remote     |           | The server's `https://` (or `http://`) URL                    |
 | `auth`        | remote     | none      | `{ bearer = <credential> }`                                   |
 | `insecure`    | remote     | `false`   | Allow plain `http://` to a host other than this machine       |
-| `deadline`    | all        | `"5m"`    | How long one tool call may run                                |
-| `parallel`    | all        | `false`   | The toolset's tools may run in parallel with each other and with read-only core tools |
+| `deadline`    | all        | `"5m"`    | How long one tool call may run; then it's cancelled and the model told it timed out |
+| `parallel`    | all        | `false`   | The toolset's tools may run in parallel with each other and with read-only core tools, up to 8 at once |
 | `skills`      | all        | `[]`      | Absolute paths of skill directories the toolset offers        |
 
 Toolsets have no `config` table: a stdio server is configured through its `args`.
@@ -345,8 +345,10 @@ Files in `agents/` and directories whose names start with `.` are ignored.
 | `idle_reset`          | off             | Start a new session after this long without messages              |
 
 Tool names are `<instance>__<tool>` for toolsets and bare for the core tools (`memory`,
-`memory_search`, `load_skill`, `schedule`, `send_attachment`). `/stop` ends a turn with no
-iteration limit.
+`memory_search`, `load_skill`, `schedule`, `send_attachment`). A call to a tool the agent isn't
+allowed, or one its toolset no longer offers, fails with `tool unavailable` and nothing runs.
+
+`/stop` ends a turn with no iteration limit.
 
 ### `[[jobs]]`
 
