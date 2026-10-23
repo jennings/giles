@@ -13,8 +13,10 @@ There is no build step. TLS is terminated by a reverse proxy, never by Giles.
    busy or forbidden address is a startup error: `cannot listen for HTTP on <addr>` with the OS
    error as the cause (`http::BindError { addr, source }`).
 2. `http::RouterBuilder::new().build()` assembles the application, and `http::serve(listener, app,
-   shutdown)` runs on its own task. The `giles started` line carries `http=http://<addr>/` (the
-   bound address, so port `0` shows the port the OS picked).
+   shutdown)` runs on its own task. `serve` takes any `axum::serve::Listener`: the TCP listener
+   here, or a `tokio::net::UnixListener` (the web channel's trusted-proxy socket). The `giles
+   started` line carries `http=http://<addr>/` (the bound address, so port `0` shows the port the
+   OS picked).
 3. When the shutdown token is cancelled, the server stops accepting connections, closes idle
    keep-alive connections, and waits for in-flight requests, for at most `http::DRAIN_TIMEOUT`
    (5 s). Requests still open then are dropped with a warning, and `serve` returns; the runtime
@@ -32,20 +34,20 @@ shutdown waits for every open request.
 `http::RouterBuilder` is the one place routes are added:
 
 ```rust
-let app = http::RouterBuilder::new()   // `/` and `/static/*`
-    .merge(web::routes(web_state))     // 2.22: chat pages, SSE, `/blobs/<sha256>`
-    .merge(login::routes(login_state)) // 2.23
+let app = http::RouterBuilder::new()   // `/static/*`, and a placeholder `/`
+    .home(get(chats).with_state(s))    // replaces the placeholder `/` (the web channel's chats)
+    .merge(web::routes(web_state))     // chat pages, SSE, `/blobs/<sha256>`, login
     .merge(admin::routes(admin_state)) // 3.8
-    .build();                          // 404 fallback + security headers
+    .build();                          // `/`, 404 fallback, security headers
 ```
 
 Rules for a module's `routes(..) -> axum::Router`:
 
 - Return a `Router<()>`: apply the module's own state with `.with_state(state)` before returning,
   so routers with different state types merge.
-- Don't overlap existing routes; `axum` panics on a duplicate path at startup. `/` is the core's
-  placeholder home page: the web channel (2.22) replaces the route in `RouterBuilder::new` rather
-  than merging a second `/`. `/static/` belongs to the asset module.
+- Don't overlap existing routes; `axum` panics on a duplicate path at startup. `/` is added by
+  `build`: the placeholder home page, or the `MethodRouter` given to `RouterBuilder::home`; never
+  merge a route for `/`. `/static/` belongs to the asset module.
 - Don't set a fallback; `build` adds the 404 page.
 - Don't add security headers; `build` adds them to every response, merged routes included. A
   handler may add its own `Content-Security-Policy` (see below), which only tightens the policy.

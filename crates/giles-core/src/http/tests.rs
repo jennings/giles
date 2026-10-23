@@ -266,3 +266,40 @@ async fn bind_reports_the_address_it_could_not_use() {
     assert_eq!(err.source.kind(), std::io::ErrorKind::AddrInUse);
     assert_eq!(err.to_string(), format!("cannot listen for HTTP on {addr}"));
 }
+
+#[tokio::test]
+async fn home_replaces_the_placeholder_page() {
+    let app = RouterBuilder::new().home(get(|| async { "chats" })).build();
+    let response = request(app, Method::GET, "/").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_security_headers("home", response.headers());
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(body, "chats");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn serves_on_a_unix_socket_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("http.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let shutdown = CancellationToken::new();
+    let server = tokio::spawn(serve(
+        listener,
+        RouterBuilder::new().build(),
+        shutdown.clone(),
+    ));
+
+    let mut stream = tokio::net::UnixStream::connect(&path).await.unwrap();
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+
+    shutdown.cancel();
+    let result = tokio::time::timeout(Duration::from_secs(5), server).await;
+    result.expect("server did not stop").unwrap().unwrap();
+}

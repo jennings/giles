@@ -14,13 +14,15 @@ mod pages;
 #[cfg(test)]
 mod tests;
 
+use std::fmt::Debug;
 use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use axum::Router;
 use axum::middleware::map_response;
-use axum::routing::get;
+use axum::routing::{MethodRouter, get};
+use axum::serve::Listener;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -42,16 +44,23 @@ pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug)]
 pub struct RouterBuilder {
     router: Router,
+    home: Option<MethodRouter>,
 }
 
 impl RouterBuilder {
-    /// The core routes: the home page at `/` and the static assets under `/static/`.
+    /// The core routes: the home page at `/` (a placeholder unless [`home`](Self::home) replaces
+    /// it) and the static assets under `/static/`.
     pub fn new() -> Self {
         Self {
-            router: Router::new()
-                .route("/", get(pages::index))
-                .merge(assets::routes()),
+            router: Router::new().merge(assets::routes()),
+            home: None,
         }
+    }
+
+    /// Serves `home` at `/` instead of the placeholder page (the web channel's chat list).
+    pub fn home(mut self, home: MethodRouter) -> Self {
+        self.home = Some(home);
+        self
     }
 
     /// Adds `routes` to the application.
@@ -63,7 +72,9 @@ impl RouterBuilder {
     /// The finished application: every route so far, a 404 page for any other path, and the
     /// security headers on every response, errors included.
     pub fn build(self) -> Router {
+        let home = self.home.unwrap_or_else(|| get(pages::index));
         self.router
+            .route("/", home)
             .fallback(pages::not_found)
             .layer(map_response(headers::add_security_headers))
     }
@@ -94,22 +105,27 @@ pub async fn bind(addr: SocketAddr) -> Result<TcpListener, BindError> {
         .map_err(|source| BindError { addr, source })
 }
 
-/// Serves `app` on `listener` until `shutdown` is cancelled. Then it stops accepting connections,
-/// lets in-flight requests finish for up to [`DRAIN_TIMEOUT`], and returns.
-pub async fn serve(
-    listener: TcpListener,
-    app: Router,
-    shutdown: CancellationToken,
-) -> io::Result<()> {
+/// Serves `app` on `listener` (TCP, or a Unix socket) until `shutdown` is cancelled. Then it stops
+/// accepting connections, lets in-flight requests finish for up to [`DRAIN_TIMEOUT`], and
+/// returns.
+pub async fn serve<L>(listener: L, app: Router, shutdown: CancellationToken) -> io::Result<()>
+where
+    L: Listener,
+    L::Addr: Debug,
+{
     serve_with_drain(listener, app, shutdown, DRAIN_TIMEOUT).await
 }
 
-async fn serve_with_drain(
-    listener: TcpListener,
+async fn serve_with_drain<L>(
+    listener: L,
     app: Router,
     shutdown: CancellationToken,
     drain: Duration,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    L: Listener,
+    L::Addr: Debug,
+{
     let server =
         axum::serve(listener, app).with_graceful_shutdown(shutdown.clone().cancelled_owned());
     let deadline = async {
