@@ -760,6 +760,178 @@ async fn idle_reset_ends_a_quiet_session_at_the_boundary() {
     assert!(old.ended_at.is_some());
 }
 
+/// Asks for a hold on `session` in a task; the receiver yields it once granted.
+fn ask_hold(h: &Harness, session: SessionId) -> oneshot::Receiver<Option<SessionHold>> {
+    let (tx, rx) = oneshot::channel();
+    let sessions = h.sessions.clone();
+    tokio::spawn(async move {
+        let _ = tx.send(sessions.hold(session).await);
+    });
+    rx
+}
+
+#[test]
+fn holder_order_rows_received_up_to_the_hold_go_first() {
+    let at = |s| base().checked_add(Duration::from_secs(s)).unwrap();
+    assert!(!driver::holder_first(Some(at(1)), None));
+    assert!(driver::holder_first(None, Some(at(1))));
+    assert!(driver::holder_first(Some(at(2)), Some(at(1))));
+    assert!(!driver::holder_first(Some(at(1)), Some(at(1))));
+    assert!(!driver::holder_first(Some(at(1)), Some(at(2))));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_hold_waits_its_turn_and_holds_back_later_rows() {
+    let (mut h, events) = Harness::new(queue()).await;
+    send(&events, message("e1", "one"));
+    h.ack().await;
+    let first = h.turn().await;
+    let session = first.session;
+    // Queued before the hold: it runs first.
+    send(&events, message("e2", "two"));
+    h.ack().await;
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let mut held = ask_hold(&h, session);
+    h.settle().await;
+    tokio::time::advance(Duration::from_secs(1)).await;
+    // Queued after the hold asked: it waits for the hold.
+    send(&events, message("e3", "three"));
+    h.ack().await;
+    h.settle().await;
+    assert!(held.try_recv().is_err(), "held while a turn runs");
+
+    first.complete();
+    let second = h.turn().await;
+    assert_eq!(second.texts, ["two"]);
+    h.settle().await;
+    assert!(held.try_recv().is_err(), "held before an earlier row ran");
+    second.complete();
+
+    let hold = tokio::time::timeout(WAIT, held)
+        .await
+        .expect("no hold")
+        .unwrap()
+        .expect("hold refused");
+    assert_eq!(hold.session().id, session);
+    assert_eq!(hold.session().key(), Some(key()));
+    assert!(h.sessions.is_running(session));
+    h.assert_no_turn().await;
+
+    // `/stop` in the conversation cancels the holder's work, not the hold.
+    send(&events, message("s1", "/stop"));
+    h.ack().await;
+    h.settle().await;
+    assert!(hold.cancel().is_cancelled());
+    h.assert_no_turn().await;
+
+    drop(hold);
+    let third = h.turn().await;
+    assert_eq!(third.texts, ["three"]);
+    third.complete();
+    h.settle().await;
+    assert!(!h.sessions.is_running(session));
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_idle_session_is_held_at_once_and_wait_idle_waits_for_quiet() {
+    let (mut h, events) = Harness::new(queue()).await;
+    let now = h.setup.now();
+    let (session, _) = h
+        .store()
+        .open_session(key(), SessionKind::Direct, Some(identity::owner()), now)
+        .await
+        .unwrap();
+    // Nothing running: wait_idle returns, and the hold comes at once.
+    tokio::time::timeout(WAIT, h.sessions.wait_idle(session.id))
+        .await
+        .expect("waited on an idle session");
+    let hold = tokio::time::timeout(WAIT, h.sessions.hold(session.id))
+        .await
+        .expect("no hold")
+        .expect("hold refused");
+
+    // Held, then a message waits behind the hold: not idle until both are done.
+    send(&events, message("e1", "one"));
+    h.ack().await;
+    let sessions = h.sessions.clone();
+    let mut idle = tokio::spawn(async move { sessions.wait_idle(session.id).await });
+    h.settle().await;
+    assert!(!idle.is_finished());
+    drop(hold);
+    let turn = h.turn().await;
+    h.settle().await;
+    assert!(!idle.is_finished(), "idle while a turn runs");
+    turn.complete();
+    tokio::time::timeout(WAIT, &mut idle)
+        .await
+        .expect("still waiting after the session went quiet")
+        .unwrap();
+
+    // A hold for a session that doesn't exist is refused.
+    assert!(h.sessions.hold(SessionId::new(999)).await.is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn holds_are_refused_at_shutdown_and_waiting_holders_get_none() {
+    let (mut h, events) = Harness::new(queue()).await;
+    send(&events, message("e1", "one"));
+    h.ack().await;
+    let turn = h.turn().await;
+    let session = turn.session;
+    let held = ask_hold(&h, session);
+    h.settle().await;
+    h.shutdown.cancel();
+    let waited = tokio::time::timeout(WAIT, held).await.expect("no answer");
+    assert!(waited.unwrap().is_none());
+    assert!(h.sessions.hold(session).await.is_none());
+    // wait_idle returns at shutdown.
+    tokio::time::timeout(WAIT, h.sessions.wait_idle(session))
+        .await
+        .expect("wait_idle hung at shutdown");
+}
+
+#[tokio::test(start_paused = true)]
+async fn open_direct_opens_the_dm_like_an_inbound_message() {
+    let idle = Duration::from_secs(3600);
+    let (mut h, events) = Harness::new(AgentPolicy {
+        busy_mode: BusyMode::Queue,
+        idle_reset: Some(idle),
+    })
+    .await;
+    let opened = h
+        .sessions
+        .open_direct(key(), identity::owner())
+        .await
+        .unwrap();
+    assert_eq!(opened.key(), Some(key()));
+    assert_eq!(opened.kind, SessionKind::Direct);
+    assert_eq!(opened.user, Some(identity::owner()));
+    // The owner's next message lands in it.
+    send(&events, message("e1", "one"));
+    h.ack().await;
+    let turn = h.turn().await;
+    assert_eq!(turn.session, opened.id);
+    turn.complete();
+    h.settle().await;
+    let again = h
+        .sessions
+        .open_direct(key(), identity::owner())
+        .await
+        .unwrap();
+    assert_eq!(again.id, opened.id);
+
+    // Quiet for `idle_reset`: a fresh session, the old one ended.
+    tokio::time::advance(idle).await;
+    let fresh = h
+        .sessions
+        .open_direct(key(), identity::owner())
+        .await
+        .unwrap();
+    assert_ne!(fresh.id, opened.id);
+    let old = h.store().session(opened.id).await.unwrap().unwrap();
+    assert!(old.ended_at.is_some());
+}
+
 /// The state a restart leaves behind: a turn on the fake channel was running (two started rows
 /// and a tool call without a result) with one more message queued behind it, and a turn on a
 /// channel that never comes back was running. Returns the rows: e1, e2, e3 started, e4 queued.

@@ -8,7 +8,8 @@ The agent loop plugs in as a `TurnRunner`; the decision before anything is store
 
 | Item                     | What it is                                                              |
 | ------------------------ | ----------------------------------------------------------------------- |
-| `Sessions`               | The manager: `start`, `attach_channel`, `stop`, `is_running`, `channel_status(es)`, `closed` |
+| `Sessions`               | The manager: `start`, `attach_channel`, `stop`, `is_running`, `hold`, `wait_idle`, `open_direct`, `channel_status(es)`, `closed` |
+| `SessionHold`            | Exclusive use of a session between its turns: `session`, `cancel`; released on drop |
 | `SessionsOptions`        | Store, `Router`, per-agent `AgentPolicy`, `ChannelLookup`, `TurnRunner`, `Approvals`, `Clock` |
 | `TurnRunner`             | `async fn run_turn(&self, turn: Turn) -> TurnOutcome`; the agent loop implements it |
 | `Turn`                   | `session`, `requester`, `messages: Vec<TurnMessage>`, `busy_mode`, `cancel`, `steering`, `reply` |
@@ -113,6 +114,27 @@ At shutdown every turn's `cancel` fires (it's a child of the shutdown token). A 
 returns `Completed` has its rows finished; otherwise the driver stops without finishing them, so
 they're still `started` at the next start and recovery tells the requester. `Sessions::closed()`
 returns once every runner has returned.
+
+## Holds
+
+The scheduler runs a `dm` job as its own turn in the user's DM session, and appends a job's reply
+to the DM between turns (§6.11, TASKS.md 3.2). It does so through a hold:
+
+- `Sessions::hold(session)` queues the caller in the session's driver (starting one if needed) with
+  the time it asked. Before each turn the driver compares the oldest holder with the oldest queued
+  row: rows received up to the moment the holder asked go first, and a turn's batch never takes rows
+  received after a waiting holder asked; then the holder gets a `SessionHold`. Holders never merge
+  with messages.
+- While a hold is held, no turn starts in the session, `is_running` is true, and `/stop` in its
+  conversation and shutdown cancel `SessionHold::cancel` (the holder must stop its work when it
+  fires). Messages arriving meanwhile are queued as usual and never steer into the holder's work.
+  Dropping the hold gives the session back to the driver.
+- `hold` returns `None` at shutdown or if the session can't be loaded; a caller that stops waiting
+  just drops the future, and the driver skips it.
+- `wait_idle(session)` waits until the session has no driver: no turn, no hold, nothing queued (a
+  job's `idle_only`), or until shutdown.
+- `open_direct(key, user)` opens a DM session the way an inbound message from `user` would,
+  `idle_reset` included.
 
 ## Startup Recovery
 

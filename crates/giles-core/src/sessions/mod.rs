@@ -17,14 +17,15 @@ mod turn;
 mod tests;
 
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use giles_store::{SessionId, SessionKey, Store};
+use giles_store::{Session, SessionId, SessionKey, Store};
 use giles_types::{AgentId, Channel, Timestamp, UserId};
+use tokio::sync::{Notify, oneshot};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
@@ -211,6 +212,7 @@ impl Sessions {
             notices: Mutex::default(),
             pumps: Mutex::default(),
             statuses: Mutex::default(),
+            retired: Notify::new(),
             tasks: TaskTracker::new(),
         });
         recovery::recover(&inner).await?;
@@ -268,6 +270,67 @@ impl Sessions {
             .is_some_and(|live| live.turn.is_some())
     }
 
+    /// Waits until no turn runs in `session` and the rows queued in it before now have had
+    /// their turns, then holds it ([`SessionHold`]): rows queued later wait until the hold is
+    /// dropped. The scheduler runs a `dm` job's turn this way, as its own turn in the DM
+    /// session, and appends a job's reply to a DM (PLAN section 6.11). `None` at shutdown, or if
+    /// the session can't be loaded.
+    pub async fn hold(&self, session: SessionId) -> Option<SessionHold> {
+        let (handoff, handed) = oneshot::channel();
+        let waiter = HoldWaiter {
+            at: self.inner.clock.now(),
+            handoff,
+        };
+        if !self.inner.hold(session, waiter) {
+            return None;
+        }
+        let handoff = handed.await.ok()?;
+        Some(SessionHold {
+            session: handoff.session,
+            cancel: handoff.cancel,
+            _release: handoff.release,
+        })
+    }
+
+    /// Waits until `session` has no running turn, no hold, and nothing queued (a job's
+    /// `idle_only`, PLAN section 6.11), or until shutdown.
+    pub async fn wait_idle(&self, session: SessionId) {
+        loop {
+            let retired = self.inner.retired.notified();
+            tokio::pin!(retired);
+            retired.as_mut().enable();
+            if !self.inner.is_live(session) {
+                return;
+            }
+            tokio::select! {
+                () = retired => {}
+                () = self.inner.shutdown.cancelled() => return,
+            }
+        }
+    }
+
+    /// The open direct session for `key`, owned by `user`, opened if there is none: the same
+    /// session an inbound message from `user` would land in, including ending a session the
+    /// agent's `idle_reset` has expired. Where a job finds the DM it runs in or appends its
+    /// reply to (PLAN section 6.11).
+    ///
+    /// # Errors
+    ///
+    /// A database error.
+    pub async fn open_direct(
+        &self,
+        key: SessionKey,
+        user: UserId,
+    ) -> Result<Session, giles_store::Error> {
+        let to = Routed { session: key, user };
+        let id = inbound::session_for(&self.inner, &to, self.inner.clock.now()).await?;
+        self.inner
+            .store
+            .session(id)
+            .await?
+            .ok_or_else(|| giles_store::Error::NotFound(format!("session {id}")))
+    }
+
     /// Waits until every task of the session manager has stopped: channel pumps, drivers, turns,
     /// and the prune task. Call it after cancelling the shutdown token; it waits as long as a
     /// runner ignores [`Turn::cancel`].
@@ -299,6 +362,8 @@ struct Inner {
     /// The stop token of each attached channel's pump.
     pumps: Mutex<HashMap<InstanceName, CancellationToken>>,
     statuses: Mutex<BTreeMap<InstanceName, ChannelStatusRecord>>,
+    /// Notified whenever a session leaves `live`.
+    retired: Notify,
     /// Every task spawned, so shutdown can wait for them.
     tasks: TaskTracker,
 }
@@ -311,15 +376,62 @@ struct Live {
     dirty: bool,
     /// The session's key (unset for job sessions, and until the driver has loaded the session).
     key: Option<SessionKey>,
-    /// The running turn.
+    /// The running turn, or the holder's.
     turn: Option<LiveTurn>,
+    /// Callers of [`Sessions::hold`] waiting for their turn, oldest first.
+    holds: VecDeque<HoldWaiter>,
 }
 
 struct LiveTurn {
     cancel: CancellationToken,
     requester: Option<UserId>,
     /// Woken when the requester sends a message during the turn.
-    steer: Arc<tokio::sync::Notify>,
+    steer: Arc<Notify>,
+}
+
+/// A caller waiting in [`Sessions::hold`].
+struct HoldWaiter {
+    /// When it asked: rows received up to then have their turns first.
+    at: Timestamp,
+    handoff: oneshot::Sender<Handoff>,
+}
+
+/// What the driver gives a holder: the session, the cancel token `/stop` and shutdown cancel,
+/// and the sender whose drop gives the session back.
+struct Handoff {
+    session: Session,
+    cancel: CancellationToken,
+    release: oneshot::Sender<()>,
+}
+
+/// Exclusive use of a session between its turns, from [`Sessions::hold`]: no turn starts in it
+/// until this is dropped. Meanwhile [`Sessions::is_running`] is `true` for it, and `/stop` in
+/// its conversation and shutdown cancel [`cancel`](Self::cancel); a turn run while holding it
+/// must stop when that fires.
+pub struct SessionHold {
+    session: Session,
+    cancel: CancellationToken,
+    _release: oneshot::Sender<()>,
+}
+
+impl fmt::Debug for SessionHold {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionHold")
+            .field("session", &self.session.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SessionHold {
+    /// The session, as loaded when the hold began.
+    pub fn session(&self) -> &Session {
+        &self.session
+    }
+
+    /// Cancelled by `/stop` in the session's conversation and at shutdown.
+    pub fn cancel(&self) -> &CancellationToken {
+        &self.cancel
+    }
 }
 
 impl Inner {
@@ -330,6 +442,27 @@ impl Inner {
     /// A row was queued for `session` (by `from`, if known): start a driver unless one is live,
     /// and tell a running turn of its requester's new message.
     fn wake(self: &Arc<Self>, session: SessionId, from: Option<&UserId>) {
+        self.enliven(session, |live| {
+            if let Some(turn) = &live.turn
+                && from.is_some()
+                && turn.requester.as_ref() == from
+            {
+                turn.steer.notify_one();
+            }
+        });
+    }
+
+    /// Queues `waiter` for a hold on `session` and makes sure a driver hands it over. `false` at
+    /// shutdown.
+    fn hold(self: &Arc<Self>, session: SessionId, waiter: HoldWaiter) -> bool {
+        let mut waiter = Some(waiter);
+        self.enliven(session, |live| live.holds.extend(waiter.take()));
+        waiter.is_none()
+    }
+
+    /// Marks `session` dirty and applies `update` to it, starting a driver unless one is live.
+    /// Nothing at shutdown.
+    fn enliven(self: &Arc<Self>, session: SessionId, update: impl FnOnce(&mut Live)) {
         if self.shutdown.is_cancelled() {
             return;
         }
@@ -337,26 +470,29 @@ impl Inner {
             Entry::Occupied(mut entry) => {
                 let live = entry.get_mut();
                 live.dirty = true;
-                if let Some(turn) = &live.turn
-                    && from.is_some()
-                    && turn.requester.as_ref() == from
-                {
-                    turn.steer.notify_one();
-                }
+                update(live);
             }
             Entry::Vacant(entry) => {
-                entry.insert(Live {
+                update(entry.insert(Live {
                     dirty: true,
                     ..Live::default()
-                });
+                }));
                 self.tasks.spawn(driver::drive(self.clone(), session));
             }
         }
     }
 
-    /// Whether `session` has a driver (a running turn or queued rows about to start one).
+    /// Whether `session` has a driver (a running turn, a holder, or queued rows or holders
+    /// about to get their turn).
     fn is_live(&self, session: SessionId) -> bool {
         lock(&self.live).contains_key(&session)
+    }
+
+    /// The driver of `session` stopped: forgets it (dropping waiting holders, who get `None`)
+    /// and wakes [`Sessions::wait_idle`].
+    fn retire(&self, session: SessionId) {
+        lock(&self.live).remove(&session);
+        self.retired.notify_waiters();
     }
 
     fn stop(&self, key: &SessionKey) -> bool {

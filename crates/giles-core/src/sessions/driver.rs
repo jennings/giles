@@ -1,14 +1,15 @@
-//! The per-session driver: runs the session's queued inbox rows as turns, one at a time.
+//! The per-session driver: runs the session's queued inbox rows as turns, one at a time, and
+//! hands the session to holders ([`Sessions::hold`](super::Sessions::hold)) in their turn.
 
 use std::sync::{Arc, Mutex};
 
 use giles_store::{InboxEntry, InboxId, Session, SessionId};
-use giles_types::UserId;
-use tokio::sync::Notify;
-use tracing::{error, info, warn};
+use giles_types::{Timestamp, UserId};
+use tokio::sync::{Notify, oneshot};
+use tracing::{debug, error, info, warn};
 
 use super::turn::{Reply, Steering, Turn, TurnMessage, TurnOutcome};
-use super::{Inner, LiveTurn, lock};
+use super::{Handoff, Inner, LiveTurn, lock};
 
 /// The next turn's requester and messages: the sender of the oldest queued row and all of that
 /// sender's queued rows, in order (PLAN section 6.3: consecutive messages from one person form
@@ -25,26 +26,41 @@ pub(super) fn select_batch(queued: Vec<InboxEntry>) -> (Option<UserId>, Vec<Inbo
     (requester, batch)
 }
 
-/// Runs turns for `session` until it has no queued rows, then retires. Spawned by
-/// [`Inner::wake`], which registered the session as live.
+/// Whether the oldest holder, waiting since `hold`, goes before the queued rows, the oldest of
+/// which was received at `row`: rows received up to the moment a holder asked go first.
+pub(super) fn holder_first(row: Option<Timestamp>, hold: Option<Timestamp>) -> bool {
+    match (row, hold) {
+        (_, None) => false,
+        (None, Some(_)) => true,
+        (Some(row), Some(hold)) => hold < row,
+    }
+}
+
+/// Runs turns for `session` and hands it to holders until it has no queued rows or holders,
+/// then retires. Spawned by [`Inner::enliven`], which registered the session as live.
 pub(super) async fn drive(inner: Arc<Inner>, session: SessionId) {
     loop {
-        if let Some(live) = lock(&inner.live).get_mut(&session) {
-            live.dirty = false;
-        }
+        let hold = match lock(&inner.live).get_mut(&session) {
+            Some(live) => {
+                live.dirty = false;
+                live.holds.front().map(|waiter| waiter.at)
+            }
+            None => None,
+        };
         if inner.shutdown.is_cancelled() {
-            lock(&inner.live).remove(&session);
+            inner.retire(session);
             return;
         }
         let queued = match inner.store.inbox_queued(session).await {
             Ok(queued) => queued,
             Err(error) => {
                 error!(%session, %error, "cannot read the session's queued messages");
-                lock(&inner.live).remove(&session);
+                inner.retire(session);
                 return;
             }
         };
-        if queued.is_empty() {
+        let holder = holder_first(queued.first().map(|row| row.received_at), hold);
+        if queued.is_empty() && !holder {
             if retire(&inner, session) {
                 return;
             }
@@ -53,36 +69,93 @@ pub(super) async fn drive(inner: Arc<Inner>, session: SessionId) {
         let loaded = match inner.store.session(session).await {
             Ok(Some(loaded)) => loaded,
             Ok(None) => {
-                error!(%session, "queued messages for a session that doesn't exist");
-                lock(&inner.live).remove(&session);
+                error!(%session, "queued messages or a hold for a session that doesn't exist");
+                inner.retire(session);
                 return;
             }
             Err(error) => {
                 error!(%session, %error, "cannot load the session");
-                lock(&inner.live).remove(&session);
+                inner.retire(session);
                 return;
             }
         };
         if let Some(live) = lock(&inner.live).get_mut(&session) {
             live.key = loaded.key();
         }
-        let (requester, batch) = select_batch(queued);
-        if !run_turn(&inner, loaded, requester, batch).await {
-            lock(&inner.live).remove(&session);
+        let go_on = if holder {
+            hand_off(&inner, loaded).await
+        } else {
+            // Rows received after a waiting holder asked don't join this turn: they're after
+            // the holder's turn.
+            let queued = match hold {
+                Some(hold) => queued
+                    .into_iter()
+                    .filter(|row| row.received_at <= hold)
+                    .collect(),
+                None => queued,
+            };
+            let (requester, batch) = select_batch(queued);
+            run_turn(&inner, loaded, requester, batch).await
+        };
+        if !go_on {
+            inner.retire(session);
             return;
         }
     }
 }
 
-/// Removes the session from the live map unless a wake arrived since the driver last read the
-/// queue. Returns whether it retired.
+/// Removes the session from the live map unless a wake or hold arrived since the driver last
+/// read the queue. Returns whether it retired.
 fn retire(inner: &Inner, session: SessionId) -> bool {
-    let mut live = lock(&inner.live);
-    if live.get(&session).is_some_and(|l| l.dirty) {
-        return false;
+    {
+        let mut live = lock(&inner.live);
+        if live
+            .get(&session)
+            .is_some_and(|l| l.dirty || !l.holds.is_empty())
+        {
+            return false;
+        }
+        live.remove(&session);
     }
-    live.remove(&session);
+    inner.retired.notify_waiters();
     true
+}
+
+/// Gives the session to its oldest waiting holder and waits until the holder drops it. Returns
+/// `false` at shutdown.
+async fn hand_off(inner: &Arc<Inner>, session: Session) -> bool {
+    let id = session.id;
+    let Some(waiter) = lock(&inner.live)
+        .get_mut(&id)
+        .and_then(|live| live.holds.pop_front())
+    else {
+        return true;
+    };
+    let cancel = inner.shutdown.child_token();
+    if let Some(live) = lock(&inner.live).get_mut(&id) {
+        live.turn = Some(LiveTurn {
+            cancel: cancel.clone(),
+            requester: None,
+            steer: Arc::new(Notify::new()),
+        });
+    }
+    let (release, released) = oneshot::channel();
+    let handoff = Handoff {
+        session,
+        cancel,
+        release,
+    };
+    // A holder that gave up waiting has dropped its receiver; the next one goes on.
+    if waiter.handoff.send(handoff).is_ok() {
+        debug!(session = %id, "session held");
+        // Resolves when the holder drops its `SessionHold`.
+        let _ = released.await;
+        debug!(session = %id, "session released");
+    }
+    if let Some(live) = lock(&inner.live).get_mut(&id) {
+        live.turn = None;
+    }
+    !inner.shutdown.is_cancelled()
 }
 
 /// Starts `batch` as a turn, runs it, and finishes its rows. Returns `false` if the driver must

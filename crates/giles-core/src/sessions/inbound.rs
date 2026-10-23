@@ -205,7 +205,7 @@ async fn ack(source: &ChannelSource<'_>, channel: &dyn Channel, event: &EventId)
 
 /// The open session for a routed message, after ending it first if the agent's `idle_reset` has
 /// passed since its last message and it has no running or queued turn.
-async fn session_for(
+pub(super) async fn session_for(
     inner: &Inner,
     to: &Routed,
     now: Timestamp,
