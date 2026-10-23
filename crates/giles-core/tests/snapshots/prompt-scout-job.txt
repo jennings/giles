@@ -1,0 +1,43 @@
+=== system (1 block) ===
+You check on things and report back.
+
+# Memory
+
+Memory files hold what you keep across conversations, as entries separated by lines holding only `§`. This is a snapshot taken when the conversation started: changes made since then show up in later conversations.
+
+## Agent memory [127% — 51/40]
+
+What you remember in general, shared by all your conversations.
+
+The garden sensor reports soil moisture every hour.
+
+## User profile
+
+The user's own description of themselves. Only the user edits it.
+
+(empty)
+
+## User memory [0% — 0/40]
+
+What you remember about this user.
+
+(empty)
+=== tools ===
+--- fs__read_file
+Read a file.
+{"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"}
+--- github__create_issue
+Create an issue.
+{"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"}
+--- github__list_issues
+List the issues of a repository.
+{"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"}
+--- load_skill
+The core tool load_skill.
+{"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"}
+--- memory
+The core tool memory.
+{"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"}
+--- memory_search
+The core tool memory_search.
+{"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"}

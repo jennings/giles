@@ -33,6 +33,7 @@
 - [Configuration](technical/config.md)
 - [Identity and Routing](technical/identity-and-routing.md)
 - [Sessions and Turns](technical/sessions.md)
+- [Agent Loop](technical/agent-loop.md)
 - [Skills and Memory Files](technical/skills-and-memory.md)
 - [WhatsApp Spike](technical/whatsapp-spike.md)
 

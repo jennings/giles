@@ -1,0 +1,23 @@
+=== system (1 block) ===
+# Memory
+
+Memory files hold what you keep across conversations, as entries separated by lines holding only `§`. This is a snapshot taken when the conversation started: changes made since then show up in later conversations.
+
+## Agent memory [0% — 0/2,200]
+
+What you remember in general, shared by all your conversations.
+
+(empty)
+
+## User profile
+
+The user's own description of themselves. Only the user edits it.
+
+(empty)
+
+## User memory [0% — 0/2,200]
+
+What you remember about this user.
+
+(empty)
+=== tools ===
