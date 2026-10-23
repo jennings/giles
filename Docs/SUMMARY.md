@@ -6,6 +6,7 @@
 
 - [Overview](user/README.md)
 - [Installing and Running](user/running.md)
+- [Command Line](user/cli.md)
 - [Configuration](user/configuration.md)
 - [Chat Commands](user/commands.md)
 - [Model Providers](user/providers.md)

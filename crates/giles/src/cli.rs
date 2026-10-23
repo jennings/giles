@@ -23,6 +23,12 @@ pub struct Cli {
 pub enum Command {
     /// Run the daemon in the foreground until SIGINT or SIGTERM.
     Serve(ServeArgs),
+    /// Show the running daemon's state: its sandbox, channels, and plugins.
+    Status(StatusArgs),
+    /// Show token usage per agent and model, with the prompt cache hit rate.
+    Usage(UsageArgs),
+    /// Administer the running daemon.
+    Admin(AdminArgs),
     /// Run a command in the plugin sandbox (internal: the daemon launches plugins through it).
     SandboxExec(SandboxExecArgs),
 }
@@ -30,6 +36,42 @@ pub enum Command {
 /// Arguments to `giles serve`.
 #[derive(Debug, Args)]
 pub struct ServeArgs {}
+
+/// Arguments to `giles status`.
+#[derive(Debug, Args)]
+pub struct StatusArgs {}
+
+/// Arguments to `giles usage`.
+#[derive(Debug, Args)]
+pub struct UsageArgs {
+    /// Only requests since WHEN: a duration ago ("7d", "12h"), a date ("2026-10-01", from local
+    /// midnight), or an RFC 3339 time ("2026-10-01T09:00:00Z"). Default: all.
+    #[arg(long, value_name = "WHEN")]
+    pub since: Option<String>,
+}
+
+/// Arguments to `giles admin`.
+#[derive(Debug, Args)]
+pub struct AdminArgs {
+    /// What to do.
+    #[command(subcommand)]
+    pub command: AdminCommand,
+}
+
+/// The `giles admin` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum AdminCommand {
+    /// Print a one-time login URL for the web chat.
+    LoginLink(LoginLinkArgs),
+}
+
+/// Arguments to `giles admin login-link`.
+#[derive(Debug, Args)]
+pub struct LoginLinkArgs {
+    /// The user to log in, e.g. "owner".
+    #[arg(long, value_name = "USER")]
+    pub user: String,
+}
 
 /// Arguments to `giles sandbox-exec`.
 #[derive(Debug, Args)]
@@ -104,5 +146,31 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
         }
+    }
+
+    #[test]
+    fn admin_commands_parse() {
+        let cli = Cli::try_parse_from(["giles", "usage", "--since", "7d", "--home", "/h"]).unwrap();
+        let Command::Usage(args) = cli.command else {
+            panic!("{:?}", cli.command);
+        };
+        assert_eq!(args.since.as_deref(), Some("7d"));
+        assert_eq!(cli.home.as_deref(), Some(Path::new("/h")));
+
+        let cli = Cli::try_parse_from(["giles", "admin", "login-link", "--user", "owner"]).unwrap();
+        let Command::Admin(AdminArgs {
+            command: AdminCommand::LoginLink(args),
+        }) = cli.command
+        else {
+            panic!("{:?}", cli.command);
+        };
+        assert_eq!(args.user, "owner");
+
+        assert!(matches!(
+            Cli::try_parse_from(["giles", "status"]).unwrap().command,
+            Command::Status(_)
+        ));
+        // The user is required.
+        assert!(Cli::try_parse_from(["giles", "admin", "login-link"]).is_err());
     }
 }

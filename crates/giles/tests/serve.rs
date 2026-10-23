@@ -401,6 +401,120 @@ fn one_daemon_per_root_with_a_private_admin_socket_and_token() {
     assert!(status.success(), "{status}\n{log}");
 }
 
+/// Runs `giles <args>` to completion: whether it succeeded, its stdout, and its stderr.
+fn run_cli(env: &Env, args: &[&str]) -> (bool, String, String) {
+    let output = env.command(args).stdout(Stdio::piped()).output().unwrap();
+    (
+        output.status.success(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+/// Records one provider request in `home`'s database, as the agent loop would.
+fn record_usage(home: &Path, agent: &str, usage: giles_types::Usage) {
+    fs::create_dir_all(home.join("data")).unwrap();
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let store = giles_store::Store::open(home.join("data/giles.db"))
+                .await
+                .unwrap();
+            store
+                .record_usage(giles_store::UsageRecord {
+                    at: jiff::Timestamp::now(),
+                    provider: "anthropic".into(),
+                    model: "claude".into(),
+                    agent: giles_types::AgentId::new(agent).unwrap(),
+                    user: None,
+                    session: None,
+                    usage,
+                    fallback: false,
+                })
+                .await
+                .unwrap();
+        });
+}
+
+#[test]
+fn status_usage_and_login_link_ask_the_running_daemon() {
+    let env = Env::new();
+    let home = env.path("home");
+    let home_arg = home.to_str().unwrap();
+    write_config(
+        &home,
+        &format!("{MINIMAL_CONFIG}\n[channel.libera]\ncomponent = \"irc\"\n"),
+    );
+    record_usage(
+        &home,
+        "jeeves",
+        giles_types::Usage {
+            input_tokens: 100,
+            output_tokens: 20,
+            cache_read_tokens: 300,
+            cache_write_tokens: 0,
+        },
+    );
+
+    // Not running yet.
+    let (ok, _, stderr) = run_cli(&env, &["status", "--home", home_arg]);
+    assert!(!ok);
+    assert!(
+        stderr.contains("giles is not running") && stderr.contains("giles serve"),
+        "{stderr}"
+    );
+
+    let daemon = Daemon::start(env.command(&["serve", "--home", home_arg]));
+
+    let (ok, stdout, stderr) = run_cli(&env, &["status", "--home", home_arg]);
+    assert!(ok, "{stderr}");
+    let version = format!("giles {}, running since ", env!("CARGO_PKG_VERSION"));
+    for expected in [
+        version.as_str(),
+        "Plugin sandbox: ",
+        "Channels:\n  libera  irc (plugin): no status yet\n",
+        "Plugins:\n  libera (channel, irc)\n",
+        "state:     unknown (plugin supervision is not available)",
+        "location:  giles-channel-irc",
+    ] {
+        assert!(stdout.contains(expected), "{expected:?} in:\n{stdout}");
+    }
+
+    let (ok, stdout, stderr) = run_cli(&env, &["usage", "--home", home_arg]);
+    assert!(ok, "{stderr}");
+    assert!(
+        stdout.starts_with("Usage per agent (all time):"),
+        "{stdout}"
+    );
+    let jeeves = stdout.lines().find(|l| l.starts_with("jeeves ")).unwrap();
+    assert!(jeeves.ends_with("75.0%"), "{stdout}");
+    let (ok, stdout, stderr) = run_cli(
+        &env,
+        &["usage", "--home", home_arg, "--since", "2099-01-01"],
+    );
+    assert!(ok, "{stderr}");
+    assert!(
+        stdout.starts_with("No provider requests since 2099-01-01 00:00:00"),
+        "{stdout}"
+    );
+    let (ok, _, stderr) = run_cli(&env, &["usage", "--home", home_arg, "--since", "soon"]);
+    assert!(!ok && stderr.contains("invalid --since"), "{stderr}");
+
+    // No web channel yet, so no login links.
+    let (ok, stdout, stderr) = run_cli(
+        &env,
+        &["admin", "login-link", "--home", home_arg, "--user", "owner"],
+    );
+    assert!(!ok && stdout.is_empty(), "{stdout}");
+    assert!(stderr.contains("web channel"), "{stderr}");
+
+    let (status, log) = daemon.stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+    let (ok, _, stderr) = run_cli(&env, &["usage", "--home", home_arg]);
+    assert!(!ok && stderr.contains("giles is not running"), "{stderr}");
+}
+
 #[cfg(feature = "provider-anthropic")]
 #[test]
 fn a_component_that_cannot_be_built_fails_with_the_file_and_key() {

@@ -22,7 +22,12 @@ provider-openai = ["giles-core/provider-openai"]
 anyhow.workspace = true
 clap = { version = "4.6.7", features = ["derive"] }
 giles-core.workspace = true
-jiff.workspace = true
+# Timestamp conversions for the admin CLI commands.
+giles-plugin-sdk = { workspace = true, default-features = false }
+giles-proto.workspace = true
+giles-types.workspace = true
+jiff = { workspace = true, features = ["tz-system"] }
+prost-types.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 tokio-util.workspace = true
 tonic.workspace = true
@@ -34,4 +39,6 @@ workspace = true
 
 [dev-dependencies]
 libc.workspace = true
+# Usage rows for the `giles usage` end-to-end test.
+giles-store.workspace = true
 tempfile.workspace = true

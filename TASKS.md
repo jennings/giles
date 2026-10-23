@@ -250,12 +250,13 @@ The five tracks run in parallel.
   backed by `web_sessions`, expiring after 30 days; redemption of one-time login links; the
   trusted-proxy identity header, honored only on `run/proxy.sock` (mode 0600) or a TCP listener
   that also requires a shared-secret header. **Needs:** 2.22, 1.2.
-- [ ] **2.24 Admin service and CLI** (§8.7, §11.7). `giles.admin.v1` on `run/admin.sock` (mode
+- [x] **2.24 Admin service and CLI** (§8.7, §11.7). `giles.admin.v1` on `run/admin.sock` (mode
   0600), every call checked against `run/admin.token`; v1 RPCs `Status` (config error, sandbox ABI,
   `requested_grants`, channel status), `ListPlugins`, `RestartPlugin`, `ListSessions`,
   `ResetSession`, `CreateLoginLink`, `UsageReport`; CLI `giles status`,
   `giles admin login-link --user`, `giles usage` (cache hit rate per agent). RPCs fill in as their
-  subsystems land. **Needs:** 1.4, 1.2.
+  subsystems land. **Needs:** 1.4, 1.2. `RestartPlugin` and the plugins' lifecycle fields await
+  2.17 (`admin::PluginControl`); `CreateLoginLink` awaits 2.23 (`admin::LoginLinks`).
 
 ## Phase 3: v1 Features
 
