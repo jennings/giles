@@ -21,11 +21,13 @@ row_id!(
 /// A send to enqueue with [`Store::outbox_enqueue`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewOutbox {
-    /// The channel instance to send through.
+    /// The channel instance it routes to, for logs (the core's sender routes again at each
+    /// attempt).
     pub instance: String,
-    /// The identity to send to (`SendRequest.recipient`).
+    /// The identity to send to, `<namespace>:<native id>`; the sender sends the native id as
+    /// `SendRequest.recipient`.
     pub recipient: NativeId,
-    /// What it is, for logs: e.g. `job`, `approval`, `login_code`.
+    /// What it is, for logs: `job_reply`, `approval_prompt`, `login_code`, or `notice`.
     pub kind: String,
     /// The user it's for, if any.
     pub user: Option<UserId>,
