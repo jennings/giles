@@ -4,6 +4,7 @@ use std::os::unix::fs::symlink;
 
 use crate::agents::{AgentCreator, CreateError, DEFAULT_SOUL, MAX_FILE_BYTES, MAX_FILES, NewAgent};
 use crate::config::{Config, LoadOptions};
+use crate::http::assets;
 use crate::paths::DataRoot;
 
 use super::*;
@@ -361,6 +362,58 @@ async fn the_new_form_asks_for_the_name_before_the_id_and_starts_the_soul() {
         "{html}"
     );
     assert!(html.contains("a helpful personal assistant.\n</textarea>"));
+}
+
+#[tokio::test]
+async fn the_new_form_loads_its_script_from_an_embedded_asset_the_policy_allows() {
+    let env = env().await;
+    let creator = env.creator();
+    let page = call(
+        env.agents_router(&creator, Some(owner())),
+        Method::GET,
+        "/admin/agents/new",
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(page.status(), StatusCode::OK);
+    let policy = page.headers()[CONTENT_SECURITY_POLICY].to_str().unwrap();
+    assert!(policy.contains("script-src 'self';"), "{policy}");
+    assert!(!policy.contains("unsafe-inline"), "{policy}");
+    let html = body_text(page).await;
+
+    // Every script is an external file (no inline script the policy would block), and one of them
+    // is the form's, loaded after parsing so the fields exist.
+    let script = assets::agent_form_script();
+    assert!(
+        html.contains(&format!(r#"<script src="{}" defer></script>"#, script.path)),
+        "{html}"
+    );
+    assert_eq!(
+        html.matches("<script").count(),
+        html.matches("<script src=").count(),
+        "{html}"
+    );
+    assert!(
+        !html.contains(" onchange=") && !html.contains(" oninput="),
+        "{html}"
+    );
+
+    // The asset is served from the binary with a JavaScript type.
+    let asset = call(
+        env.agents_router(&creator, Some(owner())),
+        Method::GET,
+        script.path,
+        &[],
+        None,
+    )
+    .await;
+    assert_eq!(asset.status(), StatusCode::OK);
+    assert_eq!(
+        asset.headers()[CONTENT_TYPE],
+        "text/javascript; charset=utf-8"
+    );
+    assert_eq!(body_text(asset).await.as_bytes(), script.body);
 }
 
 #[tokio::test]

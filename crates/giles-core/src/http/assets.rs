@@ -1,10 +1,10 @@
-//! Static assets compiled into the binary: the vendored `htmx` and its SSE extension, and the
-//! stylesheet.
+//! Static assets compiled into the binary: the vendored `htmx` and its SSE extension, the
+//! stylesheet, and the new-agent form's script.
 //!
 //! Every asset's path changes whenever its content does (a version for the vendored files, a
-//! content hash for the stylesheet), so all of them are served as `immutable` for a year. Pages
-//! link them through these constants (askama: `{{ crate::http::assets::HTMX.path }}`), never by a
-//! hand-written path.
+//! content hash for our own), so all of them are served as `immutable` for a year. Pages link them
+//! through these constants and functions (askama: `{{ crate::http::assets::HTMX.path }}`), never by
+//! a hand-written path.
 
 use std::sync::LazyLock;
 
@@ -67,9 +67,29 @@ pub fn stylesheet() -> Asset {
     }
 }
 
+const AGENT_FORM_SCRIPT_BODY: &[u8] = include_bytes!("../../assets/agent-form.js");
+
+static AGENT_FORM_SCRIPT_PATH: LazyLock<String> =
+    LazyLock::new(|| hashed_path("agent-form", AGENT_FORM_SCRIPT_BODY, "js"));
+
+/// The URL path of the new-agent form's script: `/static/agent-form-<hash>.js`.
+pub fn agent_form_script_path() -> &'static str {
+    AGENT_FORM_SCRIPT_PATH.as_str()
+}
+
+/// The new-agent form's script, at [`agent_form_script_path`]: it fills the form's id from its name
+/// as the owner types.
+pub fn agent_form_script() -> Asset {
+    Asset {
+        path: agent_form_script_path(),
+        content_type: JAVASCRIPT,
+        body: AGENT_FORM_SCRIPT_BODY,
+    }
+}
+
 /// Every asset.
-pub fn all() -> [Asset; 3] {
-    [HTMX, HTMX_SSE, stylesheet()]
+pub fn all() -> [Asset; 4] {
+    [HTMX, HTMX_SSE, stylesheet(), agent_form_script()]
 }
 
 /// `/static/<stem>-<hash>.<extension>`, the hash being the first 16 hex digits of the SHA-256 of

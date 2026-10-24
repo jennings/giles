@@ -2,7 +2,8 @@
 
 The core runs one HTTP server (PLAN section 9) for web chat, the admin pages, and the login flow. It
 lives in `giles_core::http`, is built on `axum`, renders pages with `askama` templates compiled into
-the binary, and ships its only JavaScript (`htmx` and its SSE extension) inside the binary too.
+the binary, and ships its JavaScript (`htmx`, its SSE extension, and one small script of our own for
+the new-agent form) inside the binary too.
 There is no build step. TLS is terminated by a reverse proxy, never by Giles.
 
 ## Lifecycle
@@ -59,9 +60,11 @@ Rules for a module's `routes(..) -> axum::Router`:
 Templates live in `crates/giles-core/templates/` (askama's default directory) and are compiled into
 the binary by `#[derive(askama::Template)]`; a template error is a compile error.
 
-`layout.html` is the base every page extends. It has two blocks:
+`layout.html` is the base every page extends. It has three blocks:
 
 - `title` (default `Giles`).
+- `head` (default empty), for a page's own `<script src>` or `<link>`; the new-agent form loads
+  its script here.
 - `content`, inside `<main>`.
 
 It links the stylesheet and both scripts through the asset constants
@@ -94,12 +97,14 @@ The home page (`index.html`) shows the version; it's `/` only when no web channe
 | `/static/htmx-2.0.11.min.js`        | `assets/vendor/htmx-2.0.11/htmx.min.js`       | `text/javascript; charset=utf-8` |
 | `/static/htmx-ext-sse-2.2.4.min.js` | `assets/vendor/htmx-ext-sse-2.2.4/sse.min.js` | `text/javascript; charset=utf-8` |
 | `/static/giles-<hash>.css`          | `assets/giles.css`                            | `text/css; charset=utf-8`        |
+| `/static/agent-form-<hash>.js`      | `assets/agent-form.js`                        | `text/javascript; charset=utf-8` |
 
-Each path changes whenever its content does: the vendored files carry their version, and the
-stylesheet carries the first 16 hex digits of its SHA-256 (`assets::stylesheet_path()`, computed
-once). So every asset is served with `Cache-Control: public, max-age=31536000, immutable`, and a
-browser never revalidates or keeps a stale copy across an upgrade. `HEAD` works on every asset; any
-other method is a 405, and an unknown path under `/static/` gets the 404 page.
+Each path changes whenever its content does: the vendored files carry their version, and our own
+files carry the first 16 hex digits of their SHA-256 (`assets::stylesheet_path()` and
+`assets::agent_form_script_path()`, computed once). So every asset is served with
+`Cache-Control: public, max-age=31536000, immutable`, and a browser never revalidates or keeps a
+stale copy across an upgrade. `HEAD` works on every asset; any other method is a 405, and an unknown
+path under `/static/` gets the 404 page.
 
 ### Vendored Files
 
@@ -156,7 +161,8 @@ Why each part:
   leak data with no tool call. Images come only from this origin (`/blobs/<sha256>`) and `data:`
   URLs, the two kinds the renderer keeps.
 - `script-src 'self'` and `style-src 'self'`, no `'unsafe-inline'` or `'unsafe-eval'`: the only
-  scripts are the two vendored files, and the only stylesheet is `giles.css`. Any injected
+  scripts are the two vendored files and `agent-form.js` (only the new-agent form loads it, through
+  the layout's `head` block), and the only stylesheet is `giles.css`. Any injected
   `<script>`, `on*=` handler, or `javascript:` URL is inert even if it got past the renderer. This
   also blocks inline `style="..."` attributes, so pages style with classes. Note for 2.22:
   `pulldown-cmark` writes table column alignment as `style="text-align: ..."`, which browsers drop
@@ -202,7 +208,8 @@ servers on `127.0.0.1:0`) and `crates/giles/tests/serve.rs` (the daemon end to e
   paths), 405s, and merged routes; a merged handler's own policy is kept next to the base and its
   `X-Frame-Options` is replaced.
 - Each asset is served byte-for-byte with its content type and the immutable cache header; the
-  vendored files match the recorded checksums; the stylesheet path is its content hash.
+  vendored files match the recorded checksums; the stylesheet and form script paths are their
+  content hashes, and the script's id derivation is pinned to the Rust function's expression.
 - The layout renders: doctype, title block, stylesheet link, both scripts in order, the
   `htmx-config` meta; pages contain no inline script or style; the 404 page uses the layout.
 - A real server answers over TCP and returns once the token is cancelled; a request that never

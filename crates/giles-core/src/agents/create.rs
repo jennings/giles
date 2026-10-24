@@ -49,6 +49,9 @@ pub const DEFAULT_SOUL: &str = "This is your information. Update it as you learn
 /// characters an id may have (though it can be empty, or `new`, which creation refuses). Nothing
 /// is trimmed or collapsed, and ids are ASCII: letters beyond it (`é`) are removed like any
 /// symbol, and so is whitespace other than a plain space.
+///
+/// `assets/agent-form.js` does the same in the browser as the owner types; keep the two equal
+/// (the table in this module's tests is for running through the script by hand).
 pub fn agent_id_from_name(name: &str) -> String {
     name.to_lowercase()
         .chars()
@@ -384,7 +387,7 @@ fn write_file(dir: &Path, name: &str, contents: &[u8]) -> io::Result<()> {
 mod tests {
     use super::*;
 
-    /// `(name, id)`.
+    /// `(name, id)`. Also the cases to run through `derive` in `assets/agent-form.js`.
     const ID_FROM_NAME: &[(&str, &str)] = &[
         ("Jeeves", "jeeves"),
         ("The Butler", "the-butler"),

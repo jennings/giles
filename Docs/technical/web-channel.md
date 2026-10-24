@@ -430,10 +430,20 @@ no agent RPCs yet (PLAN section 8.7).
   `agents::agent_id_from_name`, a pure function: lowercase (`str::to_lowercase`), each space to `-`,
   every other character outside `a-z`, `0-9`, `-` removed. Nothing is trimmed or collapsed, ids
   are ASCII so `Café` gives `caf`, and whitespace other than a plain space is removed like a
-  symbol. The result can be empty or `new`; creation refuses both as before. The Id input isn't
-  `required`: `POST /admin/agents` with an empty (or blank) id derives it from the name, so a
-  form posted without scripts, or by `curl`, works, and an invalid form comes back showing the id
-  that was used.
+  symbol. The result can be empty or `new`; creation refuses both as before. The Id input stays a
+  visible, editable field and isn't `required`: `POST /admin/agents` with an empty (or blank) id
+  derives it from the name, so a form posted without scripts, or by `curl`, works, and an invalid
+  form comes back showing the id that was used.
+- Live in the browser, `assets/agent-form.js` (embedded like the stylesheet, at
+  `/static/agent-form-<hash>.js`, loaded `defer` through the layout's `head` block because the
+  CSP is `script-src 'self'`) writes the same derivation into the Id as the owner types in the
+  Name: `text.toLowerCase().replace(/ /g, '-').replace(/[^a-z0-9-]/g, '')`. It follows while the Id
+  is empty or equals what the name derives (also on a form shown again after an error); typing in
+  the Id stops it, and emptying the Id resumes it. The expression is the Rust function written
+  in JavaScript (`to_lowercase` and `toLowerCase` agree on every character the filter keeps,
+  U+212A KELVIN SIGN and U+0130 included); a unit test pins the expression in the file. After
+  changing either, run the table in `agents/create.rs`'s tests through the script (for example
+  with `bun` or `node`) by hand: this isn't automated.
 - `CreateForm` (`agents.rs`) starts `soul` as `agents::DEFAULT_SOUL`, so the first `GET` shows it
   and a post with no `soul` field gets it; a `soul` that was posted empty stays empty, also when
   the form is shown again after an error.

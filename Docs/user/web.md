@@ -109,11 +109,14 @@ agent. Limits keep the page small:
 **New agent** opens a form that creates one:
 
 - **Name**: the display name. Optional if you give an id.
-- **Id**: the directory name, letters, digits, and `-`. Leave it empty and Giles makes it from the
-  name: lowercase, each space turned into `-`, and everything else (punctuation, symbols, other
-  whitespace, and letters outside `a`-`z`, so `é` too) removed: "The Butler!" becomes
-  `the-butler`, "Café" becomes `caf`. An id that's taken (ignoring case) or `new`, and an id that
-  comes out empty, is refused.
+- **Id**: the directory name, letters, digits, and `-`. It is always a plain, editable field. As
+  you type the name, the id fills in from it: lowercase, each space turned into `-`, and
+  everything else (punctuation, symbols, other whitespace, and letters outside `a`-`z`, so `é`
+  too) removed: "The Butler!" becomes `the-butler`, "Café" becomes `caf`. Once you edit the id
+  yourself it stays as you typed it; clear it and it follows the name again. If the id is empty
+  when you create the agent (the page's script didn't run, say), Giles makes it from the name the
+  same way. An id that's taken (ignoring case) or `new`, and an id that comes out empty, is
+  refused.
 - **Models**: `<provider>/<model>`, several separated by commas. The field suggests the models
   your providers list; you can type any other.
 - **Tools** and **Ask first**: optional tool names or globs, separated by commas or spaces.
