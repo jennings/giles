@@ -46,6 +46,7 @@
 - [gRPC Protocols](technical/protocols.md)
 - [Admin Service](technical/admin.md)
 - [Configuration](technical/config.md)
+- [Instance Rename](technical/instance-rename.md)
 - [Identity and Routing](technical/identity-and-routing.md)
 - [Sessions and Turns](technical/sessions.md)
 - [Agent Loop](technical/agent-loop.md)

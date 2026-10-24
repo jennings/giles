@@ -25,6 +25,8 @@ giles-core.workspace = true
 # Timestamp conversions for the admin CLI commands.
 giles-plugin-sdk = { workspace = true, default-features = false }
 giles-proto.workspace = true
+# The database, for `giles instance rename`.
+giles-store.workspace = true
 giles-types.workspace = true
 jiff = { workspace = true, features = ["tz-system"] }
 prost-types.workspace = true
@@ -42,6 +44,4 @@ libc.workspace = true
 # The end-to-end tests read the daemon's database and talk JSON to its fake provider and plugin.
 rusqlite.workspace = true
 serde_json.workspace = true
-# Usage rows for the `giles usage` end-to-end test.
-giles-store.workspace = true
 tempfile.workspace = true

@@ -1,8 +1,9 @@
 # Command Line
 
 Besides `giles serve` ([Installing and Running](running.md)), the `giles` command talks to the
-running daemon. These commands take the same `--home <DIR>` option and `GILES_HOME` variable as
-`giles serve`, so they find the daemon of that data root. If it isn't running they fail with
+running daemon (except `giles instance rename`, which needs it stopped). These commands take the
+same `--home <DIR>` option and `GILES_HOME` variable as `giles serve`, so they find the daemon of
+that data root. If it isn't running they fail with
 `giles is not running (nothing listens on <data root>/run/admin.sock)`.
 
 They connect to the daemon's admin socket, `run/admin.sock`, and authenticate with the token in
@@ -79,3 +80,58 @@ Writes a consistent snapshot of the data root into an existing directory while t
 database (`giles-<time>.db`) and a tar of the configuration, Markdown files, and attachments
 (`giles-<time>.tar`). It prints the two paths. A relative `<dir>` is relative to where you run the
 command. See [Backups](backups.md) for what's included and how to restore.
+
+## `giles instance rename <old> <new>`
+
+Renames an instance, with Giles stopped. An instance name (`libera` in `[channel.libera]`) is
+permanent: sessions, history, the inbox, group memory, and the plugin's data directory are all
+stored under it, so changing the table's name in `giles.toml` alone would leave all of that behind
+and start a new, empty instance. This command renames everything together:
+
+- the database rows that name the instance (sessions, inbound and outbound messages, usage, and
+  the provider recorded on past replies),
+- the directories `data/plugins/<old>/` and `agents/*/groups/<old>/`, and the instance's cache and
+  pid files,
+- the `[<kind>.<old>]` table in `giles.toml`, with its comments, formatting, and sub-tables, and the
+  `[[routes]]` that name a renamed channel. An instance without a `component` key runs the
+  component named like the instance (`[channel.web]` is the built-in web channel), so the command
+  adds `component = "<old>"` to keep it running the same thing,
+- in each agent's `agent.toml`: for a renamed provider, the `models`, `compaction_model`, and job
+  `model` values that start with `<old>/`; for a renamed toolset, the `tools` and `ask` globs that
+  start with `<old>__`.
+
+```console
+$ giles instance rename libera libera-chat
+Renamed channel instance "libera" to "libera-chat".
+  database: 3 sessions, 10 inbox rows, 0 outbox rows, 0 usage rows, 0 messages
+  giles.toml: [channel.libera] -> [channel.libera-chat]
+  giles.toml: 1 route(s) updated
+  moved data/plugins/libera -> data/plugins/libera-chat
+Start giles again to use the new name.
+```
+
+Unlike the other commands on this page, this one needs the daemon stopped: it takes the same lock
+`giles serve` does, and fails with `giles is already running ... stop it first` otherwise. Names
+use only letters, digits, and `-`, and `<new>` must not differ from another instance's name only
+in case. It refuses, changing nothing, if:
+
+- `<old>` isn't configured and has no data,
+- `<new>` is also configured, or already has data (database rows or directories): renaming never
+  merges two instances,
+- `giles.toml` or an `agent.toml` can't be read or isn't valid TOML,
+- a renamed toolset's `tools` or `ask` globs match its tools by the old name without starting with
+  `<old>__` (`github*`, `git*`). Giles can't tell what you meant and leaving them would stop them
+  matching (an `ask` entry would stop asking), so it lists them: change them (to `github__*`, say)
+  and run the command again. Globs such as `*`, `memory*` and `*__create_issue` are fine.
+
+The rename is all or nothing as far as Giles can tell. The database changes happen in one
+transaction and the file changes inside it, and if any step fails, the earlier ones are undone and
+the error says what failed. If the process is killed in the middle (a power loss), run the same
+command again: it finishes what was left, treating directories that already moved as done. If
+undoing a failed rename also fails, the error lists what to fix by hand.
+
+What the command leaves alone:
+
+- Tool names in old conversations: a renamed toolset's past calls still read `<old>__<tool>`.
+- Your identities: `irc:libera:account:me` is named after the network the channel reports, not
+  after the instance, so `[owner] identities` stay as they are.

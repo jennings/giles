@@ -700,6 +700,8 @@ renames the directories, and renames the instance's config (in the current layou
 `[<kind>.<old>]` table in `giles.toml`, section 11.2). At startup, the core refuses to start a new
 instance whose name doesn't match any known data while an unused old name has data, and points to
 the rename command.
+Renaming an instance that has no `component` key keeps its component by writing
+`component = "<old>"`, since the component defaults to the instance name.
 
 ### 7.3 Discovery and Enablement
 

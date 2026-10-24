@@ -23,6 +23,7 @@ pub mod plugin_host;
 mod process_group;
 pub mod providers;
 pub mod registry;
+pub mod rename;
 pub mod router;
 pub mod runtime;
 pub mod sandbox;

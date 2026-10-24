@@ -31,6 +31,8 @@ pub enum Command {
     Admin(AdminArgs),
     /// Write a consistent snapshot of the data root (database and files) to a directory.
     Backup(BackupArgs),
+    /// Manage instances with the daemon stopped.
+    Instance(InstanceArgs),
     /// Run a command in the plugin sandbox (internal: the daemon launches plugins through it).
     SandboxExec(SandboxExecArgs),
 }
@@ -81,6 +83,33 @@ pub struct LoginLinkArgs {
     /// The user to log in, e.g. "owner".
     #[arg(long, value_name = "USER")]
     pub user: String,
+}
+
+/// Arguments to `giles instance`.
+#[derive(Debug, Args)]
+pub struct InstanceArgs {
+    /// What to do.
+    #[command(subcommand)]
+    pub command: InstanceCommand,
+}
+
+/// The `giles instance` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum InstanceCommand {
+    /// Rename an instance: its database rows, directories, and config. Stop the daemon first.
+    Rename(RenameArgs),
+}
+
+/// Arguments to `giles instance rename`.
+#[derive(Debug, Args)]
+pub struct RenameArgs {
+    /// The current name of the instance.
+    #[arg(value_name = "OLD")]
+    pub old: String,
+
+    /// The new name: letters, digits, and `-`.
+    #[arg(value_name = "NEW")]
+    pub new: String,
 }
 
 /// Arguments to `giles sandbox-exec`.
@@ -194,5 +223,25 @@ mod tests {
         assert_eq!(cli.home.as_deref(), Some(Path::new("/h")));
         assert!(Cli::try_parse_from(["giles", "backup"]).is_err());
         assert!(Cli::try_parse_from(["giles", "backup", "a", "b"]).is_err());
+    }
+
+    #[test]
+    fn instance_rename_takes_two_names() {
+        let cli = Cli::try_parse_from(["giles", "instance", "rename", "libera", "oftc"]).unwrap();
+        let Command::Instance(InstanceArgs {
+            command: InstanceCommand::Rename(args),
+        }) = cli.command
+        else {
+            panic!("{:?}", cli.command);
+        };
+        assert_eq!((args.old.as_str(), args.new.as_str()), ("libera", "oftc"));
+        for args in [
+            &["giles", "instance"][..],
+            &["giles", "instance", "rename"],
+            &["giles", "instance", "rename", "a"],
+            &["giles", "instance", "rename", "a", "b", "c"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
+        }
     }
 }

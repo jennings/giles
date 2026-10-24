@@ -1216,6 +1216,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "toml",
+ "toml_edit",
  "tonic",
  "tonic-health",
  "tonic-prost",
@@ -3335,6 +3336,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b86d767906c6c42421dcba507eb9d203e779497710a47782a224bb871653053"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "toml_edit"
+version = "0.25.15+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1340ea94a5856333492c9064b02c778b191dd2c853778d9609debdcdfea3a614"
+dependencies = [
+ "indexmap",
+ "toml_datetime",
+ "toml_parser",
+ "toml_writer",
+ "winnow",
 ]
 
 [[package]]

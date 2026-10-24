@@ -58,6 +58,8 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "
 tokio-rustls.workspace = true
 tokio-util = { workspace = true, features = ["io", "rt"] }
 toml.workspace = true
+# Edits `giles.toml` and `agent.toml` for `giles instance rename`, keeping comments and formatting.
+toml_edit = { version = "0.25.15", default-features = false, features = ["parse", "display"] }
 tonic.workspace = true
 tonic-health.workspace = true
 tower.workspace = true

@@ -3,6 +3,7 @@
 mod admin_client;
 mod backup;
 mod cli;
+mod instance;
 mod logging;
 mod login_link;
 mod sandbox_exec;
@@ -13,7 +14,7 @@ mod usage;
 
 use clap::Parser;
 
-use crate::cli::{AdminCommand, Cli, Command};
+use crate::cli::{AdminCommand, Cli, Command, InstanceCommand};
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -41,6 +42,12 @@ fn main() -> anyhow::Result<()> {
             logging?;
             match args.command {
                 AdminCommand::LoginLink(args) => login_link::run(home, &args),
+            }
+        }
+        Command::Instance(args) => {
+            logging?;
+            match args.command {
+                InstanceCommand::Rename(args) => instance::run(home, &args),
             }
         }
         Command::SandboxExec(args) => sandbox_exec::run(&args, logging),
