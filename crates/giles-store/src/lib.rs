@@ -28,7 +28,9 @@ mod time;
 mod usage;
 mod web_sessions;
 
-pub use blobs::{Blob, BlobMeta, BlobReader, BlobStore, SWEEP_GRACE, SweepGuard, SweepReport};
+pub use blobs::{
+    Blob, BlobMeta, BlobReader, BlobStore, SWEEP_GRACE, SweepGuard, SweepHold, SweepReport,
+};
 pub use conversations::{ConversationActivity, ConversationMessage, ConversationTranscript};
 pub use db::{OpenOptions, Store};
 pub use error::{BoxError, Error, Result};

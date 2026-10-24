@@ -34,7 +34,7 @@ use giles_types::{MediaId, MediaRef, Timestamp};
 use rusqlite::{OptionalExtension, params};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf};
-use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
+use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 use crate::time::to_millis;
 use crate::{Error, Result, Store};
@@ -131,6 +131,13 @@ pub struct SweepGuard {
     _guard: OwnedRwLockWriteGuard<()>,
 }
 
+/// Held by a backup while it copies the database and the blobs; the sweep waits for it, puts
+/// don't. From [`BlobStore::hold_off_sweep`].
+#[derive(Debug)]
+pub struct SweepHold {
+    _guard: OwnedRwLockReadGuard<()>,
+}
+
 async fn create_private_dir(path: &Path) -> io::Result<()> {
     tokio::fs::DirBuilder::new()
         .recursive(true)
@@ -172,6 +179,18 @@ impl BlobStore {
     pub async fn lock_for_sweep(&self) -> SweepGuard {
         SweepGuard {
             _guard: self.sweep_lock.clone().write_owned().await,
+        }
+    }
+
+    /// Keeps the sweep from starting, and waits for one that has, until the guard is dropped.
+    /// It is the shared side of the lock the sweep takes exclusively, so puts, which also hold
+    /// the shared side, are not held up by it, except behind a sweep that is already waiting.
+    /// A backup holds it from before it snapshots the database until it has copied the blobs:
+    /// the sweep could otherwise delete a blob the snapshot's rows still refer to before the
+    /// copy reaches it.
+    pub async fn hold_off_sweep(&self) -> SweepHold {
+        SweepHold {
+            _guard: self.sweep_lock.clone().read_owned().await,
         }
     }
 

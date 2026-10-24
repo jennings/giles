@@ -672,6 +672,36 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn the_sweep_waits_for_a_hold_while_puts_go_on() {
+        let f = open().await;
+        let old = f.put("old", 0).await;
+        let hold = f.blobs.hold_off_sweep().await;
+
+        let sweep = {
+            let (blobs, now) = (f.blobs.clone(), ts(NOW));
+            tokio::spawn(async move { blobs.sweep(now, SWEEP_GRACE).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!sweep.is_finished(), "the sweep must wait for the hold");
+        assert!(f.has_row(&old).await && f.has_file(&old));
+
+        // Dropping the hold lets the waiting sweep run.
+        drop(hold);
+        let report = sweep.await.unwrap().unwrap();
+        assert_eq!(report.blobs, 1);
+        assert!(!f.has_row(&old).await && !f.has_file(&old));
+    }
+
+    #[tokio::test]
+    async fn holds_and_puts_share_the_lock() {
+        let f = open().await;
+        let _first = f.blobs.hold_off_sweep().await;
+        let _second = f.blobs.hold_off_sweep().await;
+        let put = tokio::time::timeout(std::time::Duration::from_secs(5), f.put("new", NOW)).await;
+        assert!(put.is_ok(), "a put must not wait for a backup");
+    }
+
     #[test]
     fn find_ids_matches_only_whole_windows_of_lowercase_hex() {
         let id = [b'a'; 64];

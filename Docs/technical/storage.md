@@ -33,6 +33,13 @@ When the last `Store` clone is dropped, the read connections close first and the
 last connection to close checkpoints the WAL into the database file and deletes it, and only a
 read-write connection can do that, so a clean shutdown leaves no `-wal` file (a test checks this).
 
+`Store::vacuum_into(dest)` writes a consistent snapshot while the store keeps serving: `VACUUM INTO`
+on a pooled read connection, outside a transaction (`VACUUM` can't run inside one). It sees one
+consistent state and blocks neither the writer nor other readers. The destination must not exist or
+be an empty file (so a caller can create it with the mode it wants first), and the copy is a
+standalone database with no `-wal` file. A plain file copy of a WAL database can miss the WAL or
+capture a torn state, which is why this is the only supported way to copy a live database.
+
 A dedicated writer was chosen over a pool of interchangeable connections because with SQLite a
 second writer connection only adds `SQLITE_BUSY` retries, never throughput.
 
@@ -320,6 +327,9 @@ periodically (see [Daemon](daemon.md)) with `SWEEP_GRACE`, 48 hours, and returns
   Without it, a sweep could delete a file whose row a put is about to write, or delete an old row
   and file just as a put of the same content commits, leaving a row without a file. Puts keep
   streaming into temp files while the sweep runs; only their commit waits.
+  `BlobStore::hold_off_sweep()` takes the shared side too, for a caller that must keep the sweep
+  from deleting blobs while it copies them together with the database; it holds the sweep off and
+  doesn't hold puts up.
 - **What it leaves alone.** `sha256/tmp/` (puts in progress; a failed or cancelled put deletes its
   temp file, and opening the store clears a crash's leftovers) and anything under a shard
   directory that isn't a regular file named by a valid id in its own shard.

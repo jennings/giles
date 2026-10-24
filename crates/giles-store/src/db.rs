@@ -179,6 +179,36 @@ impl Store {
         })
         .await?
     }
+
+    /// Writes a consistent snapshot of the database to `dest` with `VACUUM INTO`, while the
+    /// store keeps serving (PLAN 11.4).
+    ///
+    /// It runs on a pooled read connection, outside a transaction (`VACUUM` can't run inside
+    /// one), so it sees one consistent state and blocks neither writers nor other readers. In WAL
+    /// mode that is the difference from copying the file, which can capture a broken state.
+    /// `dest` must not exist, or be an empty file, and must be valid UTF-8; the copy is a
+    /// standalone database without a `-wal` file.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Database`] if SQLite can't write `dest`, [`Error::InvalidRequest`] for a path
+    /// that isn't UTF-8.
+    pub async fn vacuum_into(&self, dest: PathBuf) -> Result<()> {
+        let permit = self
+            .inner
+            .reader_slots
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("the reader semaphore is never closed");
+        let inner = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let mut pooled = Pooled::take(&inner);
+            migrate::vacuum_into(pooled.conn(), &dest)
+        })
+        .await?
+    }
 }
 
 /// A read connection checked out of the pool; it goes back on drop, even after a panic.
@@ -341,6 +371,51 @@ mod tests {
         assert!(wal.exists());
         drop(store);
         assert!(!wal.exists(), "the writer closed last and removed the WAL");
+    }
+
+    #[tokio::test]
+    async fn vacuum_into_snapshots_a_live_wal_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("giles.db");
+        let store = Store::open(&path).await.unwrap();
+        for i in 0..20 {
+            store
+                .write(move |conn| {
+                    conn.execute(
+                        "INSERT INTO job_runs (agent, job, last_run_at) VALUES ('a', ?1, ?2)",
+                        rusqlite::params![format!("config:{i}"), i],
+                    )?;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+        }
+        // The writes are still in the WAL, which a plain copy of the main file would miss.
+        assert!(dir.path().join("giles.db-wal").exists());
+
+        let dest = dir.path().join("snapshot.db");
+        store.vacuum_into(dest.clone()).await.unwrap();
+        // The store keeps working, and the copy is a standalone database.
+        store
+            .write(|conn| {
+                conn.execute("DELETE FROM job_runs", [])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let copy = Connection::open(&dest).unwrap();
+        let rows: i64 = copy
+            .query_row("SELECT count(*) FROM job_runs", [], |r| r.get(0))
+            .unwrap();
+        let version: i64 = copy
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!((rows, version), (20, crate::SCHEMA_VERSION));
+        assert!(!dir.path().join("snapshot.db-wal").exists());
+
+        // An existing non-empty destination is refused, not overwritten.
+        let err = store.vacuum_into(dest).await.unwrap_err();
+        assert!(matches!(err, Error::Database(_)), "{err}");
     }
 
     #[tokio::test]
