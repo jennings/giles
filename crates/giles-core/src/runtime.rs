@@ -15,6 +15,7 @@ use crate::paths::DataRoot;
 use crate::registry::{Registry, RegistryError};
 use crate::rename::{InstanceDataError, check_unused_instance_data};
 use crate::router::Router;
+use crate::routes::RouteList;
 use crate::scheduler::{JobChanges, OutboxDelivery, Scheduler, SchedulerOptions};
 use crate::sessions::{Approvals, Clock, Sessions, SessionsOptions, SystemClock, TurnRunner};
 
@@ -141,7 +142,11 @@ impl Runtime {
         let agents = Arc::new(self.registry.live_config().clone());
         let options = SessionsOptions {
             store: self.store.clone(),
-            router: Router::new(&config.owner, &config.routes, agents.clone()),
+            router: Router::new(
+                &config.owner,
+                RouteList::new(config.routes.clone()),
+                agents.clone(),
+            ),
             agents,
             channels: self.registry.clone(),
             runner,

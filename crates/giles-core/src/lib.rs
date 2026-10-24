@@ -25,6 +25,7 @@ pub mod providers;
 pub mod registry;
 pub mod rename;
 pub mod router;
+pub mod routes;
 pub mod runtime;
 pub mod sandbox;
 pub mod scheduler;

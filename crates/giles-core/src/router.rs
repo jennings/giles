@@ -10,8 +10,9 @@ use giles_types::{AgentId, ConversationKind, ConversationRef, EventId, InboundMe
 
 use crate::channels::chat_ids;
 use crate::commands::{self, CoreCommand, PendingApprovals};
-use crate::config::{InstanceName, OwnerConfig, Route};
+use crate::config::{InstanceName, OwnerConfig};
 use crate::identity::{self, NamespaceError, OwnerIdentities};
+use crate::routes::RouteList;
 use crate::sessions::AgentPolicies;
 
 /// The channel instance an event came from.
@@ -64,7 +65,7 @@ pub enum DropReason {
     Unauthenticated,
     /// Neither the sender nor any alias is an `[owner]` identity.
     UnknownSender,
-    /// No `[[routes]]` rule matches the conversation.
+    /// No route matches the conversation.
     NoRoute,
     /// A web chat started with an agent that isn't configured (any more).
     UnknownAgent(AgentId),
@@ -85,11 +86,11 @@ impl fmt::Display for DropReason {
     }
 }
 
-/// The owner's identities, the ordered `[[routes]]`, and the agents that exist now.
+/// The owner's identities, the ordered routes, and the agents that exist now.
 #[derive(Clone)]
 pub struct Router {
     owner: OwnerIdentities,
-    routes: Vec<Route>,
+    routes: RouteList,
     agents: Arc<dyn AgentPolicies>,
 }
 
@@ -103,13 +104,14 @@ impl fmt::Debug for Router {
 }
 
 impl Router {
-    /// A router for `[owner]` and `[[routes]]` (`Config::owner`, `Config::routes`). `agents`
-    /// says which agents exist now, for web chats started with a chosen agent (in the daemon, the
-    /// running configuration, so an agent created in the web UI is reachable at once).
-    pub fn new(owner: &OwnerConfig, routes: &[Route], agents: Arc<dyn AgentPolicies>) -> Self {
+    /// A router for `[owner]` (`Config::owner`) and `routes`, which it reads for every message, so
+    /// a change to the list applies to the next one. `agents` says which agents exist now, for web
+    /// chats started with a chosen agent (in the daemon, the running configuration, so an agent
+    /// created in the web UI is reachable at once).
+    pub fn new(owner: &OwnerConfig, routes: RouteList, agents: Arc<dyn AgentPolicies>) -> Self {
         Self {
             owner: OwnerIdentities::new(owner),
-            routes: routes.to_vec(),
+            routes,
             agents,
         }
     }
@@ -120,18 +122,12 @@ impl Router {
         &self,
         instance: &InstanceName,
         conversation: &ConversationRef,
-    ) -> Option<&AgentId> {
+    ) -> Option<AgentId> {
         self.routes
+            .get()
             .iter()
-            .find(|route| {
-                route.channel.as_ref().is_none_or(|c| c == instance)
-                    && route.kind.is_none_or(|k| k == conversation.kind)
-                    && route
-                        .conversation
-                        .as_deref()
-                        .is_none_or(|c| c == conversation.id.as_str())
-            })
-            .map(|route| &route.agent)
+            .find(|route| route.matches(instance, conversation))
+            .map(|route| route.agent.clone())
     }
 
     /// Decides what to do with `message`, event `event` from `source`. Checks, in order: the
@@ -193,8 +189,7 @@ impl Router {
             Some(agent) => return Err(DropReason::UnknownAgent(agent)),
             None => self
                 .route(source.instance, &message.conversation)
-                .ok_or(DropReason::NoRoute)?
-                .clone(),
+                .ok_or(DropReason::NoRoute)?,
         };
         Ok(Routed {
             session: SessionKey {
@@ -258,6 +253,7 @@ mod tests {
     use super::*;
     use crate::commands::{Answer, ApprovalReply, NoPendingApprovals};
     use crate::config::Identity;
+    use crate::routes::Route;
     use crate::sessions::AgentPolicy;
 
     /// No agents: the routes alone decide.
@@ -295,6 +291,15 @@ mod tests {
         }
     }
 
+    /// A router over the fixed `routes`.
+    fn with_routes(
+        owner: &OwnerConfig,
+        routes: &[Route],
+        agents: Arc<dyn AgentPolicies>,
+    ) -> Router {
+        Router::new(owner, RouteList::new(routes.to_vec()), agents)
+    }
+
     fn message(sender: &str, text: &str) -> InboundMessage {
         InboundMessage {
             conversation: ConversationRef {
@@ -316,7 +321,7 @@ mod tests {
 
     /// The owner on WhatsApp and IRC, one route for `#giles` on IRC, and a catch-all.
     fn router() -> Router {
-        Router::new(
+        with_routes(
             &owner_config(&["whatsapp:+15551234567", "irc:libera.chat:account:stephen"]),
             &[
                 route(Some("irc-libera"), None, Some("#giles"), "butler"),
@@ -417,7 +422,7 @@ mod tests {
 
     #[test]
     fn unrouted_conversations_are_dropped_even_for_commands() {
-        let router = Router::new(
+        let router = with_routes(
             &owner_config(&["whatsapp:+15551234567"]),
             &[route(Some("irc-libera"), None, None, "jeeves")],
             no_agents(),
@@ -435,7 +440,7 @@ mod tests {
 
     #[test]
     fn aliases_identify_the_owner() {
-        let router = Router::new(
+        let router = with_routes(
             &owner_config(&["whatsapp:123456789@lid"]),
             &[route(None, None, None, "jeeves")],
             no_agents(),
@@ -473,7 +478,7 @@ mod tests {
 
     #[test]
     fn route_precedence() {
-        let router = Router::new(
+        let router = with_routes(
             &owner_config(&["web:owner"]),
             &[
                 route(Some("web"), None, Some("chat-1"), "first"),
@@ -517,19 +522,22 @@ mod tests {
         ];
         for (inst, conversation, want) in cases {
             assert_eq!(
-                router.route(inst, &conversation).map(AgentId::as_str),
+                router
+                    .route(inst, &conversation)
+                    .as_ref()
+                    .map(AgentId::as_str),
                 Some(want),
                 "{inst} {conversation:?}"
             );
         }
-        let none = Router::new(&owner_config(&["web:owner"]), &[], no_agents());
+        let none = with_routes(&owner_config(&["web:owner"]), &[], no_agents());
         assert_eq!(none.route(&web, &conv("chat-1", direct)), None);
     }
 
     #[test]
     fn a_web_chat_started_with_an_agent_goes_to_it_ahead_of_routes() {
         let agents = HashMap::from([(AgentId::new("bunter").unwrap(), AgentPolicy::default())]);
-        let router = Router::new(
+        let router = with_routes(
             &owner_config(&["web:owner", "whatsapp:+15551234567"]),
             &[route(None, None, None, "jeeves")],
             Arc::new(agents),

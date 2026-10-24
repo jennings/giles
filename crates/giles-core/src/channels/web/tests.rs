@@ -29,9 +29,10 @@ use tower::ServiceExt;
 use super::pages::MAX_MESSAGE_BYTES;
 use super::*;
 use crate::commands::NoPendingApprovals;
-use crate::config::{Identity, OwnerConfig, Route};
+use crate::config::{Identity, OwnerConfig};
 use crate::http::RouterBuilder;
 use crate::router::Router as MessageRouter;
+use crate::routes::{Route, RouteList};
 use crate::sessions::{
     AgentPolicies, AgentPolicy, ChannelLookup, Sessions, SessionsOptions, SystemClock, Turn,
     TurnOutcome, TurnRunner,
@@ -1100,12 +1101,12 @@ async fn a_posted_message_reaches_the_agent_and_the_reply_reaches_the_page() {
             default: owner_identity,
             timezone: None,
         },
-        &[Route {
+        RouteList::new(vec![Route {
             channel: None,
             kind: None,
             conversation: None,
             agent: AgentId::new("jeeves").unwrap(),
-        }],
+        }]),
         agents.clone(),
     );
     let sessions = Sessions::start(

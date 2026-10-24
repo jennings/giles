@@ -24,8 +24,9 @@ use tokio::time::Instant;
 use super::inbound::Backoff;
 use super::*;
 use crate::commands::{Answer, ApprovalReply};
-use crate::config::{Identity, OwnerConfig, Route};
+use crate::config::{Identity, OwnerConfig};
 use crate::identity;
+use crate::routes::{Route, RouteList};
 
 const INSTANCE: &str = "fake";
 const OWNER: &str = "owner";
@@ -317,12 +318,12 @@ impl Setup {
                 identities,
                 timezone: None,
             },
-            &[Route {
+            RouteList::new(vec![Route {
                 channel: None,
                 kind: None,
                 conversation: None,
                 agent: agent(),
-            }],
+            }]),
             agents.clone(),
         );
         let shutdown = CancellationToken::new();

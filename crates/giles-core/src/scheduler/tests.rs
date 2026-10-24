@@ -27,6 +27,7 @@ use crate::config::{Config, InstanceName, LoadOptions};
 use crate::identity::owner;
 use crate::paths::DataRoot;
 use crate::router::Router;
+use crate::routes::RouteList;
 use crate::sessions::{SessionsOptions, Turn, TurnOutcome};
 
 const AGENT: &str = "jeeves";
@@ -255,7 +256,7 @@ impl Harness {
                 store: store.clone(),
                 router: Router::new(
                     &config.owner,
-                    &config.routes,
+                    RouteList::new(config.routes.clone()),
                     Arc::new(registry.live_config().clone()),
                 ),
                 agents: Arc::new(registry.live_config().clone()),

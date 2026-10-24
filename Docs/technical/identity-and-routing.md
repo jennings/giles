@@ -11,11 +11,12 @@ handle it as a core command, or hand it to an agent's session ([Plan](../PLAN.md
 | `identity` | `OWNER`, `owner()`, `validate_namespace`, `NamespaceError`, `OwnerIdentities` |
 | `commands` | `CoreCommand`, `ApprovalReply`, `Answer`, `parse`, `PendingApprovals`, `NoPendingApprovals` |
 | `router`   | `Router`, `ChannelSource`, `Routed`, `Inbound`, `DropReason`                |
+| `routes`   | `Route`, `RouteList`                                                        |
 
 ## The Decision
 
 ```rust
-let router = Router::new(&config.owner, &config.routes, agents);
+let router = Router::new(&config.owner, RouteList::new(config.routes.clone()), agents);
 let source = ChannelSource { instance, component, identity_namespace };
 match router.classify(&source, &event_id, &message, &pending_approvals) {
     Inbound::Drop(reason) => { /* already logged; ack the event and forget it */ }
@@ -100,7 +101,8 @@ than building and hashing the joined strings.
 `Router::route(instance, conversation)` returns the agent of the first `[[routes]]` rule whose every
 set key matches: `channel` (the instance name), `kind`, and `conversation` (the id exactly as the
 channel reports it). A rule with no keys besides `agent` matches everything. Config loading has
-already checked that each rule's channel instance and agent exist.
+already checked that each rule's channel instance and agent exist. The router holds a `RouteList`
+(`routes.rs`), a shared, atomically replaced snapshot of the rules, and reads it once per message.
 
 A web chat can be started with a chosen agent (the chat list's picker, TASKS.md 5.1). Its chat id,
 which is the conversation id, is then `<agent>.<32 hex digits>` instead of 32 hex digits

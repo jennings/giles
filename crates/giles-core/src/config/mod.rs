@@ -31,6 +31,7 @@ use giles_types::AgentId;
 use serde::de::DeserializeOwned;
 
 use crate::paths::DataRoot;
+use crate::routes::Route;
 
 pub use agent::{
     ActiveHours, AgentConfig, AskTo, BusyMode, DEFAULT_APPROVAL_TIMEOUT,
@@ -38,7 +39,7 @@ pub use agent::{
 };
 pub use discovery::{discover_plugin, find_program};
 pub use error::{ConfigError, KeyPath, Position, Segment};
-pub use giles::{CoreConfig, DEFAULT_HTTP_LISTEN, Identity, OwnerConfig, Route};
+pub use giles::{CoreConfig, DEFAULT_HTTP_LISTEN, Identity, OwnerConfig};
 pub use hash::ConfigHash;
 pub use instances::{
     Auth, ChannelInstance, ChannelRuntime, DEFAULT_MAX_BLOB, DEFAULT_TOOL_DEADLINE, Launch,

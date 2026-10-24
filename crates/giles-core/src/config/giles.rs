@@ -12,6 +12,7 @@ use serde::Deserialize;
 use super::error::{ConfigError, KeyPath};
 use super::instances::{RawChannel, RawProvider, RawToolset};
 use super::names::{InstanceName, invalid_name_reason, is_valid_name};
+use crate::routes::Route;
 
 /// The HTTP listener when `[core]` sets no `http_listen`: `127.0.0.1:8080`.
 pub const DEFAULT_HTTP_LISTEN: SocketAddr =
@@ -82,21 +83,6 @@ impl std::fmt::Display for Identity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
-}
-
-/// A `[[routes]]` rule (PLAN section 6.1). A rule matches a conversation when every key it sets
-/// matches; rules are tried in order and the first match wins.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct Route {
-    /// Match this channel instance.
-    pub channel: Option<InstanceName>,
-    /// Match this conversation kind.
-    pub kind: Option<ConversationKind>,
-    /// Match this conversation id, as the channel reports it (e.g. `#giles`).
-    pub conversation: Option<String>,
-    /// The agent that handles matching conversations.
-    pub agent: AgentId,
 }
 
 #[derive(Debug, Deserialize)]
