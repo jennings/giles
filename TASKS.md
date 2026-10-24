@@ -341,3 +341,18 @@ Added by the owner after the v1 plan.
   - No secrets are shown.
 
   **Needs:** 3.8.
+
+- [ ] **5.2 Routes in the web UI** (added by the owner) (§3.2, §11.2). Move route configuration out
+  of `giles.toml` into the web UI, as the plan intends for routes (§1.1, §3.2, §11.2):
+  - Giles-managed storage for the ordered route list (channel instance, optional conversation,
+    agent; first match wins), read by the router in place of `[[routes]]`.
+  - Owner-only pages behind the web login: list routes in order, add, edit, remove, and reorder
+    them. CSRF-protected forms, validated like hand-written config (the channel instance and the
+    agent exist, no duplicate or unreachable route is silently accepted), with clear errors.
+  - Changes take effect for new inbound messages without a restart; web chats started with a chosen
+    agent still route ahead of the list (§8.7).
+  - Migration: an existing `[[routes]]` in `giles.toml` is imported once when no routes are stored
+    yet, then no longer read; a `[[routes]]` still present afterwards is reported at startup rather
+    than silently ignored. Update `Docs/PLAN.md` and `Docs/user` examples that show `[[routes]]`.
+
+  **Needs:** 5.1, 2.2.
