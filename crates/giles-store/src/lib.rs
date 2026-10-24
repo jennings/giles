@@ -18,6 +18,7 @@ mod conversations;
 mod db;
 mod error;
 mod inbox;
+mod instances;
 mod jobs;
 mod messages;
 mod migrate;
@@ -35,6 +36,7 @@ pub use conversations::{ConversationActivity, ConversationMessage, ConversationT
 pub use db::{OpenOptions, Store};
 pub use error::{BoxError, Error, Result};
 pub use inbox::{InboxEntry, InboxId, InboxState, NewInboxEvent};
+pub use instances::{InstanceRows, RenamedRows};
 pub use jobs::{JobKey, RuntimeJob, RuntimeJobId};
 pub use messages::{
     Appended, Entry, History, Slot, StoredMessage, StoredMessageId, Summary, SummaryId,

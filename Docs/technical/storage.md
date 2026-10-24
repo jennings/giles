@@ -244,6 +244,25 @@ until)` per agent, provider instance, and model (`since` inclusive, `until` excl
 tokens over all input tokens (uncached input + cache reads + cache writes), since `input_tokens`
 excludes cached tokens. Token counts above `i64::MAX` are rejected, not truncated.
 
+## Instance Names
+
+Instance names (PLAN 7.2) are stored in `sessions.channel`, `inbox.instance`, `outbox.instance`,
+`usage.provider`, and in the `provider` field of an assistant message's `meta` JSON. Nothing else
+holds one: `inbox.payload` and `outbox.payload` carry conversations and text but no instance name,
+`jobs.spec` carries a prompt and a schedule, and identities use the namespace the channel
+reports, not the instance name.
+
+`instance_rows` returns, per name, how many rows use it in each of those four columns. It's what
+the startup check for an unused old instance name reads (`Docs/technical/instance-rename.md`).
+
+`rename_instance(old, new, hook)` moves all five places to the new name in one `IMMEDIATE`
+transaction, runs `hook` inside it after the updates and before the commit, and returns the number
+of rows moved. It refuses with `Conflict` if any row already uses `new`, so two instances' data are
+never merged. A failing hook rolls everything back and comes back as `Error::Hook`; the caller does
+its filesystem work in the hook, so that work and the rows succeed or fail together. The caller
+still has to undo that work if the commit itself fails. `messages.meta` is updated without a
+trigger on the column, so the search index is untouched.
+
 ## Web Sessions
 
 `web_sessions` backs the login cookie (PLAN 3.4). The store hashes the cookie token with SHA-256

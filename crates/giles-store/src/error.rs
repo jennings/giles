@@ -29,6 +29,10 @@ pub enum Error {
     /// The hook run before migrations failed, so no migration was applied.
     #[error("pre-migration hook failed: {0}")]
     BeforeMigrate(#[source] BoxError),
+    /// A hook the caller passed to a transactional method failed, so the transaction was rolled
+    /// back and nothing changed.
+    #[error("{0}")]
+    Hook(#[source] BoxError),
     /// The referenced row doesn't exist.
     #[error("not found: {0}")]
     NotFound(String),
