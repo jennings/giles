@@ -109,7 +109,6 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest
-            type=sha
           labels: |
             org.opencontainers.image.licenses=MIT OR Apache-2.0
       # amd64 only: an arm64 Rust release build under QEMU emulation is too slow.
