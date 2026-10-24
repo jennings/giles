@@ -6,7 +6,8 @@ pub mod create;
 pub mod files;
 
 pub use create::{
-    AgentCreator, CreateError, MAX_SOUL_BYTES, NewAgent, RESERVED_AGENT_IDS, agent_toml, split_list,
+    AgentCreator, CreateError, DEFAULT_SOUL, MAX_SOUL_BYTES, NewAgent, RESERVED_AGENT_IDS,
+    agent_id_from_name, agent_toml, split_list,
 };
 pub use files::{
     AgentFile, AgentFiles, Content, FileKind, MAX_DEPTH, MAX_FILE_BYTES, MAX_FILES,

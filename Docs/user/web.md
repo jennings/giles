@@ -108,14 +108,19 @@ agent. Limits keep the page small:
 
 **New agent** opens a form that creates one:
 
-- **Id**: the directory name, letters, digits, and `-`. An id that's taken (ignoring case) or
-  `new` is refused.
-- **Name**: optional, the display name.
+- **Name**: the display name. Optional if you give an id.
+- **Id**: the directory name, letters, digits, and `-`. Leave it empty and Giles makes it from the
+  name: lowercase, each space turned into `-`, and everything else (punctuation, symbols, other
+  whitespace, and letters outside `a`-`z`, so `é` too) removed: "The Butler!" becomes
+  `the-butler`, "Café" becomes `caf`. An id that's taken (ignoring case) or `new`, and an id that
+  comes out empty, is refused.
 - **Models**: `<provider>/<model>`, several separated by commas. The field suggests the models
   your providers list; you can type any other.
 - **Tools** and **Ask first**: optional tool names or globs, separated by commas or spaces.
 - **Time zone**: optional, such as `Europe/London`.
-- **SOUL.md**: who the agent is, at most 64 KiB.
+- **SOUL.md**: who the agent is, at most 64 KiB. The form starts with "This is your information.
+  Update it as you learn new things about yourself." and "You are a helpful personal assistant."
+  as two paragraphs; change it freely, or empty it for an empty file.
 
 Giles checks the agent exactly as it checks a hand-written `agent.toml` at startup (every model
 must name a configured provider, tool globs can't be empty, and so on). If something is wrong, the

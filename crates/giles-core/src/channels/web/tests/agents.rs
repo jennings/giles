@@ -2,7 +2,7 @@
 
 use std::os::unix::fs::symlink;
 
-use crate::agents::{AgentCreator, CreateError, MAX_FILE_BYTES, MAX_FILES, NewAgent};
+use crate::agents::{AgentCreator, CreateError, DEFAULT_SOUL, MAX_FILE_BYTES, MAX_FILES, NewAgent};
 use crate::config::{Config, LoadOptions};
 use crate::paths::DataRoot;
 
@@ -336,6 +336,119 @@ async fn creating_an_agent_writes_files_that_load_and_makes_it_usable_at_once() 
     );
     let response = env.get("/chats/new?agent=butler").await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
+}
+
+#[tokio::test]
+async fn the_new_form_asks_for_the_name_before_the_id_and_starts_the_soul() {
+    let env = env().await;
+    let creator = env.creator();
+    let (status, html, _) = env
+        .agents_call(&creator, Method::GET, "/admin/agents/new", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let name = html.find(r#"<input id="name" name="name" value="">"#);
+    let id = html.find(r#"<input id="id" name="id" value="""#);
+    assert!(name.unwrap() < id.unwrap(), "{html}");
+    // The id can stay empty (no script: the server derives it), but is still a valid id when typed.
+    assert!(
+        html.contains(r#"<input id="id" name="id" value="" pattern="[a-zA-Z0-9-]+">"#),
+        "{html}"
+    );
+    assert!(
+        html.contains(&format!(
+            r#"<textarea id="soul" name="soul" rows="12">{DEFAULT_SOUL}</textarea>"#
+        )),
+        "{html}"
+    );
+    assert!(html.contains("a helpful personal assistant.\n</textarea>"));
+}
+
+#[tokio::test]
+async fn a_post_without_an_id_derives_it_from_the_name() {
+    let env = env().await;
+    let creator = env.creator();
+    // No id and no soul field, as a client without scripts (or curl) might post.
+    let (status, _, location) = env
+        .agents_call(
+            &creator,
+            Method::POST,
+            "/admin/agents",
+            Some(&format!("csrf={CSRF}&name=The+Butler%21&models=fake/m")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(location.as_deref(), Some("/admin/agents/the-butler"));
+    let dir = env.root().agents_dir().join("the-butler");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("SOUL.md")).unwrap(),
+        DEFAULT_SOUL
+    );
+    let toml = std::fs::read_to_string(dir.join("agent.toml")).unwrap();
+    assert!(toml.contains("name = \"The Butler!\""), "{toml}");
+
+    // A typed id wins over the name, and a soul the owner emptied stays empty.
+    let (status, _, location) = env
+        .agents_call(
+            &creator,
+            Method::POST,
+            "/admin/agents",
+            Some(&form("jarvis", "fake/m", "&name=Not+Used&soul=")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(location.as_deref(), Some("/admin/agents/jarvis"));
+    let soul = std::fs::read_to_string(env.root().agents_dir().join("jarvis/SOUL.md")).unwrap();
+    assert_eq!(soul, "");
+}
+
+#[tokio::test]
+async fn a_form_posted_without_an_id_comes_back_with_the_derived_id_and_what_was_typed() {
+    let env = env().await;
+    let creator = env.creator();
+    let cases = [
+        // A model that doesn't exist: the derived id is shown, the soul as typed (here: emptied).
+        (
+            "Dr.+Who%3F",
+            "nope/m",
+            "&soul=",
+            StatusCode::BAD_REQUEST,
+            "dr-who",
+        ),
+        // The derived id is `jeeves`, which exists.
+        (
+            "JEEVES",
+            "fake/m",
+            "&soul=Mine",
+            StatusCode::CONFLICT,
+            "jeeves",
+        ),
+        // The derived id is `new`, which is reserved.
+        ("New", "fake/m", "", StatusCode::BAD_REQUEST, "new"),
+        // Nothing is left of the name: the id stays empty and is refused.
+        ("%21%21%21", "fake/m", "", StatusCode::BAD_REQUEST, ""),
+    ];
+    for (name, model, extra, expected, id) in cases {
+        let (status, html, _) = env
+            .agents_call(
+                &creator,
+                Method::POST,
+                "/admin/agents",
+                Some(&format!("csrf={CSRF}&name={name}&models={model}{extra}")),
+            )
+            .await;
+        assert_eq!(status, expected, "{name}\n{html}");
+        assert!(
+            html.contains(&format!(r#"<input id="id" name="id" value="{id}""#)),
+            "{name}\n{html}"
+        );
+        if extra == "&soul=" {
+            assert!(
+                html.contains(r#"<textarea id="soul" name="soul" rows="12"></textarea>"#),
+                "{html}"
+            );
+        }
+    }
+    assert_eq!(env.agent_dirs(), ["bunter", "jeeves"]);
 }
 
 #[tokio::test]

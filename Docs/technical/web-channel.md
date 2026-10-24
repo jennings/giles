@@ -426,6 +426,17 @@ no agent RPCs yet (PLAN section 8.7).
   `list_models()`, 5 s each, failures logged at `debug` with secrets scrubbed; any
   `<provider>/<model>` can still be typed. Lists are split at commas and whitespace
   (`agents::split_list`).
+- The form asks for the name before the id. The id is derived from the name by
+  `agents::agent_id_from_name`, a pure function: lowercase (`str::to_lowercase`), each space to `-`,
+  every other character outside `a-z`, `0-9`, `-` removed. Nothing is trimmed or collapsed, ids
+  are ASCII so `Café` gives `caf`, and whitespace other than a plain space is removed like a
+  symbol. The result can be empty or `new`; creation refuses both as before. The Id input isn't
+  `required`: `POST /admin/agents` with an empty (or blank) id derives it from the name, so a
+  form posted without scripts, or by `curl`, works, and an invalid form comes back showing the id
+  that was used.
+- `CreateForm` (`agents.rs`) starts `soul` as `agents::DEFAULT_SOUL`, so the first `GET` shows it
+  and a post with no `soul` field gets it; a `soul` that was posted empty stays empty, also when
+  the form is shown again after an error.
 - `AgentCreator::create` (one at a time, under a lock): builds `agent.toml` with the TOML
   serializer (`agents::agent_toml`, unset values left out), validates it with
   `Config::validate_agent` (the startup checks), refuses `RESERVED_AGENT_IDS` (`new`, the form's

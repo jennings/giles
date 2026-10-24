@@ -23,8 +23,8 @@ use super::admin::{forbidden, may_administer};
 use super::auth::{WebUser, check_csrf};
 use super::pages::{WebApp, agent_label, error_page, no_store};
 use crate::agents::{
-    AgentCreator, AgentFile, Content, CreateError, MAX_FILE_BYTES, MAX_FILES, MAX_TOTAL_BYTES,
-    NewAgent, list_files, split_list,
+    AgentCreator, AgentFile, Content, CreateError, DEFAULT_SOUL, MAX_FILE_BYTES, MAX_FILES,
+    MAX_TOTAL_BYTES, NewAgent, agent_id_from_name, list_files, split_list,
 };
 use crate::config::AgentConfig;
 use crate::http::{self, RouterBuilder};
@@ -235,25 +235,36 @@ async fn agent_page(
     })
 }
 
-/// The create form's fields, as posted (and shown again after an error).
-#[derive(Debug, Default, Deserialize)]
+/// The create form's fields, as posted (and shown again after an error). A field the post leaves
+/// out is empty, except `soul`, which is then [`DEFAULT_SOUL`]: the first `GET` of the form shows
+/// it, and a post of only a name and models still gets it, while a `soul` the owner emptied
+/// (posted, but empty) stays empty.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
 struct CreateForm {
-    #[serde(default)]
     csrf: Option<String>,
-    #[serde(default)]
     id: String,
-    #[serde(default)]
     name: String,
-    #[serde(default)]
     models: String,
-    #[serde(default)]
     tools: String,
-    #[serde(default)]
     ask: String,
-    #[serde(default)]
     timezone: String,
-    #[serde(default)]
     soul: String,
+}
+
+impl Default for CreateForm {
+    fn default() -> Self {
+        Self {
+            csrf: None,
+            id: String::new(),
+            name: String::new(),
+            models: String::new(),
+            tools: String::new(),
+            ask: String::new(),
+            timezone: String::new(),
+            soul: DEFAULT_SOUL.to_owned(),
+        }
+    }
 }
 
 #[derive(Template)]
@@ -288,13 +299,14 @@ async fn new_agent_page(State(pages): State<AgentPages>, user: WebUser) -> Respo
     render_form(&pages, &user, &CreateForm::default(), None).await
 }
 
-/// `POST /admin/agents` (CSRF-checked): creates the agent, then 303 to its page. An invalid form
-/// is shown again with the problem (400, or 409 for an id that's taken); nothing is written.
+/// `POST /admin/agents` (CSRF-checked): creates the agent, then 303 to its page. An empty id is
+/// derived from the name ([`agent_id_from_name`]). An invalid form is shown again with the problem
+/// (400, or 409 for an id that's taken), with the id that was used; nothing is written.
 async fn create(
     State(pages): State<AgentPages>,
     user: WebUser,
     headers: HeaderMap,
-    Form(form): Form<CreateForm>,
+    Form(mut form): Form<CreateForm>,
 ) -> Response {
     if !may_administer(&user) {
         return forbidden();
@@ -302,8 +314,12 @@ async fn create(
     if let Err(rejected) = check_csrf(&user, &headers, form.csrf.as_deref()) {
         return rejected.into_response();
     }
+    form.id = form.id.trim().to_owned();
+    if form.id.is_empty() {
+        form.id = agent_id_from_name(&form.name);
+    }
     let agent = NewAgent {
-        id: form.id.trim().to_owned(),
+        id: form.id.clone(),
         name: form.name.clone(),
         models: split_list(&form.models),
         tools: split_list(&form.tools),

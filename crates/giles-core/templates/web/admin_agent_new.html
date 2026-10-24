@@ -10,11 +10,12 @@
 {%- endif %}
 <form class="agent-form" method="post" action="/admin/agents">
 <input type="hidden" name="csrf" value="{{ csrf }}">
-<label for="id">Id</label>
-<input id="id" name="id" value="{{ form.id }}" required pattern="[a-zA-Z0-9-]+">
-<p class="detail">The agent's directory name, <code>agents/&lt;id&gt;/</code>: letters, digits, and <code>-</code>.</p>
 <label for="name">Name</label>
 <input id="name" name="name" value="{{ form.name }}">
+<p class="detail">The display name, such as <code>Jeeves</code>. Optional if you give an id.</p>
+<label for="id">Id</label>
+<input id="id" name="id" value="{{ form.id }}" pattern="[a-zA-Z0-9-]+">
+<p class="detail">The agent's directory name, <code>agents/&lt;id&gt;/</code>: letters, digits, and <code>-</code>. Left empty, it is made from the name: lowercase, spaces as <code>-</code>, everything else dropped.</p>
 <label for="models">Models</label>
 <input id="models" name="models" value="{{ form.models }}" list="known-models" required>
 <datalist id="known-models">
@@ -33,7 +34,7 @@
 <input id="timezone" name="timezone" value="{{ form.timezone }}" placeholder="Europe/London">
 <label for="soul">SOUL.md</label>
 <textarea id="soul" name="soul" rows="12">{{ form.soul }}</textarea>
-<p class="detail">Who the agent is: its instructions, in Markdown.</p>
+<p class="detail">Who the agent is: its instructions, in Markdown. It starts with a short default you can replace.</p>
 <button type="submit">Create</button>
 </form>
 {% endblock %}

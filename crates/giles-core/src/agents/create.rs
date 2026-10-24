@@ -40,6 +40,26 @@ pub const RESERVED_AGENT_IDS: &[&str] = &["new"];
 /// The longest `SOUL.md` the form accepts, in bytes.
 pub const MAX_SOUL_BYTES: usize = 64 * 1024;
 
+/// The text the new-agent form starts `SOUL.md` with, and what an agent created from a post that
+/// has no `soul` field gets.
+pub const DEFAULT_SOUL: &str = "This is your information. Update it as you learn new things about yourself.\n\nYou are a helpful personal assistant.\n";
+
+/// The id the form derives from an agent's name: lowercased, each space turned into `-`, and every
+/// other character that isn't `a`-`z`, `0`-`9`, or `-` removed. So the result always has the
+/// characters an id may have (though it can be empty, or `new`, which creation refuses). Nothing
+/// is trimmed or collapsed, and ids are ASCII: letters beyond it (`é`) are removed like any
+/// symbol, and so is whitespace other than a plain space.
+pub fn agent_id_from_name(name: &str) -> String {
+    name.to_lowercase()
+        .chars()
+        .filter_map(|c| match c {
+            ' ' => Some('-'),
+            'a'..='z' | '0'..='9' | '-' => Some(c),
+            _ => None,
+        })
+        .collect()
+}
+
 /// How long the form waits for each provider's model list.
 const LIST_MODELS_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -363,6 +383,62 @@ fn write_file(dir: &Path, name: &str, contents: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `(name, id)`.
+    const ID_FROM_NAME: &[(&str, &str)] = &[
+        ("Jeeves", "jeeves"),
+        ("The Butler", "the-butler"),
+        ("MIXED case 42", "mixed-case-42"),
+        ("with  two   spaces", "with--two---spaces"),
+        (" padded ", "-padded-"),
+        ("Dr. Who? (Time & Space) #1!", "dr-who-time--space-1"),
+        ("under_score/slash\\back.dot", "underscoreslashbackdot"),
+        ("already-hyphenated--name", "already-hyphenated--name"),
+        ("-", "-"),
+        ("007", "007"),
+        ("tab\tnewline\nnbsp\u{a0}end", "tabnewlinenbspend"),
+        ("Café", "caf"),
+        ("Ünïcödé", "ncd"),
+        ("日本語 agent", "-agent"),
+        ("emoji 🙂 face", "emoji--face"),
+        // Lowercasing happens first: these two lowercase to ASCII letters (plus a combining dot).
+        ("\u{212a}elvin", "kelvin"),
+        ("\u{130}stanbul", "istanbul"),
+        ("", ""),
+        ("!@#$%^&*()", ""),
+        ("日本語", ""),
+    ];
+
+    #[test]
+    fn the_id_is_the_name_lowercased_with_hyphens_for_spaces_and_no_other_symbols() {
+        for (name, id) in ID_FROM_NAME {
+            assert_eq!(agent_id_from_name(name), *id, "{name:?}");
+        }
+    }
+
+    #[test]
+    fn a_derived_id_has_only_id_characters() {
+        for (name, _) in ID_FROM_NAME {
+            let id = agent_id_from_name(name);
+            assert!(
+                id.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+                "{name:?} -> {id:?}"
+            );
+            if !id.is_empty() {
+                assert!(giles_types::AgentId::new(&id).is_ok(), "{id:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_default_soul_is_two_paragraphs_with_a_trailing_newline() {
+        assert_eq!(
+            DEFAULT_SOUL,
+            "This is your information. Update it as you learn new things about yourself.\n\nYou are a helpful personal assistant.\n"
+        );
+        assert!(DEFAULT_SOUL.len() <= MAX_SOUL_BYTES);
+    }
 
     #[test]
     fn lists_split_at_commas_and_whitespace() {
