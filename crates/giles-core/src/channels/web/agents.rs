@@ -309,7 +309,8 @@ async fn create(
         tools: split_list(&form.tools),
         ask: split_list(&form.ask),
         timezone: form.timezone.clone(),
-        soul: form.soul.clone(),
+        // Browsers submit a textarea's line breaks as CRLF; the file keeps plain LF.
+        soul: form.soul.replace("\r\n", "\n"),
     };
     match pages.creator.create(&agent).await {
         Ok(created) => Redirect::to(&format!("/admin/agents/{}", created.id)).into_response(),

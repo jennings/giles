@@ -441,6 +441,7 @@ no agent RPCs yet (PLAN section 8.7).
   with the same id one wins; the other is told the id is taken, as is one whose directory exists
   on disk. An invalid form comes back with `CreateError::form_message` (key and reason, never a
   file path): 409 for a taken id, else 400. Write failures are logged and answered 500.
+  The handler stores `SOUL.md` with `\n` line breaks: browsers submit a textarea's as `\r\n`.
 
 The new agent is usable at once because everything that looks agents up reads the running
 configuration: the agent loop and core tools through `Registry::config()`, the session manager's

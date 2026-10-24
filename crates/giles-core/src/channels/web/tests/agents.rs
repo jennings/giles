@@ -339,6 +339,27 @@ async fn creating_an_agent_writes_files_that_load_and_makes_it_usable_at_once() 
 }
 
 #[tokio::test]
+async fn a_browsers_crlf_line_breaks_in_the_soul_are_stored_as_lf() {
+    let env = env().await;
+    let creator = env.creator();
+    let (status, _, _) = env
+        .agents_call(
+            &creator,
+            Method::POST,
+            "/admin/agents",
+            Some(&form(
+                "butler",
+                "fake/m",
+                "&soul=One.%0D%0A%0D%0ATwo.%0D%0A",
+            )),
+        )
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let soul = std::fs::read_to_string(env.root().agents_dir().join("butler/SOUL.md")).unwrap();
+    assert_eq!(soul, "One.\n\nTwo.\n");
+}
+
+#[tokio::test]
 async fn an_invalid_form_is_shown_again_and_writes_nothing() {
     let env = env().await;
     let creator = env.creator();
