@@ -170,6 +170,48 @@ fn type_errors_have_a_key_path_and_position() {
 }
 
 #[test]
+fn retired_instances_are_names_that_are_not_configured() {
+    let config = Home::new(&format!(
+        "{MINIMAL}[core]\nretired_instances = [\"old-irc\", \"gone\"]\n[channel.web]\n"
+    ))
+    .load_ok();
+    let names: Vec<_> = config
+        .core
+        .retired_instances
+        .iter()
+        .map(InstanceName::as_str)
+        .collect();
+    assert_eq!(names, ["old-irc", "gone"]);
+    assert!(
+        Home::new(MINIMAL)
+            .load_ok()
+            .core
+            .retired_instances
+            .is_empty()
+    );
+
+    for (value, key, reason) in [
+        (
+            "[\"a b\"]",
+            "core.retired_instances[0]",
+            "invalid instance name",
+        ),
+        (
+            "[\"x\", \"x\"]",
+            "core.retired_instances[1]",
+            "listed twice",
+        ),
+        ("[\"web\"]", "core.retired_instances[0]", "is configured"),
+        ("\"x\"", "core.retired_instances", "invalid type"),
+    ] {
+        let home = Home::new(&format!(
+            "{MINIMAL}[core]\nretired_instances = {value}\n[channel.web]\n"
+        ));
+        assert_error(&home, "giles.toml", key, reason);
+    }
+}
+
+#[test]
 fn errors_found_after_parsing_have_positions() {
     let pos = |line, column| Some(Position { line, column });
     // A key that's present: its position.

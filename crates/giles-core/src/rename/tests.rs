@@ -1,8 +1,9 @@
-//! `giles instance rename`, against temporary data roots and databases.
+//! `giles instance rename` and the startup check, against temporary data roots and databases.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt;
+use std::sync::Arc;
 
 use giles_store::{InboxState, InstanceRows, NewInboxEvent, NewOutbox, SessionKey, SessionKind};
 use giles_store::{Store, UsageRecord};
@@ -717,4 +718,118 @@ fn undo_reports_what_it_could_not_take_back() {
     }
     .to_string();
     assert!(message.contains("partly done"), "{message}");
+}
+
+mod startup_check {
+    use super::*;
+
+    async fn check(home: &Home) -> Result<(), InstanceDataError> {
+        check_unused_instance_data(&home.root, &home.load(), &home.store).await
+    }
+
+    #[tokio::test]
+    async fn a_rename_done_in_the_config_alone_is_refused_until_the_command_runs() {
+        let home = Home::populated().await;
+        check(&home).await.unwrap();
+
+        // The operator renames the table (and the route) by hand.
+        home.write(
+            "giles.toml",
+            &GILES_TOML
+                .replace("[channel.libera]", "[channel.libera-chat]")
+                .replace("channel = \"libera\"", "channel = \"libera-chat\""),
+        );
+        let err = check(&home).await.unwrap_err();
+        let message = err.to_string();
+        assert!(matches!(err, InstanceDataError::Unused(_)), "{message}");
+        assert!(
+            message.contains("giles instance rename libera libera-chat"),
+            "{message}"
+        );
+        assert!(message.contains("2 sessions"), "{message}");
+
+        home.rename("libera", "libera-chat").await.unwrap();
+        check(&home).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_instance_removed_on_purpose_can_be_retired() {
+        let home = Home::populated().await;
+        // `libera` is removed (with its route) and an unrelated IRC network is added.
+        let without = "[owner]\nidentities = [\"web:owner\"]\n[provider.anthropic]\n[channel.web]\n[channel.oftc]\ncomponent = \"irc\"\nunsandboxed = true\n";
+        home.write("giles.toml", without);
+        home.write("agents/jeeves/agent.toml", BUNTER);
+        assert!(matches!(
+            check(&home).await,
+            Err(InstanceDataError::Unused(_))
+        ));
+
+        home.write(
+            "giles.toml",
+            &format!("[core]\nretired_instances = [\"libera\", \"github\"]\n{without}"),
+        );
+        check(&home).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn adding_or_removing_alone_is_fine() {
+        let home = Home::populated().await;
+        // A new instance and nothing orphaned.
+        home.write(
+            "giles.toml",
+            &format!("{GILES_TOML}[channel.oftc]\ncomponent = \"irc\"\nunsandboxed = true\n"),
+        );
+        check(&home).await.unwrap();
+        // An instance removed and nothing added: `libera` is gone, the rest has data or is
+        // referenced.
+        home.write(
+            "giles.toml",
+            "[owner]\nidentities = [\"web:owner\"]\n[channel.web]\n[provider.anthropic]\n[provider.ollama]\ncomponent = \"openai\"\n[toolset.github]\nurl = \"https://example.com/mcp\"\n",
+        );
+        check(&home).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_remote_toolset_is_never_taken_for_a_renamed_plugin() {
+        // `github` is remote (`url`): it never has rows or a data directory, so it always looks
+        // new. The directory of a stdio toolset that was removed must not make the check
+        // refuse to start, and the check must not suggest moving that state onto `github`.
+        let remote = "[owner]\nidentities = [\"web:owner\"]\n[toolset.github]\nurl = \"https://example.com/mcp\"\n";
+        let home = Home::new(remote).await;
+        home.write("data/plugins/files/state.json", "{}");
+        check(&home).await.unwrap();
+
+        // A launched toolset that has not started yet is a candidate, though.
+        home.write(
+            "giles.toml",
+            "[owner]\nidentities = [\"web:owner\"]\n[toolset.docs]\n",
+        );
+        let err = check(&home).await.unwrap_err().to_string();
+        assert!(err.contains("giles instance rename files docs"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_empty_installation_starts() {
+        let home = Home::new(GILES_TOML).await;
+        home.write("agents/jeeves/agent.toml", JEEVES);
+        check(&home).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_runtime_refuses_to_start_on_it() {
+        use crate::runtime::{Runtime, StartError};
+
+        let by_hand = "[owner]\nidentities = [\"web:owner\"]\n[channel.libera-chat]\n\
+                       component = \"irc\"\nunsandboxed = true\n";
+        let home = Home::new(by_hand).await;
+        home.write("data/plugins/libera/state.json", "{}");
+        home.seed("libera", "anthropic").await;
+        let start = |home: &Home| Runtime::start(home.root.clone(), Arc::new(home.load()));
+        let err = start(&home).await.unwrap_err();
+        assert!(matches!(err, StartError::InstanceData(_)), "{err}");
+        assert!(err.to_string().contains("giles instance rename"), "{err}");
+
+        home.rename("libera", "libera-chat").await.unwrap();
+        start(&home).await.unwrap();
+    }
 }

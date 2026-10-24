@@ -1,13 +1,15 @@
 # Instance Rename
 
 Instance names are permanent ids (PLAN section 7.2). `giles_core::rename` renames one,
-`rename_instance`, which `giles instance rename <old> <new>` calls. This page covers what a name
-keys, the order of the steps, and what a failure leaves behind.
+`rename_instance`, which `giles instance rename <old> <new>` calls, and refuses a configuration
+that looks like a rename done in `giles.toml` alone, `check_unused_instance_data`, which
+`Runtime::start` calls. This page covers what a name keys, the order of the steps, and what a
+failure leaves behind.
 
 ## What a Name Keys
 
 An audit of every place the implementation stores or derives something from an instance name. A
-rename must move each of them.
+rename must move each of them, and the startup check treats each as data.
 
 | Where                                        | What it is                                     | Rename does                    |
 | -------------------------------------------- | ---------------------------------------------- | ------------------------------ |
@@ -79,8 +81,8 @@ socket probing is needed and a core that starts mid-rename is refused instead.
    data directories are scanned.
    - If both names are configured the rename is refused: instances are never merged.
    - If only `old` is configured, that table is renamed.
-   - If only `new` is configured, the operator already renamed the table (by hand, or an earlier
-     run that stopped) and the data under `old` is moved to match. `old` must have data.
+   - If only `new` is configured, the operator already renamed the table (this is what the startup
+     check asks for) and the data under `old` is moved to match. `old` must have data.
    - If neither is configured, it is refused: with no data it is an unknown instance, and with
      data the kind can't be known, so the message says to configure `new` first.
    - `new` must have no data: no database rows, no `data/plugins/<new>`, no `groups/<new>`. The
@@ -106,8 +108,8 @@ socket probing is needed and a core that starts mid-rename is refused instead.
 Why this order. The database transaction is the only step that can't be undone by hand-editing, so
 it is the one that is held open until everything else worked: every failure the code can observe
 leaves the data root exactly as it was. `giles.toml` is rewritten before the directories, so a
-crash between them leaves the config renamed and the data not, which running the command again
-completes, and not the reverse.
+crash between them leaves the startup check's situation (config renamed, data not) and not the
+reverse.
 
 ## Crashes
 
@@ -121,6 +123,53 @@ journal exists only in memory, so recovery is to run the same command again:
 - `giles.toml` already naming `new` is the "only `new` is configured" case above.
 - Rewriting an `agent.toml` is idempotent: only references to `old` are changed.
 
-The window is the few system calls of step 3. Run the command again before the next start: once
-the daemon has written rows under the new name, the command refuses (the new name has data), and
-merging by hand is the only way back.
+The window is the few system calls of step 3, and the startup check usually notices the unfinished
+state if the daemon is started in between (`giles.toml` renamed, rows still under `old`). It cannot
+once any moved directory is already at its new path, because the instance then has a data
+directory and no longer looks new: the daemon would start, with the old rows stranded. Run the
+command again before the next start. After the daemon has written rows under the new name the
+command refuses (the new name has data), and merging by hand is the only way back.
+
+## Startup Check
+
+`Runtime::start` calls `check_unused_instance_data(root, config, store)` right after the database
+opens, before anything else uses the data, and fails with `StartError::InstanceData`. It refuses
+the one situation that looks like a rename done in `giles.toml` alone, because starting would leave
+the old name's sessions, inbox, and directories orphaned and begin a new, empty instance.
+
+Definitions:
+
+- A name **has data** if it appears in `sessions.channel`, `inbox.instance`, `outbox.instance`, or
+  `usage.provider`, or is a directory `data/plugins/<name>` or `agents/*/groups/<name>`. Only
+  directories with a valid name count (`.DS_Store` doesn't).
+- A configured instance is **fresh** if its name has no data.
+- A name is **unused** if it has data, is not configured, and is not in `[core] retired_instances`.
+- An unused name **matches** a fresh instance if the kinds fit. Rows of `sessions`, `inbox`, or
+  `outbox` can only belong to a channel; `usage` rows to a provider; a `groups` directory to a
+  channel; a `data/plugins` directory to a channel or a toolset that the core launches (a plugin
+  channel, or a stdio toolset). Built-in and remote instances, and v1 providers, never have such a
+  directory, so a leftover one is never taken for their old name. A remote toolset (`url`) gets
+  neither rows nor a directory, so nothing ever matches it.
+
+The check fails if some unused name matches a fresh instance. The message names each such pair and
+shows `giles instance rename <old> <new>` with the first candidate.
+
+False positives and how each resolves:
+
+| Situation                                                     | Result   | Resolution                           |
+| ------------------------------------------------------------- | -------- | ------------------------------------ |
+| A new instance is added; nothing has been removed             | Starts   |                                      |
+| An instance is removed; nothing is added                      | Starts   | Its data stays unused                |
+| An instance is removed, an unrelated one of the same kind is added | Refused | List the old name in `retired_instances` |
+| An instance is removed and a different kind is added          | Starts when no kind fits | |
+| A built-in or remote channel, or a provider, has never produced data and a removed instance of that kind had data | Refused | `retired_instances`, or use the instance once |
+| A remote toolset is configured and a stdio toolset's directory is left over | Starts |  |
+| `retired_instances` names a configured instance               | Config error | Remove one of them               |
+
+`retired_instances` (`[core]` in `giles.toml`) is the explicit "I know" list: names there are never
+unused. It keeps the data, so the name can be un-retired and configured again later. It doesn't
+delete anything: the rows and directories of a retired name stay until the operator removes them
+(there is no command for that in v1).
+
+The check is conservative about what it reads: it doesn't count messages (every assistant message
+with a provider has a `usage` row) and doesn't look at the cache or pid files.

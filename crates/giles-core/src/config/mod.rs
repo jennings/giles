@@ -147,7 +147,7 @@ impl Config {
                 .and_then(toml::Value::as_table);
             ConfigHash::of(table.unwrap_or(&toml::Table::new()))
         };
-        let core = raw.core();
+        let core = raw.core(file)?;
         let owner = raw.owner(file)?;
         let secrets = secrets::Secrets::load(&root.secrets_file())?;
         let resolver = secrets::Resolver {

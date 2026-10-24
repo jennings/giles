@@ -44,9 +44,14 @@ instance's `config` table, which belongs to the component (see [Instances](#inst
 
 Settings of the core itself. Optional.
 
-| Key           | Default            | Meaning                                                           |
-| ------------- | ------------------ | ----------------------------------------------------------------- |
-| `http_listen` | `"127.0.0.1:8080"` | Address of the HTTP server (web chat, admin pages, login links)   |
+| Key                 | Default            | Meaning                                                           |
+| ------------------- | ------------------ | ----------------------------------------------------------------- |
+| `http_listen`       | `"127.0.0.1:8080"` | Address of the HTTP server (web chat, admin pages, login links)   |
+| `retired_instances` | `[]`               | Names of instances you removed on purpose, whose data stays       |
+
+`retired_instances` is a list of instance names, each used by no instance table. It tells the
+startup check for a half-done rename to ignore data kept under that name; see
+[Renaming an instance](cli.md#giles-instance-rename-old-new).
 
 To reach Giles from other machines (or from outside a container), listen on `"0.0.0.0:8080"` and put
 a TLS-terminating reverse proxy in front of it. Giles binds the address at startup and refuses to

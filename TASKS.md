@@ -314,7 +314,7 @@ other and with the rest of this phase.
   **Needs:** 2.24.
 - [x] **4.2 Blob sweep** (§11.5). Periodic removal of blobs that no message, inbox or outbox row,
   or job references, and that are older than 48 h. **Needs:** 1.2, 1.3.
-- [ ] **4.3 Instance rename** (§7.2). `giles instance rename <old> <new>` with the core stopped
+- [x] **4.3 Instance rename** (§7.2). `giles instance rename <old> <new>` with the core stopped
   (database rows, directories, the `giles.toml` table); at startup, refuse a new instance name
   while an unused old name has data, pointing to the command. **Needs:** 1.1, 1.2.
 - [x] **4.4 Container image** (§14.2). Multi-stage `Dockerfile` and `.dockerignore`: Debian

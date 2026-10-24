@@ -13,6 +13,7 @@ use crate::core_tools;
 use crate::outbox::Outbox;
 use crate::paths::DataRoot;
 use crate::registry::{Registry, RegistryError};
+use crate::rename::{InstanceDataError, check_unused_instance_data};
 use crate::router::Router;
 use crate::scheduler::{JobChanges, OutboxDelivery, Scheduler, SchedulerOptions};
 use crate::sessions::{Approvals, Clock, Sessions, SessionsOptions, SystemClock, TurnRunner};
@@ -46,6 +47,9 @@ pub enum StartError {
     /// The outbox couldn't drop the approval prompts left from the previous process.
     #[error("cannot start the outbox: {0}")]
     Outbox(#[source] giles_store::Error),
+    /// The configuration looks like a rename that was never carried out (PLAN section 7.2).
+    #[error(transparent)]
+    InstanceData(#[from] InstanceDataError),
 }
 
 /// The running core's shared state.
@@ -82,6 +86,9 @@ impl Runtime {
         let store = Store::open_with(path.clone(), backup::open_options(&root))
             .await
             .map_err(|source| StartError::Store { path, source })?;
+        // Before anything else touches the data: a rename done in `giles.toml` alone would strand
+        // the old name's rows and directories (PLAN section 7.2).
+        check_unused_instance_data(&root, &config, &store).await?;
         let path = root.blobs_dir();
         let blobs = BlobStore::open(path.clone(), store.clone())
             .await

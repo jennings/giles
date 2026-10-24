@@ -24,7 +24,9 @@ The steps:
 
 1. Read `giles.toml` (UTF-8) and deserialize it into private `Raw*` structs. Every struct has
    `#[serde(deny_unknown_fields)]`; the only place unknown keys pass is an instance's `config`.
-2. Validate `[core]` and `[owner]`.
+2. Validate `[core]` and `[owner]`. `core.retired_instances` holds valid instance names that appear
+   once and that no `[provider.*]`, `[channel.*]`, or `[toolset.*]` table uses; the core only
+   stores them, for the startup check in [Instance Rename](instance-rename.md#startup-check).
 3. Load `secrets.toml` ([Secrets](#secrets)).
 4. Check that instance names are unique across the three kinds, ignoring ASCII case (they share
    the data directory namespace, `data/plugins/<instance>/`, and pid files, and macOS file systems

@@ -53,7 +53,9 @@ to stderr, with ANSI colors only when stderr is a terminal. The filter is `GILES
    plugin host refuses sandboxed instances with it. Find the `giles` binary itself, the sandbox
    trampoline (`std::env::current_exe`).
 6. Start the core runtime (`giles_core::runtime::Runtime::start`, [Registry](registry.md)): open
-   the database and the blob store and build the registry from the configuration. Any error ends
+   the database, check that no unused instance name still has data while a configured instance has
+   none ([Instance Rename](instance-rename.md#startup-check)), then open the blob store and build
+   the registry from the configuration. Any error ends
    the process. Then register every toolset (`ToolsetHost::start`, [Toolsets](toolsets.md)), each
    offering its cached tools, with its first start running in the background, and log what is
    registered (`registry ready`) and each instance still pending.

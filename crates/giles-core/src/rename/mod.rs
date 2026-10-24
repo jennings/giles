@@ -1,12 +1,14 @@
 //! Instance names are permanent ids (PLAN section 7.2): sessions, the inbox, memory paths, and the
 //! plugin's data directory are keyed by them. This module renames one ([`rename_instance`], behind
-//! `giles instance rename <old> <new>`).
+//! `giles instance rename <old> <new>`) and, at startup, refuses a configuration that looks like a
+//! rename that was never carried out ([`check_unused_instance_data`]).
 //!
 //! Docs/technical/instance-rename.md describes what a name keys, the order of the steps, and what
 //! a failure leaves behind.
 
 mod dirs;
 mod edit;
+mod guard;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -19,6 +21,8 @@ use giles_store::{BoxError, InstanceRows, RenamedRows, Store};
 use crate::admin::InstanceLock;
 use crate::config::{Kind, is_valid_name};
 use crate::paths::DataRoot;
+
+pub use guard::{InstanceDataError, UnusedName, check_unused_instance_data};
 
 /// What [`rename_instance`] changed.
 #[derive(Debug, Clone, PartialEq, Eq)]

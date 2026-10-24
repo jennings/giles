@@ -135,3 +135,32 @@ What the command leaves alone:
 - Tool names in old conversations: a renamed toolset's past calls still read `<old>__<tool>`.
 - Your identities: `irc:libera:account:me` is named after the network the channel reports, not
   after the instance, so `[owner] identities` stay as they are.
+
+### If you renamed the table by hand
+
+Renaming `[channel.libera]` to `[channel.libera-chat]` in `giles.toml` without this command leaves
+the old name's data orphaned. Giles notices at startup: if the configuration has an instance with
+no data of its own while some other name that is no longer configured still has data, `giles serve`
+refuses to start and says so:
+
+```text
+giles.toml configures an instance that has no data, while a name it no longer configures still
+has data. That looks like a rename done in giles.toml alone ...
+  "libera" has 3 sessions, 10 inbox rows; configured without data: [channel.libera-chat]
+If it was a rename, stop giles and run `giles instance rename libera libera-chat` ...
+```
+
+Run the command it suggests. It accepts the table already being renamed and moves the data to
+match. The check compares names of the same kind (database rows of a channel, say, can only be a
+renamed channel), so adding an instance or removing one doesn't trigger it on its own.
+
+If you removed an instance on purpose, and added an unrelated one that the check mistakes for a
+rename, tell it the old name is retired, and its data stays where it is:
+
+```toml
+[core]
+retired_instances = ["old-irc"]
+```
+
+The list is also the way out if an instance you have never used (a provider, say, with no usage
+yet) shows up next to a removed one. Giles never deletes the data of a retired or removed name.

@@ -24,6 +24,9 @@ pub struct CoreConfig {
     /// The address of the HTTP server (web chat, admin pages, login). [`DEFAULT_HTTP_LISTEN`]
     /// unless set.
     pub http_listen: SocketAddr,
+    /// Names of instances that were removed on purpose and whose data stays. The startup check
+    /// for a rename done by hand ignores them (PLAN section 7.2).
+    pub retired_instances: Vec<InstanceName>,
 }
 
 /// `[owner]`: the one user of v1 (PLAN section 1.1).
@@ -116,6 +119,8 @@ pub(crate) struct RawGiles {
 #[serde(deny_unknown_fields)]
 struct RawCore {
     http_listen: Option<SocketAddr>,
+    #[serde(default)]
+    retired_instances: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -136,10 +141,29 @@ struct RawRoute {
 }
 
 impl RawGiles {
-    pub(crate) fn core(&self) -> CoreConfig {
-        CoreConfig {
-            http_listen: self.core.http_listen.unwrap_or(DEFAULT_HTTP_LISTEN),
+    pub(crate) fn core(&self, file: &Path) -> Result<CoreConfig, ConfigError> {
+        let path = KeyPath::root().key("core").key("retired_instances");
+        let mut retired: Vec<InstanceName> = Vec::new();
+        for (i, text) in self.core.retired_instances.iter().enumerate() {
+            let err = |reason: String| ConfigError::at(file, path.index(i), reason);
+            let name = InstanceName::new(text.as_str()).map_err(err)?;
+            if retired.contains(&name) {
+                return Err(err(format!("{text:?} is listed twice")));
+            }
+            let configured = self.provider.contains_key(name.as_str())
+                || self.channel.contains_key(name.as_str())
+                || self.toolset.contains_key(name.as_str());
+            if configured {
+                return Err(err(format!(
+                    "{text:?} is configured, so it is not retired: remove it from `retired_instances`"
+                )));
+            }
+            retired.push(name);
         }
+        Ok(CoreConfig {
+            http_listen: self.core.http_listen.unwrap_or(DEFAULT_HTTP_LISTEN),
+            retired_instances: retired,
+        })
     }
 
     pub(crate) fn owner(&self, file: &Path) -> Result<OwnerConfig, ConfigError> {
