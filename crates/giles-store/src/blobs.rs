@@ -10,10 +10,10 @@
 //! ```
 //!
 //! Files are sharded by the first two hex digits (256 directories), which keeps directories
-//! small for listing and the sweep (4.2) without deep trees. Metadata (size, media type, name,
+//! small for listing and the sweep without deep trees. Metadata (size, media type, name,
 //! times) is a `blobs` row in the database, written after the file is in place.
 //!
-//! Contract for the sweep (task 4.2):
+//! The sweep ([`BlobStore::sweep`], in `sweep.rs`) follows this contract:
 //!
 //! - It holds [`BlobStore::lock_for_sweep`] while it picks and deletes blobs. A put holds the
 //!   shared side of the same lock from just before it renames its file into place until its row
@@ -38,6 +38,9 @@ use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
 use crate::time::to_millis;
 use crate::{Error, Result, Store};
+
+mod sweep;
+pub use sweep::{SWEEP_GRACE, SweepReport};
 
 /// The read buffer for puts.
 const CHUNK: usize = 64 * 1024;
@@ -165,7 +168,7 @@ impl BlobStore {
 
     /// Waits for puts that are committing to finish and keeps new ones from committing until
     /// the guard is dropped. Puts keep streaming into temp files meanwhile. The blob sweep
-    /// (task 4.2) holds this while it decides what to delete and deletes it.
+    /// holds this while it decides what to delete and deletes it.
     pub async fn lock_for_sweep(&self) -> SweepGuard {
         SweepGuard {
             _guard: self.sweep_lock.clone().write_owned().await,

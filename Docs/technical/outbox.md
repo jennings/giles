@@ -34,8 +34,8 @@ Rows enqueued before the sender starts just wait.
   namespace ends).
 - `kind` is stored as `job_reply`, `approval_prompt`, `login_code`, or `notice`.
 - `payload` is `{"markdown": ..., "attachments": [MediaRef, ...]}` (`attachments` omitted when
-  empty). Blobs referenced there must outlive the row; the blob sweep (TASKS.md 4.2) has to treat
-  outbox payloads as references.
+  empty). Blobs referenced there must outlive the row; the blob sweep scans outbox payloads for
+  references (see [Storage](storage.md#sweep)).
 - `expires_at`: approval prompts and login codes must set it (their approval's deadline, the
   code's expiry), else `MissingExpiry`; for the rest `None` means 24 hours after enqueueing. An
   expiry that isn't in the future is `Expired`.

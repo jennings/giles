@@ -271,7 +271,7 @@ data/blobs/sha256/
   temp file is deleted when a put fails or its future is dropped, and leftovers from a crash are
   deleted at open.
 - **Metadata.** A `blobs` row (id, size, media type, name, `created_at`, `stored_at`) is upserted
-  after the file is in place. Metadata is a table, not sidecar files, so the sweep (task 4.2) can
+  after the file is in place. Metadata is a table, not sidecar files, so the sweep can
   find unreferenced, old blobs with SQL, and a row and its file can't disagree about anything but
   existence. Media type and name are those of the first put; the returned `MediaRef`
   (`id = MediaId::from_digest`) carries the caller's own, since it describes that attachment.
@@ -287,15 +287,45 @@ rename over an existing file is atomic, and the row upsert is idempotent. Hashin
 task between reads, one 64 KiB chunk at a time, which takes well under a millisecond per chunk, so
 a put never holds a runtime thread for long.
 
-The sweep (task 4.2) must follow two rules:
+### Sweep
 
+`BlobStore::sweep(now, grace)` removes what nothing uses (PLAN 11.5); the daemon runs it
+periodically (see [Daemon](daemon.md)) with `SWEEP_GRACE`, 48 hours, and returns a `SweepReport`
+(`blobs`, `orphan_files`, `bytes`). It's in `blobs/sweep.rs`.
+
+- **What's garbage.** A `blobs` row whose `stored_at` is older than the grace period and whose id
+  no reference mentions, and a file without a row (a crash, or a put cancelled between its rename
+  and its row) whose mtime is older than the grace period and that no reference mentions. A row
+  whose file is missing is removed the same way. Every put renames a fresh file into place, so a
+  file's mtime is the time of its latest put, and `stored_at` moves forward on every put: content
+  that was just sent again is young.
+- **How references are found.** The sweep scans the text of every column that can hold a
+  `MediaRef`, listed in `REFERENCING_COLUMNS`: `messages.content` and `messages.meta` (blocks,
+  including tool-result content and `{"$media": id}` tool inputs), `summaries.content`,
+  `inbox.payload`, `outbox.payload`, and `jobs.spec`. It doesn't parse their JSON: it looks for
+  every 64-character run of lowercase hex (the shape of a `MediaId`) in the text, including windows
+  inside longer runs. Any shape that carries an id, now or in a future version of the types, is
+  found; the price is that a text that merely contains a blob's id also keeps it, which is the
+  safe direction. A new table or column that stores a `MediaRef` must be added to the list.
+- **Failing safe.** The decision and the row deletions happen in one write transaction on the
+  writer connection, so no message or row referencing a blob can appear between the scan and the
+  delete. Any error (listing the directories before the transaction, under the sweep lock, or a
+  scan query inside it) means nothing is removed: the transaction aborts before any file is
+  touched, and the sweep returns the error.
+  Files are removed after the commit; a crash in between leaves rowless files, which the next sweep
+  removes, and a file that can't be removed is logged and retried next time. A rowless file that is
+  referenced is kept.
 - **Lock.** It holds `BlobStore::lock_for_sweep()` (an exclusive `tokio::sync::RwLock` guard)
-  while it decides what to delete and deletes it. Each put holds the shared side from just before
-  its rename until its row is written. Without it, a sweep could delete a file whose row a put is
-  about to write, or delete an old row and file just as a put of the same content commits, leaving
-  a row without a file. Puts keep streaming into temp files while the sweep runs; only their commit
-  waits.
-- **Grace period for rowless files.** A file without a row is left by a crash, or by a put
-  cancelled between its rename and its row. It's garbage only once its mtime is older than 48 hours
-  (the same grace as unreferenced blobs, PLAN 11.5). Every put renames a fresh file into place, so
-  the mtime is the time of the latest put.
+  throughout. Each put holds the shared side from just before its rename until its row is written.
+  Without it, a sweep could delete a file whose row a put is about to write, or delete an old row
+  and file just as a put of the same content commits, leaving a row without a file. Puts keep
+  streaming into temp files while the sweep runs; only their commit waits.
+- **What it leaves alone.** `sha256/tmp/` (puts in progress; a failed or cancelled put deletes its
+  temp file, and opening the store clears a crash's leftovers) and anything under a shard
+  directory that isn't a regular file named by a valid id in its own shard.
+- **Cost.** The scan reads every message once. A still-referenced attachment older than 48 h
+  stays a candidate on every sweep, so any install with older attachments does the full
+  reference scan, holding the writer, every six hours; other writes wait while it runs. For the
+  text volumes of a personal assistant that is a fraction of a second every few hours.
+
+Blobs that only a plugin holds (its own copies, `GILES_PLUGIN_DATA`) aren't the core's concern.
