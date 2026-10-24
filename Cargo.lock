@@ -1087,6 +1087,8 @@ dependencies = [
  "jiff",
  "libc",
  "prost-types",
+ "rusqlite",
+ "serde_json",
  "tempfile",
  "tokio",
  "tokio-util",

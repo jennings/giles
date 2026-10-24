@@ -27,7 +27,9 @@ without Landlock (like the Apple `container` kernel used locally), and this make
 instead, so CI always runs them (see [Plugin Sandbox](sandbox.md#testing-without-landlock)). A step
 before the tests runs `host_probes_run` with `--nocapture`, so the log shows the Landlock ABI the
 runner's kernel offers (`host check: Ok(Linux { landlock_abi: N })`), which decides which
-ABI-dependent branches the sandbox tests exercise.
+ABI-dependent branches the sandbox tests exercise. The end-to-end suite ([End-to-End
+Tests](e2e-tests.md)) runs inside `cargo test --workspace` and launches its echo plugin in the
+sandbox wherever the host has one.
 
 **Protobuf** runs on `ubuntu-latest`. It installs a pinned `buf` (`BUF_VERSION`, set in the
 workflow's `env` block, with the `bufbuild/buf-action` action in setup-only mode) and runs, from the

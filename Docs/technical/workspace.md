@@ -19,7 +19,7 @@ so far is [the WhatsApp spike](whatsapp-spike.md).
 | `giles-proto`        | lib      | yes       | Generated gRPC code for the plugin and admin protocols       |
 | `giles-plugin-sdk`   | lib      | yes       | Serves a trait implementation as an out-of-process plugin    |
 | `giles-store`        | lib      | no        | SQLite and file storage under `GILES_HOME`                   |
-| `giles-channel-echo` | bin      | no        | Test-only channel plugin for host tests                      |
+| `giles-channel-echo` | bin      | no        | Test-only channel plugin for host and end-to-end tests       |
 | `giles-channel-irc`  | lib, bin | no        | The IRC channel plugin ([IRC Channel](irc.md))               |
 
 Dependencies between them:

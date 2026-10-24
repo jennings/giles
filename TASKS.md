@@ -322,7 +322,7 @@ other and with the rest of this phase.
   8080, `giles serve` entrypoint, BuildKit cache mounts. Verify the sandbox startup check inside the
   container. **Needs:** 3.4, 3.5, 3.6. Built before 3.6 with the IRC and email plugins; 3.6 adds the
   WhatsApp plugin.
-- [ ] **4.5 End-to-end tests.** Scripted tests of the whole daemon with a fake provider and the echo
+- [x] **4.5 End-to-end tests.** Scripted tests of the whole daemon with a fake provider and the echo
   channel plugin: message to reply, tool call with approval, `/stop`, restart recovery, job
   delivery through the outbox. **Needs:** Phases 2 and 3.
 

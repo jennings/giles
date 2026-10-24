@@ -22,6 +22,7 @@
 - [Overview](technical/README.md)
 - [Cargo Workspace](technical/workspace.md)
 - [Continuous Integration](technical/ci.md)
+- [End-to-End Tests](technical/e2e-tests.md)
 - [Container Image](technical/container-image.md)
 - [Message Model and Traits](technical/message-model.md)
 - [Providers](technical/providers.md)

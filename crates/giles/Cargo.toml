@@ -39,6 +39,9 @@ workspace = true
 
 [dev-dependencies]
 libc.workspace = true
+# The end-to-end tests read the daemon's database and talk JSON to its fake provider and plugin.
+rusqlite.workspace = true
+serde_json.workspace = true
 # Usage rows for the `giles usage` end-to-end test.
 giles-store.workspace = true
 tempfile.workspace = true
