@@ -19,6 +19,7 @@ mod pages;
 mod proxy;
 mod qr;
 mod render;
+mod routes;
 
 #[cfg(test)]
 mod tests;

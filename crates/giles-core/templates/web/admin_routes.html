@@ -1,0 +1,53 @@
+{% extends "layout.html" %}
+
+{% block title %}Routes - Giles{% endblock %}
+
+{% block content %}
+{% include "web/admin_nav.html" %}
+<div class="page-head">
+<h1>Routes</h1>
+<a class="button" href="/admin/routes/new">New route</a>
+</div>
+<p>Routes pick the agent for each conversation. They are tried in order and the first one that matches wins; a route matches when every key it sets matches. A message in a conversation no route matches is dropped. A web chat started for a particular agent goes to that agent whatever the routes say.</p>
+{%- if legacy > 0 %}
+<p class="notice">giles.toml still has {{ legacy }} <code>[[routes]]</code> {% if legacy == 1 %}rule{% else %}rules{% endif %}. Giles imported {% if legacy == 1 %}it{% else %}them{% endif %} once and doesn't read {% if legacy == 1 %}it{% else %}them{% endif %} any more: change routes here, and remove {% if legacy == 1 %}it{% else %}them{% endif %} from the file.</p>
+{%- endif %}
+{%- if routes.is_empty() %}
+<p>No routes, so every message is dropped. Add one with <a href="/admin/routes/new">New route</a>.</p>
+{%- else %}
+<table class="admin-table">
+<thead><tr><th>#</th><th>Channel</th><th>Kind</th><th>Conversation</th><th>Agent</th><th></th></tr></thead>
+<tbody>
+{%- for route in routes %}
+<tr id="route-{{ route.id }}">
+<td>{{ route.position }}</td>
+<td>{% if let Some(channel) = route.channel %}<code>{{ channel }}</code>{% else %}<span class="detail">any</span>{% endif %}</td>
+<td>{% if let Some(kind) = route.kind %}{{ kind }}{% else %}<span class="detail">any</span>{% endif %}</td>
+<td>{% if let Some(conversation) = route.conversation %}<code>{{ conversation }}</code>{% else %}<span class="detail">any</span>{% endif %}</td>
+<td>{% if route.agent_exists %}<a href="/admin/agents/{{ route.agent_id }}">{{ route.agent_label }}</a>{% else %}<code>{{ route.agent_id }}</code>{% endif %}</td>
+<td>
+<a href="/admin/routes/{{ route.id }}/edit">Edit</a>
+{%- if !route.first %}
+<form class="inline-form" method="post" action="/admin/routes/{{ route.id }}/move"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="direction" value="up"><button type="submit" aria-label="Move route {{ route.position }} up">Up</button></form>
+{%- endif %}
+{%- if !route.last %}
+<form class="inline-form" method="post" action="/admin/routes/{{ route.id }}/move"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="direction" value="down"><button type="submit" aria-label="Move route {{ route.position }} down">Down</button></form>
+{%- endif %}
+<form class="inline-form" method="post" action="/admin/routes/{{ route.id }}/remove"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" aria-label="Remove route {{ route.position }}">Remove</button></form>
+</td>
+</tr>
+{%- if !route.problems.is_empty() %}
+<tr class="route-problems">
+<td></td>
+<td colspan="5"><ul class="problems state-warn">
+{%- for problem in route.problems %}
+<li>{{ problem }}</li>
+{%- endfor %}
+</ul></td>
+</tr>
+{%- endif %}
+{%- endfor %}
+</tbody>
+</table>
+{%- endif %}
+{% endblock %}

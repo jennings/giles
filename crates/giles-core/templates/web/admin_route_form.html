@@ -1,0 +1,47 @@
+{% extends "layout.html" %}
+
+{% block title %}{{ title }} - Routes - Giles{% endblock %}
+
+{% block content %}
+{% include "web/admin_nav.html" %}
+<h1>{{ title }}</h1>
+{%- if let Some(error) = error %}
+<p class="error" role="alert">{{ error }}</p>
+{%- endif %}
+<form class="agent-form" method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="channel">Channel</label>
+<select id="channel" name="channel">
+{%- for option in channels %}
+<option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
+{%- endfor %}
+</select>
+<p class="detail">The channel instance the conversation is on, or any channel.</p>
+<label for="kind">Kind</label>
+<select id="kind" name="kind">
+{%- for option in kinds %}
+<option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
+{%- endfor %}
+</select>
+<p class="detail">Giles ignores group conversations for now.</p>
+<label for="conversation">Conversation</label>
+<input id="conversation" name="conversation" value="{{ conversation }}" placeholder="any conversation">
+<p class="detail">The conversation id as the channel reports it, such as <code>#giles</code> on IRC. It must match exactly, capitals included. Leave it empty for any.</p>
+<label for="agent">Agent</label>
+<select id="agent" name="agent" required>
+{%- for option in agents %}
+<option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
+{%- endfor %}
+</select>
+{%- if !befores.is_empty() %}
+<label for="before">Position</label>
+<select id="before" name="before">
+{%- for option in befores %}
+<option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
+{%- endfor %}
+</select>
+<p class="detail">Routes are tried in order. Put a specific route before a broader one.</p>
+{%- endif %}
+<button type="submit">{{ submit }}</button>
+</form>
+{% endblock %}

@@ -42,6 +42,13 @@ Neither half touches the agent loop: posted messages go through the normal inbou
 | `GET /admin/agents/new`        | The form that creates an agent.                                  |
 | `POST /admin/agents`           | Creates the agent (CSRF-checked), 303 to its page.               |
 | `GET /admin/agents/<agent>`    | The agent's settings and files.                                  |
+| `GET /admin/routes`            | Every route in order ([Route Pages](#route-pages)).              |
+| `GET /admin/routes/new`        | The form that adds a route.                                      |
+| `POST /admin/routes`           | Adds the route (CSRF-checked), 303 to the list.                  |
+| `GET /admin/routes/<id>/edit`  | The form, filled in with the route.                              |
+| `POST /admin/routes/<id>`      | Replaces the route's rule (CSRF-checked), 303 to the list.       |
+| `POST /admin/routes/<id>/remove` | Removes the route (CSRF-checked), 303 to the list.             |
+| `POST /admin/routes/<id>/move` | Moves it one place, `direction=up` or `down` (CSRF-checked), 303. |
 
 Every route except the two login routes needs a `WebUser` (below); without one it's a 401 page
 saying how to log in. A chat id is 128 random bits as 32 lowercase hex digits (`new_chat_id`), or
@@ -53,17 +60,16 @@ feature, because the router reads them.
 
 ### Choosing an Agent
 
-A plain chat goes to whichever agent `[[routes]]` picks. The chat list also has a picker, a `GET`
-form to `/chats/new?agent=<id>`, listing the agents the user may start a chat with
+A plain chat goes to whichever agent the stored routes pick. The chat list also has a picker, a
+`GET` form to `/chats/new?agent=<id>`, listing the agents the user may start a chat with
 (`agent_choices`, read from the running configuration, `WebApp`'s `LiveConfig`, so an agent added
-while Giles runs is offered at once). v1 has one user, the owner, who may
-use every agent; with roles (PLAN section 3.1), that function is where a member's `agents` globs
-apply. The chat it opens has the id `<agent>.<hex>`, and the router sends its messages to that
-agent ahead of every route ([Identity and Routing](identity-and-routing.md#routing)), so a new
-agent needs no route. A chat's page shows its agent ("with Jeeves (jeeves)"), and so does the chat
-list. If the agent isn't configured (any more), or the user may not use it, `/chats/new?agent=`,
-the chat page, and both POSTs answer 404 "No such agent" (and the router would drop the message
-anyway).
+while Giles runs is offered at once). v1 has one user, the owner, who may use every agent; with
+roles (PLAN section 3.1), that function is where a member's `agents` globs apply. The chat it opens
+has the id `<agent>.<hex>`, and the router sends its messages to that agent ahead of every route
+([Identity and Routing](identity-and-routing.md#routing)), so a new agent needs no route. A chat's
+page shows its agent ("with Jeeves (jeeves)"), and so does the chat list. If the agent isn't
+configured (any more), or the user may not use it, `/chats/new?agent=`, the chat page, and both
+POSTs answer 404 "No such agent" (and the router would drop the message anyway).
 
 ## Who Is Asking
 
@@ -442,17 +448,48 @@ configuration: the agent loop and core tools through `Registry::config()`, the s
 way (added to `agent.toml` by hand) start at the next restart, with the rest of a configuration
 change; general reload stays deferred (D28).
 
+## Route Pages
+
+TASKS.md 5.2, in `routes.rs`: `web.install_routes(builder, Arc<routes::Routes>)`, which `serve`
+calls last, with the runtime's `Routes` (the object whose `RouteList` the router reads). Like the
+agent pages: the same authentication middleware, `may_administer` on every route including the
+POSTs, `no-store` on every answer, and `check_csrf` (header or field) on every POST. Every change
+is one `Routes` call, which validates, writes, and gives the router the new list before it
+returns ([Identity and Routing](identity-and-routing.md#stored-routes)), so the next inbound
+message uses it.
+
+- The list shows each route's position, channel, kind, conversation, and agent (a link to the
+  agent's page, or plain text if it's gone), with Edit, Up, Down, and Remove. Up is left out for
+  the first route and Down for the last. A route with a problem (`RouteView::problems`: never
+  used, channel instance or agent not configured) has a warning row under it. A notice says how
+  many `[[routes]]` `giles.toml` still has (`Config::legacy_routes`).
+- Buttons are plain `POST` forms with the CSRF token in a hidden field, so the pages work without
+  scripts and removing is never a link. Routes in paths and forms are the store's stable ids
+  (`RouteId`), never positions: a page opened before another change can't act on a different
+  route; one for a route that's gone answers 404 "No such route". An id that isn't a number is the
+  same 404.
+- The add and edit forms are one template. Channel, kind, and agent are `<select>`s of what exists
+  now (the running configuration), plus the route's current value when it's no longer there, so
+  editing a route to a vanished agent shows it. The add form also has Position: "At the end" or
+  "Before route N (what it matches)". An invalid form comes back with the same values and
+  `RouteError`'s message: 400 for an invalid value, 409 for a route that could never be used or
+  would hide another; stale ids are 404; database failures are logged and answered 500. Messages
+  hold only what the owner typed or ids of agents and instances, escaped by the template.
+- A move that would hide a route is refused with the reason, as is an edit; reordering therefore
+  passes only through valid lists.
+
 ## Templates and Styles
 
-Templates are in `crates/giles-core/templates/web/`: pages `chats.html`, `chat.html`,
-`error.html`, `login_required.html`, `login.html`, `admin_status.html`, `admin_plugins.html`
-(extending `layout.html`; `admin_nav.html` is included by the admin pages), and fragments
-`message.html`, `approval.html`, `compose.html`, `attachments.html` (rendered by `render.rs`).
-Nothing inline: no scripts, styles, or `hx-on` handlers (the CSP and `allowEval: false` forbid
-them). The chat page is `hx-ext="sse"` with `sse-connect`; `#messages` has `sse-swap="message"` and
-`hx-swap="beforeend"`. The compose form replaces itself (`hx-target="this"`,
-`hx-swap="outerHTML"`); approval forms use `hx-swap="none"`. Every form also works as a plain form
-post. Styles are classes in `assets/giles.css`.
+Templates are in `crates/giles-core/templates/web/`: pages `chats.html`, `chat.html`, `error.html`,
+`login_required.html`, `login.html`, `admin_status.html`, `admin_plugins.html`, `admin_agents.html`,
+`admin_agent.html`, `admin_agent_new.html`, `admin_routes.html`, `admin_route_form.html` (extending
+`layout.html`; `admin_nav.html` is included by the admin pages), and fragments `message.html`,
+`approval.html`, `compose.html`, `attachments.html` (rendered by `render.rs`). Nothing inline: no
+scripts, styles, or `hx-on` handlers (the CSP and `allowEval: false` forbid them). The chat page is
+`hx-ext="sse"` with `sse-connect`; `#messages` has `sse-swap="message"` and `hx-swap="beforeend"`.
+The compose form replaces itself (`hx-target="this"`, `hx-swap="outerHTML"`); approval forms use
+`hx-swap="none"`. Every form also works as a plain form post. Styles are classes in
+`assets/giles.css`.
 
 ## Tests
 
@@ -507,3 +544,14 @@ middleware), plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `c
   checks that the SVG draws exactly the code's dark modules inside the quiet zone, and that an
   oversized payload is an error. `crates/giles/tests/serve.rs` checks that the daemon serves
   `/admin` from its own admin service, behind the login.
+- Route pages (`tests/routes.rs`, over the test configuration): anonymous requests get 401 and a
+  non-owner 403 on every route including the POSTs, with nothing changed; every POST needs the
+  CSRF token (a wrong or missing one is 403, the header works as well as the field); the list is
+  in order with escaped values, the agent links, no Up on the first route and no Down on the last,
+  warnings for a route that never matches or points at a gone instance or agent, and the notice
+  for `[[routes]]` still in `giles.toml`; adding stores the route and the router's `RouteList`
+  picks it for the next message, at the end or before a chosen route; an invalid form (unknown
+  instance or agent, bad kind, control characters) is shown again with the problem, its values
+  and nothing stored; a duplicate, a shadowed route, and a route that would hide another are 409;
+  edit, remove (not by `GET`), and move change which route wins in the router's list; a move that
+  would hide a route is refused; ids that aren't numbers or routes are 404.

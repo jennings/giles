@@ -10,7 +10,7 @@ use super::*;
 
 const XSS: &str = "<script>alert(1)</script>";
 
-fn guest() -> WebUser {
+pub(super) fn guest() -> WebUser {
     WebUser {
         user: UserId::new("guest").unwrap(),
         sender: NativeId::new("guest").unwrap(),

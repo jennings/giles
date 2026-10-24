@@ -264,3 +264,17 @@ button,
   align-self: flex-start;
   margin-top: 1rem;
 }
+
+/* The route pages: the buttons in a row's cells, and a route that never matches. */
+.inline-form {
+  display: inline;
+}
+
+.admin-table td form.inline-form button {
+  font-size: 0.9em;
+}
+
+.admin-table .problems {
+  margin: 0;
+  padding-left: 1.2rem;
+}

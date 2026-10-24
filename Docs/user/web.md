@@ -17,9 +17,9 @@ only one web channel. Its `config` table is optional; its keys are under
 
 Web senders are identities in the `web` namespace. For messages you send from the browser to reach
 an agent, `[owner] identities` must list your web identity, `web:owner`. Messages in a chat
-started with **New chat** are routed like any other channel's ([Configuration](configuration.md)):
-a `[[routes]]` rule can match `channel = "web"`. A chat started for a particular agent
-([Chats](#chats)) always goes to that agent and needs no route.
+started with **New chat** are routed like any other channel's ([Routes](#routes)): a route can match
+the channel `web`. A chat started for a particular agent ([Chats](#chats)) always goes to that agent
+and needs no route.
 
 ## Chats
 
@@ -30,8 +30,8 @@ in it. Each chat is its own conversation with its own history, the way each What
 
 To talk to a particular agent, pick it under **Chat with** on the chat list and press **Start**.
 The list has every configured agent, including one you've just created ([Agents](#agents)), and
-that chat always goes to the agent you picked, whatever
-`[[routes]]` say. The chat list and the chat page show which agent such a chat is with. If that
+that chat always goes to the agent you picked, whatever your
+[routes](#routes) say. The chat list and the chat page show which agent such a chat is with. If that
 agent is later removed from the configuration, its chats can't be opened any more.
 
 A chat page shows the conversation so far (the last 200 messages) and a box to write in. Replies
@@ -124,6 +124,48 @@ form comes back with the problem and nothing is written. Otherwise Giles writes
 with it from its page or the chat list. It runs with the defaults for everything the form doesn't
 ask (see [Configuration](configuration.md)); edit `agent.toml` by hand for the rest, which, like
 any other configuration change, takes effect at the next restart.
+
+## Routes
+
+**Routes** in the admin pages' menu (`/admin/routes`) is where you decide which agent answers each
+conversation, on every channel. Only the owner can open these pages. Routes are tried from the top
+and the first one that matches wins, so the order matters: put a specific route (one conversation)
+before a broader one (a whole channel, or everything). A chat started for a particular agent
+([Chats](#chats)) skips the routes. A message in a conversation no route matches is dropped, so a
+fresh Giles has no routes and answers nobody until you add one.
+
+The list shows each route's position, channel, kind, conversation, and agent (a link to the agent's
+page), with these buttons:
+
+- **Edit** opens the route's form, filled in.
+- **Up** and **Down** move the route one place. The first route has no Up and the last no Down.
+- **Remove** deletes the route.
+
+**New route** opens a form:
+
+- **Channel**: one of your channel instances, or any channel.
+- **Kind**: direct, group, or any (Giles ignores group conversations for now).
+- **Conversation**: the conversation id as the channel reports it, such as `#giles` on IRC or a
+  phone number's chat on WhatsApp; empty for any. It must match exactly, capitals included.
+- **Agent**: required, one of your agents.
+- **Position**: at the end, or before a route you pick.
+
+A route that sets nothing but the agent matches every conversation; keep it last.
+
+Giles checks a route like it checks configuration. The channel instance and the agent must exist.
+It also refuses a route that nothing could ever reach, and says why: an earlier route already
+matches everything it matches (a duplicate is the plainest case), or the change would put a route
+in front of one it hides. Adding, editing, and moving all follow this rule, so to put a broad route
+first you move the specific ones above it. The form comes back with the problem and nothing is
+changed. A route that has stopped working anyway (its agent's directory was removed, or its channel
+instance dropped from `giles.toml` before a restart) stays in the list with a warning under it, as
+does one that an earlier route hides, which can happen to routes imported from an old `giles.toml`.
+
+A change applies to the next message Giles receives, with no restart.
+
+Routes used to be `[[routes]]` in `giles.toml`. Giles imports them once, at the first start with
+this version, and then never reads them again; the Routes page tells you if the file still has
+them, and you can delete them. See [Configuration](configuration.md#routes).
 
 ## Logging In
 

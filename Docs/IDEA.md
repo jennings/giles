@@ -30,9 +30,9 @@ This doc lists the features and explains roughly how each one works. The detaile
   can be changed in the web UI: users (an admin adds them), agents and their files (`agent.toml`,
   `SOUL.md`, per-user memories), routes from channel identities to users and agents, and, once
   designed, provider, channel, and toolset instances. Whether each kind of data lives in SQLite or
-  in Markdown, JSONL, or other text files is decided as it's built. v1 still reads the owner,
-  instances, and routes from `giles.toml`; they move out as their web UI lands (`PLAN.md` section
-  11.2).
+  in Markdown, JSONL, or other text files is decided as it's built. Routes are already managed in
+  the web UI (task 5.2); v1 still reads the owner and instances from `giles.toml`, and they move
+  out as their web UI lands (`PLAN.md` section 11.2).
 
 ## v1 Scope
 
@@ -216,8 +216,8 @@ plugins.
 - Provider plugins.
 - More than one user, and group chats.
 - Model fallback.
-- Config reload, and managing users, routes, and instances in the web UI. (Creating agents in the
-  web UI was added later as task 5.1.)
+- Config reload, and managing users and instances in the web UI. (Creating agents in the web UI
+  was added later as task 5.1, and managing routes as task 5.2.)
 - MCP servers that only speak the deprecated HTTP+SSE transport.
 
 ## Decisions

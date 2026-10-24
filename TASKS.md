@@ -342,7 +342,7 @@ Added by the owner after the v1 plan.
 
   **Needs:** 3.8.
 
-- [ ] **5.2 Routes in the web UI** (added by the owner) (§3.2, §11.2). Move route configuration out
+- [x] **5.2 Routes in the web UI** (added by the owner) (§3.2, §11.2). Move route configuration out
   of `giles.toml` into the web UI, as the plan intends for routes (§1.1, §3.2, §11.2):
   - Giles-managed storage for the ordered route list (channel instance, optional conversation,
     agent; first match wins), read by the router in place of `[[routes]]`.

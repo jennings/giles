@@ -3,7 +3,7 @@
 Giles reads its configuration once, when `giles serve` starts; after a change, restart it. Two kinds
 of TOML file, both in the data root ([Installing and Running](running.md)):
 
-- `giles.toml`: the core, the owner, component instances, and routes.
+- `giles.toml`: the core, the owner, and component instances.
 - `agents/<agent>/agent.toml`: one per agent.
 
 Giles never writes `giles.toml`. It writes `agent.toml` and `SOUL.md` only for an agent you
@@ -377,19 +377,29 @@ Components receive plain values and never read `secrets.toml` or the environment
 messages and logs name the key and the secret or variable, never the value; where Giles shows an
 instance's `config`, values that came from references read `<redacted>`.
 
-### `[[routes]]`
+### Routes
 
-Routes pick the agent for each conversation. They are tried in order and the first match wins; a
-route matches when every key it sets matches. Conversation ids match exactly, capitalization
-included. Messages in a conversation no route matches are dropped and logged, including
-[chat commands](commands.md).
+Routes pick the agent for each conversation, and they aren't in `giles.toml`: Giles stores them
+and you manage them in the web UI ([Routes](web.md#routes)), where a change applies to the next
+message with no restart.
+
+Routes are tried in order and the first match wins. A route matches when every key it sets matches.
+Conversation ids match exactly, capitalization included. Messages in a conversation no route
+matches are dropped and logged, including [chat commands](commands.md).
 
 | Key            | Meaning                                                            |
 | -------------- | ------------------------------------------------------------------ |
-| `channel`      | Match this channel instance                                        |
-| `kind`         | Match `"direct"` or `"group"` conversations (v1 ignores groups)    |
-| `conversation` | Match this conversation id, as the channel reports it, e.g. `"#giles"` |
-| `agent`        | Required: the agent, a directory under `agents/`                   |
+| channel        | Match this channel instance                                        |
+| kind           | Match `direct` or `group` conversations (v1 ignores groups)        |
+| conversation   | Match this conversation id, as the channel reports it, e.g. `#giles` |
+| agent          | Required: the agent, a directory under `agents/`                   |
+
+A route with no keys but the agent matches everything, so it belongs last. The web UI checks a
+route like it checks configuration: the channel instance and the agent must exist, and a route that
+could never be used is refused: one an earlier route already covers, such as a duplicate, or a
+change that would put a route before one it would hide.
+
+Earlier versions kept routes in `giles.toml`:
 
 ```toml
 [[routes]]
@@ -401,11 +411,12 @@ agent = "jeeves"
 agent = "jeeves"
 ```
 
-Giles stores routes in its database, not in `giles.toml`. The first time it starts with no routes
-stored, it imports the `[[routes]]` in `giles.toml`, in order, after checking them like any
-configuration (a route to a channel instance or agent that doesn't exist stops startup). After
-that it never reads them again, even if you delete every stored route, and it logs a warning at
-every start while `giles.toml` still has `[[routes]]`: remove them.
+If your `giles.toml` has `[[routes]]` like these, Giles imports them the first time it starts after
+the upgrade, in order, after checking them like any configuration (a route to a channel instance or
+agent that doesn't exist stops startup and names the route). It does this once. After that it never
+reads `[[routes]]` again, even if you delete every route in the web UI, and it logs a warning at
+every start while `giles.toml` still has them, and the Routes page says so: remove them from the
+file. A fresh install has no routes: add them in the web UI.
 
 ## `agents/<agent>/agent.toml`
 
@@ -544,14 +555,6 @@ args = ["/Users/stephen/Documents"]
 sandbox = { read = ["/Users/stephen/Documents"], write = ["/Users/stephen/Documents/Inbox"] }
 idle_stop = "30m"
 parallel = true
-
-[[routes]]
-channel = "libera"
-conversation = "#giles"
-agent = "jeeves"
-
-[[routes]]
-agent = "jeeves"
 ```
 
 ```toml

@@ -40,6 +40,7 @@ use crate::sessions::{
 
 mod admin;
 mod agents;
+mod routes;
 
 const INSTANCE: &str = "web";
 const CSRF: &str = "csrf-token-for-tests";

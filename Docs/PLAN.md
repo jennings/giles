@@ -47,8 +47,9 @@ several users and group chats are the design for later; v1 builds this subset of
 - Tool approvals: answered by the owner.
 - Models: each agent uses the first model in `models`, with no fallback.
 - Config: read at startup; changes need a restart, except agents created in the web UI, which join
-  the running configuration (section 8.7). Agent Markdown files are read per turn. v1 keeps the
-  owner, instances, and routes in `giles.toml`; they move to the web UI later (section 11.2).
+  the running configuration (section 8.7), and routes, which the web UI changes for the next
+  message (section 6.1). Agent Markdown files are read per turn. v1 keeps the owner and instances
+  in `giles.toml`; they move to the web UI later (section 11.2).
 
 Deferred decisions, each with what v1 does meanwhile and when to revisit it, are in
 `Docs/decisions/`: D28, D49, D57, D58, D63, D65, D66.
@@ -396,19 +397,32 @@ Media:
 
 Ordered rules, first match wins. A rule matches any of channel instance, conversation kind
 (`direct`/`group`), user, and conversation id, and names an agent. Most setups are one rule per
-channel instance. Routes are managed by Giles and meant to be edited in the web UI; in the current
-layout they're `[[routes]]` in `giles.toml` (section 11.2).
+channel instance. Routes are managed by Giles: they're stored in the database and edited in the web
+UI (admin pages, section 8.7), not in `giles.toml`. A route has the optional keys `channel` (an
+instance name), `kind`, and `conversation`, and the required `agent`. A route that sets no key
+matches every conversation.
 
-```toml
-[[routes]]
-channel = "irc-libera"
-conversation = "#giles"
-agent = "jeeves"
-
-[[routes]]
-channel = "whatsapp"
-agent = "jeeves"
+```text
+1. channel irc-libera, conversation #giles  ->  jeeves
+2. channel whatsapp                          ->  jeeves
 ```
+
+The web UI lists the routes in order and adds, edits, removes, and moves them; a change applies to
+the next inbound message, with no restart. Each change is validated like configuration: the channel
+instance and the agent must exist, and a route that no message could ever reach is refused, either
+because an earlier route matches everything it does (a duplicate is the same case) or because the
+change would put a route before one it would hide. Refusing was chosen over a warning because such
+a route is nearly always a mistake, and moving routes one place at a time always passes through
+valid lists. A route that stopped working anyway, say because its agent directory was deleted, or
+one imported from `giles.toml` (which never checked), is kept and flagged on the page and in the
+log at startup. A web chat started with a chosen agent goes to that agent ahead of every route
+(section 8.7).
+
+Transition: `giles.toml` used to hold the routes as `[[routes]]`. The first start that finds no
+import recorded in the database imports them, in order, after the same checks (an invalid rule
+stops startup, naming its key), and records that it did. After that `giles.toml`'s `[[routes]]`
+are never read again, not even if every route is later deleted; Giles warns at every start while
+the file still has them.
 
 In-message addressing (`@name`) is not in v1.
 
@@ -1141,9 +1155,13 @@ The web UI's agent pages (list an agent's configuration and files, create an age
 admin pages, but have no RPCs yet: they call the core's agent management in-process. A created
 agent is written as `agent.toml` and `SOUL.md`, validated like startup config, and added to the
 running configuration without a reload; nothing else changes until a restart. Web chats can be
-started with a chosen agent, which routes them to it ahead of `[[routes]]`. Who sees which agent
-file is one per-viewer check: the owner sees all of them; with multi-user support a user sees only
-their own per-user memory.
+started with a chosen agent, which routes them to it ahead of the stored routes. Who sees which
+agent file is one per-viewer check: the owner sees all of them; with multi-user support a user sees
+only their own per-user memory.
+
+The route pages (list, add, edit, remove, and reorder the routes of section 6.1) are owner-only
+admin pages too, also without RPCs: they call the core's route management in-process, and a change
+applies to the next inbound message.
 
 ## 9. HTTP and Web
 
@@ -1241,7 +1259,8 @@ Giles creates and edits them:
 - Users: an admin adds users in the web UI.
 - Agents and their files: `agent.toml`, `SOUL.md`, and per-user memories (section 11.3).
 - Routes from channel identities to users and agents: identity links (section 3.2) and routing
-  rules (section 6.1).
+  rules (section 6.1). Routing rules are the first of these built: they're stored in SQLite and
+  edited in the web UI.
 - Component instances (providers, channels, toolsets) are headed for the web UI too, within the
   limits `giles.toml` sets; how they're managed there is not designed yet.
 
@@ -1249,9 +1268,11 @@ Where each kind of data is stored, in SQLite or in Markdown, JSONL, or other tex
 `GILES_HOME`, is decided as each is built. `secrets.toml` stays operator-written; where secrets for
 settings managed in the web UI live is open.
 
-Transition: the current implementation still reads the owner (section 1.1), instances, and routes
-from `giles.toml`, and the multi-user design below keeps roles there and users in `user.toml`. Each
-moves to storage Giles manages as its web UI lands; the migration isn't designed. Open: the first
+Transition: the current implementation still reads the owner (section 1.1) and instances from
+`giles.toml`, and the multi-user design below keeps roles there and users in `user.toml`. Each
+moves to storage Giles manages as its web UI lands; the migration isn't designed, except for routes,
+which already moved: `[[routes]]` is imported once into the database and then ignored (section
+6.1). Open: the first
 login (section 3.4) needs the owner's identity, so whether some bootstrap identity stays in
 `giles.toml` is undecided.
 
@@ -1299,11 +1320,6 @@ args = ["/Users/stephen/Documents"]
 sandbox = { read = ["/Users/stephen/Documents"] }
 idle_stop = "30m"
 
-[[routes]]
-channel = "libera"
-conversation = "#giles"
-agent = "jeeves"
-
 [roles.member]
 agents = ["*"]
 tools = ["*"]
@@ -1348,7 +1364,8 @@ Reload (reopened: _Deferred, D28_): the core watches these files and `secrets.to
 settle (500 ms), it parses and validates the whole config.
 
 - Invalid: keep running the previous config, log the error, and report it in `giles status`.
-- Valid: apply the difference. Routes, roles, agents, and users apply to the next turn. A changed
+- Valid: apply the difference. Roles, agents, and users apply to the next turn (routes already
+  change at runtime in the web UI and aren't read from these files). A changed
   instance is restarted with its new config; a removed one is stopped; a new one is started.
 - `[core]` settings such as `http_listen` need a restart; the core logs that.
 
@@ -1393,6 +1410,7 @@ One database, `data/giles.db`, in WAL mode with migrations embedded in the binar
 | `job_runs`     | Last run time per job id (config and runtime jobs)                     |
 | `usage`        | Section 11.7                                                           |
 | `web_sessions` | Web login sessions                                                     |
+| `routes`       | The ordered routing rules (section 6.1), and a marker that `giles.toml`'s `[[routes]]` were imported |
 | `search`       | FTS5 index over `messages`, maintained by triggers (section 6.7)        |
 
 Per-user operations:
