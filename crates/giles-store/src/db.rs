@@ -3,9 +3,17 @@
 //!
 //! SQLite allows one writer at a time. Funnelling every write through a single connection behind
 //! an async mutex means our own writers queue in Tokio instead of colliding inside SQLite, so they
-//! never see `SQLITE_BUSY`. In WAL mode readers don't block the writer or each other, so reads go
-//! to a small pool of read-only connections and run in parallel with writes. `busy_timeout` stays
-//! as a backstop for other processes touching the file.
+//! never see `SQLITE_BUSY`. In WAL mode (the default) readers don't block the writer or each
+//! other, so reads go to a small pool of read-only connections and run in parallel with writes.
+//! `busy_timeout` stays as a backstop for other processes touching the file.
+//!
+//! In the rollback-journal modes ([`JournalMode`]) a commit needs every reader to be out, and
+//! readers wait while it commits, so `busy_timeout` is what makes them wait instead of fail with
+//! `SQLITE_BUSY`. That holds because reads are short and readers never try to become writers
+//! (the read connections are read-only, so there is no `SQLITE_BUSY_SNAPSHOT` and no
+//! reader-to-writer lock upgrade that SQLite resolves by failing at once). A read that runs
+//! longer than `busy_timeout` can fail the commit waiting for it; `VACUUM INTO` is the one long
+//! read, so it runs on the writer connection there ([`Store::vacuum_into`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -14,6 +22,7 @@ use std::time::Duration;
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 
+use crate::JournalMode;
 use crate::migrate::{self, BeforeMigrate, Migration, MigrationPlan};
 use crate::{BoxError, Error, Result};
 
@@ -26,6 +35,8 @@ const DEFAULT_READERS: usize = 4;
 /// Options for [`Store::open_with`].
 pub struct OpenOptions {
     readers: usize,
+    /// `None`: leave the database in the mode it is in.
+    journal_mode: Option<JournalMode>,
     before_migrate: Option<BeforeMigrate>,
 }
 
@@ -33,6 +44,7 @@ impl Default for OpenOptions {
     fn default() -> Self {
         Self {
             readers: DEFAULT_READERS,
+            journal_mode: Some(JournalMode::default()),
             before_migrate: None,
         }
     }
@@ -42,13 +54,14 @@ impl std::fmt::Debug for OpenOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OpenOptions")
             .field("readers", &self.readers)
+            .field("journal_mode", &self.journal_mode)
             .field("before_migrate", &self.before_migrate.is_some())
             .finish()
     }
 }
 
 impl OpenOptions {
-    /// Default options: 4 read connections, no pre-migration hook.
+    /// Default options: 4 read connections, WAL, no pre-migration hook.
     pub fn new() -> Self {
         Self::default()
     }
@@ -56,6 +69,23 @@ impl OpenOptions {
     /// The number of read-only connections (at least 1).
     pub fn readers(mut self, readers: usize) -> Self {
         self.readers = readers.max(1);
+        self
+    }
+
+    /// The journal mode to run the database in ([`JournalMode::Wal`] unless set). Opening
+    /// switches an existing database to it, whichever mode it was last in, with no manual step.
+    /// If SQLite can't (WAL on a file system without shared memory, or leaving WAL while another
+    /// process has the database open) the open fails with [`Error::JournalMode`].
+    pub fn journal_mode(mut self, mode: JournalMode) -> Self {
+        self.journal_mode = Some(mode);
+        self
+    }
+
+    /// Opens the database in whatever mode it is in, without changing it: WAL if the file is
+    /// recorded as WAL, otherwise `delete`. For tools that run beside the configuration, like
+    /// `giles instance rename`, and must not undo the daemon's choice.
+    pub fn keep_journal_mode(mut self) -> Self {
+        self.journal_mode = None;
         self
     }
 
@@ -83,12 +113,29 @@ pub struct Store {
 }
 
 // Fields drop in declaration order: the readers close before the writer, so the last connection
-// to close is the writer, which checkpoints the WAL and deletes it. A read-only connection can't.
+// to close is the writer, which in WAL mode checkpoints the WAL and deletes it. A read-only
+// connection can't.
 struct Inner {
     path: PathBuf,
+    mode: JournalMode,
     readers: Mutex<Vec<Connection>>,
     reader_slots: Arc<Semaphore>,
     writer: Arc<AsyncMutex<Connection>>,
+}
+
+impl Drop for Inner {
+    /// `truncate` and `persist` leave the (empty or invalidated) journal file behind after every
+    /// commit. Neither is recorded in the database file, so switching the writer to `delete`
+    /// before it closes removes the file without changing anything the next open sees. A writer
+    /// still busy with a write that outlives the store's last handle is skipped.
+    fn drop(&mut self) {
+        if matches!(self.mode, JournalMode::Truncate | JournalMode::Persist)
+            && let Ok(writer) = self.writer.try_lock()
+            && let Err(err) = writer.query_row("PRAGMA journal_mode = DELETE", [], |_| Ok(()))
+        {
+            tracing::warn!(path = %self.path.display(), %err, "cannot remove the journal file on close");
+        }
+    }
 }
 
 impl std::fmt::Debug for Store {
@@ -117,14 +164,15 @@ impl Store {
         migrations: &'static [Migration],
     ) -> Result<Self> {
         tokio::task::spawn_blocking(move || {
-            let mut writer = open_writer(&path)?;
+            let (mut writer, mode) = open_writer(&path, options.journal_mode)?;
             migrate::migrate(&mut writer, migrations, options.before_migrate)?;
             let readers = (0..options.readers)
-                .map(|_| open_reader(&path))
+                .map(|_| open_reader(&path, mode))
                 .collect::<Result<Vec<_>>>()?;
             Ok(Self {
                 inner: Arc::new(Inner {
                     path,
+                    mode,
                     writer: Arc::new(AsyncMutex::new(writer)),
                     reader_slots: Arc::new(Semaphore::new(readers.len())),
                     readers: Mutex::new(readers),
@@ -183,17 +231,23 @@ impl Store {
     /// Writes a consistent snapshot of the database to `dest` with `VACUUM INTO`, while the
     /// store keeps serving (PLAN 11.4).
     ///
-    /// It runs on a pooled read connection, outside a transaction (`VACUUM` can't run inside
-    /// one), so it sees one consistent state and blocks neither writers nor other readers. In WAL
-    /// mode that is the difference from copying the file, which can capture a broken state.
+    /// In WAL mode it runs on a pooled read connection, outside a transaction (`VACUUM` can't run
+    /// inside one), so it sees one consistent state and blocks neither writers nor other readers;
+    /// copying the file instead can capture a broken state. In a rollback-journal mode a long
+    /// read would stall a writer's commit until `busy_timeout` ran out and failed it, so the
+    /// snapshot runs on the writer connection instead: writes queue behind it, reads go on.
     /// `dest` must not exist, or be an empty file, and must be valid UTF-8; the copy is a
-    /// standalone database without a `-wal` file.
+    /// standalone database without a `-wal` or `-journal` file.
     ///
     /// # Errors
     ///
     /// [`Error::Database`] if SQLite can't write `dest`, [`Error::InvalidRequest`] for a path
     /// that isn't UTF-8.
     pub async fn vacuum_into(&self, dest: PathBuf) -> Result<()> {
+        if self.inner.mode != JournalMode::Wal {
+            let conn = self.inner.writer.clone().lock_owned().await;
+            return tokio::task::spawn_blocking(move || migrate::vacuum_into(&conn, &dest)).await?;
+        }
         let permit = self
             .inner
             .reader_slots
@@ -248,32 +302,77 @@ impl Drop for Pooled<'_> {
     }
 }
 
-fn configure(conn: &Connection) -> Result<()> {
-    conn.busy_timeout(BUSY_TIMEOUT)?;
+/// Settings every connection gets once its journal mode is known.
+fn configure(conn: &Connection, mode: JournalMode) -> Result<()> {
     conn.pragma_update(None, "foreign_keys", true)?;
-    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    // NORMAL is the documented safe pairing with WAL: a power loss can drop the last commits but
+    // not corrupt the database. In a rollback-journal mode it isn't: a power loss at the wrong
+    // time can corrupt the database, so those modes keep SQLite's default, FULL.
+    let synchronous = if mode == JournalMode::Wal {
+        "NORMAL"
+    } else {
+        "FULL"
+    };
+    conn.pragma_update(None, "synchronous", synchronous)?;
     Ok(())
 }
 
-fn open_writer(path: &Path) -> Result<Connection> {
+/// Opens the writer and returns it with the journal mode it ended up in: `requested`, or, for
+/// `None`, the one the file is already in.
+///
+/// The current mode is read first, so a file SQLite can't open at all (not a database, locked by
+/// another process) fails as [`Error::Database`], and [`Error::JournalMode`] means only that
+/// SQLite refused a switch it was asked to make.
+fn open_writer(path: &Path, requested: Option<JournalMode>) -> Result<(Connection, JournalMode)> {
     let conn = Connection::open(path)?;
-    configure(&conn)?;
-    let mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
-    if !mode.eq_ignore_ascii_case("wal") {
-        return Err(Error::corrupt(format!(
-            "{} refused WAL mode (journal_mode is {mode})",
-            path.display()
-        )));
-    }
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    let current = current_journal_mode(&conn)?;
+    let mode = match requested {
+        Some(want) if want != current => set_journal_mode(&conn, want)?,
+        _ => current,
+    };
+    configure(&conn, mode)?;
+    Ok((conn, mode))
+}
+
+fn open_reader(path: &Path, mode: JournalMode) -> Result<Connection> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let conn = Connection::open_with_flags(path, flags)?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    configure(&conn, mode)?;
     Ok(conn)
 }
 
-fn open_reader(path: &Path) -> Result<Connection> {
-    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let conn = Connection::open_with_flags(path, flags)?;
-    configure(&conn)?;
-    Ok(conn)
+/// Switches the database to `want`. WAL is recorded in the file, so this changes the file when it
+/// was in the other kind of mode (and needs no other connection open); the rollback-journal
+/// modes are per connection. SQLite either fails or answers with the mode it kept, e.g. `delete`
+/// when WAL can't run.
+fn set_journal_mode(conn: &Connection, want: JournalMode) -> Result<JournalMode> {
+    let refused = |reason: String| Error::JournalMode {
+        requested: want,
+        reason,
+    };
+    let got: String = conn
+        .query_row(&format!("PRAGMA journal_mode = {want}"), [], |row| {
+            row.get(0)
+        })
+        .map_err(|err| refused(err.to_string()))?;
+    if got.eq_ignore_ascii_case(want.as_str()) {
+        Ok(want)
+    } else {
+        Err(refused(format!("SQLite kept journal_mode {got}")))
+    }
 }
+
+/// The mode a fresh connection finds: `wal` if the file is recorded as WAL, otherwise `delete`.
+fn current_journal_mode(conn: &Connection) -> Result<JournalMode> {
+    let mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+    mode.parse()
+        .map_err(|err| Error::corrupt(format!("unexpected journal_mode {mode:?}: {err}")))
+}
+
+#[cfg(test)]
+mod journal_tests;
 
 #[cfg(test)]
 mod tests {

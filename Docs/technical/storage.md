@@ -2,16 +2,18 @@
 
 The crate `giles-store` owns the SQLite database, `data/giles.db` (PLAN section 11.4), and the
 blob store under `data/blobs/` (PLAN 11.5). The core opens the database once with
-`Store::open(data_root.database_file())` and calls typed methods on the cloneable `Store` handle;
-no other crate writes SQL.
+`Store::open_with(data_root.database_file(), options)` and calls typed methods on the cloneable
+`Store` handle (`Store::open(path)` is the same with default options, WAL); no other crate writes
+SQL.
 
 ## Connections and Concurrency
 
 SQLite comes from `rusqlite` with the `bundled` feature, so every build has the same SQLite with
 FTS5 and the JSON functions compiled in (a test checks both). Every connection sets
-`foreign_keys = ON`, `synchronous = NORMAL`, and a 5 s `busy_timeout`. The database runs in WAL
-mode; `NORMAL` is the documented safe pairing for WAL: a power loss can drop the last commits but
-never corrupts the file.
+`foreign_keys = ON` and a 5 s `busy_timeout`, and `synchronous = NORMAL` in WAL mode, the default
+(`synchronous` for the other journal modes is under [Journal modes](#journal-modes)). `NORMAL` is
+the documented safe pairing for WAL: a power loss can drop the last commits but never corrupts the
+file.
 
 SQLite allows one writer at a time, so the store has:
 
@@ -26,23 +28,74 @@ SQLite allows one writer at a time, so the store has:
 
 All SQL runs on Tokio's blocking pool (`spawn_blocking`). A call that has started there finishes
 even if its future is dropped, so a cancelled caller never leaves half a transaction behind.
-`busy_timeout` remains as a backstop for other processes opening the file. Tests run many tasks
-writing and reading at once and assert that none fails.
+`busy_timeout` remains as a backstop for other processes opening the file (and does more work in
+the rollback-journal modes below). Tests run many tasks writing and reading at once, in every
+mode, and assert that none fails.
 
-When the last `Store` clone is dropped, the read connections close first and the writer last. The
-last connection to close checkpoints the WAL into the database file and deletes it, and only a
-read-write connection can do that, so a clean shutdown leaves no `-wal` file (a test checks this).
+When the last `Store` clone is dropped, the read connections close first and the writer last. In
+WAL mode the last connection to close checkpoints the WAL into the database file and deletes it,
+and only a read-write connection can do that, so a clean shutdown leaves no `-wal` file (a test
+checks this).
 
 `Store::vacuum_into(dest)` writes a consistent snapshot while the store keeps serving: `VACUUM INTO`
-on a pooled read connection, outside a transaction (`VACUUM` can't run inside one). It sees one
-consistent state and blocks neither the writer nor other readers. The destination must not exist or
-be an empty file (so a caller can create it with the mode it wants first), and the copy is a
-standalone database with no `-wal` file. A plain file copy of a WAL database can miss the WAL or
-capture a torn state, which is why this is the only supported way to copy a live database
-([Backups](backups.md)).
+outside a transaction (`VACUUM` can't run inside one). In WAL mode it runs on a pooled read
+connection, sees one consistent state, and blocks neither the writer nor other readers. The
+destination must not exist or be an empty file (so a caller can create it with the mode it wants
+first), and the copy is a standalone database with no `-wal` or `-journal` file. A plain file copy
+of a live database can miss the WAL or capture a torn state, which is why this is the only
+supported way to copy a live database ([Backups](backups.md)).
 
 A dedicated writer was chosen over a pool of interchangeable connections because with SQLite a
 second writer connection only adds `SQLITE_BUSY` retries, never throughput.
+
+## Journal Modes
+
+The journal mode is `OpenOptions::journal_mode(JournalMode)`, WAL unless the caller says
+otherwise. `JournalMode` has four variants, `Wal`, `Delete`, `Truncate` and `Persist`. SQLite's
+`memory` and `off` give up the rollback journal, so a crash can corrupt the file; they are not
+variants and `JournalMode::from_str` (case-insensitive) refuses them with an error that says why.
+
+Why not only WAL: it needs shared memory (the `-shm` file), which network file systems don't
+provide, so on one SQLite can't enter WAL mode and the database can't be opened at all. The other
+modes work anywhere SQLite works.
+
+**Switching.** Opening runs `PRAGMA journal_mode = <mode>` on the writer before anything else and
+checks the answer. SQLite either fails or reports the mode it kept (`delete` when WAL can't run);
+both become `Error::JournalMode { requested, reason }`, which a caller can turn into advice. Only
+WAL is recorded in the database file (the rollback modes are per connection and
+an unrecorded file reads as `delete`), so changing the setting in either direction rewrites the file
+header once at the next start, with no manual step and no data copied. Leaving WAL needs no other
+connection open; the daemon's single-instance lock makes that so for Giles, and the writer connects
+before the readers. A `-wal` file left by a crash is recovered and removed by that first
+connection. `OpenOptions::keep_journal_mode()` opens in whatever mode the file is in, for tools
+that must not undo the choice made for the daemon.
+
+**What changes in the rollback modes** (`delete`, `truncate`, `persist`), where readers and the
+writer exclude each other:
+
+- A writer can start while readers read (it takes `RESERVED`), but its commit needs every reader
+  gone, and while it waits no new reader may start. All of that waiting is `busy_timeout`: reads
+  and commits wait for each other instead of failing, and a test pins both directions (a commit
+  waits for a running read; a read during an open write transaction sees the committed state).
+  Under WAL the same test shows the commit does *not* wait.
+- Nothing in the store takes a deadlock-prone path: the read connections are read-only, so no
+  reader tries to become the writer (the upgrade SQLite fails immediately, and
+  `SQLITE_BUSY_SNAPSHOT`), and the writer starts every transaction with `BEGIN IMMEDIATE`, so it
+  never holds a read lock while asking for the write lock. The pool therefore keeps its size:
+  readers only share a lock.
+- The remaining failure is a read that outlasts `busy_timeout` (5 s) while a writer commits, which
+  fails that commit. Store reads are short single statements or small transactions; the one long
+  read is `VACUUM INTO`, which is why in these modes it runs on the **writer** connection
+  instead of a reader: writes queue in Tokio for its duration, reads carry on, and no commit can
+  time out behind it. The pre-migration snapshot already runs on the writer, before the readers
+  open.
+- `synchronous` is `FULL` (SQLite's default), not `NORMAL`: with a rollback journal, `NORMAL` can
+  corrupt the file on a power loss at the wrong moment.
+- `truncate` and `persist` keep the journal file between transactions (empty, or invalidated).
+  Neither is recorded in the database file, so when the last `Store` clone drops, the writer
+  switches to `delete` before it closes, which removes the file. A clean shutdown leaves no
+  `-journal` or `-wal` file in any mode (a test runs every mode). After a crash a hot `-journal`
+  stays; the next writer connection rolls it back before the readers open.
 
 ## Migrations
 

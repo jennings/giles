@@ -29,6 +29,16 @@ pub enum Error {
     /// The hook run before migrations failed, so no migration was applied.
     #[error("pre-migration hook failed: {0}")]
     BeforeMigrate(#[source] BoxError),
+    /// SQLite would not switch the database to the requested journal mode, e.g. WAL on a file
+    /// system without shared-memory support, or leaving WAL while another process has the
+    /// database open.
+    #[error("cannot set the database's journal mode to {requested}: {reason}")]
+    JournalMode {
+        /// The mode that was asked for.
+        requested: crate::JournalMode,
+        /// What SQLite said.
+        reason: String,
+    },
     /// A hook the caller passed to a transactional method failed, so the transaction was rolled
     /// back and nothing changed.
     #[error("{0}")]

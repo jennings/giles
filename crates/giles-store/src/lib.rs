@@ -20,6 +20,7 @@ mod error;
 mod inbox;
 mod instances;
 mod jobs;
+mod journal_mode;
 mod messages;
 mod migrate;
 mod outbox;
@@ -39,6 +40,7 @@ pub use error::{BoxError, Error, Result};
 pub use inbox::{InboxEntry, InboxId, InboxState, NewInboxEvent};
 pub use instances::{InstanceRows, RenamedRows};
 pub use jobs::{JobKey, RuntimeJob, RuntimeJobId};
+pub use journal_mode::{JournalMode, ParseJournalModeError};
 pub use messages::{
     Appended, Entry, History, Slot, StoredMessage, StoredMessageId, Summary, SummaryId,
 };
