@@ -51,8 +51,8 @@ pub use links::LOGIN_LINK_TTL;
 pub use pages::WebApp;
 pub use proxy::{ProxyError, ProxyListener};
 
-/// The component name, and the identity namespace of web senders (`web:<id>` in `[owner]`).
-pub const COMPONENT: &str = "web";
+pub(crate) use super::chat_ids::random_hex;
+pub use super::chat_ids::{COMPONENT, is_chat_id, new_chat_id};
 
 /// How many posted messages may wait for the core to take them before posting fails.
 pub const MAX_PENDING: usize = 256;
@@ -65,24 +65,6 @@ pub const LIVE_UPDATE_INTERVAL: Duration = Duration::from_millis(50);
 /// replacement.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// `bytes` random bytes from the OS, as lowercase hex.
-pub(crate) fn random_hex(bytes: usize) -> String {
-    let mut buf = vec![0; bytes];
-    getrandom::fill(&mut buf).expect("the OS random number generator failed");
-    buf.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// A new chat id: 128 random bits as 32 lowercase hex digits. Web chats are created by the user
-/// (`/chats/new`), and the chat id is the conversation id (PLAN section 10).
-pub fn new_chat_id() -> ConversationId {
-    ConversationId::new(random_hex(16)).expect("hex is a valid id")
-}
-
-/// Whether `id` has the form of a chat id ([`new_chat_id`]). Pages refuse anything else.
-pub fn is_chat_id(id: &str) -> bool {
-    id.len() == 32 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// `web-` and 128 random bits: event and message ids.
