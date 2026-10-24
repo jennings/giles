@@ -8,7 +8,7 @@ use anyhow::{Context, bail};
 use giles_core::admin::InstanceLock;
 use giles_core::paths::DataRoot;
 use giles_core::rename::{RenameReport, rename_instance};
-use giles_store::Store;
+use giles_store::{OpenOptions, Store};
 
 use crate::cli::RenameArgs;
 
@@ -29,9 +29,12 @@ pub fn run(home: Option<&Path>, args: &RenameArgs) -> anyhow::Result<()> {
         .build()
         .context("cannot start the async runtime")?
         .block_on(async {
-            let store = Store::open(root.database_file())
-                .await
-                .with_context(|| format!("cannot open {}", root.database_file().display()))?;
+            // The configuration isn't loaded here (it may be half renamed), so leave the journal
+            // mode the daemon chose as it is.
+            let store =
+                Store::open_with(root.database_file(), OpenOptions::new().keep_journal_mode())
+                    .await
+                    .with_context(|| format!("cannot open {}", root.database_file().display()))?;
             rename_instance(&root, &store, &lock, &args.old, &args.new)
                 .await
                 .map_err(anyhow::Error::new)

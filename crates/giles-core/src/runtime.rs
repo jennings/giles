@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use giles_store::{BlobStore, Store};
+use giles_store::{BlobStore, JournalMode, Store};
 use tokio_util::sync::CancellationToken;
 
 use crate::backup;
@@ -31,6 +31,20 @@ pub enum StartError {
         /// Why.
         source: giles_store::Error,
     },
+    /// SQLite wouldn't switch the database to the configured journal mode.
+    #[error(
+        "cannot open the database {}: {source}\n{}",
+        .path.display(),
+        journal_mode_advice(*.mode)
+    )]
+    JournalMode {
+        /// `data/giles.db`.
+        path: PathBuf,
+        /// `[core] journal_mode`.
+        mode: JournalMode,
+        /// Why.
+        source: giles_store::Error,
+    },
     /// The blob store couldn't be opened.
     #[error("cannot open the blob store {}: {source}", .path.display())]
     Blobs {
@@ -54,6 +68,21 @@ pub enum StartError {
     /// The configuration looks like a rename that was never carried out (PLAN section 7.2).
     #[error(transparent)]
     InstanceData(#[from] InstanceDataError),
+}
+
+/// How to get out of a journal mode SQLite refused, naming the config option.
+fn journal_mode_advice(mode: JournalMode) -> String {
+    if mode == JournalMode::Wal {
+        "WAL needs shared memory, which network file systems and some container mounts lack. Set \
+         `journal_mode = \"delete\"` in the `[core]` table of giles.toml, which works everywhere \
+         (and move the database to a local disk if you can)."
+            .to_owned()
+    } else {
+        format!(
+            "Stop other programs that have the database open and start again, or change \
+             `journal_mode` (currently \"{mode}\") in the `[core]` table of giles.toml."
+        )
+    }
 }
 
 /// The running core's shared state.
@@ -91,9 +120,17 @@ impl Runtime {
     pub async fn start(root: DataRoot, config: Arc<Config>) -> Result<Self, StartError> {
         let path = root.database_file();
         // An existing database is backed up to `backups/` before any migration runs.
-        let store = Store::open_with(path.clone(), backup::open_options(&root))
-            .await
-            .map_err(|source| StartError::Store { path, source })?;
+        let mode = config.core.journal_mode;
+        let options = backup::open_options(&root).journal_mode(mode);
+        let store =
+            Store::open_with(path.clone(), options)
+                .await
+                .map_err(|source| match source {
+                    giles_store::Error::JournalMode { .. } => {
+                        StartError::JournalMode { path, mode, source }
+                    }
+                    source => StartError::Store { path, source },
+                })?;
         // Before anything else touches the data: a rename done in `giles.toml` alone would strand
         // the old name's rows and directories (PLAN section 7.2).
         check_unused_instance_data(&root, &config, &store).await?;
@@ -205,5 +242,143 @@ impl Runtime {
             },
             shutdown,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    use super::*;
+
+    /// A data root whose `giles.toml` has `[core]` set to `core` and the minimal owner.
+    fn data_root(core: &str) -> (tempfile::TempDir, DataRoot) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = DataRoot::new(dir.path(), Path::new("/tmp")).unwrap();
+        root.create_layout().unwrap();
+        set_core(&root, core);
+        (dir, root)
+    }
+
+    fn set_core(root: &DataRoot, core: &str) {
+        std::fs::write(
+            root.config_file(),
+            format!("[core]\n{core}\n[owner]\nidentities = [\"web:owner\"]\n"),
+        )
+        .unwrap();
+    }
+
+    async fn start(root: &DataRoot) -> Result<Runtime, StartError> {
+        Runtime::start(root.clone(), Arc::new(Config::load(root).unwrap())).await
+    }
+
+    /// The journal mode recorded in the database file: WAL is, the rollback modes read `delete`.
+    fn recorded_mode(root: &DataRoot) -> String {
+        rusqlite::Connection::open(root.database_file())
+            .unwrap()
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    fn exists(root: &DataRoot, suffix: &str) -> bool {
+        let mut name = root.database_file().into_os_string();
+        name.push(suffix);
+        Path::new(&name).exists()
+    }
+
+    #[tokio::test]
+    async fn the_configured_journal_mode_reaches_the_database() {
+        for (core, wal) in [
+            ("", true),
+            ("journal_mode = \"wal\"", true),
+            ("journal_mode = \"delete\"", false),
+            ("journal_mode = \"truncate\"", false),
+            ("journal_mode = \"persist\"", false),
+        ] {
+            let (_dir, root) = data_root(core);
+            let runtime = start(&root).await.unwrap();
+            assert_eq!(exists(&root, "-wal"), wal, "{core}");
+            drop(runtime);
+            assert!(
+                !exists(&root, "-wal") && !exists(&root, "-journal"),
+                "{core}"
+            );
+            assert_eq!(
+                recorded_mode(&root),
+                if wal { "wal" } else { "delete" },
+                "{core}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn changing_the_option_switches_an_existing_database_at_the_next_start() {
+        let (_dir, root) = data_root("");
+        drop(start(&root).await.unwrap());
+        assert_eq!(recorded_mode(&root), "wal");
+        for (core, expected) in [
+            ("journal_mode = \"delete\"", "delete"),
+            ("", "wal"),
+            ("journal_mode = \"persist\"", "delete"),
+            ("journal_mode = \"wal\"", "wal"),
+        ] {
+            set_core(&root, core);
+            drop(start(&root).await.unwrap());
+            assert_eq!(recorded_mode(&root), expected, "{core}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_journal_mode_sqlite_refuses_is_reported_with_the_option_that_changes_it() {
+        // A database file that can't be written can't be switched, which stands in for a file
+        // system that can't run WAL.
+        let refused = |from: &'static str, to: &'static str| async move {
+            let (_dir, root) = data_root(from);
+            drop(start(&root).await.unwrap());
+            let file = root.database_file();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o444)).unwrap();
+            // Root ignores the permission bits, so there's nothing to refuse.
+            if std::fs::OpenOptions::new().write(true).open(&file).is_ok() {
+                return None;
+            }
+            set_core(&root, to);
+            let err = start(&root).await.unwrap_err();
+            Some(err)
+        };
+
+        if let Some(err) = refused("journal_mode = \"delete\"", "").await {
+            assert!(matches!(err, StartError::JournalMode { .. }), "{err}");
+            let message = err.to_string();
+            assert!(message.contains("giles.db"), "{message}");
+            assert!(message.contains("journal mode to wal"), "{message}");
+            assert!(message.contains("[core]"), "{message}");
+            assert!(message.contains("journal_mode = \"delete\""), "{message}");
+        }
+        if let Some(err) = refused("", "journal_mode = \"truncate\"").await {
+            assert!(matches!(err, StartError::JournalMode { .. }), "{err}");
+            let message = err.to_string();
+            assert!(message.contains("journal mode to truncate"), "{message}");
+            assert!(
+                message.contains("`journal_mode` (currently \"truncate\")"),
+                "{message}"
+            );
+            assert!(!message.contains("network"), "{message}");
+        }
+    }
+
+    /// A file that isn't a database is the plain store error: the journal-mode advice would
+    /// point at the wrong problem.
+    #[tokio::test]
+    async fn a_file_that_is_not_a_database_is_a_plain_store_error_whatever_the_mode() {
+        for core in ["", "journal_mode = \"delete\""] {
+            let (_dir, root) = data_root(core);
+            std::fs::write(root.database_file(), "not a database".repeat(200)).unwrap();
+            let err = start(&root).await.unwrap_err();
+            assert!(matches!(err, StartError::Store { .. }), "{core}: {err:?}");
+            let message = err.to_string();
+            assert!(message.contains("not a database"), "{core}: {message}");
+            assert!(!message.contains("journal_mode"), "{core}: {message}");
+        }
     }
 }

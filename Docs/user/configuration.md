@@ -48,6 +48,7 @@ Settings of the core itself. Optional.
 | ------------------- | ------------------ | ----------------------------------------------------------------- |
 | `http_listen`       | `"127.0.0.1:8080"` | Address of the HTTP server (web chat, admin pages, login links)   |
 | `retired_instances` | `[]`               | Names of instances you removed on purpose, whose data stays       |
+| `journal_mode`      | `"wal"`            | SQLite journal mode of `data/giles.db`: `wal`, `delete`, `truncate`, `persist` |
 
 `retired_instances` is a list of instance names, each used by no instance table. It tells the
 startup check for a half-done rename to ignore data kept under that name; see
@@ -56,6 +57,43 @@ startup check for a half-done rename to ignore data kept under that name; see
 To reach Giles from other machines (or from outside a container), listen on `"0.0.0.0:8080"` and put
 a TLS-terminating reverse proxy in front of it. Giles binds the address at startup and refuses to
 start if it can't (see [The Web Interface](running.md#the-web-interface)).
+
+#### `journal_mode`
+
+The journal is how SQLite keeps a write from corrupting the database if the machine dies in the
+middle of it. The default, `"wal"` (write-ahead log), lets Giles read the database while it writes
+and is what Giles is built for. Leave it alone unless Giles can't start with it: WAL needs shared
+memory, which network file systems (NFS, SMB, some container and FUSE mounts) don't provide. There
+Giles stops at startup with an error that names this option, and `journal_mode = "delete"` is the
+way out. Moving `~/.giles` to a local disk is better still.
+
+| Value        | Journal                                                                         |
+| ------------ | ------------------------------------------------------------------------------- |
+| `"wal"`      | Write-ahead log: reads don't wait for writes. Needs shared-memory support       |
+| `"delete"`   | Rollback journal file, deleted after each write. Works everywhere               |
+| `"truncate"` | Like `delete`, but empties the journal file instead of deleting it              |
+| `"persist"`  | Like `delete`, but keeps the journal file and marks it unused                   |
+
+Values are case-insensitive. SQLite also has `memory` and `off`; Giles refuses them at startup
+because a crash or power loss during a write could then corrupt the database or lose data.
+
+Switching needs nothing from you except a restart, as with every `[core]` setting: change the
+value and start Giles, and it converts the existing database in place, in either direction. (Stop
+any other program that has `giles.db` open, such as the `sqlite3` shell, first. Leaving WAL needs
+the database to itself.)
+
+In the `delete`, `truncate`, and `persist` modes:
+
+- A write waits for reads in progress, and reads wait for a write that is committing, instead of
+  running at the same time. Giles's reads and writes are short, so you won't notice, and none
+  fails. A backup (`giles backup`, or the one before an upgrade) holds writes for as long as it
+  takes to copy the database, which grows with the size of the database.
+- Writes use a full sync to disk, which is slower than in WAL mode but keeps the database safe on
+  a power loss.
+- `giles.db-journal` exists while a write runs, and in `truncate` and `persist` also between
+  writes; it is removed when Giles stops.
+
+See [Backups](backups.md) for restoring in any mode.
 
 ### `[owner]`
 

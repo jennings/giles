@@ -671,6 +671,137 @@ fn backup_writes_a_database_snapshot_and_an_archive_into_a_directory() {
     assert!(status.success(), "{status}\n{log}");
 }
 
+/// The journal mode recorded in the database file: WAL is, the rollback modes read as `delete`.
+fn recorded_journal_mode(home: &Path) -> String {
+    rusqlite::Connection::open(home.join("data/giles.db"))
+        .unwrap()
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .unwrap()
+}
+
+/// The files SQLite leaves beside the database while it uses a journal.
+fn journal_files(home: &Path) -> Vec<&'static str> {
+    ["-wal", "-shm", "-journal"]
+        .into_iter()
+        .filter(|suffix| {
+            home.join(format!("data/giles.db{suffix}"))
+                .try_exists()
+                .unwrap()
+        })
+        .collect()
+}
+
+#[test]
+fn journal_mode_switches_the_daemons_database_in_both_directions_across_restarts() {
+    let env = Env::new();
+    let home = env.path("home");
+    let home_arg = home.to_str().unwrap();
+    let with_mode = |mode: &str| {
+        format!(
+            "[core]\nhttp_listen = \"127.0.0.1:0\"\n{mode}\n[owner]\nidentities = [\"web:owner\"]\n"
+        )
+    };
+    write_config(&home, &with_mode(""));
+    // An existing database in the default mode, with a row in it.
+    record_usage(
+        &home,
+        "jeeves",
+        giles_types::Usage {
+            input_tokens: 7,
+            output_tokens: 1,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        },
+    );
+    assert_eq!(recorded_journal_mode(&home), "wal");
+    fs::create_dir(env.path("out")).unwrap();
+
+    // `delete` switches it with no manual step, and the daemon runs without a WAL.
+    fs::write(
+        home.join("giles.toml"),
+        with_mode("journal_mode = \"DELETE\""),
+    )
+    .unwrap();
+    let daemon = Daemon::start(env.command(&["serve", "--home", home_arg]));
+    assert_eq!(journal_files(&home), Vec::<&str>::new());
+    assert_eq!(recorded_journal_mode(&home), "delete");
+    // `giles backup` still writes a snapshot that holds the data and opens in either mode.
+    let output = env
+        .command(&[
+            "backup",
+            "--home",
+            home_arg,
+            env.path("out").to_str().unwrap(),
+        ])
+        .stdout(Stdio::piped())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let database = stdout.lines().find(|l| l.ends_with(".db")).unwrap();
+    for mode in [
+        giles_store::JournalMode::Delete,
+        giles_store::JournalMode::Wal,
+    ] {
+        let restored = env.path(&format!("restored-{mode}.db"));
+        fs::copy(database, &restored).unwrap();
+        let rows = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let options = giles_store::OpenOptions::new().journal_mode(mode);
+                let store = giles_store::Store::open_with(&restored, options)
+                    .await
+                    .unwrap();
+                store.usage_by_model(None, None).await.unwrap()
+            });
+        assert_eq!(rows.len(), 1, "{mode}");
+    }
+    let (status, log) = daemon.stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+    assert_eq!(journal_files(&home), Vec::<&str>::new(), "{log}");
+    assert_eq!(recorded_journal_mode(&home), "delete");
+
+    // Back to the default, again with no manual step.
+    fs::write(home.join("giles.toml"), with_mode("")).unwrap();
+    let daemon = Daemon::start(env.command(&["serve", "--home", home_arg]));
+    assert_eq!(recorded_journal_mode(&home), "wal");
+    let (status, log) = daemon.stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+    assert_eq!(journal_files(&home), Vec::<&str>::new(), "{log}");
+    assert_eq!(recorded_journal_mode(&home), "wal");
+}
+
+#[test]
+fn a_journal_mode_that_gives_up_the_journal_is_refused_at_startup() {
+    let env = Env::new();
+    let home = env.path("home");
+    for mode in ["memory", "OFF", "wal2"] {
+        write_config(
+            &home,
+            &format!(
+                "[core]\njournal_mode = \"{mode}\"\n\n[owner]\nidentities = [\"web:owner\"]\n"
+            ),
+        );
+        let output = env
+            .command(&["serve", "--home", home.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{mode}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let file = home.join("giles.toml");
+        assert!(
+            stderr.contains(&format!("{}:2:1: core.journal_mode: ", file.display())),
+            "{mode}: {stderr}"
+        );
+        assert!(stderr.contains("\"delete\""), "{mode}: {stderr}");
+        assert!(!stderr.contains("giles started"), "{mode}: {stderr}");
+        // Nothing opened the database.
+        assert!(!home.join("data/giles.db").exists(), "{mode}");
+    }
+}
+
 #[cfg(feature = "provider-anthropic")]
 #[test]
 fn a_component_that_cannot_be_built_fails_with_the_file_and_key() {

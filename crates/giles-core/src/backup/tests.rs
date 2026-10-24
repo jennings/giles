@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::os::unix::fs::{PermissionsExt, symlink};
 
-use giles_store::{BlobStore, JobKey, Store};
+use giles_store::{BlobStore, JobKey, JournalMode, Store};
 use giles_types::AgentId;
 use tempfile::TempDir;
 
@@ -731,4 +731,120 @@ async fn a_backup_finishes_when_its_caller_goes_away() {
     fs::copy(database, restored.path().join("giles.db")).unwrap();
     Store::open(restored.path().join("giles.db")).await.unwrap();
     assert!(read_archive(archive).contains_key("giles.toml"));
+}
+
+/// The modes with a rollback journal; the default WAL is covered by the tests above.
+const ROLLBACK_MODES: [JournalMode; 3] = [
+    JournalMode::Delete,
+    JournalMode::Truncate,
+    JournalMode::Persist,
+];
+
+#[tokio::test]
+async fn a_snapshot_taken_in_a_rollback_journal_mode_restores_in_that_mode_and_in_wal() {
+    for mode in ROLLBACK_MODES {
+        let (_dir, root) = data_root();
+        let options = open_options(&root).journal_mode(mode);
+        let store = Store::open_with(root.database_file(), options)
+            .await
+            .unwrap();
+        let blobs = BlobStore::open(root.blobs_dir(), store.clone())
+            .await
+            .unwrap();
+        let agent = || AgentId::new("main").unwrap();
+        for (i, job) in ["a", "b", "c"].into_iter().enumerate() {
+            store
+                .job_set_last_run(agent(), JobKey::Config(job.into()), at(i as i64))
+                .await
+                .unwrap();
+        }
+        assert!(!root.data_dir().join("giles.db-wal").exists(), "{mode}");
+
+        let out = tempfile::tempdir().unwrap();
+        let snapshot = create(&root, &store, &blobs, out.path(), at(100))
+            .await
+            .unwrap();
+        // Writes after the snapshot stay out of it, and the daemon went on serving.
+        store
+            .job_set_last_run(agent(), JobKey::Config("later".into()), at(200))
+            .await
+            .unwrap();
+        for leftover in ["-wal", "-journal"] {
+            let mut name = snapshot.database.clone().into_os_string();
+            name.push(leftover);
+            assert!(!PathBuf::from(name).exists(), "{mode}: {leftover}");
+        }
+
+        for target in [mode, JournalMode::Wal] {
+            let restored = tempfile::tempdir().unwrap();
+            let restored_db = restored.path().join("giles.db");
+            fs::copy(&snapshot.database, &restored_db).unwrap();
+            let restored = Store::open_with(
+                &restored_db,
+                giles_store::OpenOptions::new().journal_mode(target),
+            )
+            .await
+            .unwrap();
+            for (i, job) in ["a", "b", "c"].into_iter().enumerate() {
+                let run = job_run(&restored, job).await;
+                assert_eq!(run, Some(at(i as i64)), "{mode} -> {target}: {job}");
+            }
+            assert_eq!(
+                job_run(&restored, "later").await,
+                None,
+                "{mode} -> {target}"
+            );
+            restored
+                .job_set_last_run(agent(), JobKey::Config("new".into()), at(300))
+                .await
+                .unwrap();
+            assert_eq!(job_run(&restored, "new").await, Some(at(300)));
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_pre_migration_backup_is_consistent_in_a_rollback_journal_mode() {
+    for mode in ROLLBACK_MODES {
+        let (_dir, root) = data_root();
+        let options = || open_options(&root).journal_mode(mode);
+        let store = Store::open_with(root.database_file(), options())
+            .await
+            .unwrap();
+        store
+            .job_set_last_run(
+                AgentId::new("main").unwrap(),
+                JobKey::Config("keep".into()),
+                at(7),
+            )
+            .await
+            .unwrap();
+        drop(store);
+        downgrade_to_v1(&root.database_file());
+
+        let store = Store::open_with(root.database_file(), options())
+            .await
+            .unwrap();
+        assert_eq!(job_run(&store, "keep").await, Some(at(7)), "{mode}");
+        let names = backups(&root);
+        assert_eq!(names.len(), 2, "{mode}: {names:?}");
+        let database = root.backups_dir().join(&names[0]);
+        assert_eq!(
+            user_version(&database),
+            1,
+            "{mode}: the snapshot is the old schema"
+        );
+        let rows: i64 = rusqlite::Connection::open(&database)
+            .unwrap()
+            .query_row("SELECT count(*) FROM job_runs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "{mode}");
+        // Only the snapshot and its archive, no journal beside them.
+        assert!(
+            names
+                .iter()
+                .all(|n| n.ends_with(".db") || n.ends_with(".tar")),
+            "{names:?}"
+        );
+    }
 }

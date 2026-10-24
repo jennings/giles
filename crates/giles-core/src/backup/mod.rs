@@ -3,7 +3,7 @@
 //! A snapshot is two files that share a name stem:
 //!
 //! - `<stem>.db`: the database, written with `VACUUM INTO`, which is consistent while the core
-//!   runs in WAL mode (copying the file isn't);
+//!   runs, in any journal mode (copying the file isn't);
 //! - `<stem>.tar`: a tar of the files people write and the blobs (see [`write_archive`]).
 //!
 //! `giles backup <dir>` (the admin service's `Backup`) writes one to a directory the operator

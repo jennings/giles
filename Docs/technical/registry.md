@@ -9,7 +9,9 @@ and model resolution. `giles_core::runtime` builds it at startup together with t
 `Runtime::start(root, Arc<Config>)` runs after the configuration is loaded and the sandbox host
 check has run ([The `giles` Binary](daemon.md#giles-serve-lifecycle)):
 
-1. Open the database, `data/giles.db` (`giles_store::Store::open`, which migrates it).
+1. Open the database, `data/giles.db` (`giles_store::Store::open_with`, which migrates it) in the
+   configured `[core] journal_mode`, with the pre-migration backup hook
+   ([Storage](storage.md#journal-modes)).
 2. Open the blob store, `data/blobs` (`BlobStore::open`).
 3. `Registry::from_config(root, config, media)` with `media` a `giles_core::blobs::BlobMedia` over
    the blob store.

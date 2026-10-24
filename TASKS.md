@@ -356,3 +356,17 @@ Added by the owner after the v1 plan.
     than silently ignored. Update `Docs/PLAN.md` and `Docs/user` examples that show `[[routes]]`.
 
   **Needs:** 5.1, 2.2.
+
+- [x] **5.3 SQLite journal mode** (added by the owner) (§11.4). A `[core] journal_mode` option for
+  the database's SQLite journal mode, default `wal`:
+  - Values `wal`, `delete`, `truncate`, `persist` (case-insensitive); `memory` and `off` are
+    refused as corruption risks, and invalid values name the allowed ones.
+  - Changing it switches an existing database at the next start, in either direction, with no
+    manual step. If SQLite can't set the mode (WAL on a network file system), the startup error
+    names the option.
+  - The rollback-journal modes stay correct: reads and the writer wait for each other instead of
+    failing with `SQLITE_BUSY`, `synchronous` stays `FULL`, snapshots and pre-migration backups
+    stay consistent, and a clean shutdown leaves no journal file.
+  - Tests for every mode, switching, concurrency, backups; user and technical docs.
+
+  **Needs:** 1.2, 4.1.

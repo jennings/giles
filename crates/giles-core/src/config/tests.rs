@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use giles_store::JournalMode;
 use tempfile::TempDir;
 
 use super::*;
@@ -207,6 +208,47 @@ fn retired_instances_are_names_that_are_not_configured() {
             "{MINIMAL}[core]\nretired_instances = {value}\n[channel.web]\n"
         ));
         assert_error(&home, "giles.toml", key, reason);
+    }
+}
+
+#[test]
+fn the_journal_mode_defaults_to_wal_and_accepts_the_four_safe_modes_in_any_case() {
+    assert_eq!(
+        Home::new(MINIMAL).load_ok().core.journal_mode,
+        JournalMode::Wal
+    );
+    for (text, mode) in [
+        ("wal", JournalMode::Wal),
+        ("delete", JournalMode::Delete),
+        ("truncate", JournalMode::Truncate),
+        ("persist", JournalMode::Persist),
+        ("WAL", JournalMode::Wal),
+        ("Delete", JournalMode::Delete),
+        ("TRUNCATE", JournalMode::Truncate),
+        ("pErSiSt", JournalMode::Persist),
+    ] {
+        let home = Home::new(&format!("{MINIMAL}[core]\njournal_mode = \"{text}\"\n"));
+        assert_eq!(home.load_ok().core.journal_mode, mode, "{text}");
+    }
+}
+
+#[test]
+fn journal_modes_that_risk_corruption_or_do_not_exist_are_refused() {
+    for (value, reason) in [
+        ("\"memory\"", "can corrupt the database or lose data"),
+        ("\"OFF\"", "can corrupt the database or lose data"),
+        ("\"wal2\"", "unknown journal mode"),
+        ("\"\"", "unknown journal mode"),
+        ("true", "invalid type"),
+    ] {
+        let home = Home::new(&format!("{MINIMAL}[core]\njournal_mode = {value}\n"));
+        assert_error(&home, "giles.toml", "core.journal_mode", reason);
+    }
+    // The refusal names the way forward.
+    let home = Home::new(&format!("{MINIMAL}[core]\njournal_mode = \"memory\"\n"));
+    let reason = home.load().unwrap_err().reason;
+    for allowed in ["wal", "delete", "truncate", "persist"] {
+        assert!(reason.contains(&format!("\"{allowed}\"")), "{reason}");
     }
 }
 

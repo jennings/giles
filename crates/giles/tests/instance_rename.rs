@@ -7,7 +7,7 @@ use std::process::{Command, Output};
 
 use giles_core::admin::InstanceLock;
 use giles_core::paths::DataRoot;
-use giles_store::{SessionKey, SessionKind, Store};
+use giles_store::{JournalMode, OpenOptions, SessionKey, SessionKind, Store};
 use giles_types::{AgentId, ConversationId, UserId};
 
 const GILES_TOML: &str = r#"# Giles
@@ -116,6 +116,52 @@ async fn rename_moves_the_data_and_prints_what_it_did() {
     let rows = store.instance_rows().await.unwrap();
     assert_eq!(rows["libera-chat"].sessions, 1);
     assert!(!rows.contains_key("libera"));
+}
+
+/// What a fresh connection finds recorded in the database file: WAL, or else `delete`.
+fn recorded_journal_mode(root: &DataRoot) -> String {
+    rusqlite::Connection::open(root.database_file())
+        .unwrap()
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .unwrap()
+}
+
+/// The rename runs without loading the configuration, so it can't know the `journal_mode` the
+/// daemon uses; it must leave the database in the mode it is in, which is what a data root on a
+/// file system without WAL needs.
+#[tokio::test]
+async fn rename_leaves_the_database_in_the_journal_mode_it_is_in() {
+    for mode in [JournalMode::Wal, JournalMode::Delete] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = populated(dir.path()).await;
+        drop(
+            Store::open_with(root.database_file(), OpenOptions::new().journal_mode(mode))
+                .await
+                .unwrap(),
+        );
+        let recorded = if mode == JournalMode::Wal {
+            "wal"
+        } else {
+            "delete"
+        };
+        assert_eq!(recorded_journal_mode(&root), recorded);
+
+        let output = giles(dir.path(), &["instance", "rename", "libera", "libera-chat"]);
+        assert!(output.status.success(), "{mode}: {}", stderr(&output));
+        assert_eq!(recorded_journal_mode(&root), recorded, "{mode}");
+        for suffix in ["-wal", "-journal"] {
+            let mut name = root.database_file().into_os_string();
+            name.push(suffix);
+            assert!(!Path::new(&name).exists(), "{mode}: {suffix} left behind");
+        }
+        let store = Store::open_with(root.database_file(), OpenOptions::new().journal_mode(mode))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.instance_rows().await.unwrap()["libera-chat"].sessions,
+            1
+        );
+    }
 }
 
 #[tokio::test]

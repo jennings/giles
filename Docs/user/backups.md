@@ -4,7 +4,8 @@ Everything Giles knows is in its data root: your configuration, the agents' memo
 the conversation database, and attachments. `giles backup` writes a consistent copy of all of it
 while the daemon keeps running.
 
-Don't copy `data/giles.db` yourself. The database runs in WAL mode, so a plain file copy can miss
+Don't copy `data/giles.db` yourself. The database is written to while Giles runs (in WAL mode by
+default, see [`journal_mode`](configuration.md#journal_mode)), so a plain file copy can miss
 recent writes or capture a half-written state. `giles backup` asks the running daemon for a
 snapshot it can trust.
 
@@ -61,8 +62,9 @@ directory readable only by you, as Giles does:
 # 2. Make sure the directories exist, private to you (nothing changes if they do).
 mkdir -p -m 700 ~/.giles ~/.giles/data
 cd ~/.giles
-# 3. Put the database back. The -wal and -shm files belong to the old database; remove them.
-rm -f data/giles.db data/giles.db-wal data/giles.db-shm
+# 3. Put the database back. The -wal, -shm and -journal files belong to the old database; remove
+#    them.
+rm -f data/giles.db data/giles.db-wal data/giles.db-shm data/giles.db-journal
 cp /mnt/backups/giles/giles-20261023T140312Z.db data/giles.db
 # 4. Unpack the files over the data root.
 tar -xf /mnt/backups/giles/giles-20261023T140312Z.tar
@@ -72,6 +74,9 @@ giles serve
 
 On a new machine, add `secrets.toml` (mode 0600) and the plugin binaries before step 5. If the
 data root isn't `~/.giles`, use its path in steps 2 and 3, or set `GILES_HOME` for `giles serve`.
+
+The snapshot doesn't depend on the journal mode it was taken in. Giles switches the restored
+database to the `journal_mode` in `giles.toml` when it starts.
 
 Unpacking replaces the files of the same name and leaves the others where they are. To get back
 exactly what the backup held, restore into an empty data root.

@@ -1286,6 +1286,7 @@ for an agent created in the web UI or a user created at runtime (section 3.2).
 [core]
 http_listen = "127.0.0.1:8080"
 retired_instances = []        # instance names removed on purpose; their data stays (section 7.2)
+journal_mode = "wal"          # SQLite journal mode: wal (default), delete, truncate, persist (11.4)
 
 # Instances: [<kind>.<instance>]. `component` defaults to the instance name. The core uses a
 # built-in component with that name if there is one, else the plugin giles-<kind>-<component>.
@@ -1395,7 +1396,12 @@ users/<user>/
 
 ### 11.4 SQLite
 
-One database, `data/giles.db`, in WAL mode with migrations embedded in the binary. Main tables:
+One database, `data/giles.db`, with migrations embedded in the binary. It runs in WAL mode by
+default; `[core] journal_mode` chooses `wal`, `delete`, `truncate` or `persist` (`memory` and `off`
+are refused: they risk corruption). WAL needs shared memory, which network file systems lack, so
+the option is the way out there; changing it converts the database at the next start. Writes go
+through one writer connection, and WAL lets reads run beside it; in the other modes reads and the
+writer wait for each other and `synchronous` is `FULL`. Main tables:
 
 | Table          | Holds                                                                  |
 | -------------- | ---------------------------------------------------------------------- |
@@ -1427,10 +1433,11 @@ Per-user operations:
   - Usage rows keep their token counts with the user cleared.
   - `user.toml` is listed for the operator to delete; the core doesn't delete TOML files.
 
-Backups: copying a live SQLite file in WAL mode can capture a broken state, so `giles backup <dir>`
-is the supported way: `VACUUM INTO` for the database plus a tar of the TOML, Markdown, and blobs.
-Before applying schema migrations, the core writes the same snapshot to `backups/`, so a bad upgrade
-can be undone by restoring it with the old binary.
+Backups: copying a live SQLite file can capture a broken state (in WAL mode the main file is behind
+the WAL), so `giles backup <dir>` is the supported way: `VACUUM INTO` for the database plus a tar
+of the TOML, Markdown, and blobs. Before applying schema migrations, the core writes the same
+snapshot to `backups/`, so a bad upgrade can be undone by restoring it with the old binary. In a
+rollback-journal mode the snapshot runs on the writer connection, so writes wait for it.
 
 ### 11.5 Blob Store
 

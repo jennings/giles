@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 
+use giles_store::JournalMode;
 use jiff::tz::TimeZone;
 use serde::Deserialize;
 
@@ -26,6 +27,9 @@ pub struct CoreConfig {
     /// Names of instances that were removed on purpose and whose data stays. The startup check
     /// for a rename done by hand ignores them (PLAN section 7.2).
     pub retired_instances: Vec<InstanceName>,
+    /// The SQLite journal mode of `data/giles.db`: [`JournalMode::Wal`] unless set. The database
+    /// is switched to it at startup, from whichever mode it was in.
+    pub journal_mode: JournalMode,
 }
 
 /// `[owner]`: the one user of v1 (PLAN section 1.1).
@@ -107,6 +111,7 @@ struct RawCore {
     http_listen: Option<SocketAddr>,
     #[serde(default)]
     retired_instances: Vec<String>,
+    journal_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -137,9 +142,20 @@ impl RawGiles {
             }
             retired.push(name);
         }
+        let journal_mode = match &self.core.journal_mode {
+            Some(text) => text.parse::<JournalMode>().map_err(|err| {
+                ConfigError::at(
+                    file,
+                    KeyPath::root().key("core").key("journal_mode"),
+                    err.to_string(),
+                )
+            })?,
+            None => JournalMode::default(),
+        };
         Ok(CoreConfig {
             http_listen: self.core.http_listen.unwrap_or(DEFAULT_HTTP_LISTEN),
             retired_instances: retired,
+            journal_mode,
         })
     }
 

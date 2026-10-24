@@ -51,9 +51,12 @@ second writer connection only adds `SQLITE_BUSY` retries, never throughput.
 ## Journal Modes
 
 The journal mode is `OpenOptions::journal_mode(JournalMode)`, WAL unless the caller says
-otherwise. `JournalMode` has four variants, `Wal`, `Delete`, `Truncate` and `Persist`. SQLite's
-`memory` and `off` give up the rollback journal, so a crash can corrupt the file; they are not
-variants and `JournalMode::from_str` (case-insensitive) refuses them with an error that says why.
+otherwise. The daemon sets it from `[core] journal_mode` ([Configuration](config.md)): that is
+`Runtime::start`, which adds it to the options that carry the pre-migration backup hook
+([Backups](backups.md#before-migrations)). `JournalMode` has four variants, `Wal`, `Delete`,
+`Truncate` and `Persist`. SQLite's `memory` and `off` give up the rollback journal, so a crash can
+corrupt the file; they are not variants and `JournalMode::from_str` (case-insensitive) refuses them
+with an error that says why.
 
 Why not only WAL: it needs shared memory (the `-shm` file), which network file systems don't
 provide, so on one SQLite can't enter WAL mode and the database can't be opened at all. The other
@@ -61,14 +64,19 @@ modes work anywhere SQLite works.
 
 **Switching.** Opening runs `PRAGMA journal_mode = <mode>` on the writer before anything else and
 checks the answer. SQLite either fails or reports the mode it kept (`delete` when WAL can't run);
-both become `Error::JournalMode { requested, reason }`, which a caller can turn into advice. Only
-WAL is recorded in the database file (the rollback modes are per connection and
-an unrecorded file reads as `delete`), so changing the setting in either direction rewrites the file
-header once at the next start, with no manual step and no data copied. Leaving WAL needs no other
-connection open; the daemon's single-instance lock makes that so for Giles, and the writer connects
-before the readers. A `-wal` file left by a crash is recovered and removed by that first
-connection. `OpenOptions::keep_journal_mode()` opens in whatever mode the file is in, for tools
-that must not undo the choice made for the daemon.
+both become `Error::JournalMode { requested, reason }`. `Runtime::start` turns that into
+`StartError::JournalMode`, whose message names `[core] journal_mode` as the way out: for WAL, which
+network file systems can't run, set `delete`; for any other mode (SQLite refuses to leave WAL
+while something else has the file open), stop that program or pick another mode. Only WAL is
+recorded in the database file (the rollback modes are per connection and an unrecorded file reads
+as `delete`), so changing the setting in either direction rewrites the file header once at the
+next start, with no manual step and no data copied. Leaving WAL needs no other connection open;
+the daemon's single-instance lock makes that so for Giles, and the writer connects before the
+readers. A `-wal` file left by a crash is recovered and removed by that first connection.
+`OpenOptions::keep_journal_mode()` opens in whatever mode the file is in. `giles instance rename`
+uses it: it runs without loading `giles.toml` (the file may be half renamed), so it can't know the
+configured mode, and opening with the default would switch a database on a file system without WAL
+to WAL and fail.
 
 **What changes in the rollback modes** (`delete`, `truncate`, `persist`), where readers and the
 writer exclude each other:

@@ -8,12 +8,17 @@ The database half is `giles_store::Store::vacuum_into` ([Storage](storage.md)).
 
 A snapshot is two files that share a stem, `Snapshot { database, archive }`:
 
-- `<stem>.db`: `VACUUM INTO` of the live database. It's taken on a read connection, so it's one
-  consistent state, doesn't block the writer, and is a standalone file with no WAL.
+- `<stem>.db`: `VACUUM INTO` of the live database, one consistent state and a standalone file with
+  no WAL or journal. In WAL mode (the default) it's taken on a read connection and doesn't block
+  the writer. In the rollback-journal modes (`[core] journal_mode`) a long read would make a
+  writer's commit time out, so `Store::vacuum_into` takes it on the writer connection instead:
+  writes queue for the length of the copy, reads go on ([Storage](storage.md#journal-modes)).
 - `<stem>.tar`: a tar with paths relative to the data root, so it unpacks over one.
 
 Copying `giles.db` is not an option while the core runs: in WAL mode the main file alone is behind
-the WAL, and the copy can race a checkpoint.
+the WAL, and the copy can race a checkpoint; in the other modes it can catch a commit half done.
+The snapshot doesn't carry the journal mode (only WAL is recorded in a file, and `VACUUM INTO`
+writes a plain rollback-mode file), so a restore opens in any mode and the next start switches it.
 
 Both files are created first, empty, with `create_new` and mode 0600 (`Snapshot::reserve`). That
 reserves the names (a snapshot never overwrites a file, and two backups in one second fail with

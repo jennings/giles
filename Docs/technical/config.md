@@ -27,6 +27,9 @@ The steps:
 2. Validate `[core]` and `[owner]`. `core.retired_instances` holds valid instance names that appear
    once and that no `[provider.*]`, `[channel.*]`, or `[toolset.*]` table uses; the core only
    stores them, for the startup check in [Instance Rename](instance-rename.md#startup-check).
+   `core.journal_mode` is parsed with `giles_store::JournalMode::from_str` (case-insensitive;
+   `memory` and `off` and anything unknown are errors at `core.journal_mode`) and defaults to WAL
+   ([Storage](storage.md#journal-modes)); `Runtime::start` passes it to the store.
 3. Load `secrets.toml` ([Secrets](#secrets)).
 4. Check that instance names are unique across the three kinds, ignoring ASCII case (they share
    the data directory namespace, `data/plugins/<instance>/`, and pid files, and macOS file systems
