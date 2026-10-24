@@ -109,6 +109,8 @@ On start, `giles serve` creates any missing directories of the layout, readable 
   cache/            caches Giles can rebuild
 ```
 
+See [Backups](backups.md) for `giles backup` and the snapshot Giles takes before an upgrade.
+
 Giles never loosens permissions you set on these directories, except `run/`, which it always resets
 to 0700.
 

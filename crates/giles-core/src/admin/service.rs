@@ -2,19 +2,22 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use giles_plugin_sdk::convert::{status_to_proto, timestamp_from_proto, timestamp_to_proto};
 use giles_proto::admin::v1 as pb;
 use giles_proto::admin::v1::admin_service_server::AdminService as AdminRpc;
 use giles_proto::types::v1 as types_pb;
-use giles_store::{ModelUsage, SessionId, SessionKind, SessionSummary, Store};
+use giles_store::{BlobStore, ModelUsage, SessionId, SessionKind, SessionSummary, Store};
 use giles_types::{AgentId, Timestamp, UserId};
 use tonic::{Request, Response, Status};
 use tracing::{error, info};
 
 use super::plugins::{PluginControl, configured, landlock_abi, plugin_instances};
+use crate::backup::{self, BackupError};
 use crate::config::{ChannelRuntime, Config, InstanceName};
+use crate::paths::DataRoot;
 use crate::sandbox::HostReport;
 use crate::sessions::{ChannelStatusRecord, Clock, Sessions};
 
@@ -89,6 +92,10 @@ impl LoginLinks for crate::channels::web::WebChannel {
 pub struct AdminOptions {
     /// The configuration, as loaded at startup.
     pub config: Arc<Config>,
+    /// The data root, for `Backup`.
+    pub root: DataRoot,
+    /// The blob store, whose sweep `Backup` holds off.
+    pub blobs: BlobStore,
     /// The database.
     pub store: Store,
     /// The startup sandbox check (PLAN section 12.1): the host's report, or why it can't sandbox.
@@ -314,9 +321,59 @@ impl AdminRpc for AdminService {
 
     async fn backup(
         &self,
-        _request: Request<pb::BackupRequest>,
+        request: Request<pb::BackupRequest>,
     ) -> Result<Response<pb::BackupResponse>, Status> {
-        Err(Status::unimplemented("backups are not implemented yet"))
+        let dir = PathBuf::from(request.into_inner().dir);
+        if !dir.is_absolute() {
+            return Err(Status::invalid_argument(
+                "dir must be an absolute path to an existing directory",
+            ));
+        }
+        match tokio::fs::metadata(&dir).await {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => {
+                return Err(Status::invalid_argument(format!(
+                    "{} is not a directory",
+                    dir.display()
+                )));
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Err(Status::not_found(format!(
+                    "{} does not exist; create it first",
+                    dir.display()
+                )));
+            }
+            Err(err) => {
+                return Err(Status::failed_precondition(format!(
+                    "cannot read {}: {err}",
+                    dir.display()
+                )));
+            }
+        }
+        let snapshot = backup::create(
+            &self.options.root,
+            &self.options.store,
+            &self.options.blobs,
+            &dir,
+            self.options.clock.now(),
+        )
+        .await
+        .map_err(|err| {
+            error!(rpc = "Backup", error = %err, dir = %dir.display(), "admin call failed");
+            match err {
+                BackupError::Exists(_) => Status::already_exists(err.to_string()),
+                err => Status::internal(format!("backup failed: {err}")),
+            }
+        })?;
+        info!(
+            database = %snapshot.database.display(),
+            archive = %snapshot.archive.display(),
+            "wrote a backup",
+        );
+        let path = |path: PathBuf| path.to_string_lossy().into_owned();
+        Ok(Response::new(pb::BackupResponse {
+            paths: vec![path(snapshot.database), path(snapshot.archive)],
+        }))
     }
 }
 

@@ -7,11 +7,11 @@ lives in library crates.
 
 `clap` (derive). `cli::Cli` has the global options and a `cli::Command` enum with one variant per
 subcommand, each carrying its own `clap::Args` struct (`Serve(ServeArgs)`,
-`SandboxExec(SandboxExecArgs)`, ...). `status`, `usage`, and `admin login-link` call the running
-daemon's admin service ([Admin Service](admin.md)) through `admin_client::call`, which builds a
-current-thread Tokio runtime and words connection and token errors for the operator. Later
-subcommands (`pair`, `backup`, `instance`) are added as variants with their own argument structs
-and modules, dispatched from `main`.
+`SandboxExec(SandboxExecArgs)`, ...). `status`, `usage`, `backup`, and `admin login-link` call the
+running daemon's admin service ([Admin Service](admin.md)) through `admin_client::call`, which
+builds a current-thread Tokio runtime and words connection and token errors for the operator. Later
+subcommands (`pair`, `instance`) are added as variants with their own argument structs and modules,
+dispatched from `main`.
 
 `giles sandbox-exec <SPEC> -- <COMMAND>...` is the internal plugin sandbox trampoline (see
 [Plugin Sandbox](sandbox.md)); `--home` is accepted there but unused. Its failures exit 125 to

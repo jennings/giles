@@ -6,6 +6,7 @@ use std::sync::Arc;
 use giles_store::{BlobStore, Store};
 use tokio_util::sync::CancellationToken;
 
+use crate::backup;
 use crate::blobs::{BlobMedia, BlobSweep, SweepSchedule};
 use crate::config::Config;
 use crate::core_tools;
@@ -77,7 +78,8 @@ impl Runtime {
     /// The first failure, as a [`StartError`].
     pub async fn start(root: DataRoot, config: Arc<Config>) -> Result<Self, StartError> {
         let path = root.database_file();
-        let store = Store::open(path.clone())
+        // An existing database is backed up to `backups/` before any migration runs.
+        let store = Store::open_with(path.clone(), backup::open_options(&root))
             .await
             .map_err(|source| StartError::Store { path, source })?;
         let path = root.blobs_dir();

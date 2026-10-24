@@ -9,7 +9,7 @@ use giles_proto::admin::v1 as pb;
 use giles_proto::admin::v1::admin_service_client::AdminServiceClient;
 use giles_proto::channel::v1 as channel_pb;
 use giles_proto::plugin::v1::SandboxGrants;
-use giles_store::{SessionKey, SessionKind, Store, UsageRecord};
+use giles_store::{BlobStore, JobKey, SessionKey, SessionKind, Store, UsageRecord};
 use giles_types::{AgentId, ChannelStatus, ConversationId, Timestamp, Usage, UserId};
 use hyper_util::rt::TokioIo;
 use tempfile::TempDir;
@@ -151,11 +151,16 @@ impl Harness {
         )
         .unwrap_or_else(|e| panic!("{e}"));
         let store = Store::open(root.database_file()).await.unwrap();
+        let blobs = BlobStore::open(root.blobs_dir(), store.clone())
+            .await
+            .unwrap();
         let statuses = Arc::new(FakeStatuses::default());
         let lock = InstanceLock::acquire(&root).unwrap();
         let listener = AdminListener::bind(&root, &lock).unwrap();
         let service = Arc::new(AdminService::new(AdminOptions {
             config: Arc::new(config),
+            root: root.clone(),
+            blobs,
             store: store.clone(),
             sandbox: fakes
                 .sandbox
@@ -273,7 +278,10 @@ where
             "Backup",
             code(
                 client
-                    .backup(pb::BackupRequest { dir: "/tmp".into() })
+                    // Rejected before it touches anything.
+                    .backup(pb::BackupRequest {
+                        dir: "relative".into(),
+                    })
                     .await,
             ),
         ),
@@ -742,14 +750,108 @@ async fn usage_is_reported_per_agent_provider_and_model() {
 }
 
 #[tokio::test]
-async fn backup_is_not_implemented_yet() {
+async fn backup_writes_a_snapshot_to_the_directory() {
     let h = Harness::start(Fakes::default()).await;
+    let agent = AgentId::new("main").unwrap();
+    h.store
+        .job_set_last_run(agent.clone(), JobKey::Config("tea".into()), at(5))
+        .await
+        .unwrap();
+    let out = tempfile::tempdir().unwrap();
+
+    let paths = h
+        .client()
+        .await
+        .backup(pb::BackupRequest {
+            dir: out.path().to_str().unwrap().into(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .paths;
+    // The service's clock names it: `FixedClock` is 1000 s after 2027-01-15 08:00 UTC.
+    let database = out.path().join("giles-20270115T081640Z.db");
+    let archive = out.path().join("giles-20270115T081640Z.tar");
+    assert_eq!(
+        paths,
+        [database.to_str().unwrap(), archive.to_str().unwrap()]
+    );
+
+    let copy = Store::open(&database).await.unwrap();
+    assert_eq!(
+        copy.job_last_run(agent, JobKey::Config("tea".into()))
+            .await
+            .unwrap(),
+        Some(at(5))
+    );
+    let mut names = Vec::new();
+    for entry in tar::Archive::new(std::fs::File::open(&archive).unwrap())
+        .entries()
+        .unwrap()
+    {
+        names.push(
+            entry
+                .unwrap()
+                .path()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    // The config and the (empty) trees of the layout.
+    assert_eq!(
+        names,
+        [
+            "giles.toml",
+            "agents",
+            "users",
+            "skills",
+            "data/blobs",
+            "data/blobs/sha256"
+        ]
+    );
+
+    // A second backup in the same second is refused, not overwritten.
     let err = h
         .client()
         .await
-        .backup(pb::BackupRequest { dir: "/tmp".into() })
+        .backup(pb::BackupRequest {
+            dir: out.path().to_str().unwrap().into(),
+        })
         .await
         .unwrap_err();
-    assert_eq!(err.code(), Code::Unimplemented);
+    assert_eq!(err.code(), Code::AlreadyExists);
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn backup_needs_an_absolute_path_to_an_existing_directory() {
+    let h = Harness::start(Fakes::default()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("file");
+    std::fs::write(&file, "x").unwrap();
+    let mut client = h.client().await;
+    for (what, path, code) in [
+        ("relative", "backups".to_owned(), Code::InvalidArgument),
+        ("empty", String::new(), Code::InvalidArgument),
+        (
+            "missing",
+            dir.path().join("missing").to_str().unwrap().to_owned(),
+            Code::NotFound,
+        ),
+        (
+            "a file",
+            file.to_str().unwrap().to_owned(),
+            Code::InvalidArgument,
+        ),
+    ] {
+        let err = client
+            .backup(pb::BackupRequest { dir: path })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), code, "{what}: {}", err.message());
+    }
+    // Nothing was written anywhere.
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     h.stop().await;
 }

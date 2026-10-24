@@ -593,6 +593,84 @@ fn admin_login_link_prints_a_url_that_logs_in_once() {
     assert!(status.success(), "{status}\n{log}");
 }
 
+#[test]
+fn backup_writes_a_database_snapshot_and_an_archive_into_a_directory() {
+    let env = Env::new();
+    let home = env.path("home");
+    let home_arg = home.to_str().unwrap();
+    write_config(&home, MINIMAL_CONFIG);
+    record_usage(
+        &home,
+        "jeeves",
+        giles_types::Usage {
+            input_tokens: 7,
+            output_tokens: 1,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        },
+    );
+    fs::create_dir(env.path("out")).unwrap();
+    // The working directory is reported with symlinks resolved (macOS `/var` is `/private/var`).
+    let out = env.path("out").canonicalize().unwrap();
+    // A relative directory is the CLI's, not the daemon's, working directory.
+    let backup = |dir: &str| {
+        let output = env
+            .command(&["backup", "--home", home_arg, dir])
+            .current_dir(env.dir.path())
+            .stdout(Stdio::piped())
+            .output()
+            .unwrap();
+        (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+
+    let (ok, _, stderr) = backup("out");
+    assert!(!ok);
+    assert!(stderr.contains("giles is not running"), "{stderr}");
+
+    let daemon = Daemon::start(env.command(&["serve", "--home", home_arg]));
+
+    let (ok, stdout, stderr) = backup("out");
+    assert!(ok, "{stderr}");
+    let paths: Vec<&Path> = stdout.lines().map(Path::new).collect();
+    let [database, archive] = paths[..] else {
+        panic!("{stdout}");
+    };
+    assert!(
+        database.starts_with(&out) && archive.starts_with(&out),
+        "{stdout}"
+    );
+    assert_eq!(database.extension().unwrap(), "db");
+    assert_eq!(archive.extension().unwrap(), "tar");
+    assert_eq!(mode(database), 0o600);
+    assert_eq!(mode(archive), 0o600);
+    // The copy opens as a database with the usage row the daemon had.
+    let rows = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let store = giles_store::Store::open(database).await.unwrap();
+            store.usage_by_model(None, None).await.unwrap()
+        });
+    assert_eq!(rows.len(), 1);
+    assert!(
+        fs::read(archive)
+            .unwrap()
+            .windows("giles.toml".len())
+            .any(|w| w == b"giles.toml")
+    );
+
+    let (ok, stdout, stderr) = backup("missing");
+    assert!(!ok && stdout.is_empty(), "{stdout}");
+    assert!(stderr.contains("does not exist"), "{stderr}");
+
+    let (status, log) = daemon.stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+}
+
 #[cfg(feature = "provider-anthropic")]
 #[test]
 fn a_component_that_cannot_be_built_fails_with_the_file_and_key() {

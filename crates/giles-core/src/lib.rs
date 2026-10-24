@@ -4,6 +4,7 @@ pub mod admin;
 pub mod agent_loop;
 pub mod agents;
 pub mod approvals;
+pub mod backup;
 pub mod blobs;
 pub mod channels;
 pub mod commands;

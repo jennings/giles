@@ -55,7 +55,7 @@ connection (a socket a dead core left), or a fallback socket directory that does
 | `ResetSession`    | Ends the session like `/new` (`Store::end_session` at the current time; a running turn finishes, and the conversation's next message opens a new session). `NOT_FOUND`, `FAILED_PRECONDITION` if it already ended, `INVALID_ARGUMENT` for a malformed id. |
 | `CreateLoginLink` | `LoginLinks::create_login_link(&user, now)`; `UNAVAILABLE` without the web channel. `UnknownUser` maps to `NOT_FOUND`, `Refused` to `FAILED_PRECONDITION`. |
 | `UsageReport`     | `Store::usage_by_model(since, until)`: one row per agent, provider instance, and model. |
-| `Backup`          | `UNIMPLEMENTED` until backups (TASKS.md 4.1).                                               |
+| `Backup`          | `backup::create` into `dir` (absolute, existing): `VACUUM INTO` plus a tar of the files; answers the two paths written. See [Backups](backups.md). |
 
 Store failures are logged and answered with `INTERNAL`.
 

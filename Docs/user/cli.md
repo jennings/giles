@@ -72,3 +72,10 @@ report covers all requests.
 Prints a one-time URL that logs `<user>` in to the web chat, for example from a phone. This Giles
 has one user, `owner`. The link works once and expires after a while; when it does is printed on
 standard error. Login links need the built-in `web` channel.
+
+## `giles backup <dir>`
+
+Writes a consistent snapshot of the data root into an existing directory while the daemon runs: the
+database (`giles-<time>.db`) and a tar of the configuration, Markdown files, and attachments
+(`giles-<time>.tar`). It prints the two paths. A relative `<dir>` is relative to where you run the
+command. See [Backups](backups.md) for what's included and how to restore.

@@ -38,7 +38,8 @@ on a pooled read connection, outside a transaction (`VACUUM` can't run inside on
 consistent state and blocks neither the writer nor other readers. The destination must not exist or
 be an empty file (so a caller can create it with the mode it wants first), and the copy is a
 standalone database with no `-wal` file. A plain file copy of a WAL database can miss the WAL or
-capture a torn state, which is why this is the only supported way to copy a live database.
+capture a torn state, which is why this is the only supported way to copy a live database
+([Backups](backups.md)).
 
 A dedicated writer was chosen over a pool of interchangeable connections because with SQLite a
 second writer connection only adds `SQLITE_BUSY` retries, never throughput.
@@ -53,7 +54,8 @@ version 0). Opening:
    older binary never writes to a schema it doesn't know;
 2. if the database is at version 1 or later and behind, calls the `OpenOptions::before_migrate`
    hook with a `MigrationPlan` (from and to versions, and `vacuum_into(dest)` for a consistent
-   copy). This is where task 4.1 writes the pre-upgrade snapshot to `backups/` (PLAN 11.4). An
+   copy). The core uses it to write the pre-upgrade snapshot to `backups/` (PLAN 11.4;
+   [Backups](backups.md#before-migrations)). An
    error from the hook aborts the open before anything changes. Fresh databases skip the hook;
 3. applies every pending migration and the new `user_version` in one `IMMEDIATE` transaction, so a
    failing step leaves the database exactly as it was.
@@ -326,10 +328,10 @@ periodically (see [Daemon](daemon.md)) with `SWEEP_GRACE`, 48 hours, and returns
   throughout. Each put holds the shared side from just before its rename until its row is written.
   Without it, a sweep could delete a file whose row a put is about to write, or delete an old row
   and file just as a put of the same content commits, leaving a row without a file. Puts keep
-  streaming into temp files while the sweep runs; only their commit waits.
-  `BlobStore::hold_off_sweep()` takes the shared side too, for a caller that must keep the sweep
-  from deleting blobs while it copies them together with the database; it holds the sweep off and
-  doesn't hold puts up.
+  streaming into temp files while the sweep runs; only their commit waits. A backup takes the
+  shared side too (`BlobStore::hold_off_sweep()`) from before it snapshots the database until its
+  archive is written, so the sweep can't delete a blob the snapshot still refers to
+  ([Backups](backups.md#the-archive)); that doesn't hold puts up.
 - **What it leaves alone.** `sha256/tmp/` (puts in progress; a failed or cancelled put deletes its
   temp file, and opening the store clears a crash's leftovers) and anything under a shard
   directory that isn't a regular file named by a valid id in its own shard.

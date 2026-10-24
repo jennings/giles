@@ -29,6 +29,8 @@ pub enum Command {
     Usage(UsageArgs),
     /// Administer the running daemon.
     Admin(AdminArgs),
+    /// Write a consistent snapshot of the data root (database and files) to a directory.
+    Backup(BackupArgs),
     /// Run a command in the plugin sandbox (internal: the daemon launches plugins through it).
     SandboxExec(SandboxExecArgs),
 }
@@ -48,6 +50,14 @@ pub struct UsageArgs {
     /// midnight), or an RFC 3339 time ("2026-10-01T09:00:00Z"). Default: all.
     #[arg(long, value_name = "WHEN")]
     pub since: Option<String>,
+}
+
+/// Arguments to `giles backup`.
+#[derive(Debug, Args)]
+pub struct BackupArgs {
+    /// The directory to write the backup into. It must exist.
+    #[arg(value_name = "DIR")]
+    pub dir: PathBuf,
 }
 
 /// Arguments to `giles admin`.
@@ -172,5 +182,17 @@ mod tests {
         ));
         // The user is required.
         assert!(Cli::try_parse_from(["giles", "admin", "login-link"]).is_err());
+    }
+
+    #[test]
+    fn backup_takes_one_directory() {
+        let cli = Cli::try_parse_from(["giles", "backup", "/mnt/backups", "--home", "/h"]).unwrap();
+        let Command::Backup(args) = cli.command else {
+            panic!("{:?}", cli.command);
+        };
+        assert_eq!(args.dir, Path::new("/mnt/backups"));
+        assert_eq!(cli.home.as_deref(), Some(Path::new("/h")));
+        assert!(Cli::try_parse_from(["giles", "backup"]).is_err());
+        assert!(Cli::try_parse_from(["giles", "backup", "a", "b"]).is_err());
     }
 }

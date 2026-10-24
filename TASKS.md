@@ -309,7 +309,7 @@ other and with the rest of this phase.
 
 4.1–4.3 are parallel; 4.4 and 4.5 come last.
 
-- [ ] **4.1 Backups** (§11.4). `Backup` RPC and `giles backup <dir>`: `VACUUM INTO` plus a tar of
+- [x] **4.1 Backups** (§11.4). `Backup` RPC and `giles backup <dir>`: `VACUUM INTO` plus a tar of
   the TOML, Markdown, and blobs; the same snapshot written to `backups/` before migrations run.
   **Needs:** 2.24.
 - [x] **4.2 Blob sweep** (§11.5). Periodic removal of blobs that no message, inbox or outbox row,

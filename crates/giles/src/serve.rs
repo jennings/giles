@@ -131,6 +131,8 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     let login_links = None;
     let admin = Arc::new(AdminService::new(AdminOptions {
         config: config.clone(),
+        root: root.clone(),
+        blobs: runtime.blobs.clone(),
         store: runtime.store.clone(),
         sandbox,
         started_at,

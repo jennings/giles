@@ -1,6 +1,7 @@
 //! The `giles` binary: the daemon and its command-line interface.
 
 mod admin_client;
+mod backup;
 mod cli;
 mod logging;
 mod login_link;
@@ -31,6 +32,10 @@ fn main() -> anyhow::Result<()> {
         Command::Usage(args) => {
             logging?;
             usage::run(home, &args)
+        }
+        Command::Backup(args) => {
+            logging?;
+            backup::run(home, &args)
         }
         Command::Admin(args) => {
             logging?;

@@ -50,6 +50,8 @@ serde-saphyr = { version = "2.0.0", default-features = false, features = ["deser
 serde_json.workspace = true
 serde_path_to_error = "0.1.20"
 sha2.workspace = true
+# The tar half of a backup (`backup`); no extended attributes.
+tar = { version = "0.4", default-features = false }
 tempfile.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }

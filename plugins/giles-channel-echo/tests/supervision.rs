@@ -104,6 +104,8 @@ async fn the_admin_service_shows_and_restarts_a_running_plugin() {
     let listener = AdminListener::bind(&home.root, &lock).unwrap();
     let admin = AdminService::new(AdminOptions {
         config: core.runtime.registry.config(),
+        root: home.root.clone(),
+        blobs: core.runtime.blobs.clone(),
         store: core.runtime.store.clone(),
         sandbox: Err("not checked in this test".into()),
         started_at: Timestamp::now(),
