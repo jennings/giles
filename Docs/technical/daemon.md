@@ -60,25 +60,33 @@ to stderr, with ANSI colors only when stderr is a terminal. The filter is `GILES
    fresh admin token and bind the admin socket (`AdminListener::bind`, removing one a crash left).
 8. Start the outbox's sender (`Runtime::start_outbox`, [Outbox](outbox.md)): drop the approval
    prompts the previous process left, then deliver proactive sends as their channels come up. Start
-   the sessions (`Runtime::start_sessions`, [Sessions and Turns](sessions.md)): recover from
-   an earlier crash or shutdown (interrupted turns), resume queued messages, and consume the events
-   of every registered channel. Turns run on the agent loop (`AgentLoop::from_runtime`,
+   the sessions (`Runtime::start_sessions`, [Sessions and Turns](sessions.md)): recover from an
+   earlier crash or shutdown (interrupted turns), resume queued messages, and consume the events of
+   every registered channel. Turns run on the agent loop (`AgentLoop::from_runtime`,
    [Agent Loop](agent-loop.md)). This is the last step that can fail: recovery changes state and
-   resumed turns start running, so nothing after it may abort startup. Then start the HTTP server
-   on its own task ([HTTP Server](http.md#lifecycle)) and the admin service on another
+   resumed turns start running, so nothing after it may abort startup. Then start the HTTP server on
+   its own task ([HTTP Server](http.md#lifecycle)) and the admin service on another
    ([Admin Service](admin.md)), and start supervising every plugin channel (`PluginHost::start`,
    [Plugin Host](plugin-host.md#supervision)), which waits for each one's first launch attempt,
-   while also waiting for every toolset's first start (`ToolsetHost::started`); both waits end if
-   a shutdown signal arrives first. Each plugin is registered with the registry and attached to
-   the sessions as it comes up; one that fails is logged and relaunched with backoff, or once its
-   binary changes. A toolset that fails to start is logged and retried with backoff
+   while also waiting for every toolset's first start (`ToolsetHost::started`); both waits end if a
+   shutdown signal arrives first. Each plugin is registered with the registry and attached to the
+   sessions as it comes up; one that fails is logged and relaunched with backoff, or once its binary
+   changes. A toolset that fails to start is logged and retried with backoff
    ([Toolsets](toolsets.md#lifecycle)). The admin service reports plugin supervision through
-   `admin::PluginControl`.
+   `admin::PluginControl`. The scheduler and the blob sweep (`Runtime::start_blob_sweep`,
+   `giles_core::blobs::BlobSweep`) start just before them. The sweep waits 60 seconds, so recovery
+   and the first turns finish first, then runs `BlobStore::sweep` ([Storage](storage.md#sweep))
+   every six hours, with the 48-hour grace period (constants `SWEEP_FIRST_DELAY` and
+   `SWEEP_INTERVAL`; the interval is measured from the end of one sweep to the start of the next).
+   Each run logs one `info` line (`blob sweep removed unreferenced blobs`, with `blobs`,
+   `orphan_files`, and `bytes`) when it removed something, a `debug` line when it didn't, and a
+   `warn` when it failed, in which case it removed nothing and the next run is on schedule.
 9. Log `giles started` with the root, admin socket path, HTTP URL, and instance and agent counts,
    plus a warning if the sockets use the `$TMPDIR` fallback.
 10. Wait until the shutdown token is cancelled, then await the HTTP server (it drains open requests
     for up to 5 s), the sessions (`Sessions::closed`: running turns are cancelled, channel pumps
-    stop between events), and the outbox's sender (`Outbox::closed`), then stop the plugins and
+    stop between events), the outbox's sender (`Outbox::closed`), and the blob sweep
+    (`BlobSweep::closed`; a sweep that is running finishes first), then stop the plugins and
     their supervision (`PluginHost::stop_all`: `Shutdown`, then `SIGTERM`, then `SIGKILL` to each
     plugin's process group) and the toolsets (`ToolsetHost::stop`: stdio servers' process groups
     killed, remote connections closed), await the admin server (it drains for up to 5 s and removes

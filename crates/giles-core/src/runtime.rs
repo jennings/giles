@@ -6,7 +6,7 @@ use std::sync::Arc;
 use giles_store::{BlobStore, Store};
 use tokio_util::sync::CancellationToken;
 
-use crate::blobs::BlobMedia;
+use crate::blobs::{BlobMedia, BlobSweep, SweepSchedule};
 use crate::config::Config;
 use crate::core_tools;
 use crate::outbox::Outbox;
@@ -147,6 +147,18 @@ impl Runtime {
             sessions.attach_channel(name, component, channel);
         }
         Ok(sessions)
+    }
+
+    /// Starts the periodic blob sweep (PLAN section 11.5): the first run a minute after this call,
+    /// then every six hours ([`SweepSchedule`]), until `shutdown` is cancelled
+    /// ([`BlobSweep::closed`] waits for it).
+    pub fn start_blob_sweep(&self, shutdown: CancellationToken) -> BlobSweep {
+        BlobSweep::start(
+            self.blobs.clone(),
+            Arc::new(SystemClock),
+            SweepSchedule::default(),
+            shutdown,
+        )
     }
 
     /// Starts the scheduler (PLAN section 6.11): config and runtime jobs, running their turns on

@@ -122,6 +122,16 @@ instead and logs a warning naming it. Nothing else moves. The directory's name i
 data root path, so `giles` commands that talk to the daemon find it when given the same data root
 path.
 
+## Attachment Cleanup
+
+Attachments (images, audio, documents) are stored once, in `data/blobs/`, however many messages
+mention them. About a minute after it starts and every six hours after that, Giles deletes the
+stored attachments that are no longer used: those that no conversation message, summary, queued
+incoming event, pending outgoing message, or scheduled job refers to, and that were last stored more
+than 48 hours ago. Attachments in your conversations are never removed this way. When a sweep
+deletes something, the log says how many attachments and bytes (`blob sweep removed unreferenced
+blobs`). A sweep that hits an error deletes nothing and says so in the log.
+
 ## Logging
 
 Giles logs at the `info` level by default. Set `GILES_LOG` (or `RUST_LOG`; `GILES_LOG` wins) to a

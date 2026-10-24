@@ -1,13 +1,108 @@
 //! The core's side of the blob store (PLAN section 11.5): attachment bytes for built-in
-//! providers.
+//! providers, and the periodic sweep of blobs nothing references.
+
+use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use giles_store::{Blob, BlobStore};
+use giles_store::{Blob, BlobStore, SWEEP_GRACE, SweepReport};
 use giles_types::{Error, MediaRef, Result};
 use tokio::io::AsyncReadExt;
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 use crate::providers::MediaSource;
+use crate::sessions::Clock;
+
+/// How long after startup the first sweep runs: late enough not to compete with startup
+/// recovery, early enough that a core that is restarted often still sweeps.
+pub const SWEEP_FIRST_DELAY: Duration = Duration::from_secs(60);
+
+/// The time between sweeps. Blobs have to be unreferenced for 48 hours first
+/// ([`SWEEP_GRACE`]), so a blob lives at most this much longer; the scan reads every message,
+/// which is why it doesn't run more often.
+pub const SWEEP_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// When the sweep runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SweepSchedule {
+    /// From start to the first sweep.
+    pub first_delay: Duration,
+    /// From the end of one sweep to the start of the next.
+    pub interval: Duration,
+}
+
+impl Default for SweepSchedule {
+    fn default() -> Self {
+        Self {
+            first_delay: SWEEP_FIRST_DELAY,
+            interval: SWEEP_INTERVAL,
+        }
+    }
+}
+
+/// The background task that periodically runs [`BlobStore::sweep`].
+#[derive(Debug)]
+pub struct BlobSweep {
+    tasks: TaskTracker,
+}
+
+impl BlobSweep {
+    /// Starts sweeping `blobs` on `schedule`, with the [`SWEEP_GRACE`] period, until `shutdown`
+    /// is cancelled. A sweep that fails is logged and the next one runs on schedule; the sweep
+    /// removes nothing when it fails.
+    pub fn start(
+        blobs: BlobStore,
+        clock: Arc<dyn Clock>,
+        schedule: SweepSchedule,
+        shutdown: CancellationToken,
+    ) -> Self {
+        let tasks = TaskTracker::new();
+        tasks.spawn(async move {
+            let mut wait = schedule.first_delay;
+            loop {
+                tokio::select! {
+                    biased;
+                    () = shutdown.cancelled() => return,
+                    () = tokio::time::sleep(wait) => {}
+                }
+                // A running sweep is let finish: it's short, and abandoning it would only leave
+                // its files to the next one.
+                match blobs.sweep(clock.now(), SWEEP_GRACE).await {
+                    Ok(report) => log_report(report),
+                    Err(error) => tracing::warn!(%error, "blob sweep failed; nothing was removed"),
+                }
+                wait = schedule.interval;
+            }
+        });
+        tasks.close();
+        Self { tasks }
+    }
+
+    /// Waits until the sweep task has stopped. Call it after cancelling the shutdown token.
+    pub async fn closed(&self) {
+        self.tasks.wait().await;
+    }
+}
+
+fn log_report(report: SweepReport) {
+    let SweepReport {
+        blobs,
+        orphan_files,
+        bytes,
+    } = report;
+    if blobs + orphan_files == 0 {
+        tracing::debug!("blob sweep: nothing to remove");
+    } else {
+        tracing::info!(
+            blobs,
+            orphan_files,
+            bytes,
+            "blob sweep removed unreferenced blobs"
+        );
+    }
+}
 
 /// A [`MediaSource`] over the blob store. Each read loads the whole blob into memory, at most
 /// the size recorded when it was stored, and verifies its SHA-256.
@@ -58,6 +153,7 @@ async fn read_blob(blob: Blob, media: &MediaRef) -> Result<Bytes> {
 mod tests {
     use giles_store::{BlobMeta, Store};
     use giles_types::{MediaId, Timestamp};
+    use tokio::time::timeout;
 
     use super::*;
 
@@ -133,5 +229,87 @@ mod tests {
             .unwrap();
         let err = read_blob(blob, &media).await.unwrap_err();
         assert!(err.to_string().contains("larger than its 8 bytes"), "{err}");
+    }
+
+    struct FixedClock(Timestamp);
+
+    impl Clock for FixedClock {
+        fn now(&self) -> Timestamp {
+            self.0
+        }
+    }
+
+    const FAST: SweepSchedule = SweepSchedule {
+        first_delay: Duration::from_millis(10),
+        interval: Duration::from_millis(10),
+    };
+
+    #[tokio::test]
+    async fn the_sweep_task_removes_old_unreferenced_blobs_and_stops_on_shutdown() {
+        let (dir, blobs) = open().await;
+        let old = blobs
+            .put(&b"old"[..], 1024, meta(), Timestamp::UNIX_EPOCH)
+            .await
+            .unwrap();
+        let young = blobs
+            .put(
+                &b"young"[..],
+                1024,
+                meta(),
+                Timestamp::from_second(10_000_000).unwrap(),
+            )
+            .await
+            .unwrap();
+        let shutdown = CancellationToken::new();
+        let now = Timestamp::from_second(10_000_000).unwrap();
+        let sweep = BlobSweep::start(
+            blobs.clone(),
+            Arc::new(FixedClock(now)),
+            FAST,
+            shutdown.clone(),
+        );
+
+        timeout(Duration::from_secs(10), async {
+            while blob_file(&dir, &old.id).exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the sweep removes the old blob");
+        assert!(blobs.stat(&old.id).await.unwrap().is_none());
+        assert!(blob_file(&dir, &young.id).exists());
+
+        shutdown.cancel();
+        timeout(Duration::from_secs(10), sweep.closed())
+            .await
+            .expect("the sweep task stops with the shutdown token");
+    }
+
+    #[tokio::test]
+    async fn a_shutdown_before_the_first_sweep_removes_nothing() {
+        let (dir, blobs) = open().await;
+        let old = blobs
+            .put(&b"old"[..], 1024, meta(), Timestamp::UNIX_EPOCH)
+            .await
+            .unwrap();
+        let shutdown = CancellationToken::new();
+        let now = Timestamp::from_second(10_000_000).unwrap();
+        let schedule = SweepSchedule {
+            first_delay: Duration::from_secs(3600),
+            ..FAST
+        };
+        let sweep = BlobSweep::start(blobs, Arc::new(FixedClock(now)), schedule, shutdown.clone());
+        shutdown.cancel();
+        timeout(Duration::from_secs(10), sweep.closed())
+            .await
+            .unwrap();
+        assert!(blob_file(&dir, &old.id).exists());
+    }
+
+    #[test]
+    fn the_default_schedule_starts_soon_and_repeats_well_inside_the_grace_period() {
+        let schedule = SweepSchedule::default();
+        assert!(schedule.first_delay <= Duration::from_secs(5 * 60));
+        assert!(schedule.interval * 4 <= SWEEP_GRACE);
     }
 }

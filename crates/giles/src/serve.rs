@@ -108,6 +108,8 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
         .await?;
     // Config and runtime jobs; their replies and approval prompts go through the outbox.
     let scheduler = runtime.start_scheduler(sessions.clone(), runner, shutdown.clone());
+    // Removal of blobs nothing references any more, first a minute from now.
+    let blob_sweep = runtime.start_blob_sweep(shutdown.clone());
     // Plugin supervision (started below) and the admin service, built before the HTTP application:
     // the web admin pages call the same service the admin socket serves.
     let wiring = ChannelWiring {
@@ -222,10 +224,12 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     }
     http_server.await.context("the HTTP server panicked")??;
     // Running turns and job runs are cancelled with the token; wait for them, the channel pumps,
-    // and the outbox's sender, then stop the plugins and their supervision, and the toolsets.
+    // the outbox's sender, and the blob sweep, then stop the plugins and their supervision, and
+    // the toolsets.
     scheduler.closed().await;
     sessions.closed().await;
     runtime.outbox.closed().await;
+    blob_sweep.closed().await;
     plugins.stop_all().await;
     toolsets.stop().await;
     stop_admin(admin_server).await;

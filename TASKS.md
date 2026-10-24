@@ -312,7 +312,7 @@ other and with the rest of this phase.
 - [ ] **4.1 Backups** (§11.4). `Backup` RPC and `giles backup <dir>`: `VACUUM INTO` plus a tar of
   the TOML, Markdown, and blobs; the same snapshot written to `backups/` before migrations run.
   **Needs:** 2.24.
-- [ ] **4.2 Blob sweep** (§11.5). Periodic removal of blobs that no message, inbox or outbox row,
+- [x] **4.2 Blob sweep** (§11.5). Periodic removal of blobs that no message, inbox or outbox row,
   or job references, and that are older than 48 h. **Needs:** 1.2, 1.3.
 - [ ] **4.3 Instance rename** (§7.2). `giles instance rename <old> <new>` with the core stopped
   (database rows, directories, the `giles.toml` table); at startup, refuse a new instance name
