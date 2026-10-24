@@ -72,10 +72,11 @@ changes are new files.
 - Row ids are opaque newtypes (`SessionId`, ...) over SQLite rowids.
 - Agent, user, channel instance, and conversation ids are stored as their string forms.
 
-## Schema (version 2)
+## Schema (version 3)
 
 The files in `crates/giles-store/src/migrations/` are the authority (`0001_initial.sql` has every
-table but `blobs`, which `0002_blobs.sql` adds); this is their outline.
+table but `blobs` and `routes`, which `0002_blobs.sql` and `0003_routes.sql` add); this is their
+outline.
 
 | Table          | Columns and rules                                                                    |
 | -------------- | ------------------------------------------------------------------------------------ |
@@ -90,6 +91,8 @@ table but `blobs`, which `0002_blobs.sql` adds); this is their outline.
 | `usage`        | `at`, `provider`, `model`, `agent`, `user_id`, `session_id`, four token counts, `fallback`. |
 | `web_sessions` | `token_hash` (SHA-256 of the cookie token), `user_id`, `created_at`, `expires_at`.     |
 | `blobs`        | `id` (hex SHA-256), `size`, `media_type`, `name`, `created_at`, `stored_at` (latest put). |
+| `routes`       | The ordered routing rules: `position` (dense, 0 first), `channel`, `kind` (`direct`, `group`), `conversation` (each null for any), `agent`. Ids are `AUTOINCREMENT`, never reused. |
+| `routes_imported` | One row, once the `[[routes]]` of `giles.toml` were imported: `at`.                  |
 
 `identities` and `pairings` are deferred with multi-user support (PLAN 1.1, D49) and don't exist
 yet.
@@ -247,20 +250,26 @@ excludes cached tokens. Token counts above `i64::MAX` are rejected, not truncate
 ## Instance Names
 
 Instance names (PLAN 7.2) are stored in `sessions.channel`, `inbox.instance`, `outbox.instance`,
-`usage.provider`, and in the `provider` field of an assistant message's `meta` JSON. Nothing else
+`usage.provider`, `routes.channel`, and in the `provider` field of an assistant message's `meta`
+JSON. Nothing else
 holds one: `inbox.payload` and `outbox.payload` carry conversations and text but no instance name,
 `jobs.spec` carries a prompt and a schedule, and identities use the namespace the channel
 reports, not the instance name.
 
-`instance_rows` returns, per name, how many rows use it in each of those four columns. It's what
-the startup check for an unused old instance name reads (`Docs/technical/instance-rename.md`).
+`instance_rows` returns, per name, how many rows use it in the first four of those columns. It's
+what the startup check for an unused old instance name reads (`Docs/technical/instance-rename.md`).
+It leaves `routes.channel` out on purpose: routes are settings, not data, and a route to a removed
+instance is kept (the routes page flags it), so counting it would make adding an instance look like
+an unfinished rename. `instance_routes` returns, per channel instance, how many routes name it;
+`giles instance rename` reads it to see that a name is used.
 
-`rename_instance(old, new, hook)` moves all five places to the new name in one `IMMEDIATE`
+`rename_instance(old, new, hook)` moves all six places to the new name in one `IMMEDIATE`
 transaction, runs `hook` inside it after the updates and before the commit, and returns the number
 of rows moved. It refuses with `Conflict` if any row already uses `new`, so two instances' data are
-never merged. A failing hook rolls everything back and comes back as `Error::Hook`; the caller does
-its filesystem work in the hook, so that work and the rows succeed or fail together. The caller
-still has to undo that work if the commit itself fails. `messages.meta` is updated without a
+never merged; routes that already name `new` don't count as data and are kept (`RenamedRows::routes`
+counts the routes moved). A failing hook rolls everything back and comes back as `Error::Hook`; the
+caller does its filesystem work in the hook, so that work and the rows succeed or fail together. The
+caller still has to undo that work if the commit itself fails. `messages.meta` is updated without a
 trigger on the column, so the search index is untouched.
 
 ## Web Sessions
@@ -270,6 +279,33 @@ and keeps only the hash, so a database copy can't be replayed as a login. The to
 at least 128 bits of entropy, so a plain hash suffices. `web_session_create` (`Conflict` on a token
 collision), `web_session(token, now)` (only unexpired sessions), `web_session_delete` (logout), and
 `web_sessions_expire(now)`. The 30-day lifetime is the caller's `expires_at`.
+
+## Routes
+
+`routes` is the ordered list of routing rules (PLAN 6.1, TASKS 5.2); the first rule that matches a
+conversation wins, so `position` is the order. The store keeps the rules as written and checks
+only their shape (a non-empty channel, conversation, and agent, a known kind). That the channel
+instance and the agent exist, and that no rule hides a later one, is checked by the core before it
+writes (`Docs/technical/identity-and-routing.md`).
+
+| Method                                  | Contract                                                         |
+| --------------------------------------- | ---------------------------------------------------------------- |
+| `routes`                                | Every route in order, with its id.                               |
+| `route_insert(at, route)`               | Inserts at an index (past the end appends); returns the id.      |
+| `route_update(id, route)`               | Replaces a rule, keeping its place; `false` if there is no such route. |
+| `route_remove(id)`                      | Deletes a route; `false` if there is none.                       |
+| `route_move(id, to)`                    | Moves a route to an index; `false` if there is none.             |
+| `routes_imported`                       | Whether the import below has run.                                |
+| `routes_import(routes, now)`            | The one-time import, below.                                      |
+
+Every method keeps `position` dense (0, 1, 2, ...) inside its transaction. Ids are stable, so a form
+that names a route can't act on a different one after the list changed.
+
+`routes_import` is the import of the `[[routes]]` of `giles.toml` (PLAN 11.2). If `routes_imported`
+has no row it inserts one, and stores the routes in order unless routes exist already; it returns
+how many it stored. If the row exists it does nothing and returns `None`, even when `routes` holds
+something new and even when every route has since been deleted: the marker, not the table being
+empty, says the import happened. A config with no `[[routes]]` still records the import.
 
 ## Blob Store
 

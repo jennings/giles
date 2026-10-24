@@ -23,6 +23,7 @@ mod jobs;
 mod messages;
 mod migrate;
 mod outbox;
+mod routes;
 mod search;
 mod sessions;
 mod time;
@@ -43,6 +44,7 @@ pub use messages::{
 };
 pub use migrate::{MigrationPlan, SCHEMA_VERSION};
 pub use outbox::{NewOutbox, OutboxEntry, OutboxId};
+pub use routes::{NewRoute, RouteId, StoredRoute};
 pub use search::{SNIPPET_ELLIPSIS, SNIPPET_END, SNIPPET_START, SearchHit, SearchScope};
 pub use sessions::{Session, SessionId, SessionKey, SessionKind, SessionSummary};
 pub use usage::{AgentUsage, ModelUsage, UsageRecord};

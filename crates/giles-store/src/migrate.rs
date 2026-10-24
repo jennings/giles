@@ -30,6 +30,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "0002_blobs",
         sql: include_str!("migrations/0002_blobs.sql"),
     },
+    Migration {
+        name: "0003_routes",
+        sql: include_str!("migrations/0003_routes.sql"),
+    },
 ];
 
 /// The schema version this binary writes.
@@ -244,6 +248,8 @@ mod tests {
             "usage",
             "web_sessions",
             "blobs",
+            "routes",
+            "routes_imported",
         ] {
             assert!(tables(&conn).iter().any(|t| t == table), "missing {table}");
         }

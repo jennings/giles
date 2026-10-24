@@ -104,6 +104,7 @@ mod tests {
                 outbox: 0,
                 usage: 0,
                 messages: 0,
+                routes: 0,
             },
             config_table: true,
             routes: 2,

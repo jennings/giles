@@ -2,8 +2,14 @@
 //! new name for `giles instance rename`.
 //!
 //! An instance name appears in `sessions.channel`, `inbox.instance`, `outbox.instance`,
-//! `usage.provider`, and in the `provider` field of each assistant message's `meta` JSON. No
-//! other column or JSON payload holds one (Docs/technical/instance-rename.md has the audit).
+//! `usage.provider`, `routes.channel`, and in the `provider` field of each assistant message's
+//! `meta` JSON. No other column or JSON payload holds one (Docs/technical/instance-rename.md has
+//! the audit).
+//!
+//! Routes name a channel instance but aren't data: [`Store::instance_rows`] doesn't count them, so
+//! the startup check for an unused old name ignores them (a route to a removed instance is kept on
+//! purpose, and must not make adding an instance look like a rename). A rename still moves them
+//! ([`RenamedRows::routes`], [`Store::instance_routes`]).
 
 use std::collections::BTreeMap;
 
@@ -50,12 +56,15 @@ pub struct RenamedRows {
     pub usage: u64,
     /// Assistant messages whose `meta` named the provider instance.
     pub messages: u64,
+    /// `routes` rows whose channel was the instance. Never counted in the conflict check: a route
+    /// that already names the new name is a name, not data to merge.
+    pub routes: u64,
 }
 
 impl RenamedRows {
     /// The total number of rows moved.
     pub fn total(&self) -> u64 {
-        self.sessions + self.inbox + self.outbox + self.usage + self.messages
+        self.sessions + self.inbox + self.outbox + self.usage + self.messages + self.routes
     }
 }
 
@@ -91,6 +100,7 @@ fn rows_using(conn: &Connection, name: &str) -> Result<RenamedRows> {
             "SELECT count(*) FROM messages WHERE meta ->> '$.provider' = ?1",
             name,
         )?,
+        routes: 0,
     })
 }
 
@@ -119,6 +129,25 @@ impl Store {
                 }
             }
             Ok(names)
+        })
+        .await
+    }
+
+    /// How many routes name each channel instance, by name, sorted. Routes with no channel (any)
+    /// aren't counted. This is separate from [`instance_rows`](Self::instance_rows) on purpose.
+    pub async fn instance_routes(&self) -> Result<BTreeMap<String, u64>> {
+        self.read(|conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT channel, count(*) FROM routes WHERE channel IS NOT NULL GROUP BY channel",
+            )?;
+            query_all(&mut stmt, [], |row| {
+                let n: i64 = row.get(1)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    u64::try_from(n).map_err(|_| Error::corrupt("a negative count"))?,
+                ))
+            })
+            .map(|rows| rows.into_iter().collect())
         })
         .await
     }
@@ -173,6 +202,7 @@ impl Store {
             moved.inbox = update("inbox", "instance")?;
             moved.outbox = update("outbox", "instance")?;
             moved.usage = update("usage", "provider")?;
+            moved.routes = update("routes", "channel")?;
             // `messages` has no trigger on `meta`, so the search index is untouched.
             moved.messages = conn.execute(
                 "UPDATE messages SET meta = json_set(meta, '$.provider', ?2)
@@ -345,6 +375,7 @@ mod tests {
                 outbox: 1,
                 usage: 1,
                 messages: 1,
+                routes: 0,
             }
         );
 
@@ -435,5 +466,116 @@ mod tests {
             provider_of_messages(&store).await,
             [None, Some("libera".to_owned())]
         );
+    }
+
+    async fn route(store: &Store, channel: Option<&str>, agent: &str) {
+        store
+            .route_insert(
+                usize::MAX,
+                crate::NewRoute {
+                    channel: channel.map(str::to_owned),
+                    kind: None,
+                    conversation: None,
+                    agent: AgentId::new(agent).unwrap(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn route_channels(store: &Store) -> Vec<Option<String>> {
+        store
+            .routes()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.route.channel)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn routes_are_counted_apart_from_the_rows() {
+        let (_dir, store) = store().await;
+        route(&store, Some("libera"), "a").await;
+        route(&store, Some("libera"), "b").await;
+        route(&store, Some("oftc"), "a").await;
+        route(&store, None, "c").await;
+        assert_eq!(
+            store.instance_routes().await.unwrap(),
+            BTreeMap::from([("libera".to_owned(), 2), ("oftc".to_owned(), 1)])
+        );
+        // Not data: they don't make a name look used to the startup check.
+        assert!(store.instance_rows().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn rename_moves_the_routes_with_the_rows() {
+        let (_dir, store) = store().await;
+        session(&store, "libera", "c1").await;
+        route(&store, Some("libera"), "a").await;
+        route(&store, Some("oftc"), "b").await;
+        route(&store, None, "c").await;
+        route(&store, Some("libera"), "d").await;
+
+        let moved = store
+            .rename_instance("libera", "libera-chat", |_| Ok(()))
+            .await
+            .unwrap();
+        assert_eq!((moved.sessions, moved.routes), (1, 2));
+        // Order and the other routes are untouched.
+        assert_eq!(
+            route_channels(&store).await,
+            [
+                Some("libera-chat".to_owned()),
+                Some("oftc".to_owned()),
+                None,
+                Some("libera-chat".to_owned())
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_route_to_a_name_that_only_has_routes_can_be_renamed() {
+        let (_dir, store) = store().await;
+        route(&store, Some("libera"), "a").await;
+        let moved = store
+            .rename_instance("libera", "oftc", |_| Ok(()))
+            .await
+            .unwrap();
+        assert_eq!(moved.routes, 1);
+        assert_eq!(route_channels(&store).await, [Some("oftc".to_owned())]);
+    }
+
+    #[tokio::test]
+    async fn routes_to_the_new_name_are_not_a_merge_conflict() {
+        let (_dir, store) = store().await;
+        session(&store, "libera", "c1").await;
+        route(&store, Some("libera"), "a").await;
+        route(&store, Some("oftc"), "b").await;
+        store
+            .rename_instance("libera", "oftc", |_| Ok(()))
+            .await
+            .unwrap();
+        assert_eq!(
+            route_channels(&store).await,
+            [Some("oftc".to_owned()), Some("oftc".to_owned())]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failing_hook_leaves_the_routes_alone() {
+        let (_dir, store) = store().await;
+        session(&store, "libera", "c1").await;
+        route(&store, Some("libera"), "a").await;
+        let before = store.routes().await.unwrap();
+        let err = store
+            .rename_instance("libera", "oftc", |moved| {
+                assert_eq!(moved.routes, 1, "the hook runs after the updates");
+                Err("disk on fire".into())
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Hook(_)), "{err:?}");
+        assert_eq!(store.routes().await.unwrap(), before);
     }
 }
