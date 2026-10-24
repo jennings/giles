@@ -25,14 +25,15 @@ it and exits.
 
 ## The Running Configuration
 
-The registry holds the configuration as a `config::LiveConfig`: the `Config` loaded at startup,
-plus agents created since (the web UI's agent pages, TASKS.md 5.1). `Registry::config()` returns
-a snapshot, `Arc<Config>`; a caller keeps one snapshot for the work at hand (a turn, a tool call, a
-page). `Registry::live_config()` is the shared handle: the core tools and the session manager
-(its `AgentPolicies`) hold clones, so they see a new agent at their next lookup.
+The registry holds the configuration as a `config::LiveConfig`: the `Config` loaded at startup, plus
+agents created since (the web UI's agent pages, TASKS.md 5.1). `Registry::config()` returns a
+snapshot, `Arc<Config>`; a caller keeps one snapshot for the work at hand (a turn, a tool call, a
+page). `Registry::live_config()` is the shared handle: the core tools and the session manager (its
+`AgentPolicies`) hold clones, so they see a new agent at their next lookup.
 `LiveConfig::add_agent(AgentConfig)` swaps in a copy of the configuration with the agent added and
 refuses an id already taken, ignoring ASCII case (`AgentExists`). Nothing else changes while the
-core runs: instances, routes, and the owner are fixed until a restart (reload is deferred, D28).
+core runs: instances and the owner are fixed until a restart (reload is deferred, D28). Routes
+are stored and change at runtime ([Identity and Routing](identity-and-routing.md#routing)).
 
 ## Built-in Components
 

@@ -34,8 +34,11 @@ pub struct RenameReport {
     /// Whether the `[<kind>.<old>]` table of `giles.toml` was renamed. `false` when the operator
     /// had already renamed it by hand.
     pub config_table: bool,
-    /// How many `[[routes]]` of `giles.toml` named the old channel instance.
-    pub routes: usize,
+    /// How many `[[routes]]` of `giles.toml` named the old channel instance. Giles imports those
+    /// once and then ignores them; they are rewritten so a file not yet imported (the first start
+    /// after an upgrade) imports the new name, and a leftover block stays consistent. The routes
+    /// Giles stores moved with the database rows ([`RenamedRows::routes`]).
+    pub legacy_routes: usize,
     /// The `agent.toml` files rewritten, with the number of references changed in each.
     pub agent_files: Vec<(PathBuf, usize)>,
     /// The directories and files moved, `(from, to)`.
@@ -66,7 +69,7 @@ pub enum RenameError {
     /// Neither name is configured and the old one has no data.
     #[error(
         "no instance named {old:?}: it is not configured in giles.toml and has no data (no \
-         database rows, no directory under data/plugins/ or agents/*/groups/)"
+         database rows or routes, no directory under data/plugins/ or agents/*/groups/)"
     )]
     UnknownInstance {
         /// The old name.
@@ -220,7 +223,12 @@ pub async fn rename_instance(
 
     let rows = store.instance_rows().await.map_err(RenameError::Store)?;
     let dirs = dirs::scan_dirs(root).map_err(|(path, source)| RenameError::Io { path, source })?;
-    let has_data = |name: &str| rows.contains_key(name) || dirs.contains_key(name);
+    // Routes name an instance without being data (the startup check ignores them), but a name
+    // only they use is still worth renaming.
+    let routes = store.instance_routes().await.map_err(RenameError::Store)?;
+    let has_data = |name: &str| {
+        rows.contains_key(name) || dirs.contains_key(name) || routes.contains_key(name)
+    };
 
     let kind = match (configured.get(old), configured.get(new)) {
         (Some(&old_kind), Some(&new_kind)) => {
@@ -285,7 +293,7 @@ pub async fn rename_instance(
             kind,
             rows,
             config_table: plan.config_table,
-            routes: plan.routes,
+            legacy_routes: plan.routes,
             agent_files: plan.agent_files.clone(),
             moved: plan
                 .moves

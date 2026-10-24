@@ -331,7 +331,7 @@ struct NewChatQuery {
     agent: Option<String>,
 }
 
-/// `GET /chats/new`: a fresh chat id, routed by `[[routes]]`; with `?agent=<id>`, a chat with
+/// `GET /chats/new`: a fresh chat id, routed by the stored routes; with `?agent=<id>`, a chat with
 /// that agent ([`new_agent_chat_id`]), which must be one the user may start a chat with. Nothing
 /// is stored until the first message.
 async fn new_chat(
@@ -363,7 +363,7 @@ fn no_such_agent(agent: &str) -> Response {
 }
 
 /// For a chat started with an agent: the agent's label, or the agent as the error if `user` may
-/// not use it (it isn't configured). `Ok(None)` for a chat routed by `[[routes]]`.
+/// not use it (it isn't configured). `Ok(None)` for a chat routed by the stored routes.
 fn chosen_agent(
     app: &WebApp,
     user: &WebUser,

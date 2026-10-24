@@ -31,7 +31,6 @@ use giles_types::AgentId;
 use serde::de::DeserializeOwned;
 
 use crate::paths::DataRoot;
-use crate::routes::Route;
 
 pub use agent::{
     ActiveHours, AgentConfig, AskTo, BusyMode, DEFAULT_APPROVAL_TIMEOUT,
@@ -95,8 +94,10 @@ pub struct Config {
     pub channels: BTreeMap<InstanceName, ChannelInstance>,
     /// `[toolset.<instance>]`, by instance name.
     pub toolsets: BTreeMap<InstanceName, ToolsetInstance>,
-    /// `[[routes]]`, in file order.
-    pub routes: Vec<Route>,
+    /// `[[routes]]` as written, unvalidated. Routes are managed in the web UI and stored in the
+    /// database; these are imported once by [`Routes::open`](crate::routes::Routes::open) and then
+    /// only reported (TASKS.md 5.2).
+    pub legacy_routes: Vec<toml::Value>,
     /// Every `agents/<agent>/agent.toml`, by agent id.
     pub agents: BTreeMap<AgentId, AgentConfig>,
 }
@@ -266,17 +267,13 @@ impl Config {
         let provider_names: BTreeSet<&str> = providers.keys().map(InstanceName::as_str).collect();
         let agents = load_agents(root, &provider_names)?;
 
-        let channel_names = channels.keys().map(InstanceName::as_str).collect();
-        let agent_names = agents.keys().map(AgentId::as_str).collect();
-        let routes = raw.routes(file, &channel_names, &agent_names)?;
-
         Ok(Self {
             core,
             owner,
             providers,
             channels,
             toolsets,
-            routes,
+            legacy_routes: std::mem::take(&mut raw.routes),
             agents,
         })
     }

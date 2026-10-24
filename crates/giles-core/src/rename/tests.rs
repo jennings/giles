@@ -240,7 +240,7 @@ async fn renaming_a_channel_moves_the_rows_the_directories_and_the_config_table(
         (2, 2, 1, 0)
     );
     assert!(report.config_table);
-    assert_eq!(report.routes, 1);
+    assert_eq!(report.legacy_routes, 1);
     assert!(
         report.agent_files.is_empty(),
         "channels aren't named in agents"
@@ -288,14 +288,126 @@ async fn renaming_a_channel_moves_the_rows_the_directories_and_the_config_table(
     assert_eq!(rows["web"].sessions, 1);
     assert_eq!(rows["ollama"].usage, 1);
 
-    // The result is a configuration that loads and routes to the new name.
+    // The result is a configuration that loads, with the `[[routes]]` it still has (which Giles
+    // only imports or ignores) pointing at the new name.
     let config = home.load();
     assert!(config.channels.contains_key("libera-chat"));
     assert!(!config.channels.contains_key("libera"));
     assert_eq!(
-        config.routes[0].channel.as_ref().unwrap().as_str(),
-        "libera-chat"
+        config.legacy_routes[0]["channel"].as_str(),
+        Some("libera-chat")
     );
+}
+
+/// Stored routes (not the `[[routes]]` of giles.toml): two for `channel`, one for `web`, one for
+/// any channel; in that order.
+async fn seed_routes(home: &Home, channel: &str) {
+    for (name, agent) in [
+        (Some(channel), "jeeves"),
+        (Some("web"), "bunter"),
+        (None, "jeeves"),
+        (Some(channel), "bunter"),
+    ] {
+        home.store
+            .route_insert(
+                usize::MAX,
+                giles_store::NewRoute {
+                    channel: name.map(str::to_owned),
+                    kind: None,
+                    conversation: None,
+                    agent: AgentId::new(agent).unwrap(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+}
+
+async fn route_channels(home: &Home) -> Vec<Option<String>> {
+    home.store
+        .routes()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.route.channel)
+        .collect()
+}
+
+#[tokio::test]
+async fn renaming_a_channel_moves_its_stored_routes_in_place() {
+    let home = Home::populated().await;
+    seed_routes(&home, "libera").await;
+    let report = home.rename("libera", "libera-chat").await.unwrap();
+    assert_eq!(report.rows.routes, 2);
+    // Same order, the other channel's route and the any-channel route untouched.
+    assert_eq!(
+        route_channels(&home).await,
+        [
+            Some("libera-chat".to_owned()),
+            Some("web".to_owned()),
+            None,
+            Some("libera-chat".to_owned())
+        ]
+    );
+    // Routes aren't data to the startup check, and the renamed configuration is fine.
+    home.load();
+    check_unused_instance_data(&home.root, &home.load(), &home.store)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_name_that_only_routes_use_can_be_renamed_once_its_new_name_is_configured() {
+    // The operator renamed the table by hand and has no sessions: only the stored routes still
+    // name `libera`.
+    let home = Home::new(
+        "[owner]\nidentities = [\"web:owner\"]\n[channel.web]\n\
+         [channel.libera-chat]\ncomponent = \"irc\"\nunsandboxed = true\n",
+    )
+    .await;
+    seed_routes(&home, "libera").await;
+    let report = home.rename("libera", "libera-chat").await.unwrap();
+    assert_eq!(report.rows.routes, 2);
+    assert!(!report.config_table);
+    assert_eq!(
+        route_channels(&home).await[0].as_deref(),
+        Some("libera-chat")
+    );
+}
+
+#[tokio::test]
+async fn a_failing_rename_leaves_the_stored_routes_where_they_were() {
+    let home = Home::populated().await;
+    seed_routes(&home, "libera").await;
+    let before = route_channels(&home).await;
+    // `giles.toml` is rewritten last, after the database rows (routes included) were updated in
+    // the transaction; a read-only data root makes that write fail.
+    fs::set_permissions(home.dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
+    let writable_anyway = fs::File::create(home.path("probe")).is_ok();
+    if writable_anyway {
+        // Running as root: permissions don't stop us, so this failure can't be provoked.
+        fs::set_permissions(home.dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        return;
+    }
+    let err = home.rename("libera", "libera-chat").await.unwrap_err();
+    fs::set_permissions(home.dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(matches!(err, RenameError::Failed { .. }), "{err}");
+    assert_eq!(route_channels(&home).await, before);
+    assert_eq!(home.rows().await["libera"].sessions, 2);
+}
+
+#[tokio::test]
+async fn routes_to_a_removed_instance_do_not_make_a_new_instance_look_like_a_rename() {
+    let home = Home::new(
+        "[owner]\nidentities = [\"web:owner\"]\n[channel.web]\n\
+         [channel.oftc]\ncomponent = \"irc\"\nunsandboxed = true\n",
+    )
+    .await;
+    // A route to `libera`, which was removed, and nothing else with that name.
+    seed_routes(&home, "libera").await;
+    check_unused_instance_data(&home.root, &home.load(), &home.store)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -365,7 +477,7 @@ async fn a_table_renamed_by_hand_gets_its_data_moved() {
 
     let report = home.rename("libera", "libera-chat").await.unwrap();
     assert!(!report.config_table);
-    assert_eq!(report.routes, 0);
+    assert_eq!(report.legacy_routes, 0);
     assert_eq!(home.read("giles.toml"), hand_edited);
     assert!(home.path("data/plugins/libera-chat/state.json").is_file());
     assert_eq!(home.rows().await["libera-chat"].sessions, 2);

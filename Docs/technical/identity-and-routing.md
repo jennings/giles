@@ -37,7 +37,7 @@ match router.classify(&source, &event_id, &message, &pending_approvals) {
 4. `UnknownSender`: neither `sender` nor any `sender_aliases` entry is an `[owner]` identity.
 5. `UnknownAgent`: a web chat started with a chosen agent names one that isn't configured (see
    [Routing](#routing)).
-6. `NoRoute`: no `[[routes]]` rule matches.
+6. `NoRoute`: no route matches.
 
 A message that passes is `Routed { session: SessionKey { agent, channel, conversation }, user }`.
 If it has no attachments and `commands::parse` recognizes its text, it's `Inbound::Command`;
@@ -98,11 +98,50 @@ than building and hashing the joined strings.
 
 ## Routing
 
-`Router::route(instance, conversation)` returns the agent of the first `[[routes]]` rule whose every
-set key matches: `channel` (the instance name), `kind`, and `conversation` (the id exactly as the
-channel reports it). A rule with no keys besides `agent` matches everything. Config loading has
-already checked that each rule's channel instance and agent exist. The router holds a `RouteList`
-(`routes.rs`), a shared, atomically replaced snapshot of the rules, and reads it once per message.
+`Router::route(instance, conversation)` returns the agent of the first route whose every set key
+matches: `channel` (the instance name), `kind`, and `conversation` (the id exactly as the channel
+reports it). A route with no keys besides `agent` matches everything. The router holds a
+`RouteList` (`routes.rs`), a shared, atomically replaced snapshot of the ordered routes, and reads
+it once per message, so a change applies to the next message and nothing restarts.
+
+### Stored routes
+
+The routes are the `routes` table (`Docs/technical/storage.md`), not config. `routes::Routes`
+(one per core, `Runtime::routes`) owns them:
+
+- **Liveness.** `Routes::list()` is the `RouteList` the router holds. Every successful change
+  reloads the stored list and replaces the snapshot. A snapshot, instead of a database read per
+  message, keeps `classify` synchronous and off the database, including for messages it drops.
+  One async lock spans read, validate, write, and replace, so concurrent changes serialize and
+  the snapshot always equals what is stored. Only this process writes the table.
+- **Operations.** `add(spec, before)`, `update(id, spec)`, `remove(id)`, `move_route(id, up)`,
+  and `view()` (every route with what is wrong with it now). Routes have stable ids, so a stale
+  page can't act on another route (`RouteError::NotFound`).
+- **Validation**, like config: `RouteSpec` is text (blank is any), checked against the running
+  configuration (`LiveConfig`): the channel instance and the agent exist, the kind is `direct` or
+  `group`, the conversation has no control characters and is at most 512 bytes, the agent is
+  required. A route that no earlier route hides is required too: `Unreachable` if earlier routes
+  match everything it does (one route, or for a route with no kind, one covering direct and one
+  covering group conversations), `Duplicate` if one matches exactly the same, `Hides` if the change
+  would leave a later route unusable. Hiding is judged against the list before the change, so a
+  route that was already unreachable (one imported from `giles.toml`, which never checked this)
+  doesn't block unrelated changes; `view()` flags it, as it flags a route whose channel instance
+  or agent is no longer configured, and `Routes::open` logs both at startup. Refusing is a
+  deliberate choice over a warning: a route that can't match is almost always a mistake, and
+  reordering keeps every step valid.
+- **Import.** `giles.toml`'s `[[routes]]` stay in `Config::legacy_routes`, as written and
+  unvalidated. `Routes::open` runs at `Runtime::start`: if the database hasn't recorded the import
+  (`routes_imported`), it validates each rule like a route made in the web UI (shadowed routes
+  are kept as written, but an empty or blank `channel`, `kind`, or `conversation` is an error, as
+  it was in config), stores them in file order, and records the import, all or nothing; an
+  invalid rule fails startup with `giles.toml: routes[<i>].<key>: <reason>`. A config with no
+  `[[routes]]` still records the import, and so does an import that finds routes stored already.
+  After that the rules are never read: not when the file changes, not when the owner has deleted
+  every route (the record, not an empty table, says it ran), not when they have become invalid.
+  While the file still has `[[routes]]`, startup logs `info` on the importing start and `warn`
+  on every later one, saying they're ignored and to remove them. `giles status` doesn't report
+  it: its response has no field for a warning (`config_error` is for reload errors), and a new
+  proto field wasn't worth it for a line already in the log and on the routes page.
 
 A web chat can be started with a chosen agent (the chat list's picker, TASKS.md 5.1). Its chat id,
 which is the conversation id, is then `<agent>.<32 hex digits>` instead of 32 hex digits

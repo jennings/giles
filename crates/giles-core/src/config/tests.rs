@@ -3,7 +3,6 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use giles_types::ConversationKind;
 use tempfile::TempDir;
 
 use super::*;
@@ -116,7 +115,7 @@ fn minimal_config_gets_defaults() {
     assert!(config.providers.is_empty());
     assert!(config.channels.is_empty());
     assert!(config.toolsets.is_empty());
-    assert!(config.routes.is_empty());
+    assert!(config.legacy_routes.is_empty());
     assert!(config.agents.is_empty());
 }
 
@@ -231,14 +230,6 @@ fn errors_found_after_parsing_have_positions() {
     let err = home.load().unwrap_err();
     assert_eq!(err.key.to_string(), "owner.default");
     assert_eq!(err.position, pos(1, 2), "{err}");
-    // Through arrays of tables.
-    home.write(
-        "giles.toml",
-        &format!("{MINIMAL}[[routes]]\nagent = \"x\"\n\n[[routes]]\n\nagent = \"y\"\n"),
-    );
-    let err = home.load().unwrap_err();
-    assert_eq!(err.key.to_string(), "routes[0].agent");
-    assert_eq!(err.position, pos(4, 1), "{err}");
     // In agent.toml too.
     let home = with_provider();
     home.agent(
@@ -333,11 +324,6 @@ fn unknown_keys_are_rejected_everywhere_but_config_tables() {
             "[toolset.files]\nconfig = {}",
             "toolset.files.config",
             "unknown field `config`",
-        ),
-        (
-            "[[routes]]\nagent = \"a\"\nuser = \"me\"",
-            "routes[0].user",
-            "unknown field `user`",
         ),
     ];
     for (toml, key, reason) in cases {
@@ -685,62 +671,16 @@ fn with_provider() -> Home {
 }
 
 #[test]
-fn routes() {
+fn routes_in_giles_toml_are_kept_as_written_for_the_import() {
+    // The web UI owns routes (TASKS.md 5.2): the file's rules aren't checked here, so one that
+    // names a channel or agent that's gone can't stop a core that no longer reads them.
     let home = Home::new(&format!(
-        "{MINIMAL}{PROVIDER}[channel.web]\n[channel.libera]\ncomponent = \"irc\"\n\
-         [[routes]]\nchannel = \"libera\"\nconversation = \"#giles\"\nagent = \"jeeves\"\n\
-         [[routes]]\nkind = \"direct\"\nagent = \"jeeves\"\n\
-         [[routes]]\nagent = \"bunter\"\n"
+        "{MINIMAL}[[routes]]\nchannel = \"gone\"\nagent = \"nobody\"\n\
+         [[routes]]\nkind = \"dm\"\nagent = 7\n[[routes]]\nwhat = 1\n"
     ));
-    home.agent("jeeves", "models = [\"anthropic/claude-sonnet-4-5\"]")
-        .agent("bunter", "models = [\"ollama/qwen3:8b\"]");
     let config = home.load_ok();
-    let routes = &config.routes;
-    assert_eq!(routes.len(), 3);
-    assert_eq!(routes[0].channel.as_ref().unwrap().as_str(), "libera");
-    assert_eq!(routes[0].conversation.as_deref(), Some("#giles"));
-    assert_eq!(routes[0].kind, None);
-    assert_eq!(routes[0].agent.as_str(), "jeeves");
-    assert_eq!(routes[1].channel, None);
-    assert_eq!(routes[1].kind, Some(ConversationKind::Direct));
-    assert_eq!(routes[2].agent.as_str(), "bunter");
-
-    let cases = [
-        (
-            "channel = \"irc\"\nagent = \"jeeves\"",
-            "routes[0].channel",
-            "no channel instance",
-        ),
-        (
-            "channel = \"a_b\"\nagent = \"jeeves\"",
-            "routes[0].channel",
-            "invalid instance name",
-        ),
-        (
-            "agent = \"wooster\"",
-            "routes[0].agent",
-            "no agent \"wooster\"",
-        ),
-        ("agent = \"a.b\"", "routes[0].agent", "invalid agent name"),
-        (
-            "kind = \"dm\"\nagent = \"jeeves\"",
-            "routes[0].kind",
-            "unknown variant `dm`",
-        ),
-        (
-            "conversation = \"\"\nagent = \"jeeves\"",
-            "routes[0].conversation",
-            "not be empty",
-        ),
-        ("channel = \"web\"", "routes[0]", "missing field `agent`"),
-    ];
-    for (toml, key, reason) in cases {
-        let home = Home::new(&format!(
-            "{MINIMAL}{PROVIDER}[channel.web]\n[[routes]]\n{toml}\n"
-        ));
-        home.agent("jeeves", "models = [\"anthropic/claude-sonnet-4-5\"]");
-        assert_error(&home, "giles.toml", key, reason);
-    }
+    assert_eq!(config.legacy_routes.len(), 3);
+    assert_eq!(config.legacy_routes[0]["channel"].as_str(), Some("gone"));
 }
 
 #[test]
@@ -1162,7 +1102,6 @@ fn the_documented_full_example_is_valid() {
     home.write("agents/jeeves/morning.md", "Plan my day.");
     let config = home.load_ok();
     assert_eq!(config.agents.len(), 1);
-    assert_eq!(config.routes.len(), 2);
     assert_eq!(config.agents[&agent_id("jeeves")].jobs.len(), 2);
     let libera = config.channels["libera"].config.to_json();
     assert_eq!(libera["sasl"]["password"], "correct horse battery staple");

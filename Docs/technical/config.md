@@ -34,7 +34,9 @@ The steps:
    secret references.
 5. Load every agent: each directory in `agents/` not starting with `.` must have a valid name and
    an `agent.toml`. Models are checked against the configured provider instances.
-6. Validate `[[routes]]` against the channel instances and agents.
+6. Keep `[[routes]]` as written (`Config::legacy_routes`, unvalidated). Routes are stored in the
+   database and managed in the web UI; the one-time import of these rules, which validates them,
+   is [Identity and Routing](identity-and-routing.md#routing).
 
 `Config::validate_agent(root, id, source)` runs step 5 for one agent that isn't on disk yet: the id
 as a directory name, then the same parser and checks as a loaded `agent.toml` (models against this

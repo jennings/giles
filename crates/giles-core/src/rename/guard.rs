@@ -86,7 +86,8 @@ fn unused_message(unused: &[UnusedName]) -> String {
 ///
 /// - A name *has data* if it is in the database (`sessions.channel`, `inbox.instance`,
 ///   `outbox.instance`, `usage.provider`) or is a directory `data/plugins/<name>` or
-///   `agents/*/groups/<name>`.
+///   `agents/*/groups/<name>`. Stored routes (`routes.channel`) don't count: a route to a removed
+///   instance is kept on purpose, and must not make adding an instance look like a rename.
 /// - A configured instance is *fresh* if its name has no data.
 /// - An *unused name* has data, isn't configured, and isn't in `[core] retired_instances`.
 /// - They *match* if the kinds fit: database rows of a channel (sessions, inbox, outbox) belong to

@@ -401,6 +401,12 @@ agent = "jeeves"
 agent = "jeeves"
 ```
 
+Giles stores routes in its database, not in `giles.toml`. The first time it starts with no routes
+stored, it imports the `[[routes]]` in `giles.toml`, in order, after checking them like any
+configuration (a route to a channel instance or agent that doesn't exist stops startup). After
+that it never reads them again, even if you delete every stored route, and it logs a warning at
+every start while `giles.toml` still has `[[routes]]`: remove them.
+
 ## `agents/<agent>/agent.toml`
 
 Each directory under `agents/` is an agent, named by the directory, and must contain `agent.toml`.

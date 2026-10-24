@@ -2,7 +2,7 @@
 //! `channel-web` feature because the router reads them: a chat started for a chosen agent goes to
 //! that agent ([`Router`](crate::router::Router)).
 //!
-//! A chat id is 128 random bits as 32 lowercase hex digits (`0123…ef`), routed by `[[routes]]`
+//! A chat id is 128 random bits as 32 lowercase hex digits (`0123…ef`), routed by the stored routes
 //! like any conversation, or `<agent>.<32 hex digits>` for a chat started with an agent picked
 //! in the web UI. Agent ids are `[a-zA-Z0-9-]+`, so the `.` is unambiguous and the whole id is
 //! safe in a URL path.
@@ -22,8 +22,8 @@ pub(crate) fn random_hex(bytes: usize) -> String {
     buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// A new chat id routed by `[[routes]]`: 32 random lowercase hex digits. Web chats are created by
-/// the user (`/chats/new`), and the chat id is the conversation id.
+/// A new chat id routed by the stored routes: 32 random lowercase hex digits. Web chats are created
+/// by the user (`/chats/new`), and the chat id is the conversation id.
 pub fn new_chat_id() -> ConversationId {
     ConversationId::new(random_hex(16)).expect("hex is a valid id")
 }

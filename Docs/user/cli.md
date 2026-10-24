@@ -88,12 +88,15 @@ permanent: sessions, history, the inbox, group memory, and the plugin's data dir
 stored under it, so changing the table's name in `giles.toml` alone would leave all of that behind
 and start a new, empty instance. This command renames everything together:
 
-- the database rows that name the instance (sessions, inbound and outbound messages, usage, and
-  the provider recorded on past replies),
+- the database rows that name the instance (sessions, inbound and outbound messages, usage, the
+  provider recorded on past replies, and the [routes](configuration.md#routes) Giles stores, which
+  keep their order),
 - the directories `data/plugins/<old>/` and `agents/*/groups/<old>/`, and the instance's cache and
   pid files,
 - the `[<kind>.<old>]` table in `giles.toml`, with its comments, formatting, and sub-tables, and the
-  `[[routes]]` that name a renamed channel. An instance without a `component` key runs the
+  `[[routes]]` that name a renamed channel (Giles imports those once and then ignores them, so this
+  only matters before its first start with routes in the database, or to keep a leftover block
+  consistent). An instance without a `component` key runs the
   component named like the instance (`[channel.web]` is the built-in web channel), so the command
   adds `component = "<old>"` to keep it running the same thing,
 - in each agent's `agent.toml`: for a renamed provider, the `models`, `compaction_model`, and job
@@ -103,9 +106,9 @@ and start a new, empty instance. This command renames everything together:
 ```console
 $ giles instance rename libera libera-chat
 Renamed channel instance "libera" to "libera-chat".
-  database: 3 sessions, 10 inbox rows, 0 outbox rows, 0 usage rows, 0 messages
+  database: 3 sessions, 10 inbox rows, 0 outbox rows, 0 usage rows, 0 messages, 2 routes
   giles.toml: [channel.libera] -> [channel.libera-chat]
-  giles.toml: 1 route(s) updated
+  giles.toml: 1 [[routes]] rule(s) updated (Giles no longer reads them once they are imported)
   moved data/plugins/libera -> data/plugins/libera-chat
 Start giles again to use the new name.
 ```
@@ -117,7 +120,7 @@ in case. It refuses, changing nothing, if:
 
 - `<old>` isn't configured and has no data,
 - `<new>` is also configured, or already has data (database rows or directories): renaming never
-  merges two instances,
+  merges two instances. Routes that already name `<new>` aren't data, and stay,
 - `giles.toml` or an `agent.toml` can't be read or isn't valid TOML,
 - a renamed toolset's `tools` or `ask` globs match its tools by the old name without starting with
   `<old>__` (`github*`, `git*`). Giles can't tell what you meant and leaving them would stop them

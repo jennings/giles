@@ -15,7 +15,7 @@ use crate::paths::DataRoot;
 use crate::registry::{Registry, RegistryError};
 use crate::rename::{InstanceDataError, check_unused_instance_data};
 use crate::router::Router;
-use crate::routes::RouteList;
+use crate::routes::{Routes, RoutesError};
 use crate::scheduler::{JobChanges, OutboxDelivery, Scheduler, SchedulerOptions};
 use crate::sessions::{Approvals, Clock, Sessions, SessionsOptions, SystemClock, TurnRunner};
 
@@ -42,6 +42,9 @@ pub enum StartError {
     /// A configured component couldn't be built.
     #[error(transparent)]
     Registry(#[from] RegistryError),
+    /// The routes couldn't be imported from `giles.toml` or loaded.
+    #[error(transparent)]
+    Routes(#[from] RoutesError),
     /// Startup recovery of the sessions failed (PLAN section 6.3).
     #[error("cannot recover the sessions: {0}")]
     Sessions(#[source] giles_store::Error),
@@ -65,6 +68,9 @@ pub struct Runtime {
     /// Configured instances and their objects, the tool index, the skill index, and the running
     /// configuration ([`Registry::config`]).
     pub registry: Arc<Registry>,
+    /// The routing rules, stored in the database and changed through the web UI. The router
+    /// reads them ([`Routes::list`]).
+    pub routes: Arc<Routes>,
     /// Proactive sends to identities (PLAN section 6.11): job replies, approval prompts of job
     /// turns, login codes. Its sender starts with [`start_outbox`](Self::start_outbox).
     pub outbox: Outbox,
@@ -74,8 +80,9 @@ pub struct Runtime {
 
 impl Runtime {
     /// Opens (and migrates) the database and the blob store under `root`, builds the registry
-    /// from `config` with built-in providers reading attachments from the blob store, and
-    /// registers the core tools. The data root's layout must exist. `serve` logs the registry's
+    /// from `config` with built-in providers reading attachments from the blob store, imports
+    /// `giles.toml`'s `[[routes]]` if that never happened and loads the routes ([`Routes::open`]),
+    /// and registers the core tools. The data root's layout must exist. `serve` logs the registry's
     /// summary ([`Registry::log_summary`]) once it has registered the toolsets.
     ///
     /// # Errors
@@ -96,6 +103,7 @@ impl Runtime {
             .map_err(|source| StartError::Blobs { path, source })?;
         let media = Arc::new(BlobMedia::new(blobs.clone()));
         let registry = Arc::new(Registry::from_config(root.clone(), config.clone(), media)?);
+        let routes = Arc::new(Routes::open(store.clone(), registry.live_config().clone()).await?);
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let runtime = Self {
             root,
@@ -103,6 +111,7 @@ impl Runtime {
             store,
             blobs,
             registry,
+            routes,
             jobs: JobChanges::default(),
         };
         core_tools::register(&runtime)?;
@@ -142,11 +151,7 @@ impl Runtime {
         let agents = Arc::new(self.registry.live_config().clone());
         let options = SessionsOptions {
             store: self.store.clone(),
-            router: Router::new(
-                &config.owner,
-                RouteList::new(config.routes.clone()),
-                agents.clone(),
-            ),
+            router: Router::new(&config.owner, self.routes.list(), agents.clone()),
             agents,
             channels: self.registry.clone(),
             runner,

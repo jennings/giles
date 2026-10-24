@@ -52,8 +52,9 @@ fn format_report(root: &DataRoot, old: &str, new: &str, report: &RenameReport) -
     let mut text = format!("Renamed {} instance {old:?} to {new:?}.\n", report.kind);
     let _ = writeln!(
         text,
-        "  database: {} sessions, {} inbox rows, {} outbox rows, {} usage rows, {} messages",
-        rows.sessions, rows.inbox, rows.outbox, rows.usage, rows.messages
+        "  database: {} sessions, {} inbox rows, {} outbox rows, {} usage rows, {} messages, {} \
+         routes",
+        rows.sessions, rows.inbox, rows.outbox, rows.usage, rows.messages, rows.routes
     );
     if report.config_table {
         let _ = writeln!(
@@ -68,8 +69,13 @@ fn format_report(root: &DataRoot, old: &str, new: &str, report: &RenameReport) -
             report.kind
         );
     }
-    if report.routes > 0 {
-        let _ = writeln!(text, "  giles.toml: {} route(s) updated", report.routes);
+    if report.legacy_routes > 0 {
+        let _ = writeln!(
+            text,
+            "  giles.toml: {} [[routes]] rule(s) updated (Giles no longer reads them once they \
+             are imported)",
+            report.legacy_routes
+        );
     }
     for (path, changes) in &report.agent_files {
         let _ = writeln!(text, "  {}: {changes} reference(s) updated", relative(path));
@@ -104,10 +110,10 @@ mod tests {
                 outbox: 0,
                 usage: 0,
                 messages: 0,
-                routes: 0,
+                routes: 4,
             },
             config_table: true,
-            routes: 2,
+            legacy_routes: 2,
             agent_files: vec![(Path::new("/g/agents/jeeves/agent.toml").to_owned(), 1)],
             moved: vec![(
                 Path::new("/g/data/plugins/libera").to_owned(),
@@ -117,9 +123,9 @@ mod tests {
         let text = format_report(&root(), "libera", "libera-chat", &report);
         let expected = [
             "Renamed channel instance \"libera\" to \"libera-chat\".",
-            "  database: 3 sessions, 10 inbox rows, 0 outbox rows, 0 usage rows, 0 messages",
+            "  database: 3 sessions, 10 inbox rows, 0 outbox rows, 0 usage rows, 0 messages, 4 routes",
             "  giles.toml: [channel.libera] -> [channel.libera-chat]",
-            "  giles.toml: 2 route(s) updated",
+            "  giles.toml: 2 [[routes]] rule(s) updated (Giles no longer reads them once they are imported)",
         ];
         for line in expected {
             assert!(text.contains(line), "{text}");

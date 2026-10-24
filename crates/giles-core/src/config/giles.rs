@@ -5,14 +5,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 
-use giles_types::{AgentId, ConversationKind};
 use jiff::tz::TimeZone;
 use serde::Deserialize;
 
 use super::error::{ConfigError, KeyPath};
 use super::instances::{RawChannel, RawProvider, RawToolset};
-use super::names::{InstanceName, invalid_name_reason, is_valid_name};
-use crate::routes::Route;
+use super::names::InstanceName;
 
 /// The HTTP listener when `[core]` sets no `http_listen`: `127.0.0.1:8080`.
 pub const DEFAULT_HTTP_LISTEN: SocketAddr =
@@ -98,7 +96,9 @@ pub(crate) struct RawGiles {
     #[serde(default)]
     pub toolset: BTreeMap<String, RawToolset>,
     #[serde(default)]
-    routes: Vec<RawRoute>,
+    /// Anything: the web UI manages routes (TASKS.md 5.2), so these are only imported once, and
+    /// then not even parsed.
+    pub routes: Vec<toml::Value>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -115,15 +115,6 @@ struct RawOwner {
     identities: Vec<String>,
     default: Option<String>,
     timezone: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawRoute {
-    channel: Option<String>,
-    kind: Option<ConversationKind>,
-    conversation: Option<String>,
-    agent: String,
 }
 
 impl RawGiles {
@@ -208,57 +199,6 @@ impl RawGiles {
             default,
             timezone,
         })
-    }
-
-    /// The routes, checked against the configured channels and agents.
-    pub(crate) fn routes(
-        &self,
-        file: &Path,
-        channels: &BTreeSet<&str>,
-        agents: &BTreeSet<&str>,
-    ) -> Result<Vec<Route>, ConfigError> {
-        self.routes
-            .iter()
-            .enumerate()
-            .map(|(i, raw)| {
-                let path = KeyPath::root().key("routes").index(i);
-                let err = |key: &str, reason: String| ConfigError::at(file, path.key(key), reason);
-                let channel = match &raw.channel {
-                    Some(name) => {
-                        let name =
-                            InstanceName::new(name.as_str()).map_err(|r| err("channel", r))?;
-                        if !channels.contains(name.as_str()) {
-                            return Err(err(
-                                "channel",
-                                format!("no channel instance {name:?} (`[channel.{name}]`)"),
-                            ));
-                        }
-                        Some(name)
-                    }
-                    None => None,
-                };
-                if raw.conversation.as_deref() == Some("") {
-                    return Err(err("conversation", "must not be empty".into()));
-                }
-                if !is_valid_name(&raw.agent) {
-                    return Err(err("agent", invalid_name_reason("agent", &raw.agent)));
-                }
-                if !agents.contains(raw.agent.as_str()) {
-                    return Err(err(
-                        "agent",
-                        format!("no agent {:?} (agents/{0}/agent.toml)", raw.agent),
-                    ));
-                }
-                let agent =
-                    AgentId::new(raw.agent.as_str()).map_err(|e| err("agent", e.to_string()))?;
-                Ok(Route {
-                    channel,
-                    kind: raw.kind,
-                    conversation: raw.conversation.clone(),
-                    agent,
-                })
-            })
-            .collect()
     }
 }
 

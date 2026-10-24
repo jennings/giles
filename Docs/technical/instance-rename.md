@@ -14,7 +14,8 @@ rename must move each of them, and the startup check treats each as data.
 | Where                                        | What it is                                     | Rename does                    |
 | -------------------------------------------- | ---------------------------------------------- | ------------------------------ |
 | `giles.toml` `[<kind>.<name>]`               | The instance table and its sub-tables          | Renames the table in place     |
-| `giles.toml` `[[routes]]` `channel`          | A route's channel instance                     | Rewrites it (channels)         |
+| `routes.channel`                             | A stored route's channel instance              | Updates in the transaction     |
+| `giles.toml` `[[routes]]` `channel`          | A route of the old layout (imported once, then ignored) | Rewrites it (channels) |
 | `agent.toml` `models`, `compaction_model`, `[[jobs]]` `model` | `<provider instance>/<model id>` | Rewrites the prefix (providers) |
 | `agent.toml` `tools`, `ask`                  | Globs over `<toolset instance>__<tool>`        | Rewrites a leading `<name>__` (toolsets) |
 | `sessions.channel`                           | Session key (agent, channel, conversation)     | Updates in the transaction     |
@@ -26,6 +27,18 @@ rename must move each of them, and the startup check treats each as data.
 | `agents/<agent>/groups/<name>/`              | Memory a channel's groups wrote                | Moves                          |
 | `cache/describe/<name>.json`, `cache/toolsets/<name>.json` | Discovery caches                 | Moves if present; they are disposable |
 | `run/pids/<name>.pid`                        | The launched plugin's pid, killed at the next start | Moves if present, so a plugin that outlived the core is still found |
+
+Routes are the exception to "a rename must move each of them, and the startup check treats each as
+data": a route is a setting, not data. The rename moves `routes.channel` (in the same transaction,
+keeping the order; `RenamedRows::routes` counts them), and a name that only routes use still
+counts as existing for `old`, so a table renamed by hand can be finished. But `instance_rows`, which
+the startup check reads, leaves routes out, and a route to `new` isn't a conflict. The reason is
+the removed-instance case: a route to a removed instance is kept (the routes page flags it), and
+if routes counted as data, adding any instance would make the check take the removed name for the
+old name of the new instance and refuse to start until it is retired. The `[[routes]]` of
+`giles.toml` are rewritten too, because Giles reads them exactly once: a rename before the first
+start with routes in the database would otherwise import the old name, and the rewrite keeps a
+leftover block consistent after that (`RenameReport::legacy_routes`).
 
 Things that look like they carry a name and don't:
 
@@ -46,8 +59,8 @@ Not rewritten, by design:
   tool names); `*`, `memory*`, and `*__create_issue` mean the same under both names and are fine.
 - The `sandbox` grants of other instances, which can't name another instance's directory anyway.
 
-`Store::instance_rows` and `Store::rename_instance` (storage.md, "Instance Names") do the database
-half.
+`Store::instance_rows`, `Store::instance_routes` and `Store::rename_instance` (storage.md,
+"Instance Names") do the database half.
 
 ## Editing Config With Comments Intact
 
@@ -85,7 +98,8 @@ socket probing is needed and a core that starts mid-rename is refused instead.
      check asks for) and the data under `old` is moved to match. `old` must have data.
    - If neither is configured, it is refused: with no data it is an unknown instance, and with
      data the kind can't be known, so the message says to configure `new` first.
-   - `new` must have no data: no database rows, no `data/plugins/<new>`, no `groups/<new>`. The
+   - `new` must have no data: no database rows, no `data/plugins/<new>`, no `groups/<new>` (routes
+     that name `new` don't count). The
      exception is an interrupted rename run again (below): `giles.toml` already names `new`, so
      `old` is no longer configured, and rows still exist under `old`. While `old` is still
      configured, a directory called `new` belongs to something else and is refused.
@@ -140,8 +154,8 @@ the old name's sessions, inbox, and directories orphaned and begin a new, empty 
 Definitions:
 
 - A name **has data** if it appears in `sessions.channel`, `inbox.instance`, `outbox.instance`, or
-  `usage.provider`, or is a directory `data/plugins/<name>` or `agents/*/groups/<name>`. Only
-  directories with a valid name count (`.DS_Store` doesn't).
+  `usage.provider` (not `routes.channel`, see above), or is a directory `data/plugins/<name>` or
+  `agents/*/groups/<name>`. Only directories with a valid name count (`.DS_Store` doesn't).
 - A configured instance is **fresh** if its name has no data.
 - A name is **unused** if it has data, is not configured, and is not in `[core] retired_instances`.
 - An unused name **matches** a fresh instance if the kinds fit. Rows of `sessions`, `inbox`, or

@@ -25,12 +25,12 @@ The agent loop plugs in as a `TurnRunner`; the decision before anything is store
 
 `giles serve` calls `Runtime::start_sessions(runner, approvals, shutdown)` after `Runtime::start`
 and binding the HTTP listener: it's the last startup step that can fail, since recovery changes
-state and resumed turns start running. It builds the `Router` from `[owner]` and `[[routes]]`,
-passes the registry's `LiveConfig` as the `AgentPolicies` (so an agent created in the web UI gets
-its policy without a restart; a session of an agent no longer configured gets the defaults), runs
-`Sessions::start` (recovery, then resume, then the prune task), and attaches every channel
-registered so far. The plugin host
-then registers each plugin channel as it comes up and attaches it with
+state and resumed turns start running. It builds the `Router` from `[owner]` and the routes
+`Runtime::start` loaded (`Runtime::routes`), passes the registry's `LiveConfig` as the
+`AgentPolicies` (so an agent created in the web UI gets its policy without a restart; a session of
+an agent no longer configured gets the defaults), runs `Sessions::start` (recovery, then resume,
+then the prune task), and attaches every channel registered so far. The plugin host then registers
+each plugin channel as it comes up and attaches it with
 `Sessions::attach_channel(instance, component, channel)` ([Plugin Host](plugin-host.md)); attaching
 an instance again (a restarted plugin) stops the earlier pump after its current event.
 

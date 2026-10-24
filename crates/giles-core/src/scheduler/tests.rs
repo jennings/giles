@@ -256,7 +256,7 @@ impl Harness {
                 store: store.clone(),
                 router: Router::new(
                     &config.owner,
-                    RouteList::new(config.routes.clone()),
+                    RouteList::default(),
                     Arc::new(registry.live_config().clone()),
                 ),
                 agents: Arc::new(registry.live_config().clone()),
