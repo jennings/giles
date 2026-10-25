@@ -2,7 +2,7 @@
 
 use std::os::unix::fs::symlink;
 
-use crate::agents::{AgentCreator, CreateError, DEFAULT_SOUL, MAX_FILE_BYTES, MAX_FILES, NewAgent};
+use crate::agents::{AgentManager, CreateError, DEFAULT_SOUL, MAX_FILE_BYTES, MAX_FILES, NewAgent};
 use crate::config::{Config, LoadOptions};
 use crate::http::assets;
 use crate::paths::DataRoot;
@@ -53,10 +53,10 @@ impl Env {
         self.registry.root()
     }
 
-    fn agents_router(&self, creator: &Arc<AgentCreator>, user: Option<WebUser>) -> axum::Router {
+    fn agents_router(&self, manager: &Arc<AgentManager>, user: Option<WebUser>) -> axum::Router {
         let app = self
             .app
-            .install_agents(self.app.install(RouterBuilder::new()), creator.clone())
+            .install_agents(self.app.install(RouterBuilder::new()), manager.clone())
             .build();
         match user {
             Some(user) => app.layer(Extension(user)),
@@ -64,20 +64,20 @@ impl Env {
         }
     }
 
-    fn creator(&self) -> Arc<AgentCreator> {
-        Arc::new(AgentCreator::new(self.registry.clone()))
+    fn manager(&self) -> Arc<AgentManager> {
+        Arc::new(AgentManager::new(self.registry.clone()))
     }
 
     /// `method path` as the owner; the status and body. Every answer is `no-store`.
     async fn agents_call(
         &self,
-        creator: &Arc<AgentCreator>,
+        manager: &Arc<AgentManager>,
         method: Method,
         path: &str,
         form: Option<&str>,
     ) -> (StatusCode, String, Option<String>) {
         let response = call(
-            self.agents_router(creator, Some(owner())),
+            self.agents_router(manager, Some(owner())),
             method,
             path,
             &[],
@@ -112,7 +112,7 @@ fn form(id: &str, model: &str, extra: &str) -> String {
 #[tokio::test]
 async fn only_the_owner_gets_the_agent_pages() {
     let env = env().await;
-    let creator = env.creator();
+    let manager = env.manager();
     let cases = [
         (Method::GET, "/admin/agents"),
         (Method::GET, "/admin/agents/new"),
@@ -125,7 +125,7 @@ async fn only_the_owner_gets_the_agent_pages() {
             (Some(guest()), StatusCode::FORBIDDEN),
         ] {
             let response = call(
-                env.agents_router(&creator, user),
+                env.agents_router(&manager, user),
                 method.clone(),
                 path,
                 &[("x-csrf-token", CSRF)],
@@ -144,9 +144,9 @@ async fn only_the_owner_gets_the_agent_pages() {
 #[tokio::test]
 async fn the_list_shows_every_agent_with_its_models_and_links() {
     let env = env().await;
-    let creator = env.creator();
+    let manager = env.manager();
     let (status, html, _) = env
-        .agents_call(&creator, Method::GET, "/admin/agents", None)
+        .agents_call(&manager, Method::GET, "/admin/agents", None)
         .await;
     assert_eq!(status, StatusCode::OK);
     for expected in [
@@ -163,7 +163,7 @@ async fn the_list_shows_every_agent_with_its_models_and_links() {
 #[tokio::test]
 async fn an_agents_page_shows_its_files_escaped_and_refuses_links() {
     let env = env().await;
-    let creator = env.creator();
+    let manager = env.manager();
     let dir = env.root().agents_dir().join("jeeves");
     let write = |relative: &str, contents: &[u8]| {
         let path = dir.join(relative);
@@ -185,7 +185,7 @@ async fn an_agents_page_shows_its_files_escaped_and_refuses_links() {
     symlink(env.root().root(), dir.join("linked-dir")).unwrap();
 
     let (status, html, _) = env
-        .agents_call(&creator, Method::GET, "/admin/agents/jeeves", None)
+        .agents_call(&manager, Method::GET, "/admin/agents/jeeves", None)
         .await;
     assert_eq!(status, StatusCode::OK);
     for expected in [
@@ -228,7 +228,7 @@ async fn an_agents_page_shows_its_files_escaped_and_refuses_links() {
         "/admin/agents/..%2Fjeeves",
         "/admin/agents/jeeves%2F..%2F..",
     ] {
-        let (status, html, _) = env.agents_call(&creator, Method::GET, path, None).await;
+        let (status, html, _) = env.agents_call(&manager, Method::GET, path, None).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
         assert!(!html.contains("agent.toml"), "{path}\n{html}");
     }
@@ -237,14 +237,14 @@ async fn an_agents_page_shows_its_files_escaped_and_refuses_links() {
 #[tokio::test]
 async fn a_page_lists_at_most_max_files() {
     let env = env().await;
-    let creator = env.creator();
+    let manager = env.manager();
     let notes = env.root().agents_dir().join("bunter/notes");
     std::fs::create_dir_all(&notes).unwrap();
     for i in 0..MAX_FILES + 5 {
         std::fs::write(notes.join(format!("{i:04}.md")), "note").unwrap();
     }
     let (status, html, _) = env
-        .agents_call(&creator, Method::GET, "/admin/agents/bunter", None)
+        .agents_call(&manager, Method::GET, "/admin/agents/bunter", None)
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
@@ -265,9 +265,9 @@ async fn creating_an_agent_writes_files_that_load_and_makes_it_usable_at_once() 
             Arc::new(ListingProvider),
         )
         .unwrap();
-    let creator = env.creator();
+    let manager = env.manager();
     let (status, html, _) = env
-        .agents_call(&creator, Method::GET, "/admin/agents/new", None)
+        .agents_call(&manager, Method::GET, "/admin/agents/new", None)
         .await;
     assert_eq!(status, StatusCode::OK);
     assert!(
@@ -283,7 +283,7 @@ async fn creating_an_agent_writes_files_that_load_and_makes_it_usable_at_once() 
     );
     let (status, _, location) = env
         .agents_call(
-            &creator,
+            &manager,
             Method::POST,
             "/admin/agents",
             Some(&form("butler", "fake/listed-a", &fields)),
@@ -322,11 +322,11 @@ async fn creating_an_agent_writes_files_that_load_and_makes_it_usable_at_once() 
     // Running: listed, with a page, and a chat can be started with it.
     assert!(env.registry.config().agents.contains_key(&butler.id));
     let (_, list, _) = env
-        .agents_call(&creator, Method::GET, "/admin/agents", None)
+        .agents_call(&manager, Method::GET, "/admin/agents", None)
         .await;
     assert!(list.contains("The Butler (butler)"), "{list}");
     let (status, page, _) = env
-        .agents_call(&creator, Method::GET, "/admin/agents/butler", None)
+        .agents_call(&manager, Method::GET, "/admin/agents/butler", None)
         .await;
     assert_eq!(status, StatusCode::OK);
     assert!(page.contains("Be brief."), "{page}");
@@ -342,9 +342,9 @@ async fn creating_an_agent_writes_files_that_load_and_makes_it_usable_at_once() 
 #[tokio::test]
 async fn the_new_form_asks_for_the_name_before_the_id_and_starts_the_soul() {
     let env = env().await;
-    let creator = env.creator();
+    let manager = env.manager();
     let (status, html, _) = env
-        .agents_call(&creator, Method::GET, "/admin/agents/new", None)
+        .agents_call(&manager, Method::GET, "/admin/agents/new", None)
         .await;
     assert_eq!(status, StatusCode::OK);
     let name = html.find(r#"<input id="name" name="name" value="">"#);
@@ -367,9 +367,9 @@ async fn the_new_form_asks_for_the_name_before_the_id_and_starts_the_soul() {
 #[tokio::test]
 async fn the_new_form_loads_its_script_from_an_embedded_asset_the_policy_allows() {
     let env = env().await;
-    let creator = env.creator();
+    let manager = env.manager();
     let page = call(
-        env.agents_router(&creator, Some(owner())),
+        env.agents_router(&manager, Some(owner())),
         Method::GET,
         "/admin/agents/new",
         &[],
@@ -401,7 +401,7 @@ async fn the_new_form_loads_its_script_from_an_embedded_asset_the_policy_allows(
 
     // The asset is served from the binary with a JavaScript type.
     let asset = call(
-        env.agents_router(&creator, Some(owner())),
+        env.agents_router(&manager, Some(owner())),
         Method::GET,
         script.path,
         &[],
@@ -419,11 +419,11 @@ async fn the_new_form_loads_its_script_from_an_embedded_asset_the_policy_allows(
 #[tokio::test]
 async fn a_post_without_an_id_derives_it_from_the_name() {
     let env = env().await;
-    let creator = env.creator();
+    let manager = env.manager();
     // No id and no soul field, as a client without scripts (or curl) might post.
     let (status, _, location) = env
         .agents_call(
-            &creator,
+            &manager,
             Method::POST,
             "/admin/agents",
             Some(&format!("csrf={CSRF}&name=The+Butler%21&models=fake/m")),
@@ -442,7 +442,7 @@ async fn a_post_without_an_id_derives_it_from_the_name() {
     // A typed id wins over the name, and a soul the owner emptied stays empty.
     let (status, _, location) = env
         .agents_call(
-            &creator,
+            &manager,
             Method::POST,
             "/admin/agents",
             Some(&form("jarvis", "fake/m", "&name=Not+Used&soul=")),
@@ -457,7 +457,7 @@ async fn a_post_without_an_id_derives_it_from_the_name() {
 #[tokio::test]
 async fn a_form_posted_without_an_id_comes_back_with_the_derived_id_and_what_was_typed() {
     let env = env().await;
-    let creator = env.creator();
+    let manager = env.manager();
     let cases = [
         // A model that doesn't exist: the derived id is shown, the soul as typed (here: emptied).
         (
@@ -483,7 +483,7 @@ async fn a_form_posted_without_an_id_comes_back_with_the_derived_id_and_what_was
     for (name, model, extra, expected, id) in cases {
         let (status, html, _) = env
             .agents_call(
-                &creator,
+                &manager,
                 Method::POST,
                 "/admin/agents",
                 Some(&format!("csrf={CSRF}&name={name}&models={model}{extra}")),
@@ -507,10 +507,10 @@ async fn a_form_posted_without_an_id_comes_back_with_the_derived_id_and_what_was
 #[tokio::test]
 async fn a_browsers_crlf_line_breaks_in_the_soul_are_stored_as_lf() {
     let env = env().await;
-    let creator = env.creator();
+    let manager = env.manager();
     let (status, _, _) = env
         .agents_call(
-            &creator,
+            &manager,
             Method::POST,
             "/admin/agents",
             Some(&form(
@@ -528,7 +528,7 @@ async fn a_browsers_crlf_line_breaks_in_the_soul_are_stored_as_lf() {
 #[tokio::test]
 async fn an_invalid_form_is_shown_again_and_writes_nothing() {
     let env = env().await;
-    let creator = env.creator();
+    let manager = env.manager();
     let cases = [
         ("Bad%20Id", "fake/m", "", StatusCode::BAD_REQUEST, "invalid"),
         ("..%2Fx", "fake/m", "", StatusCode::BAD_REQUEST, "invalid"),
@@ -587,7 +587,7 @@ async fn an_invalid_form_is_shown_again_and_writes_nothing() {
     for (id, model, extra, expected, message) in cases {
         let (status, html, _) = env
             .agents_call(
-                &creator,
+                &manager,
                 Method::POST,
                 "/admin/agents",
                 Some(&form(id, model, extra)),
@@ -613,7 +613,7 @@ async fn an_invalid_form_is_shown_again_and_writes_nothing() {
     // A typed name is shown escaped when the form comes back.
     let (_, html, _) = env
         .agents_call(
-            &creator,
+            &manager,
             Method::POST,
             "/admin/agents",
             Some(&form("other", "nope/m", "&name=%22%3E%3Cscript%3E")),
@@ -626,7 +626,7 @@ async fn an_invalid_form_is_shown_again_and_writes_nothing() {
 #[tokio::test]
 async fn creating_an_agent_needs_the_csrf_token() {
     let env = env().await;
-    let creator = env.creator();
+    let manager = env.manager();
     for (headers, form) in [
         (&[][..], "id=butler&models=fake/m".to_owned()),
         (&[][..], "csrf=wrong&id=butler&models=fake/m".to_owned()),
@@ -636,7 +636,7 @@ async fn creating_an_agent_needs_the_csrf_token() {
         ),
     ] {
         let response = call(
-            env.agents_router(&creator, Some(owner())),
+            env.agents_router(&manager, Some(owner())),
             Method::POST,
             "/admin/agents",
             headers,
@@ -648,7 +648,7 @@ async fn creating_an_agent_needs_the_csrf_token() {
     }
     assert_eq!(env.agent_dirs(), ["bunter", "jeeves"]);
     let response = call(
-        env.agents_router(&creator, Some(owner())),
+        env.agents_router(&manager, Some(owner())),
         Method::POST,
         "/admin/agents",
         &[("x-csrf-token", CSRF)],
@@ -661,7 +661,7 @@ async fn creating_an_agent_needs_the_csrf_token() {
 #[tokio::test]
 async fn of_two_creations_with_the_same_id_one_wins() {
     let env = env().await;
-    let creator = env.creator();
+    let manager = env.manager();
     let agent = |soul: &str| NewAgent {
         id: "butler".into(),
         models: vec!["fake/m".into()],
@@ -669,7 +669,7 @@ async fn of_two_creations_with_the_same_id_one_wins() {
         ..NewAgent::default()
     };
     let (first, second) = (agent("first"), agent("second"));
-    let (a, b) = tokio::join!(creator.create(&first), creator.create(&second));
+    let (a, b) = tokio::join!(manager.create(&first), manager.create(&second));
     let (won, lost) = match (a, b) {
         (Ok(_), Err(lost)) => ("first", lost),
         (Err(lost), Ok(_)) => ("second", lost),
@@ -681,9 +681,9 @@ async fn of_two_creations_with_the_same_id_one_wins() {
     assert_eq!(env.agent_dirs(), ["bunter", "butler", "jeeves"]);
     assert_eq!(env.registry.config().agents.len(), 3);
 
-    // A second creator over the same registry (another page) can't take it either, and neither
+    // A second manager over the same registry (another page) can't take it either, and neither
     // can a directory someone made by hand.
-    let other = env.creator();
+    let other = env.manager();
     assert!(matches!(
         other.create(&agent("again")).await,
         Err(CreateError::Exists(_))
@@ -694,14 +694,14 @@ async fn of_two_creations_with_the_same_id_one_wins() {
         ..agent("x")
     };
     assert!(matches!(
-        creator.create(&manual).await,
+        manager.create(&manual).await,
         Err(CreateError::Exists(_))
     ));
     assert!(!env.root().agents_dir().join("manual/SOUL.md").exists());
 }
 
 /// A creation cut off by a crash leaves only its staging directory, which doesn't stop startup
-/// and is removed when the next daemon's creator is built.
+/// and is removed when the next daemon's manager is built.
 #[tokio::test]
 async fn a_staging_directory_left_by_a_crash_breaks_nothing() {
     let env = env().await;
@@ -721,15 +721,15 @@ async fn a_staging_directory_left_by_a_crash_breaks_nothing() {
     .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(loaded.agents.len(), 2);
 
-    let creator = env.creator();
+    let manager = env.manager();
     assert!(!stale.exists());
     let (_, list, _) = env
-        .agents_call(&creator, Method::GET, "/admin/agents", None)
+        .agents_call(&manager, Method::GET, "/admin/agents", None)
         .await;
     assert!(!list.contains("creating"), "{list}");
     let (status, _, _) = env
         .agents_call(
-            &creator,
+            &manager,
             Method::POST,
             "/admin/agents",
             Some(&form("butler", "fake/m", "")),

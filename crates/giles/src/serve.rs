@@ -152,12 +152,12 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     #[cfg(feature = "channel-web")]
     let builder = match &web {
         Some(web) => {
-            let creator = Arc::new(giles_core::agents::AgentCreator::new(
+            let manager = Arc::new(giles_core::agents::AgentManager::new(
                 runtime.registry.clone(),
             ));
             let builder = web.install_agents(
                 web.install_admin(web.install(builder), admin.clone()),
-                creator,
+                manager,
             );
             web.install_routes(builder, runtime.routes.clone())
         }

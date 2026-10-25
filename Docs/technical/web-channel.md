@@ -397,8 +397,8 @@ aren't part of `Status`, and remote URLs can't carry credentials (config validat
 
 ## Agent Pages
 
-TASKS.md 5.1, in `agents.rs`: `web.install_agents(builder, Arc<agents::AgentCreator>)`, which
-`serve` calls after `install_admin` with a creator over the runtime's registry (so the chat list,
+TASKS.md 5.1, in `agents.rs`: `web.install_agents(builder, Arc<agents::AgentManager>)`, which
+`serve` calls after `install_admin` with a manager over the runtime's registry (so the chat list,
 reading the same `LiveConfig`, offers a new agent at once). Like the admin pages: the same
 authentication middleware, `may_administer` (the owner only; a guest gets 403, no login 401) on
 every route including the POST, `no-store` on every answer, and `check_csrf` on the POST. Unlike
@@ -424,7 +424,7 @@ no agent RPCs yet (PLAN section 8.7).
 - Who sees which file is one hook, `FileKind::visible_to(viewer)`, applied before a file is read
   or counted. It allows everything now: v1's only user is the owner, the only one who can open the
   pages. With several users it is where a user is limited to their own `UserMemory`.
-- The form offers `AgentCreator::known_models()` as a `<datalist>`: every registered provider's
+- The form offers `AgentManager::known_models()` as a `<datalist>`: every registered provider's
   `list_models()`, 5 s each, failures logged at `debug` with secrets scrubbed; any
   `<provider>/<model>` can still be typed. Lists are split at commas and whitespace
   (`agents::split_list`).
@@ -449,7 +449,7 @@ no agent RPCs yet (PLAN section 8.7).
 - `CreateForm` (`agents.rs`) starts `soul` as `agents::DEFAULT_SOUL`, so the first `GET` shows it
   and a post with no `soul` field gets it; a `soul` that was posted empty stays empty, also when
   the form is shown again after an error.
-- `AgentCreator::create` (one at a time, under a lock): builds `agent.toml` with the TOML
+- `AgentManager::create` (one at a time, under a lock): builds `agent.toml` with the TOML
   serializer (`agents::agent_toml`, unset values left out), validates it with
   `Config::validate_agent` (the startup checks), refuses `RESERVED_AGENT_IDS` (`new`, the form's
   address) and an id taken ignoring ASCII case, then writes the files into a staging directory,
@@ -460,7 +460,7 @@ no agent RPCs yet (PLAN section 8.7).
   directory appears whole or not at all; on any failure the staging directory is removed. Then
   `LiveConfig::add_agent`; if that refuses (another creator took the id, ignoring case, meanwhile)
   the new directory is removed. A staging directory left by a crash breaks nothing (startup skips
-  it) and is removed when `serve` builds its `AgentCreator` at the next start. Of two creations
+  it) and is removed when `serve` builds its `AgentManager` at the next start. Of two creations
   with the same id one wins; the other is told the id is taken, as is one whose directory exists
   on disk. An invalid form comes back with `CreateError::form_message` (key and reason, never a
   file path): 409 for a taken id, else 400. Write failures are logged and answered 500.

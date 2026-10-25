@@ -4,12 +4,14 @@
 
 pub mod create;
 pub mod files;
+mod manager;
 
 pub use create::{
-    AgentCreator, CreateError, DEFAULT_SOUL, MAX_SOUL_BYTES, NewAgent, RESERVED_AGENT_IDS,
-    agent_id_from_name, agent_toml, split_list,
+    CreateError, DEFAULT_SOUL, MAX_SOUL_BYTES, NewAgent, RESERVED_AGENT_IDS, agent_id_from_name,
+    agent_toml, split_list,
 };
 pub use files::{
     AgentFile, AgentFiles, Content, FileKind, MAX_DEPTH, MAX_FILE_BYTES, MAX_FILES,
     MAX_TOTAL_BYTES, list_files, percent_decode,
 };
+pub use manager::AgentManager;

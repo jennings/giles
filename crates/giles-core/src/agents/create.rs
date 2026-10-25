@@ -1,9 +1,9 @@
 //! Creating an agent while the core runs (TASKS.md 5.1, PLAN section 11.2): the web UI's form
 //! becomes `agents/<agent>/agent.toml` and `SOUL.md`, and the agent joins the running
-//! configuration ([`LiveConfig`]), so it can be used at once. Nothing else about the
-//! configuration changes; reload stays deferred (D28).
+//! configuration ([`LiveConfig`](crate::config::LiveConfig)), so it can be used at once. Nothing
+//! else about the configuration changes; reload stays deferred (D28).
 //!
-//! [`AgentCreator::create`]:
+//! [`AgentManager::create`]:
 //!
 //! 1. Builds `agent.toml` with the TOML serializer ([`agent_toml`]) and validates it with
 //!    [`Config::validate_agent`], the checks startup loading runs on every agent.
@@ -14,8 +14,8 @@
 //!    file, fsynced, renamed into place (`SOUL.md`, then `agent.toml`); fsyncs it, renames it to
 //!    `agents/<agent>/` (refused if that exists and isn't empty), and fsyncs `agents/`. So the
 //!    agent's directory appears whole or not at all. On any failure the staging directory is
-//!    removed; one left by a crash is removed at the next start ([`AgentCreator::new`]).
-//! 4. Adds the agent to the [`LiveConfig`].
+//!    removed; one left by a crash is removed at the next start ([`AgentManager::new`]).
+//! 4. Adds the agent to the [`LiveConfig`](crate::config::LiveConfig).
 //!
 //! Creations run one at a time (a lock around all four steps), so of two with the same id one
 //! wins and the other is told the id is taken.
@@ -24,14 +24,12 @@ use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::Path;
-use std::sync::Arc;
-use std::time::Duration;
 
 use serde::Serialize;
 use tracing::{debug, info};
 
-use crate::config::{AgentConfig, ConfigError, LiveConfig};
-use crate::registry::Registry;
+use super::manager::AgentManager;
+use crate::config::{AgentConfig, ConfigError};
 
 /// Agent ids the web UI won't create: `new` is the address of the form itself
 /// (`/admin/agents/new`), so an agent with that id couldn't have a page.
@@ -62,9 +60,6 @@ pub fn agent_id_from_name(name: &str) -> String {
         })
         .collect()
 }
-
-/// How long the form waits for each provider's model list.
-const LIST_MODELS_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// What the form asks for. Lists hold what the owner typed, split ([`split_list`]); every value is
 /// checked by [`Config::validate_agent`](crate::config::Config::validate_agent) like a
@@ -172,71 +167,7 @@ pub fn agent_toml(agent: &NewAgent) -> String {
     .expect("strings and lists of strings always serialize")
 }
 
-/// Creates agents in the running core. Shared as `Arc<AgentCreator>`.
-#[derive(Debug)]
-pub struct AgentCreator {
-    registry: Arc<Registry>,
-    /// Held for a whole creation, so creations run one at a time.
-    lock: tokio::sync::Mutex<()>,
-}
-
-impl AgentCreator {
-    /// Creates agents under the registry's data root, adding them to its running configuration.
-    /// `giles serve` builds one at startup, before it serves; building it removes the staging
-    /// directories a creation cut off by a crash left in `agents/` (`.<agent>.creating/`).
-    /// Blocking (a directory listing).
-    pub fn new(registry: Arc<Registry>) -> Self {
-        remove_stale_staging(&registry.root().agents_dir());
-        Self {
-            registry,
-            lock: tokio::sync::Mutex::new(()),
-        }
-    }
-
-    /// The running configuration agents are added to.
-    pub fn config(&self) -> &LiveConfig {
-        self.registry.live_config()
-    }
-
-    /// Every `<provider>/<model>` the registered providers list, sorted, for the form to offer.
-    /// A provider whose listing fails or takes longer than 5 seconds offers nothing (logged at
-    /// `debug`, with secrets scrubbed); its models can still be typed.
-    pub async fn known_models(&self) -> Vec<String> {
-        let config = self.registry.config();
-        let listings = self.registry.providers().into_iter().map(|(name, provider)| {
-            let config = config.clone();
-            async move {
-                match tokio::time::timeout(LIST_MODELS_TIMEOUT, provider.list_models()).await {
-                    Ok(Ok(models)) => models
-                        .into_iter()
-                        .map(|model| format!("{name}/{}", model.id))
-                        .collect(),
-                    Ok(Err(error)) => {
-                        let error = error.to_string();
-                        let error = match config.providers.get(&name) {
-                            Some(instance) => instance.config.scrub(&error),
-                            None => error,
-                        };
-                        debug!(provider = %name, %error, "cannot list the provider's models for the agent form");
-                        Vec::new()
-                    }
-                    Err(_) => {
-                        debug!(provider = %name, "listing the provider's models for the agent form timed out");
-                        Vec::new()
-                    }
-                }
-            }
-        });
-        let mut models: Vec<String> = futures::future::join_all(listings)
-            .await
-            .into_iter()
-            .flatten()
-            .collect();
-        models.sort();
-        models.dedup();
-        models
-    }
-
+impl AgentManager {
     /// Creates `agent` (see the [module docs](self)) and returns its configuration, already part
     /// of the running configuration.
     ///
@@ -301,10 +232,10 @@ fn staging_name(id: &str) -> String {
 const STAGING_SUFFIX: &str = ".creating";
 
 /// Removes the staging directories left in `agents_dir` by a creation that never finished (the
-/// process died mid-write). Called when the daemon's creator is built at startup, before any
+/// process died mid-write). Called when the daemon's manager is built at startup, before any
 /// creation runs (the data root's instance lock makes this daemon the only writer), so none is in
 /// use. A leftover never breaks startup anyway: config loading skips it like any dot directory.
-fn remove_stale_staging(agents_dir: &Path) {
+pub(super) fn remove_stale_staging(agents_dir: &Path) {
     let Ok(entries) = fs::read_dir(agents_dir) else {
         return;
     };

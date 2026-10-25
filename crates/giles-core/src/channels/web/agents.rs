@@ -23,7 +23,7 @@ use super::admin::{forbidden, may_administer};
 use super::auth::{WebUser, check_csrf};
 use super::pages::{WebApp, agent_label, error_page, no_store};
 use crate::agents::{
-    AgentCreator, AgentFile, Content, CreateError, DEFAULT_SOUL, MAX_FILE_BYTES, MAX_FILES,
+    AgentFile, AgentManager, Content, CreateError, DEFAULT_SOUL, MAX_FILE_BYTES, MAX_FILES,
     MAX_TOTAL_BYTES, NewAgent, agent_id_from_name, list_files, split_list,
 };
 use crate::config::AgentConfig;
@@ -32,18 +32,18 @@ use crate::http::{self, RouterBuilder};
 /// The agent pages' state.
 #[derive(Clone)]
 struct AgentPages {
-    creator: Arc<AgentCreator>,
+    manager: Arc<AgentManager>,
 }
 
 impl WebApp {
-    /// Adds the agent pages to `builder`, creating agents with `creator` (whose running
+    /// Adds the agent pages to `builder`, creating agents with `manager` (whose running
     /// configuration should be this app's, so the chat list offers a new agent at once), behind
     /// the same authentication middleware as the chat pages. Every answer on these routes is
     /// `no-store`.
     pub fn install_agents(
         &self,
         builder: RouterBuilder,
-        creator: Arc<AgentCreator>,
+        manager: Arc<AgentManager>,
     ) -> RouterBuilder {
         let auth = from_fn_with_state(self.clone(), super::login::authenticate);
         builder.merge(
@@ -51,7 +51,7 @@ impl WebApp {
                 .route("/admin/agents", get(agents_page).post(create))
                 .route("/admin/agents/new", get(new_agent_page))
                 .route("/admin/agents/{agent}", get(agent_page))
-                .with_state(AgentPages { creator })
+                .with_state(AgentPages { manager })
                 .route_layer(auth)
                 .route_layer(map_response(async |response: Response| no_store(response))),
         )
@@ -76,7 +76,7 @@ async fn agents_page(State(pages): State<AgentPages>, user: WebUser) -> Response
     if !may_administer(&user) {
         return forbidden();
     }
-    let config = pages.creator.config().get();
+    let config = pages.manager.config().get();
     let agents = config
         .agents
         .values()
@@ -181,7 +181,7 @@ async fn agent_page(
     if !may_administer(&user) {
         return forbidden();
     }
-    let config = pages.creator.config().get();
+    let config = pages.manager.config().get();
     let Some(agent) = AgentId::new(&agent)
         .ok()
         .and_then(|id| config.agents.get(&id))
@@ -287,7 +287,7 @@ async fn render_form(
         csrf: &user.csrf,
         form,
         error,
-        known_models: pages.creator.known_models().await,
+        known_models: pages.manager.known_models().await,
     })
 }
 
@@ -328,7 +328,7 @@ async fn create(
         // Browsers submit a textarea's line breaks as CRLF; the file keeps plain LF.
         soul: form.soul.replace("\r\n", "\n"),
     };
-    match pages.creator.create(&agent).await {
+    match pages.manager.create(&agent).await {
         Ok(created) => Redirect::to(&format!("/admin/agents/{}", created.id)).into_response(),
         Err(err) if err.is_invalid_input() => {
             let status = match err {
