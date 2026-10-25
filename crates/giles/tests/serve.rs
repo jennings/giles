@@ -1220,7 +1220,7 @@ fn location(response: &str) -> &str {
         .unwrap_or_else(|| panic!("no Location in {response}"))
 }
 
-/// TASKS.md 5.1 end to end: the owner creates an agent on the web, then chats with it, and its
+/// End to end: the owner creates an agent on the web, then chats with it, and its
 /// (fake) provider answers, all without a restart.
 #[cfg(all(feature = "channel-web", feature = "provider-openai"))]
 #[test]

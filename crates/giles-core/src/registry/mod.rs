@@ -264,7 +264,7 @@ impl Registry {
         self.config.get()
     }
 
-    /// The shared configuration that agents created at runtime are added to (TASKS.md 5.1).
+    /// The shared configuration that agents created at runtime are added to.
     pub fn live_config(&self) -> &LiveConfig {
         &self.config
     }
@@ -393,8 +393,8 @@ impl Registry {
     }
 
     /// The built-in web channel, typed, if `giles.toml` configures one: its pages
-    /// ([`WebApp`](crate::channels::web::WebApp)), approval prompts (TASKS.md 2.7), and login links
-    /// (2.24) need more than [`Channel`].
+    /// ([`WebApp`](crate::channels::web::WebApp)), approval prompts, and login links
+    /// need more than [`Channel`].
     #[cfg(feature = "channel-web")]
     pub fn web_channel(&self) -> Option<Arc<crate::channels::web::WebChannel>> {
         self.web.get().cloned()

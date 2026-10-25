@@ -1,4 +1,4 @@
-//! End to end tests of the whole daemon (TASKS.md 4.5).
+//! End to end tests of the whole daemon.
 //!
 //! Each test runs the real `giles serve` binary on a temporary data root, with the test-only echo
 //! channel plugin (`plugins/giles-channel-echo`, launched through the plugin host and, where the

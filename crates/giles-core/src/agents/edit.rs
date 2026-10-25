@@ -1,4 +1,4 @@
-//! Editing an agent while the core runs (TASKS.md 5.4, PLAN section 11.2): the web UI's edit form
+//! Editing an agent while the core runs (PLAN section 11.2): the web UI's edit form
 //! changes `agent.toml` and `SOUL.md` in place, and the edited agent replaces the old one in the
 //! running configuration ([`LiveConfig`](crate::config::LiveConfig)), so the next session uses it.
 //! A session that is running keeps the tools and `system` it started with (PLAN section 6.3).

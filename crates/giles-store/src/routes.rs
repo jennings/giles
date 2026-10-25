@@ -1,4 +1,4 @@
-//! `routes`: the ordered routing rules (PLAN 6.1, TASKS 5.2), and the marker that says the
+//! `routes`: the ordered routing rules (PLAN 6.1), and the marker that says the
 //! `[[routes]]` of `giles.toml` have been imported.
 //!
 //! The store keeps the rules as written and checks nothing about them but their shape: whether the

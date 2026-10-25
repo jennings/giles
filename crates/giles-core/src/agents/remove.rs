@@ -1,4 +1,4 @@
-//! Removing an agent while the core runs (TASKS.md 5.4, PLAN sections 8.7 and 11.2).
+//! Removing an agent while the core runs (PLAN sections 8.7 and 11.2).
 //!
 //! # What removal does
 //!

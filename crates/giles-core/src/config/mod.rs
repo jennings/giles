@@ -103,7 +103,7 @@ pub struct Config {
     pub unknown_keys: Vec<UnknownKey>,
     /// `[[routes]]` as written, unvalidated. Routes are managed in the web UI and stored in the
     /// database; these are imported once by [`Routes::open`](crate::routes::Routes::open) and then
-    /// only reported (TASKS.md 5.2).
+    /// only reported.
     pub legacy_routes: Vec<toml::Value>,
     /// Every `agents/<agent>/agent.toml`, by agent id.
     pub agents: BTreeMap<AgentId, AgentConfig>,

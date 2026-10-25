@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
-description = "Throwaway spike for TASKS.md 1.13: link, send, and receive DMs with whatsapp-rust"
+description = "Throwaway WhatsApp spike: link, send, and receive DMs with whatsapp-rust"
 
 [dependencies]
 anyhow = "1"

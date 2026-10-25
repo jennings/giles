@@ -7,7 +7,7 @@
 //! pass through unchanged. See `Docs/technical/sandbox.md`.
 //!
 //! The platform backends sit behind the internal [`backend::SandboxBackend`] trait: Landlock and
-//! seccomp on Linux (TASKS.md 2.13), Seatbelt on macOS (TASKS.md 2.14). A backend that can't
+//! seccomp on Linux, Seatbelt on macOS. A backend that can't
 //! apply its sandbox fails, and the trampoline runs nothing, unless the spec opts out with
 //! [`Spec::unsandboxed`].
 //!

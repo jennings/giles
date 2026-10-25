@@ -129,7 +129,7 @@ impl AgentPolicy {
 }
 
 /// Where the session manager looks up each agent's [`AgentPolicy`] when it needs it, so agents
-/// added while the core runs (TASKS.md 5.1) get theirs.
+/// added while the core runs get theirs.
 pub trait AgentPolicies: Send + Sync {
     /// `agent`'s policy, or `None` if no such agent is configured now.
     fn policy(&self, agent: &AgentId) -> Option<AgentPolicy>;
@@ -160,7 +160,7 @@ pub struct SessionsOptions {
     pub agents: Arc<dyn AgentPolicies>,
     /// Where replies and restart notices are sent.
     pub channels: Arc<dyn ChannelLookup>,
-    /// Runs turns: the agent loop (TASKS.md 2.4).
+    /// Runs turns: the agent loop.
     pub runner: Arc<dyn TurnRunner>,
     /// Pending approvals and where replies go.
     pub approvals: Arc<dyn Approvals>,

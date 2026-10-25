@@ -766,7 +766,7 @@ fn random_bytes<const N: usize>() -> io::Result<[u8; N]> {
     Ok(bytes)
 }
 
-/// A launched, configured plugin: what supervision (2.17) and the `RemoteChannel` adapter (2.18)
+/// A launched, configured plugin: what supervision and the `RemoteChannel` adapter
 /// build on.
 #[derive(Debug)]
 #[non_exhaustive]

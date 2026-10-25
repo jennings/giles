@@ -28,7 +28,7 @@ it and exits.
 ## The Running Configuration
 
 The registry holds the configuration as a `config::LiveConfig`: the `Config` loaded at startup, plus
-the agents created, edited, and removed since (the web UI's agent pages, TASKS.md 5.1 and 5.4).
+the agents created, edited, and removed since (the web UI's agent pages).
 `Registry::config()` returns a snapshot, `Arc<Config>`; a caller keeps one snapshot for the work at
 hand (a turn, a tool call, a page). `Registry::live_config()` is the shared handle: the core tools,
 the session manager (its `AgentPolicies`), and the scheduler hold clones, so they see a change at

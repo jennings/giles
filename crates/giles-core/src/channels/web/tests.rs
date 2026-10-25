@@ -1194,7 +1194,7 @@ fn approval_answers_and_codes() {
     assert!(!is_chat_id("owner"));
 }
 
-// The web login (TASKS.md 2.23): requests go through the real authentication middleware.
+// The web login: requests go through the real authentication middleware.
 
 /// The session cookie as a request header.
 fn session(token: &str) -> String {
@@ -2040,7 +2040,7 @@ async fn the_agent_loop_streams_a_reply_live_to_the_page() {
     sessions.closed().await;
 }
 
-/// The owner may start a chat with any configured agent; the chat keeps it (TASKS.md 5.1).
+/// The owner may start a chat with any configured agent; the chat keeps it.
 #[tokio::test]
 async fn a_chat_can_be_started_with_any_agent_and_keeps_it() {
     let env = env().await;

@@ -1,4 +1,4 @@
-//! Router-level tests of editing an agent (TASKS.md 5.4) over the test configuration's registry:
+//! Router-level tests of editing an agent over the test configuration's registry:
 //! the agents `jeeves` (a name, a tool, and a job with a prompt file) and `bunter`.
 
 use crate::agents::{AgentEdit, AgentManager, EditError};

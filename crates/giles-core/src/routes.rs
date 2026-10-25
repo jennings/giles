@@ -1,4 +1,4 @@
-//! Routing rules (PLAN sections 6.1 and 11.2, TASKS.md 5.2): [`Route`], [`RouteList`], the ordered
+//! Routing rules (PLAN sections 6.1 and 11.2): [`Route`], [`RouteList`], the ordered
 //! list the [router](crate::router::Router) reads for every inbound message, and [`Routes`], which
 //! keeps that list in the database and changes it for the web UI.
 //!

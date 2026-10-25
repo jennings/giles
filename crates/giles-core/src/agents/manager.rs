@@ -1,5 +1,5 @@
-//! [`AgentManager`]: what the web UI's agent pages call to change the agents of the running core
-//! (TASKS.md 5.1, 5.4). Creating, editing, and removing an agent run under the manager's one lock,
+//! [`AgentManager`]: what the web UI's agent pages call to change the agents of the running core.
+//! Creating, editing, and removing an agent run under the manager's one lock,
 //! so they are serialized with each other. What each does is in its own module:
 //! [`create`](super::create), [`edit`](super::edit), [`remove`](super::remove).
 

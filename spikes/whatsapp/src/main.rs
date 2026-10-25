@@ -1,4 +1,4 @@
-//! WhatsApp spike for TASKS.md 1.13: link `whatsapp-rust` as a companion device (QR code or pair
+//! WhatsApp spike: link `whatsapp-rust` as a companion device (QR code or pair
 //! code), print incoming messages, send a DM, and reuse the persisted session after a restart.
 //! Test plan and findings: `Docs/technical/whatsapp-spike.md`.
 
@@ -29,7 +29,7 @@ const LINK_SETTLE: Duration = Duration::from_secs(20);
 const SEND_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Parser)]
-#[command(about = "WhatsApp spike (TASKS.md 1.13): link, listen, and send with whatsapp-rust")]
+#[command(about = "WhatsApp spike: link, listen, and send with whatsapp-rust")]
 struct Cli {
     /// Directory for the session store and spike state (created with mode 0700). Only one
     /// process may use it at a time.

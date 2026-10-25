@@ -60,7 +60,7 @@ const MAX_SLEEP: Duration = Duration::from_secs(5 * 60);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum OutboxKind {
-    /// A job's reply, delivered to its user (TASKS.md 3.2).
+    /// A job's reply, delivered to its user.
     JobReply,
     /// The approval prompt of a job turn with `ask_to = "deliver_to"` (PLAN section 6.4). Needs
     /// [`OutboxItem::expires_at`]: the approval's deadline. Pending approvals don't survive a

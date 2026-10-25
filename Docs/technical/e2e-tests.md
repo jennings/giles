@@ -1,6 +1,6 @@
 # End-to-End Tests
 
-`crates/giles/tests/e2e/` runs the whole daemon, scripted from outside (TASKS.md 4.5). Each test
+`crates/giles/tests/e2e/` runs the whole daemon, scripted from outside. Each test
 starts the real `giles serve` binary on a temporary data root, with the echo channel plugin
 (`plugins/giles-channel-echo`, see [Plugin SDK](plugin-sdk.md)) and a fake model provider. The
 tests play the owner: they put messages into the echo plugin and read back what the daemon sent.

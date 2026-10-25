@@ -1,4 +1,4 @@
-//! Creating an agent while the core runs (TASKS.md 5.1, PLAN section 11.2): the web UI's form
+//! Creating an agent while the core runs (PLAN section 11.2): the web UI's form
 //! becomes `agents/<agent>/agent.toml` and `SOUL.md`, and the agent joins the running
 //! configuration ([`LiveConfig`](crate::config::LiveConfig)), so it can be used at once. Nothing
 //! else about the configuration changes; reload stays deferred (D28).

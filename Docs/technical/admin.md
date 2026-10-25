@@ -48,7 +48,7 @@ connection (a socket a dead core left), or a fallback socket directory that does
 
 | RPC               | Behavior                                                                                    |
 | ----------------- | ------------------------------------------------------------------------------------------- |
-| `Status`          | Version, start time, `config_error` (always unset in v1: an invalid configuration stops startup, and there is no reload), the host's sandbox (`SandboxHost`: the startup check's report or error, and the Landlock ABI on Linux), every configured channel with its runtime and last recorded status (from `Sessions::channel_statuses`, TASKS.md 2.3), and the plugins as in `ListPlugins`. |
+| `Status`          | Version, start time, `config_error` (always unset in v1: an invalid configuration stops startup, and there is no reload), the host's sandbox (`SandboxHost`: the startup check's report or error, and the Landlock ABI on Linux), every configured channel with its runtime and last recorded status (from `Sessions::channel_statuses`), and the plugins as in `ListPlugins`. |
 | `ListPlugins`     | Every configured channel plugin (launched or remote) and MCP toolset, channels first, each sorted by name. v1 providers are all built in, so none is listed. |
 | `RestartPlugin`   | `NOT_FOUND` for anything not listed by `ListPlugins`; `UNAVAILABLE` without plugin supervision; `FAILED_PRECONDITION` if supervision doesn't know the instance; else `PluginControl::restart`. |
 | `ListSessions`    | `Store::list_sessions`: newest activity first, optionally one agent's, open ones unless `include_ended`. `INVALID_ARGUMENT` for an invalid agent id. |

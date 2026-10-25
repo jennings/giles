@@ -205,8 +205,7 @@ adapters merge consecutive `User` messages where an API requires alternating rol
 | `truncate_messages`    | Deletes the messages after a seq and the summaries covering any of them (a `dm` job run that replied `NO_REPLY`). |
 | `insert_summary`       | Stores a compaction summary of `from_seq..=through_seq`; rejects empty ranges, ranges past the last message, and a cut between a `ToolUse` and its slots. |
 
-The store doesn't decide when to compact or what a synthetic result says; the agent loop does
-(tasks 2.3 to 2.10).
+The store doesn't decide when to compact or what a synthetic result says; the agent loop does.
 
 ## Conversations
 
@@ -344,7 +343,7 @@ collision), `web_session(token, now)` (only unexpired sessions), `web_session_de
 
 ## Routes
 
-`routes` is the ordered list of routing rules (PLAN 6.1, TASKS 5.2); the first rule that matches a
+`routes` is the ordered list of routing rules (PLAN 6.1); the first rule that matches a
 conversation wins, so `position` is the order. The store keeps the rules as written and checks
 only their shape (a non-empty channel, conversation, and agent, a known kind). That the channel
 instance and the agent exist, and that no rule hides a later one, is checked by the core before it

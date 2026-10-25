@@ -1,5 +1,5 @@
 //! The configuration the running core uses: the one loaded at startup, plus the agents created,
-//! edited, and removed since (TASKS.md 5.1, 5.4). Nothing else changes while the core runs;
+//! edited, and removed since. Nothing else changes while the core runs;
 //! reload stays deferred (D28).
 
 use std::collections::BTreeMap;

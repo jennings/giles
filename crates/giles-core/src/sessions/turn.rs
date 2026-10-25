@@ -16,7 +16,7 @@ use super::{ChannelLookup, lock};
 use crate::approvals::ApprovalTarget;
 use crate::config::{BusyMode, ModelRef};
 
-/// Runs turns. The agent loop (TASKS.md 2.4) implements it.
+/// Runs turns. The agent loop implements it.
 #[async_trait]
 pub trait TurnRunner: Send + Sync {
     /// Runs one turn to its end. The session code marks the turn's inbox rows `started` before
@@ -246,7 +246,7 @@ impl SteerShared {
     }
 }
 
-/// Sends into a session's conversation: replies (TASKS.md 2.8) and notices.
+/// Sends into a session's conversation: replies and notices.
 #[derive(Clone)]
 pub struct Reply {
     channels: Arc<dyn ChannelLookup>,

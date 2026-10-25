@@ -39,7 +39,7 @@ pub(super) struct Event {
     pub html: String,
 }
 
-/// An approval prompt shown in a chat, until it's resolved (TASKS.md 2.7) or the hub is dropped.
+/// An approval prompt shown in a chat, until it's resolved or the hub is dropped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Approval {
     /// The short code.

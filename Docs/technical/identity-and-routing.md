@@ -146,7 +146,7 @@ The routes are the `routes` table (`Docs/technical/storage.md`), not config. `ro
   it: its response has no field for a warning (`config_error` is for reload errors), and a new
   proto field wasn't worth it for a line already in the log and on the routes page.
 
-A web chat can be started with a chosen agent (the chat list's picker, TASKS.md 5.1). Its chat id,
+A web chat can be started with a chosen agent (the chat list's picker). Its chat id,
 which is the conversation id, is then `<agent>.<32 hex digits>` instead of 32 hex digits
 (`channels::chat_ids`: `new_agent_chat_id`, `chat_agent`). For an event from the `web` component
 with such an id, `classify` takes that agent ahead of every route, if `agents` (an

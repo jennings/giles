@@ -80,7 +80,7 @@ POSTs answer 404 "No such agent" (and the router would drop the message anyway).
 `channels::web::WebUser { user: UserId, sender: NativeId, csrf: String, .. }` is an axum
 extractor (`FromRequestParts` for any state) that reads a `WebUser` from the request's extensions,
 or rejects with the login page. The authentication middleware (`login::authenticate`, applied by
-`install`) inserts it; the extractor is the seam, so the admin pages (3.8) use the same one (their
+`install`) inserts it; the extractor is the seam, so the admin pages use the same one (their
 router must be wrapped in the same middleware: `from_fn_with_state(web_app, authenticate)`, or
 merged through `WebApp`). `sender` is the native id in the `web` namespace that posted messages
 carry (`InboundMessage::sender`, with `sender_authenticated: true`); the router matches it against
@@ -105,7 +105,7 @@ On top of the token, the cookie is `SameSite=Lax`, so cross-site POSTs don't car
 ## Login
 
 PLAN section 3.4; v1 scope (section 1.1) is the login link and the trusted-proxy header. The
-login *code* flow (a code sent to the user's default channel) needs the outbox (3.1) and isn't
+login *code* flow (a code sent to the user's default channel) needs the outbox and isn't
 built. Code: `login.rs` (middleware and routes), `links.rs`, `proxy.rs`, the cookie helpers in
 `auth.rs`, and the keys in `config.rs`.
 
@@ -401,7 +401,7 @@ aren't part of `Status`, and remote URLs can't carry credentials (config validat
 
 ## Agent Pages
 
-TASKS.md 5.1 and 5.4, in `agents.rs`: `web.install_agents(builder, Arc<agents::AgentManager>)`,
+In `agents.rs`: `web.install_agents(builder, Arc<agents::AgentManager>)`,
 which `serve` calls after `install_admin` with a manager over the runtime's registry (so the chat
 list, reading the same `LiveConfig`, offers a new agent at once). Like the admin pages: the same
 authentication middleware, `may_administer` (the owner only; a guest gets 403, no login 401) on
@@ -587,7 +587,7 @@ reload stays deferred (D28).
 
 ## Route Pages
 
-TASKS.md 5.2, in `routes.rs`: `web.install_routes(builder, Arc<routes::Routes>)`, which `serve`
+In `routes.rs`: `web.install_routes(builder, Arc<routes::Routes>)`, which `serve`
 calls last, with the runtime's `Routes` (the object whose `RouteList` the router reads). Like the
 agent pages: the same authentication middleware, `may_administer` on every route including the
 POSTs, `no-store` on every answer, and `check_csrf` (header or field) on every POST. Every change

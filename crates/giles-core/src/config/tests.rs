@@ -923,7 +923,7 @@ fn with_provider() -> Home {
 
 #[test]
 fn routes_in_giles_toml_are_kept_as_written_for_the_import() {
-    // The web UI owns routes (TASKS.md 5.2): the file's rules aren't checked here, so one that
+    // The web UI owns routes: the file's rules aren't checked here, so one that
     // names a channel or agent that's gone can't stop a core that no longer reads them.
     let home = Home::new(&format!(
         "{MINIMAL}[[routes]]\nchannel = \"gone\"\nagent = \"nobody\"\n\

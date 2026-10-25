@@ -291,7 +291,7 @@ impl WebChannel {
 
     /// Creates a one-time login link for `user`: it logs in whoever opens it first, within
     /// [`LOGIN_LINK_TTL`] (10 minutes), with a 30-day session cookie. This is what
-    /// `giles admin login-link --user <user>` calls over the admin service (TASKS.md 2.24). Links
+    /// `giles admin login-link --user <user>` calls over the admin service. Links
     /// live in memory: a restart invalidates them.
     ///
     /// # Errors
@@ -378,7 +378,7 @@ impl WebChannel {
     }
 
     /// Shows an approval prompt with Allow / Allow for this session / Deny buttons in chat
-    /// `chat`: the hook for the approvals code (TASKS.md 2.7), which sends approval prompts here
+    /// `chat`: the hook for the approvals code, which sends approval prompts here
     /// instead of through [`Channel::send`] on this channel. A button posts `yes <code>`,
     /// `yes! <code>`, or `no <code>` from the logged-in user, exactly as if they typed it. The
     /// prompt stays on the page (also across reloads, until a restart) until
@@ -437,7 +437,7 @@ impl WebChannel {
 
     /// Retires the approval prompt `code` in chat `chat` with its `outcome`, however it ended
     /// (a button, a typed reply, a timeout, a new message): every page replaces the prompt with
-    /// the outcome, and page loads no longer show it. The approvals code (TASKS.md 2.7) calls
+    /// the outcome, and page loads no longer show it. The approvals code calls
     /// this for every prompt it sent with [`send_approval`](Self::send_approval). Returns
     /// `false` if the chat doesn't show the prompt (already resolved, or forgotten by a restart
     /// or with an idle chat's state).

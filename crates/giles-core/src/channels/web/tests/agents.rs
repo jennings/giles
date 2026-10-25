@@ -1,4 +1,4 @@
-//! Router-level tests of the agent pages (TASKS.md 5.1) over the test configuration's registry.
+//! Router-level tests of the agent pages over the test configuration's registry.
 
 use std::os::unix::fs::symlink;
 

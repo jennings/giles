@@ -55,7 +55,7 @@ paths, as the daemon serving that root.
 Accessors that take an agent, user, or instance name return `PathsError::InvalidName` unless the
 name is a single normal path component (`is_valid_name`: non-empty, no `/` or NUL, not `.` or
 `..`), so a name can never escape its parent directory. This is a path-safety backstop, not the name
-grammar: config validation (task 1.1) applies the stricter `[a-zA-Z0-9-]+`, but names also arrive at
+grammar: config validation applies the stricter `[a-zA-Z0-9-]+`, but names also arrive at
 runtime (e.g. a user created through the admin service), and those must not be able to traverse
 paths either. It matters most for `data/plugins/<instance>/`, the only directory a plugin can write.
 

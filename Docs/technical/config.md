@@ -223,7 +223,7 @@ resolved: the longest existing ancestor is canonicalized and the rest appended. 
 directories and the own data directory are expanded the same way (on macOS, `/var` and `/tmp` are
 symlinks into `/private`). Limits: the check sees the filesystem at startup. A symlink created or
 retargeted afterwards, or a bind mount, can make a granted path lead into the data root; Landlock
-and Seatbelt resolve paths again when the sandbox is applied, so the trampoline (task 1.6) should
+and Seatbelt resolve paths again when the sandbox is applied, so the trampoline should
 re-run the same check on the spec it receives. `check_grant(root, instance, path)` exposes the rule
 for paths the core adds itself, such as a stdio server's install prefix.
 

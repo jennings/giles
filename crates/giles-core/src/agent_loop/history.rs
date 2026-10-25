@@ -12,7 +12,7 @@ use crate::sessions::{INTERRUPTED_RESULT, TurnMessage};
 /// How the time prefix is formatted (`jiff` strftime): `[Thu 2026-10-22 14:03 PDT]`.
 const PREFIX_FORMAT: &str = "%a %Y-%m-%d %H:%M %Z";
 
-/// What introduces a compaction summary at the start of the history (TASKS.md 2.10).
+/// What introduces a compaction summary at the start of the history.
 pub const SUMMARY_INTRO: &str = "Summary of the earlier conversation:";
 
 /// The time zone message times are shown in: the owner's (`[owner] timezone`, standing in for

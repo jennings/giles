@@ -40,7 +40,7 @@ files:
 
 Left out: `secrets.toml` (a backup is meant to leave the machine, and credentials are the operator's
 to keep), `plugins/` (binaries), `data/plugins/` (plugin-owned state, the core doesn't read it),
-`data/giles.db*` (the `.db` file), `backups/`, `trash/` (agents removed in the web UI, TASKS.md 5.4:
+`data/giles.db*` (the `.db` file), `backups/`, `trash/` (agents removed in the web UI:
 the list of what is archived is explicit, so nothing outside it, the trash included, is picked up),
 `run/`, `cache/`, and `data/blobs/sha256/tmp/` (the blob store's puts in progress, which it deletes
 when it opens). A file that vanishes while the walk runs is skipped. Directories are recorded (with
@@ -67,7 +67,7 @@ disk was full (a test backs up into `link/agents` where `link` points at the dat
 backup directory inside an archived tree is fine. Earlier backups there are ordinary files and are
 archived.
 
-The database is written before the archive. The blob sweep (task 4.2) could otherwise delete an old
+The database is written before the archive. The blob sweep could otherwise delete an old
 blob that only an inbox or outbox row refers to between the two, leaving a row in the snapshot
 without its file in the archive. So `create` holds `BlobStore::hold_off_sweep` from before the
 `VACUUM INTO` until the archive is written. That is the shared side of the lock the sweep takes

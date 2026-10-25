@@ -1,4 +1,4 @@
-//! Router-level tests of the route pages (TASKS.md 5.2) over the test configuration: the channel
+//! Router-level tests of the route pages over the test configuration: the channel
 //! `web` and the agents `jeeves` and `bunter`.
 
 use giles_store::NewRoute;

@@ -70,7 +70,7 @@ pub struct Delivery {
     pub expires_at: Option<Timestamp>,
 }
 
-/// Where jobs send their output: the outbox (TASKS.md 3.1), which delivers to the user's
+/// Where jobs send their output: the outbox, which delivers to the user's
 /// default identity once its channel is up.
 #[async_trait]
 pub trait JobDelivery: Send + Sync {

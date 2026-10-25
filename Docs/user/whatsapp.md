@@ -24,7 +24,8 @@ message from your own WhatsApp to the account's number, and give the conversatio
 >
 > **Not yet run against a real account.** The plugin's logic is tested against a fake WhatsApp
 > client, and the library calls it makes are the ones a working spike used, but nobody has linked
-> a real account with this plugin yet. Expect rough edges, and look at the
+> a real account with this plugin yet ([issue #1](https://github.com/jennings/giles/issues/1)
+> tracks it). Expect rough edges, and look at the
 > [live test plan](../technical/whatsapp-spike.md#owner-test-plan) before relying on it.
 
 ## Licensing

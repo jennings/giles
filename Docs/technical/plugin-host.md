@@ -382,7 +382,7 @@ handshake. Shutdown interrupts any wait at once.
 ### Status
 
 `PluginHost::statuses()` and `status(instance)` return `PluginStatus`, for `giles status` and the
-admin service (TASKS.md 2.24):
+admin service:
 
 ```rust
 pub struct PluginStatus {

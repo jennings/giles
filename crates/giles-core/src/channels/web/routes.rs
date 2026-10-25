@@ -1,4 +1,4 @@
-//! The route pages (TASKS.md 5.2): the ordered routes, and the forms that add, edit, remove, and
+//! The route pages: the ordered routes, and the forms that add, edit, remove, and
 //! move them while the core runs. Next to the admin pages (`admin.rs`) and the agent pages
 //! (`agents.rs`) and like them: behind the login, the owner only, every answer `no-store`, every
 //! change a CSRF-checked form post. A change is made by [`Routes`], which validates it, stores it,

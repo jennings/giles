@@ -99,7 +99,7 @@ pub(crate) struct RawGiles {
     #[serde(default)]
     pub toolset: BTreeMap<String, RawToolset>,
     #[serde(default)]
-    /// Anything: the web UI manages routes (TASKS.md 5.2), so these are only imported once, and
+    /// Anything: the web UI manages routes, so these are only imported once, and
     /// then not even parsed.
     pub routes: Vec<toml::Value>,
 }

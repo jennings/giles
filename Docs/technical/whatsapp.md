@@ -7,12 +7,13 @@ linked device on the WhatsApp Web protocol, built on `whatsapp-rust`.
 User-facing behavior and settings: [WhatsApp](../user/whatsapp.md). Why this library:
 [WhatsApp Spike](whatsapp-spike.md).
 
-**Verified against a fake client only.** The owner chose to build on `whatsapp-rust` without
-waiting for the live device run (TASKS.md 1.13, still open), so nothing here has touched the
-WhatsApp service. Everything above the `real` module is tested against a fake client; `real` is a
-thin layer over the library, covered by compilation and tests of its pure conversion functions,
-and is verified for real only by the [live test plan](whatsapp-spike.md#owner-test-plan), which
-is also how to check this plugin once someone links an account.
+**Verified against a fake client only.** The owner chose to build on `whatsapp-rust` without waiting
+for the live device run ([issue #1](https://github.com/jennings/giles/issues/1), still open), so
+nothing here has touched the WhatsApp service. Everything above the `real` module is tested against
+a fake client; `real` is a thin layer over the library, covered by compilation and tests of its pure
+conversion functions, and is verified for real only by the
+[live test plan](whatsapp-spike.md#owner-test-plan), which is also how to check this plugin once
+someone links an account.
 
 ## The Library, and Why It's a Git Dependency
 

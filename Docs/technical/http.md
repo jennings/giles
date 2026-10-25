@@ -195,7 +195,7 @@ How handlers interact with the layer:
 
 - `Content-Security-Policy` is appended: a handler may set its own, and browsers enforce every
   policy on a response, so the result is at least as strict as the base. The web channel's blob
-  route (2.22) adds `Content-Security-Policy: sandbox` this way, so a stored HTML blob can't run
+  route adds `Content-Security-Policy: sandbox` this way, so a stored HTML blob can't run
   script in Giles's origin.
 - The other five are overwritten, so no handler can weaken them by accident.
 

@@ -1,25 +1,26 @@
 # WhatsApp Spike
 
-TASKS.md 1.13 decides which library the WhatsApp channel plugin (3.6) is built on: `whatsapp-rust`
+This spike decides which library the WhatsApp channel plugin is built on: `whatsapp-rust`
 (PLAN section 10) or the `whatsmeow` fallback. The spike is a small CLI on `whatsapp-rust` in
 `spikes/whatsapp/`. It links as a companion device, prints incoming messages, sends a DM, and
 reuses its saved session after a restart. Everything that needs no phone has been verified. The
 live run, which links a real account, is the owner's: follow the [test plan](#owner-test-plan) and
-fill in [Results](#results). 1.13 stays open until then.
+fill in [Results](#results). [Issue #1](https://github.com/jennings/giles/issues/1) (verify the
+WhatsApp plugin and library on a real account) stays open until then.
 
-**The owner chose not to wait.** The WhatsApp channel plugin (3.6, [WhatsApp
+**The owner chose not to wait.** The WhatsApp channel plugin ([WhatsApp
 Channel](whatsapp.md)) is built on `whatsapp-rust` on the assumption that it works, so the live
-run has not happened and the plugin's behavior with a real account is unverified. 1.13 stays
+run has not happened and the plugin's behavior with a real account is unverified. Issue #1 stays
 open, and the test plan below is the way to verify both the spike and the plugin later.
 
-**Recommendation:** build 3.6 on `whatsapp-rust`, unless the live run fails one of the
+**Recommendation:** build the plugin on `whatsapp-rust`, unless the live run fails one of the
 [decision criteria](#decision-criteria). It is actively maintained, covers everything Giles needs,
 and keeps the plugin in Rust, so it can use `giles-plugin-sdk` (gRPC serving, the `whatsapp()`
 renderer, unacked-event storage). A Go plugin on `whatsmeow` would have to rebuild all of that in
 Go. The risks are its age (one year), a single main author, a fast-moving API, and fixes that are on
-`main` but not in a release yet (see [Findings](#findings-for-36)). Its manifests say MIT, but the
-Signal protocol code in `wacore-libsignal` is `AGPL-3.0-only`, which makes anything that links it
-AGPL ([Licensing](whatsapp.md#licensing)).
+`main` but not in a release yet (see [Findings](#findings-for-the-plugin)). Its manifests say MIT,
+but the Signal protocol code in `wacore-libsignal` is `AGPL-3.0-only`, which makes anything that
+links it AGPL ([Licensing](whatsapp.md#licensing)).
 
 ## The libraries
 
@@ -45,7 +46,7 @@ Data from crates.io and GitHub on 2026-10-22.
 Both are unofficial clients of the WhatsApp Web protocol. `whatsapp-rust` warns that using it may
 violate Meta's terms and get the account suspended; the same holds for `whatsmeow`.
 
-## Findings for 3.6
+## Findings for the plugin
 
 From reading the 0.7.0 sources, building the spike, and one unscanned `link --qr` run.
 
@@ -56,8 +57,8 @@ From reading the 0.7.0 sources, building the spike, and one unscanned `link --qr
 - **SQLite version clash with the workspace.** 0.7.0's `whatsapp-rust-sqlite-storage` requires
   `libsqlite3-sys` 0.37; `giles-store`'s `rusqlite` 0.40 uses 0.38. Cargo allows only one package
   per native `links` name in a resolve, so a 0.7.0 plugin can't be a member of the workspace. `main`
-  already uses 0.38 and says it is meant to coexist with `rusqlite` 0.40. 3.6 should use the first
-  release after 0.7.0 (or pin a `main` commit). *Resolved in 3.6:* there is no release after 0.7.0,
+  already uses 0.38 and says it is meant to coexist with `rusqlite` 0.40. The plugin should use the
+  first release after 0.7.0 (or pin a `main` commit). *Resolved:* there is no release after 0.7.0,
   so the plugin pins the `main` commit `9b9fdb7e5c4211cdc7c837abb6a9ae9c597e35c5` (2026-10-23) as a
   git dependency and is a workspace member
   ([why and how](whatsapp.md#the-library-and-why-its-a-git-dependency)).
@@ -224,8 +225,8 @@ If a step fails, rerun it with `RUST_LOG=info` (or `debug`) and keep the stderr 
 ### Results
 
 Fill in the result (pass, fail, or skipped) and notes for each step, plus the date, the phone's
-platform, and whether A is a consumer or Business account. Then record the decision in TASKS.md
-1.13 and tick it.
+platform, and whether A is a consumer or Business account. Then record the decision in
+[issue #1](https://github.com/jennings/giles/issues/1) and close it.
 
 | Step                  | Result | Notes |
 | --------------------- | ------ | ----- |
@@ -245,7 +246,7 @@ platform, and whether A is a consumer or Business account. Then record the decis
 ### Decision criteria
 
 Choose `whatsapp-rust` if steps 1 through 7, 10, 11, and 12 pass, with at most a problem that a
-`main` commit fixes (then 3.6 waits for, or pins, that fix).
+`main` commit fixes (then the plugin waits for, or pins, that fix).
 
 Switch to `whatsmeow` if any of these hold on both 0.7.0 and `main`:
 
@@ -258,9 +259,9 @@ Switch to `whatsmeow` if any of these hold on both 0.7.0 and `main`:
 - Echoes can't be told apart from other messages.
 
 Not a reason to switch: a DM whose phone number is unknown (only a LID). That is the protocol, not
-the library; `whatsmeow` gets the same addresses. Record how often it happens. 3.6's rule for it:
-the LID itself is the identity, `whatsapp:<lid>@lid`, which the owner lists in `[owner]
-identities` (PLAN section 3.2 keys identities on the phone number when there is one).
+the library; `whatsmeow` gets the same addresses. Record how often it happens. The plugin's rule for
+it: the LID itself is the identity, `whatsapp:<lid>@lid`, which the owner lists in
+`[owner] identities` (PLAN section 3.2 keys identities on the phone number when there is one).
 
 ### Testing `main`
 
@@ -282,7 +283,7 @@ config rewrites `https://github.com/` to SSH, which Cargo's built-in git can't u
 
 ### Verifying the plugin
 
-The plugin (3.6) uses the same library at the commit under [Testing `main`](#testing-main), so the
+The plugin uses the same library at the commit under [Testing `main`](#testing-main), so the
 plan above checks it too, with the plugin's own surfaces in place of the spike's output. Link with
 `giles-channel-whatsapp` instead of `spikes/whatsapp`, on a throwaway `GILES_HOME` (never
 `~/.giles`), with a `[channel.whatsapp]` instance and the web chat's admin page open:

@@ -1,4 +1,4 @@
-//! Agent management for the web UI (TASKS.md 5.1, 5.4; PLAN sections 8.7, 11.2, 11.3): what an
+//! Agent management for the web UI (PLAN sections 8.7, 11.2, 11.3): what an
 //! agent's page shows ([`files`]) and creating ([`create`]), editing ([`edit`]), and removing
 //! ([`remove`]) an agent while the core runs. The web
 //! channel's agent pages are the only client so far; nothing here depends on HTTP.

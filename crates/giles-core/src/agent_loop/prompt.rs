@@ -3,7 +3,7 @@
 //!
 //! Both are built once, when the session's first turn starts, and kept for the session's life,
 //! so the prompt prefix (tools, then system) stays byte-identical and provider prompt caching
-//! hits. Only compaction (TASKS.md 2.10) rebuilds `system`, with a fresh memory snapshot; the
+//! hits. Only compaction rebuilds `system`, with a fresh memory snapshot; the
 //! tools never change within a session. The current time never goes in `system`: it travels in
 //! each user message's time prefix ([`super::history`]).
 //!

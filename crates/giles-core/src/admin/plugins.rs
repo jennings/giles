@@ -16,7 +16,7 @@ use crate::sandbox::HostReport;
 use crate::sessions::ChannelStatusRecord;
 
 /// Plugin supervision, as the admin service sees it: a snapshot of every supervised instance,
-/// and a restart on request. The plugin host implements it (TASKS.md 2.17); until it's wired,
+/// and a restart on request. The plugin host implements it; until it's wired,
 /// `RestartPlugin` answers `UNAVAILABLE` and the lifecycle fields of `ListPlugins` stay unset.
 pub trait PluginControl: Send + Sync {
     /// Every supervised instance, in any order.

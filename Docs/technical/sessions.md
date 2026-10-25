@@ -122,7 +122,7 @@ returns once every runner has returned.
 ## Holds
 
 The scheduler runs a `dm` job as its own turn in the user's DM session, and appends a job's reply
-to the DM between turns (§6.11, TASKS.md 3.2). It does so through a hold:
+to the DM between turns (§6.11). It does so through a hold:
 
 - `Sessions::hold(session)` queues the caller in the session's driver (starting one if needed) with
   the time it asked. Before each turn the driver compares the oldest holder with the oldest queued

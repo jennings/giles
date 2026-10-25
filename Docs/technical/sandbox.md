@@ -14,10 +14,10 @@ giles sandbox-exec <spec> -- <command> [args...]
 
 ## Backends
 
-| Platform | Backend                       | Implemented by | Section                                     |
-| -------- | ----------------------------- | -------------- | ------------------------------------------- |
-| Linux    | Landlock and seccomp          | TASKS.md 2.13  | [Linux](#linux-landlock-and-seccomp)        |
-| macOS    | Seatbelt through sandbox-exec | TASKS.md 2.14  | [macOS](#macos-seatbelt)                    |
+| Platform | Backend                       | Section                              |
+| -------- | ----------------------------- | ------------------------------------ |
+| Linux    | Landlock and seccomp          | [Linux](#linux-landlock-and-seccomp) |
+| macOS    | Seatbelt through sandbox-exec | [macOS](#macos-seatbelt)             |
 
 A backend that can't apply its sandbox makes the trampoline exit with status 125 without running
 the command; it never pretends to sandbox. The only way to run a command without one is a spec

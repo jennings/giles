@@ -22,7 +22,7 @@ use crate::sandbox::HostReport;
 use crate::sessions::{ChannelStatusRecord, Clock, Sessions};
 
 /// The latest status each channel reported since startup. Implemented by [`Sessions`], which
-/// records them (TASKS.md 2.3).
+/// records them.
 pub trait ChannelStatuses: Send + Sync {
     /// The latest status of every channel that sent one, by instance.
     fn channel_statuses(&self) -> BTreeMap<InstanceName, ChannelStatusRecord>;

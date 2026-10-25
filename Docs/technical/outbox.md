@@ -103,7 +103,7 @@ the message's content.
 
 ## Expiry
 
-- Approval prompts (job turns with `ask_to = "deliver_to"`, TASKS.md 3.2) expire at their
+- Approval prompts (job turns with `ask_to = "deliver_to"`) expire at their
   approval's deadline. When an approval resolves first, `remove(id)` deletes its prompt (`false`
   if it was already sent or gone); a send already under way still completes. Pending approvals
   live in memory and die with the process, so `start` first drops every `approval_prompt` row
