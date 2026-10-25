@@ -89,6 +89,12 @@ and the map is bounded by the number of conversations. A session without a key (
 run, one turn long) isn't cached. A turn takes the prefix once at its start and uses it for every
 request it makes.
 
+The entry also records the agent's incarnation (`LiveConfig::incarnation`). Editing an agent in the
+web UI keeps it, so a session goes on with the tools and `system` it started with (compaction
+rebuilds `system` from the files as they are then, and keeps the tools); only a new session sees
+an edit. An agent removed and created again under the same id has a new incarnation, so the old
+sessions of that id, which stay in the database, assemble their prefix again at their next turn.
+
 The prefix isn't stored. After a restart the cache is empty, and a session's first turn assembles
 it again from the files and tools of that moment. If nothing changed, the bytes are the same and
 the provider's cache (one hour for interactive sessions) still hits. If memory files, skills, or

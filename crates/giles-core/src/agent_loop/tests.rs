@@ -952,6 +952,54 @@ async fn rebuilding_refreshes_system_and_keeps_the_tools() {
 }
 
 #[tokio::test]
+async fn an_edited_agent_keeps_its_sessions_prefix_and_a_recreated_one_assembles_it_again() {
+    let h = Harness::new().await;
+    let agent_loop = h.agent_loop();
+    let live = h.registry.live_config().clone();
+    let id = AgentId::new(AGENT).unwrap();
+    let source =
+        std::fs::read_to_string(h.dir.path().join(format!("agents/{AGENT}/agent.toml"))).unwrap();
+    let validated = || {
+        h.registry
+            .config()
+            .validate_agent(h.registry.root(), AGENT, &source)
+            .unwrap()
+    };
+    let config = h.registry.config();
+    let first = agent_loop
+        .session_prompt(&h.session, &config.agents[&id])
+        .await
+        .unwrap();
+
+    // An edit leaves what the session started with alone.
+    live.replace_agent(validated()).unwrap();
+    let config = h.registry.config();
+    let after_edit = agent_loop
+        .session_prompt(&h.session, &config.agents[&id])
+        .await
+        .unwrap();
+    assert!(Arc::ptr_eq(&first, &after_edit));
+
+    // Removed and created again under the id, it is another agent: nothing carries over.
+    live.remove_agent(&id).unwrap();
+    live.add_agent(validated()).unwrap();
+    let config = h.registry.config();
+    let recreated = agent_loop
+        .session_prompt(&h.session, &config.agents[&id])
+        .await
+        .unwrap();
+    assert!(!Arc::ptr_eq(&first, &recreated));
+    // And that one is cached in turn.
+    assert!(Arc::ptr_eq(
+        &recreated,
+        &agent_loop
+            .session_prompt(&h.session, &config.agents[&id])
+            .await
+            .unwrap()
+    ));
+}
+
+#[tokio::test]
 async fn a_turn_for_an_unknown_agent_fails_with_a_notice() {
     let mut h = Harness::new().await;
     let (mut turn, _) = h.turn(&["Hi"]);

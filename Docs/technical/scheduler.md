@@ -35,6 +35,16 @@ delays a job by at most that. After each run the next time is the first match af
 times that pass during a long run are skipped. A time outside `active_hours` is skipped (not
 recorded). A one-shot runtime job is deleted after its time, run or not.
 
+Config jobs follow the running configuration ([Registry](registry.md#the-running-configuration)). At
+start, and whenever `LiveConfig` changes, `reconcile_config_jobs` compares each agent's `[[jobs]]`
+with the ones its tasks were started for: an agent that is gone, or whose jobs differ, has its tasks
+stopped (one token per agent, so they stop together), and one with jobs and no tasks gets them
+started. An edit that leaves `[[jobs]]` alone keeps the tasks and their place in the schedule. Each
+run reads the agent's configuration again when its time comes (the time zone, the model and tools,
+`ask`), and a task whose agent has been removed stops, so a removed agent's job can't fire, and one
+created later under the same id runs only the jobs its own `agent.toml` has. A task that started
+from `first_fire` follows the rule above, so a restarted one can run once for times it missed.
+
 Runtime jobs: a task reads `jobs` at start and on every `JobChanges::notify`, starting tasks for new
 rows and stopping the tasks of deleted ones. Stopping a job's task (deleting the job, or shutdown)
 ends its run's waits before the turn (for an idle DM, for the DM's hold); a turn already started

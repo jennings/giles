@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use giles_store::{JobKey, OutboxId, RuntimeJobId, Store};
-use giles_types::{Timestamp, UserId};
+use giles_types::{AgentId, Timestamp, UserId};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -34,7 +34,7 @@ pub use run::{JobReply, NO_REPLY, job_reply};
 pub use schedule::{When, in_active_hours};
 
 use crate::agent_loop::history::message_timezone;
-use crate::config::OwnerConfig;
+use crate::config::{Job, OwnerConfig};
 use crate::identity;
 use crate::outbox::{Outbox, OutboxItem, OutboxKind};
 use crate::registry::Registry;
@@ -195,7 +195,8 @@ pub(crate) struct Context {
 
 impl Scheduler {
     /// Starts a task per config job of every agent and per runtime job in the store, and keeps
-    /// the runtime ones in step with [`JobChanges`]. Start it after the session manager.
+    /// them in step with the running configuration (config jobs, as agents are edited and
+    /// removed) and [`JobChanges`] (runtime jobs). Start it after the session manager.
     /// Everything stops when `shutdown` is cancelled; a running job turn is cancelled with it.
     pub fn start(options: SchedulerOptions, shutdown: CancellationToken) -> Self {
         let tasks = TaskTracker::new();
@@ -208,17 +209,15 @@ impl Scheduler {
             clock: options.clock,
             shutdown,
         });
-        let config = context.registry.config();
-        for (agent, agent_config) in &config.agents {
-            for job in &agent_config.jobs {
-                let job = JobDef::from_config(agent, job);
-                tasks.spawn(job_task(
-                    context.clone(),
-                    job,
-                    context.shutdown.child_token(),
-                ));
-            }
-        }
+        let mut running = HashMap::new();
+        let config_changes = context.registry.live_config().subscribe();
+        reconcile_config_jobs(&context, &tasks, &mut running);
+        tasks.spawn(config_jobs(
+            context.clone(),
+            config_changes,
+            tasks.clone(),
+            running,
+        ));
         let changes = options.changes.subscribe();
         tasks.spawn(runtime_jobs(context, changes, tasks.clone()));
         Self { tasks }
@@ -228,6 +227,79 @@ impl Scheduler {
     pub async fn closed(&self) {
         self.tasks.close();
         self.tasks.wait().await;
+    }
+}
+
+/// The tasks of one agent's config jobs: stopped together, when its jobs change or it is removed.
+struct AgentJobs {
+    /// The jobs the tasks were started for.
+    jobs: Vec<Job>,
+    stop: CancellationToken,
+}
+
+/// Makes the tasks of the config jobs match the running configuration: an agent that is gone, or
+/// whose `[[jobs]]` changed since its tasks started, has them stopped; one with jobs and no tasks
+/// gets them started. Edits to an agent that leave its jobs alone keep the tasks (and their
+/// place in the schedule); each run reads the agent's other settings when it starts. Idempotent,
+/// so it only needs to run after the configuration changed.
+fn reconcile_config_jobs(
+    context: &Arc<Context>,
+    tasks: &TaskTracker,
+    running: &mut HashMap<AgentId, AgentJobs>,
+) {
+    let config = context.registry.config();
+    running.retain(|agent, running| {
+        let keep = config
+            .agents
+            .get(agent)
+            .is_some_and(|agent| agent.jobs == running.jobs);
+        if !keep {
+            info!(%agent, "the agent's jobs changed or the agent was removed; its config jobs stop");
+            running.stop.cancel();
+        }
+        keep
+    });
+    for (agent, agent_config) in &config.agents {
+        if agent_config.jobs.is_empty() || running.contains_key(agent) {
+            continue;
+        }
+        let stop = context.shutdown.child_token();
+        for job in &agent_config.jobs {
+            tasks.spawn(job_task(
+                context.clone(),
+                JobDef::from_config(agent, job),
+                stop.child_token(),
+            ));
+        }
+        running.insert(
+            agent.clone(),
+            AgentJobs {
+                jobs: agent_config.jobs.clone(),
+                stop,
+            },
+        );
+    }
+}
+
+/// Keeps the config jobs' tasks in step with the running configuration
+/// ([`reconcile_config_jobs`]) until shutdown.
+async fn config_jobs(
+    context: Arc<Context>,
+    mut changes: watch::Receiver<u64>,
+    tasks: TaskTracker,
+    mut running: HashMap<AgentId, AgentJobs>,
+) {
+    loop {
+        tokio::select! {
+            biased;
+            () = context.shutdown.cancelled() => return,
+            changed = changes.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+            }
+        }
+        reconcile_config_jobs(&context, &tasks, &mut running);
     }
 }
 
@@ -294,7 +366,9 @@ async fn sleep_or_forever(delay: Option<Duration>) {
 }
 
 /// One job: sleeps until each of its times and runs it, until `stop` (shutdown, or the job was
-/// deleted) or a one-shot job has run.
+/// deleted) or a one-shot job has run, or its agent is no longer configured. The agent's
+/// configuration is read again for every run, so an edit (a time zone, a model, the tools) applies
+/// to the next one.
 async fn job_task(context: Arc<Context>, job: JobDef, stop: CancellationToken) {
     let label = job.label();
     let config = context.registry.config();
@@ -302,7 +376,7 @@ async fn job_task(context: Arc<Context>, job: JobDef, stop: CancellationToken) {
         warn!(job = %label, agent = %job.agent, "job of an agent that isn't configured; skipped");
         return;
     };
-    let tz = message_timezone(&config, agent);
+    let mut tz = message_timezone(&config, agent);
     let last = match context
         .store
         .job_last_run(job.agent.clone(), job.key.clone())
@@ -325,6 +399,12 @@ async fn job_task(context: Arc<Context>, job: JobDef, stop: CancellationToken) {
         if !sleep_until(&*context.clock, at, &stop).await {
             return;
         }
+        let config = context.registry.config();
+        let Some(agent) = config.agents.get(&job.agent) else {
+            info!(job = %label, agent = %job.agent, "the job's agent was removed; the job stops");
+            return;
+        };
+        tz = message_timezone(&config, agent);
         let now = context.clock.now();
         if in_active_hours(job.active_hours.as_ref(), &tz, now) {
             if !run::run(&context, &job, agent, &stop).await {

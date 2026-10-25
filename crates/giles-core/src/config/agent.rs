@@ -76,7 +76,7 @@ pub enum BusyMode {
 }
 
 /// A config job: a `[[jobs]]` entry in `agent.toml` (PLAN section 6.11).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct Job {
     /// The stable id, unique within the agent; `job_runs` is keyed by it.

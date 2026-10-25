@@ -1026,6 +1026,56 @@ fn live_config_adds_agents_without_changing_earlier_snapshots() {
 }
 
 #[test]
+fn live_config_replaces_and_removes_agents_and_tells_subscribers() {
+    let home = with_provider();
+    home.agent("jeeves", "models = [\"anthropic/claude-sonnet-4-5\"]");
+    let config = home.load_ok();
+    let agent = |id: &str, source: &str| config.validate_agent(&home.root, id, source).unwrap();
+    let live = LiveConfig::new(std::sync::Arc::new(config.clone()));
+    let mut changes = live.subscribe();
+    let jeeves = agent_id("jeeves");
+    let first = live.incarnation(&jeeves).unwrap();
+    let before = live.get();
+
+    // An edit replaces the agent, keeps its incarnation, and leaves earlier snapshots alone.
+    let edited = agent(
+        "jeeves",
+        "name = \"Jeeves\"\nmodels = [\"anthropic/claude-sonnet-4-5\"]",
+    );
+    let after = live.replace_agent(edited).unwrap();
+    assert_eq!(after.agents[&jeeves].name.as_deref(), Some("Jeeves"));
+    assert_eq!(before.agents[&jeeves].name, None);
+    assert_eq!(live.incarnation(&jeeves), Some(first));
+    assert!(changes.has_changed().unwrap());
+    changes.borrow_and_update();
+
+    // An id nobody has can't be replaced, and nothing is announced.
+    let stranger = agent("bunter", "models = [\"anthropic/m\"]");
+    assert_eq!(
+        live.replace_agent(stranger.clone()).unwrap_err().0,
+        agent_id("bunter")
+    );
+    assert!(live.remove_agent(&agent_id("bunter")).is_none());
+    assert!(!changes.has_changed().unwrap());
+
+    // A removal takes the agent out of the configuration, not out of snapshots already taken.
+    let removed = live.remove_agent(&jeeves).unwrap();
+    assert_eq!(removed.id, jeeves);
+    assert!(!live.get().agents.contains_key(&jeeves));
+    assert!(after.agents.contains_key(&jeeves));
+    assert_eq!(live.incarnation(&jeeves), None);
+    assert!(changes.has_changed().unwrap());
+    changes.borrow_and_update();
+
+    // The id is free again, and whoever takes it is another agent.
+    live.add_agent(agent("jeeves", "models = [\"anthropic/m\"]"))
+        .unwrap();
+    let second = live.incarnation(&jeeves).unwrap();
+    assert!(second > first, "{second} after {first}");
+    assert!(changes.has_changed().unwrap());
+}
+
+#[test]
 fn agent_settings() {
     let home = with_provider();
     home.write("agents/jeeves/morning.md", "Good morning.")

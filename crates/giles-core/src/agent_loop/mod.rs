@@ -46,6 +46,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::FutureExt;
 use giles_store::{Session, SessionId, SessionKey, Store};
+use giles_types::AgentId;
 
 pub use dispatch::{
     CallPolicy, MAX_PARALLEL_CALLS, PARALLEL_SAFE_CORE_TOOLS, PolicyDispatcher,
@@ -83,15 +84,28 @@ pub const NOTICE_TIMEOUT: Duration = Duration::from_secs(10);
 /// in memory by session key, so every later request of the session reuses the same tools and
 /// `system` bytes. Only the newest session of a key is kept. After a daemon restart the cache
 /// is empty and the first turn assembles the prefix again from the files and tools of that
-/// moment: if memory files changed meanwhile, that one turn misses the provider's cache.
+/// moment: if memory files changed meanwhile, that one turn misses the provider's cache. An
+/// edit to the agent in the web UI doesn't touch a cached prefix (the session keeps its tools and
+/// `system` until compaction rebuilds `system`), but an agent removed and created again under
+/// the same id is another agent
+/// ([`LiveConfig::incarnation`](crate::config::LiveConfig::incarnation)): its sessions assemble the
+/// prefix again.
 pub struct AgentLoop {
     registry: Arc<Registry>,
     store: Store,
     clock: Arc<dyn Clock>,
     dispatcher: Arc<dyn ToolDispatcher>,
     approvals: Arc<ApprovalBoard>,
-    prompts: Mutex<HashMap<SessionKey, (SessionId, Arc<SessionPrompt>)>>,
+    prompts: Mutex<HashMap<SessionKey, CachedPrompt>>,
     models: models::ModelInfos,
+}
+
+/// A session's cached prompt prefix: for the session `session` of the agent incarnation
+/// `incarnation`.
+struct CachedPrompt {
+    session: SessionId,
+    incarnation: Option<u64>,
+    prompt: Arc<SessionPrompt>,
 }
 
 impl fmt::Debug for AgentLoop {
@@ -155,10 +169,11 @@ impl AgentLoop {
     ) -> Result<Arc<SessionPrompt>, PromptError> {
         let key = session.key();
         if let Some(key) = &key
-            && let Some((id, prompt)) = lock(&self.prompts).get(key)
-            && *id == session.id
+            && let Some(cached) = lock(&self.prompts).get(key)
+            && cached.session == session.id
+            && cached.incarnation == self.incarnation(&session.agent)
         {
-            return Ok(prompt.clone());
+            return Ok(cached.prompt.clone());
         }
         let prompt = Arc::new(prompt::assemble(&self.registry, agent, session).await?);
         self.remember(key, session.id, prompt.clone());
@@ -186,8 +201,21 @@ impl AgentLoop {
 
     fn remember(&self, key: Option<SessionKey>, session: SessionId, prompt: Arc<SessionPrompt>) {
         if let Some(key) = key {
-            lock(&self.prompts).insert(key, (session, prompt));
+            let incarnation = self.incarnation(&key.agent);
+            lock(&self.prompts).insert(
+                key,
+                CachedPrompt {
+                    session,
+                    incarnation,
+                    prompt,
+                },
+            );
         }
+    }
+
+    /// Which agent of the running configuration `agent` is now.
+    fn incarnation(&self, agent: &AgentId) -> Option<u64> {
+        self.registry.live_config().incarnation(agent)
     }
 
     /// Where the turn's responses go ([`output::output_for`]).

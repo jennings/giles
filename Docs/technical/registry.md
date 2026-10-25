@@ -28,14 +28,26 @@ it and exits.
 ## The Running Configuration
 
 The registry holds the configuration as a `config::LiveConfig`: the `Config` loaded at startup, plus
-agents created since (the web UI's agent pages, TASKS.md 5.1). `Registry::config()` returns a
-snapshot, `Arc<Config>`; a caller keeps one snapshot for the work at hand (a turn, a tool call, a
-page). `Registry::live_config()` is the shared handle: the core tools and the session manager (its
-`AgentPolicies`) hold clones, so they see a new agent at their next lookup.
-`LiveConfig::add_agent(AgentConfig)` swaps in a copy of the configuration with the agent added and
-refuses an id already taken, ignoring ASCII case (`AgentExists`). Nothing else changes while the
-core runs: instances and the owner are fixed until a restart (reload is deferred, D28). Routes
-are stored and change at runtime ([Identity and Routing](identity-and-routing.md#routing)).
+the agents created, edited, and removed since (the web UI's agent pages, TASKS.md 5.1 and 5.4).
+`Registry::config()` returns a snapshot, `Arc<Config>`; a caller keeps one snapshot for the work at
+hand (a turn, a tool call, a page). `Registry::live_config()` is the shared handle: the core tools,
+the session manager (its `AgentPolicies`), and the scheduler hold clones, so they see a change at
+their next lookup.
+
+- `add_agent(AgentConfig)` swaps in a copy of the configuration with the agent added and refuses an
+  id already taken, ignoring ASCII case (`AgentExists`).
+- `replace_agent(AgentConfig)` swaps in an edited agent under its id (`NoSuchAgent` if there is
+  none).
+- `remove_agent(&AgentId)` takes an agent out; snapshots taken before still have it.
+- `incarnation(&AgentId)` numbers an agent's life: the same through edits, new when an agent is
+  created under an id a removal freed. State that belongs to one life (the agent loop's cached
+  session prompts) checks it.
+- `subscribe()` is a counter that goes up after every one of those changes, for what keeps state
+  derived from the agents (the scheduler's config job tasks, [Scheduler](scheduler.md#timing)).
+
+Nothing else changes while the core runs: instances and the owner are fixed until a restart
+(reload is deferred, D28). Routes are stored and change at runtime ([Identity and
+Routing](identity-and-routing.md#routing)).
 
 ## Built-in Components
 

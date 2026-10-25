@@ -876,3 +876,163 @@ async fn a_job_that_cancels_itself_still_delivers_and_appends_its_reply() {
     h.assert_nothing_ran().await;
     h.stop().await;
 }
+
+impl Harness {
+    /// The agent `jeeves` as `agent.toml` text says (a job prompt file must exist).
+    fn agent_config(&self, toml: &str) -> crate::config::AgentConfig {
+        self.registry
+            .config()
+            .validate_agent(self.registry.root(), AGENT, toml)
+            .unwrap_or_else(|e| panic!("{e}"))
+    }
+}
+
+const MORNING: &str =
+    "[[jobs]]\nid = \"morning\"\ncron = \"0 8 * * *\"\nprompt = \"Plan my day.\"\n";
+
+#[tokio::test(start_paused = true)]
+async fn a_removed_agents_config_jobs_stop_and_a_new_agent_with_its_id_does_not_inherit_them() {
+    let mut h = Harness::new(MORNING, &[]).await;
+    h.start().await;
+    let live = h.registry.live_config().clone();
+    let jeeves = AgentId::new(AGENT).unwrap();
+
+    // Removed before the job's time (08:00 in Los Angeles, 15:00 UTC): it never runs.
+    live.remove_agent(&jeeves).unwrap();
+    h.settle().await;
+    h.advance_to(ts("2026-10-22T15:30:00Z")).await;
+    h.assert_nothing_ran().await;
+
+    // Created again, with no jobs of its own, before the next time: still nothing.
+    live.add_agent(h.agent_config("models = [\"anthropic/test-model\"]\n"))
+        .unwrap();
+    h.settle().await;
+    h.advance_to(ts("2026-10-23T15:30:00Z")).await;
+    h.assert_nothing_ran().await;
+    assert_eq!(h.last_run(config_key("morning")).await, None);
+    h.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_edit_that_changes_the_jobs_moves_them_and_other_edits_leave_them_be() {
+    let mut h = Harness::new(MORNING, &[]).await;
+    h.start().await;
+    let live = h.registry.live_config().clone();
+
+    // A new name: the 08:00 job still runs at 08:00.
+    live.replace_agent(h.agent_config(&format!(
+        "name = \"Jeeves\"\nmodels = [\"anthropic/test-model\"]\n{MORNING}"
+    )))
+    .unwrap();
+    h.settle().await;
+    assert_eq!(h.ran().await.at, ts("2026-10-22T15:00:00Z"));
+    h.delivered(1).await;
+
+    // The job now says 09:00: it doesn't run at 08:30, runs at 09:00, and only once.
+    live.replace_agent(
+        h.agent_config(
+            &MORNING
+                .replace("0 8", "0 9")
+                .replace("[[jobs]]", "models = [\"anthropic/test-model\"]\n[[jobs]]"),
+        ),
+    )
+    .unwrap();
+    h.settle().await;
+    h.advance_to(ts("2026-10-22T15:30:00Z")).await;
+    h.assert_nothing_ran().await;
+    assert_eq!(h.ran().await.at, ts("2026-10-22T16:00:00Z"));
+    h.settle().await;
+    h.assert_nothing_ran().await;
+    h.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn tasks_are_kept_while_an_agents_jobs_are_unchanged() {
+    let h = Harness::new(MORNING, &[]).await;
+    let context = Arc::new(Context {
+        store: h.store.clone(),
+        registry: h.registry.clone(),
+        sessions: h.sessions.clone(),
+        runner: h.replies.clone(),
+        delivery: h.delivery.clone(),
+        clock: h.clock.clone(),
+        shutdown: h.shutdown.clone(),
+    });
+    let tasks = TaskTracker::new();
+    let live = h.registry.live_config().clone();
+    let jeeves = AgentId::new(AGENT).unwrap();
+    let mut running = HashMap::new();
+
+    reconcile_config_jobs(&context, &tasks, &mut running);
+    assert_eq!(running.len(), 1);
+    let first = running[&jeeves].stop.clone();
+
+    // Edits that leave `[[jobs]]` alone, and no change at all, keep the tasks.
+    reconcile_config_jobs(&context, &tasks, &mut running);
+    live.replace_agent(h.agent_config(&format!(
+        "tools = [\"memory\"]\nmodels = [\"anthropic/test-model\"]\n{MORNING}"
+    )))
+    .unwrap();
+    reconcile_config_jobs(&context, &tasks, &mut running);
+    assert!(!first.is_cancelled());
+    assert_eq!(running.len(), 1);
+
+    // Different jobs replace them; an agent without jobs has none; removal ends them.
+    live.replace_agent(h.agent_config(&format!(
+        "models = [\"anthropic/test-model\"]\n{}",
+        MORNING.replace("0 8", "30 8")
+    )))
+    .unwrap();
+    reconcile_config_jobs(&context, &tasks, &mut running);
+    assert!(first.is_cancelled());
+    let second = running[&jeeves].stop.clone();
+    assert!(!second.is_cancelled());
+    live.replace_agent(h.agent_config("models = [\"anthropic/test-model\"]\n"))
+        .unwrap();
+    reconcile_config_jobs(&context, &tasks, &mut running);
+    assert!(second.is_cancelled());
+    assert!(running.is_empty());
+
+    live.replace_agent(h.agent_config(&format!("models = [\"anthropic/test-model\"]\n{MORNING}")))
+        .unwrap();
+    reconcile_config_jobs(&context, &tasks, &mut running);
+    let third = running[&jeeves].stop.clone();
+    live.remove_agent(&jeeves).unwrap();
+    reconcile_config_jobs(&context, &tasks, &mut running);
+    assert!(third.is_cancelled());
+    assert!(running.is_empty());
+    h.shutdown.cancel();
+    tasks.close();
+    tasks.wait().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_runtime_job_of_a_removed_agent_does_not_run() {
+    let mut h = Harness::new("", &[]).await;
+    h.start().await;
+    let job = h
+        .store
+        .job_create(
+            AgentId::new(AGENT).unwrap(),
+            owner(),
+            json!({"at": "2026-10-22T15:00:00Z", "prompt": "Tea time."}),
+            h.now(),
+        )
+        .await
+        .unwrap();
+    h.changes.notify();
+    h.settle().await;
+
+    // The agent goes while its job is waiting (the row is still there: the caller deletes it).
+    h.registry
+        .live_config()
+        .remove_agent(&AgentId::new(AGENT).unwrap())
+        .unwrap();
+    h.advance_to(ts("2026-10-22T15:30:00Z")).await;
+    h.assert_nothing_ran().await;
+    assert!(
+        h.store.job(job.id).await.unwrap().is_some(),
+        "a job that couldn't run isn't treated as done"
+    );
+    h.stop().await;
+}
