@@ -107,8 +107,10 @@ built. Code: `login.rs` (middleware and routes), `links.rs`, `proxy.rs`, the coo
 
 ### Configuration
 
-`WebConfig::from_json` parses the instance's `config` table (unknown keys rejected, errors name the
-key and are scrubbed of secrets):
+`WebConfig::from_json` parses the instance's `config` table (unknown keys are collected into
+`WebConfig::unknown_keys` and logged by the registry, except in `proxy`, whose `RawProxy` keeps
+`deny_unknown_fields` because it configures a listener and a shared secret; errors name the key and
+are scrubbed of secrets):
 
 - `public_url`: an `http`/`https` origin, normalized (lowercase host, no trailing slash); a path,
   query, fragment, or user info is an error. Login links start with it; `https` makes the cookie

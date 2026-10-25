@@ -13,7 +13,8 @@ identities = ["web:owner"]
 
 The instance can have another name (`[channel.chat]` with `component = "web"`), but there can be
 only one web channel. Its `config` table is optional; its keys are under
-[Logging In](#logging-in). An unknown key is an error.
+[Logging In](#logging-in). An unknown key is ignored with a
+warning at startup, except in `proxy`, where it is an error.
 
 Web senders are identities in the `web` namespace. For messages you send from the browser to reach
 an agent, `[owner] identities` must list your web identity, `web:owner`. Messages in a chat

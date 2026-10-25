@@ -117,6 +117,7 @@ fn minimal_config_gets_defaults() {
     assert!(config.channels.is_empty());
     assert!(config.toolsets.is_empty());
     assert!(config.legacy_routes.is_empty());
+    assert!(config.unknown_keys.is_empty());
     assert!(config.agents.is_empty());
 }
 
@@ -317,16 +318,6 @@ fn owner_rules() {
             "owner.timezone",
             "unknown time zone",
         ),
-        (
-            "[owner]\nidentities = [\"a:b\"]\nname = \"me\"",
-            "owner.name",
-            "unknown field `name`",
-        ),
-        (
-            "[owner]\nidentity = [\"a:b\"]",
-            "owner.identity",
-            "unknown field `identity`",
-        ),
     ];
     for (toml, key, reason) in cases {
         assert_error(&Home::new(toml), "giles.toml", key, reason);
@@ -343,40 +334,259 @@ fn owner_rules() {
     assert_eq!(tz.iana_name(), Some("America/Los_Angeles"));
 }
 
+/// The unknown keys of a loaded configuration, as key paths, sorted.
+fn unknown_keys(config: &Config) -> Vec<String> {
+    let mut keys: Vec<String> = config
+        .unknown_keys
+        .iter()
+        .map(|k| k.key.to_string())
+        .collect();
+    keys.sort();
+    keys
+}
+
 #[test]
-fn unknown_keys_are_rejected_everywhere_but_config_tables() {
-    let cases = [
-        ("[cores]\nx = 1", "cores", "unknown field `cores`"),
-        (
-            "[core]\nhttp = \"127.0.0.1:1\"",
-            "core.http",
-            "unknown field `http`",
-        ),
-        (
-            "[provider.anthropic]\napi_key = \"x\"",
-            "provider.anthropic.api_key",
-            "unknown field `api_key`",
-        ),
-        (
-            "[channel.irc]\nfoo = 1",
+fn unknown_keys_are_ignored_and_reported_at_every_depth() {
+    let home = Home::new(
+        r#"typo = 1
+[cores]
+x = { y = 1 }
+[owner]
+identities = ["web:owner"]
+nmae = "me"
+[core]
+http = "127.0.0.1:1"
+[provider.anthropic]
+api_key = "x"
+[channel.irc]
+foo = 1
+[channel.x]
+component = "irc"
+address = "https://x"
+auth = { bearer = "t", bearr = "u" }
+[channel.y]
+component = "irc"
+address = "https://y"
+auth = { oauth = { token_url = "https://t", client_id = "c", client_secret = "s", scope = [] } }
+[toolset.files]
+command = "/x"
+config = {}
+max_blob = 5
+sandbox = { read = ["/r"] }
+[toolset.remote]
+url = "https://z"
+auth = { bearer = "t", other = { deep = 1 } }
+[[routes]]
+channel = "x"
+bogus = true
+"#,
+    );
+    let config = home.load_ok();
+    // Each unknown key once, at its full path; nothing inside an unknown table, and nothing for
+    // the keys of a `[[routes]]` rule, which the one-time import handles.
+    assert_eq!(
+        unknown_keys(&config),
+        [
             "channel.irc.foo",
-            "unknown field `foo`",
+            "channel.x.auth.bearr",
+            "channel.y.auth.oauth.scope",
+            "core.http",
+            "cores",
+            "owner.nmae",
+            "provider.anthropic.api_key",
+            "toolset.files.config",
+            "toolset.files.max_blob",
+            "toolset.remote.auth.other",
+            "typo",
+        ]
+    );
+    // Listed in file order.
+    let lines: Vec<usize> = config
+        .unknown_keys
+        .iter()
+        .map(|k| k.position.unwrap().line)
+        .collect();
+    assert!(lines.is_sorted(), "{lines:?}");
+    assert_eq!(config.legacy_routes.len(), 1);
+    // What is recognized loads as usual.
+    assert_eq!(config.owner.identities.len(), 1);
+    assert!(matches!(
+        &config.toolsets["files"].transport,
+        ToolsetTransport::Stdio(stdio) if stdio.program == Program::Command("/x".into())
+    ));
+
+    let owner = config
+        .unknown_keys
+        .iter()
+        .find(|k| k.key.to_string() == "owner.nmae")
+        .unwrap();
+    assert_eq!(owner.file, home.path("giles.toml"));
+    assert_eq!(owner.position, Some(Position { line: 6, column: 1 }));
+    assert_eq!(
+        owner.to_string(),
+        format!(
+            "{}:6:1: unknown key `owner.nmae` (ignored)",
+            home.path("giles.toml").display()
+        )
+    );
+}
+
+#[test]
+fn a_known_key_with_the_wrong_type_still_fails_whatever_else_is_wrong() {
+    // Each case holds a typo before and after the wrong-typed key: the error wins.
+    let cases = [
+        (
+            "typo = 1\n[core]\nhttp_listen = 5\nhttp_listn = 2",
+            "core.http_listen",
+            "invalid type",
         ),
         (
-            "[toolset.files]\nconfig = {}",
-            "toolset.files.config",
-            "unknown field `config`",
+            "[core]\nhttp_listen = \"127.0.0.1:1\"\nretired_instances = [1]",
+            "core.retired_instances[0]",
+            "invalid type",
+        ),
+        (
+            "[core]\njournal_mode = true\nx = 1",
+            "core.journal_mode",
+            "invalid type",
+        ),
+        (
+            "[owner]\nidentities = \"web:owner\"\nnmae = 1",
+            "owner.identities",
+            "invalid type",
+        ),
+        (
+            "[owner]\nidentities = [\"web:owner\"]\nnmae = 1\ntimezone = 5",
+            "owner.timezone",
+            "invalid type",
+        ),
+        (
+            "[[owner]]\nnmae = 1\nidentities = [\"web:owner\"]",
+            "owner[0]",
+            "invalid type",
+        ),
+        (
+            "[provider.anthropic]\nx = 1\ncomponent = 5",
+            "provider.anthropic.component",
+            "invalid type",
+        ),
+        (
+            "[provider]\nanthropic = 5",
+            "provider.anthropic",
+            "invalid type",
+        ),
+        (
+            "[[provider.anthropic]]\nx = 1",
+            "provider.anthropic[0]",
+            "invalid type",
+        ),
+        (
+            "[channel.web]\nx = 1\ninsecure = \"no\"",
+            "channel.web.insecure",
+            "invalid type",
+        ),
+        (
+            "[channel.x]\nmax_blob = [1]\nx = 1",
+            "channel.x.max_blob",
+            "invalid type",
+        ),
+        (
+            "[toolset.t]\ncommand = \"/x\"\nx = 1\nparallel = \"yes\"",
+            "toolset.t.parallel",
+            "invalid type",
+        ),
+        (
+            "[toolset.t]\ncommand = \"/x\"\nargs = [\"a\", 1]\nx = 1",
+            "toolset.t.args[1]",
+            "invalid type",
+        ),
+        (
+            "[toolset.t]\ncommand = \"/x\"\nskills = \"/s\"\nx = 1",
+            "toolset.t.skills",
+            "invalid type",
+        ),
+        (
+            "[toolset.t]\ncommand = \"/x\"\nx = 1\nsandbox = { read = \"/r\" }",
+            "toolset.t.sandbox.read",
+            "invalid type",
+        ),
+        (
+            "[toolset.t]\ncommand = \"/x\"\nsandbox = { network = 5 }",
+            "toolset.t.sandbox.network",
+            "true, false, or a list",
+        ),
+        (
+            "[toolset.t]\ncommand = \"/x\"\nsandbox = { min_abi = \"1\" }",
+            "toolset.t.sandbox.min_abi",
+            "invalid type",
+        ),
+        (
+            "[toolset.t]\nx = 1\ncommand = \"/x\"\nunsandboxed = \"yes\"",
+            "toolset.t.unsandboxed",
+            "invalid type",
+        ),
+        (
+            "[toolset.t]\ncommand = 5\nx = 1",
+            "toolset.t.command",
+            "invalid type",
+        ),
+        (
+            "[[toolset.t.sandbox]]\nx = 1",
+            "toolset.t.sandbox[0]",
+            "invalid type",
+        ),
+        (
+            "typo = 1\nroutes = \"all\"\n[owner]\nidentities = [\"web:owner\"]",
+            "routes",
+            "invalid type",
         ),
     ];
     for (toml, key, reason) in cases {
-        let home = Home::new(&format!("{MINIMAL}{toml}\n"));
+        // `[owner]` is in the minimal file; a case that sets it itself replaces it.
+        let source = if toml.contains("owner]") {
+            toml.to_owned()
+        } else {
+            format!("{MINIMAL}{toml}\n")
+        };
+        let home = Home::new(&source);
         assert_error(&home, "giles.toml", key, reason);
+        let err = home.load().unwrap_err();
+        assert!(err.position.is_some(), "{err}");
     }
-    // Anything goes inside `config`.
+}
+
+#[test]
+fn a_misspelled_sandbox_key_is_an_error_not_a_warning() {
+    // A typo in `network` or `min_abi` would leave the default and widen the sandbox, so the
+    // `sandbox` table stays strict, with the error positioned at the key.
+    let cases = [
+        (
+            "[channel.irc]\nsandbox = { netwrok = false }",
+            "channel.irc.sandbox.netwrok",
+        ),
+        (
+            "[toolset.t]\ncommand = \"/x\"\nsandbox = { min_ab = 3 }",
+            "toolset.t.sandbox.min_ab",
+        ),
+        (
+            "[toolset.t]\ncommand = \"/x\"\nsandbox = { read = [\"/r\"], rite = [] }",
+            "toolset.t.sandbox.rite",
+        ),
+    ];
+    for (toml, key) in cases {
+        let home = Home::new(&format!("{MINIMAL}{toml}\n"));
+        assert_error(&home, "giles.toml", key, "unknown field");
+        assert!(home.load().unwrap_err().position.is_some());
+    }
+}
+
+#[test]
+fn unknown_keys_are_ignored_but_config_tables_still_take_anything() {
     let home = Home::new(&format!(
         "{MINIMAL}[channel.irc]\nconfig = {{ anything = {{ at = [\"all\", 1] }} }}\n"
     ));
     let config = home.load_ok();
+    assert!(config.unknown_keys.is_empty());
     let irc = &config.channels["irc"];
     assert_eq!(irc.config.to_json()["anything"]["at"][1], 1);
 }
@@ -693,7 +903,6 @@ fn toolset_rules() {
             "absolute path",
         ),
         ("parallel = \"yes\"", "parallel", "invalid type"),
-        ("max_blob = 5", "max_blob", "unknown field `max_blob`"),
     ];
     for (toml, key, reason) in cases {
         let home = Home::new(&format!("{MINIMAL}[toolset.t]\n{toml}\n"));
@@ -1364,14 +1573,6 @@ fn auth_and_env_rules() {
             ),
             "channel.x.auth.oauth.client_id",
             "must be a string",
-        ),
-        (
-            &format!(
-                "{remote}\nauth = {{ oauth = {{ token_url = \"https://t\", client_id = \"c\", \
-                 client_secret = \"s\", scope = [] }} }}"
-            ),
-            "channel.x.auth.oauth.scope",
-            "unknown field `scope`",
         ),
         (
             &format!(

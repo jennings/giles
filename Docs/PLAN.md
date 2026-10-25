@@ -1331,6 +1331,11 @@ Keys at the instance level belong to the core: `component`, `address`, `auth`, `
 `command`, `args`, `env`, `url`, `skills`, `parallel`. Only the `config` table goes to a provider or
 channel component.
 
+A key in `giles.toml` that the core doesn't know is ignored with a startup warning; a known key with
+a value of the wrong type stops startup. The exceptions stay strict: `sandbox` tables (a typo would
+widen the sandbox), `auth` without a method, `[[routes]]` not yet imported, the web channel's
+`proxy` table, and `agent.toml`.
+
 `agents/<agent>/agent.toml`:
 
 ```toml

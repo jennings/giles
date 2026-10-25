@@ -22,7 +22,7 @@ use tracing::{info, warn};
 
 use crate::config::{
     AgentConfig, ChannelInstance, ChannelRuntime, Config, ConfigError, InstanceName, KeyPath, Kind,
-    LiveConfig, ModelRef, ProviderInstance,
+    LiveConfig, ModelRef, ProviderInstance, UnknownKey,
 };
 use crate::core_tools::CoreTool;
 use crate::paths::{DataRoot, PathsError};
@@ -190,8 +190,10 @@ impl Registry {
     ) -> Result<Self, RegistryError> {
         let registry = Self::new(root, config);
         let config = registry.config();
+        // Keys the built-in components ignored, under `giles.toml`'s `[<kind>.<instance>.config]`.
+        let mut unknown = Vec::new();
         for instance in config.providers.values() {
-            let provider = build_provider(instance, &media).map_err(|(key, reason)| {
+            let (provider, keys) = build_provider(instance, &media).map_err(|(key, reason)| {
                 let path = KeyPath::root()
                     .key("provider")
                     .key(instance.name.as_str())
@@ -199,20 +201,45 @@ impl Registry {
                 registry.giles_toml_error(path, reason)
             })?;
             insert(&registry.providers, &instance.name, provider);
+            let at = KeyPath::root()
+                .key("provider")
+                .key(instance.name.as_str())
+                .key("config");
+            unknown.extend(keys.iter().map(|key| at.join(key)));
         }
         for instance in config.channels.values() {
             if let ChannelRuntime::BuiltIn = instance.runtime {
-                let channel = build_channel(&registry, instance).map_err(|(key, reason)| {
-                    let path = KeyPath::root()
-                        .key("channel")
-                        .key(instance.name.as_str())
-                        .key(key);
-                    registry.giles_toml_error(path, reason)
-                })?;
+                let (channel, keys) =
+                    build_channel(&registry, instance).map_err(|(key, reason)| {
+                        let path = KeyPath::root()
+                            .key("channel")
+                            .key(instance.name.as_str())
+                            .key(key);
+                        registry.giles_toml_error(path, reason)
+                    })?;
                 insert(&registry.channels, &instance.name, channel);
+                let at = KeyPath::root()
+                    .key("channel")
+                    .key(instance.name.as_str())
+                    .key("config");
+                unknown.extend(keys.iter().map(|key| at.join(key)));
             }
         }
+        registry.report_unknown_keys(unknown);
         Ok(registry)
+    }
+
+    /// Logs the keys that built-in components ignored, once each.
+    fn report_unknown_keys(&self, keys: Vec<KeyPath>) {
+        if keys.is_empty() {
+            return;
+        }
+        let file = self.root.config_file();
+        // Only to give the keys positions; without the file they are logged without one.
+        let source = std::fs::read_to_string(&file).unwrap_or_default();
+        for key in keys {
+            warn!("{}", UnknownKey::new(&file, &source, key));
+        }
     }
 
     /// An error at `key` in `giles.toml`, with the key's position if the file can be read again
@@ -488,6 +515,10 @@ impl Registry {
     }
 }
 
+/// A built-in component and the keys of its `config` table that it ignored, or the `giles.toml` key
+/// under the instance table and the reason it can't be built.
+type Built<T> = Result<(Arc<T>, Vec<KeyPath>), (&'static str, String)>;
+
 /// Builds a built-in provider; the error is the key under `[provider.<instance>]` and the
 /// reason. One arm per built-in component name.
 #[cfg_attr(
@@ -497,7 +528,7 @@ impl Registry {
 fn build_provider(
     instance: &ProviderInstance,
     media: &Arc<dyn MediaSource>,
-) -> Result<Arc<dyn Provider>, (&'static str, String)> {
+) -> Built<dyn Provider> {
     #[cfg(any(feature = "provider-anthropic", feature = "provider-openai"))]
     let invalid = |e: giles_types::Error| ("config", instance.config.scrub(&e.to_string()));
     match instance.component.as_str() {
@@ -505,8 +536,9 @@ fn build_provider(
         "anthropic" => {
             use crate::providers::anthropic::{AnthropicConfig, AnthropicProvider};
             let config = AnthropicConfig::from_json(&instance.config.to_json()).map_err(invalid)?;
+            let unknown = config.unknown_keys.clone();
             let provider = AnthropicProvider::new(config, media.clone()).map_err(invalid)?;
-            Ok(Arc::new(provider))
+            Ok((Arc::new(provider), unknown))
         }
         #[cfg(not(feature = "provider-anthropic"))]
         "anthropic" => Err((
@@ -517,8 +549,9 @@ fn build_provider(
         "openai" => {
             use crate::providers::openai::{OpenAiConfig, OpenAiProvider};
             let config = OpenAiConfig::from_json(&instance.config.to_json()).map_err(invalid)?;
+            let unknown = config.unknown_keys.clone();
             let provider = OpenAiProvider::new(config, media.clone()).map_err(invalid)?;
-            Ok(Arc::new(provider))
+            Ok((Arc::new(provider), unknown))
         }
         #[cfg(not(feature = "provider-openai"))]
         "openai" => Err((
@@ -532,10 +565,7 @@ fn build_provider(
 /// Builds a built-in channel; the error is the key under `[channel.<instance>]` and the reason.
 /// One arm per built-in component name.
 #[cfg_attr(not(feature = "channel-web"), allow(unused_variables))]
-fn build_channel(
-    registry: &Registry,
-    instance: &ChannelInstance,
-) -> Result<Arc<dyn Channel>, (&'static str, String)> {
+fn build_channel(registry: &Registry, instance: &ChannelInstance) -> Built<dyn Channel> {
     match instance.component.as_str() {
         #[cfg(feature = "channel-web")]
         "web" => {
@@ -552,7 +582,8 @@ fn build_channel(
             }
             let web = Arc::new(WebChannel::from_instance(instance, &registry.config())?);
             registry.web.get_or_init(|| web.clone());
-            Ok(web)
+            let unknown = web.config().unknown_keys.clone();
+            Ok((web, unknown))
         }
         #[cfg(not(feature = "channel-web"))]
         "web" => Err((

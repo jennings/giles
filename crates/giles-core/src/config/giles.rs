@@ -88,7 +88,6 @@ impl std::fmt::Display for Identity {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct RawGiles {
     #[serde(default)]
     core: RawCore,
@@ -106,7 +105,6 @@ pub(crate) struct RawGiles {
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawCore {
     http_listen: Option<SocketAddr>,
     #[serde(default)]
@@ -115,7 +113,6 @@ struct RawCore {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawOwner {
     identities: Vec<String>,
     default: Option<String>,

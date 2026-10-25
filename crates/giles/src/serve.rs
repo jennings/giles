@@ -29,6 +29,10 @@ pub fn run(home: Option<&Path>, _args: &ServeArgs) -> anyhow::Result<()> {
     root.create_layout()?;
     let lock = InstanceLock::acquire(&root)?;
     let config = Config::load(&root)?;
+    // Once, here: the configuration is read only at startup.
+    for unknown in &config.unknown_keys {
+        warn!("{unknown}");
+    }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

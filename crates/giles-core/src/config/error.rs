@@ -85,6 +85,20 @@ impl From<&serde_path_to_error::Path> for KeyPath {
     }
 }
 
+impl From<&serde_ignored::Path<'_>> for KeyPath {
+    fn from(path: &serde_ignored::Path<'_>) -> Self {
+        use serde_ignored::Path as P;
+        match path {
+            P::Root => Self::root(),
+            P::Seq { parent, index } => Self::from(*parent).index(*index),
+            P::Map { parent, key } => Self::from(*parent).key(key.clone()),
+            P::Some { parent } | P::NewtypeStruct { parent } | P::NewtypeVariant { parent } => {
+                Self::from(*parent)
+            }
+        }
+    }
+}
+
 impl fmt::Display for KeyPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut first = true;
@@ -266,6 +280,51 @@ pub(crate) fn locate(source: &str, path: &KeyPath) -> Option<Position> {
         };
     }
     found.map(|offset| Position::of_offset(source, offset))
+}
+
+/// A key in a configuration file that Giles doesn't recognize. It is ignored, and reported, so a
+/// misspelled key doesn't stop startup (a recognized key with a value of the wrong type does).
+///
+/// Displayed as `<file>:<line>:<column>: unknown key `<key path>` (ignored)`, leaving out the
+/// position if it isn't known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct UnknownKey {
+    /// The file with the key.
+    pub file: PathBuf,
+    /// Where in the file, if known.
+    pub position: Option<Position>,
+    /// The key, in full: for a table `[core]` with `http_listn`, `core.http_listn`.
+    pub key: KeyPath,
+}
+
+impl UnknownKey {
+    /// The unknown key at `key` in `file`, whose contents are `source`.
+    pub(crate) fn new(file: &Path, source: &str, key: KeyPath) -> Self {
+        Self {
+            file: file.to_path_buf(),
+            position: locate(source, &key),
+            key,
+        }
+    }
+}
+
+impl UnknownKey {
+    /// Where the key is in its file, for listing keys in file order. Keys without a position
+    /// come first.
+    pub(crate) fn order(&self) -> Option<(usize, usize)> {
+        self.position.map(|p| (p.line, p.column))
+    }
+}
+
+impl fmt::Display for UnknownKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.file.display())?;
+        if let Some(Position { line, column }) = self.position {
+            write!(f, ":{line}:{column}")?;
+        }
+        write!(f, ": unknown key `{}` (ignored)", self.key)
+    }
 }
 
 impl fmt::Display for ConfigError {

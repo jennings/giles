@@ -4,9 +4,11 @@
 //! [`Config::load`] reads and validates everything once, at startup; changes need a restart (PLAN
 //! section 1.1), except agents created in the web UI, which join the running configuration through
 //! [`LiveConfig`]. Every problem is a [`ConfigError`] naming the file, the key path, and the reason.
-//! Unknown keys are errors everywhere except inside an instance's free-form `config` table, which
-//! belongs to the component. Secret references are resolved during loading; resolved values are
-//! held as [`Secret`]s or in a [`PluginConfig`], whose `Debug` output is redacted.
+//! Unknown keys in `giles.toml` are ignored and reported ([`Config::unknown_keys`]), except inside
+//! an instance's free-form `config` table, which belongs to the component; a recognized key with a
+//! value of the wrong type is an error, as is every key of `agent.toml`. Secret references are
+//! resolved during loading; resolved values are held as [`Secret`]s or in a [`PluginConfig`],
+//! whose `Debug` output is redacted.
 
 mod agent;
 mod discovery;
@@ -21,6 +23,7 @@ mod plugin_config;
 mod sandbox;
 mod secrets;
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
@@ -37,7 +40,7 @@ pub use agent::{
     DEFAULT_MAX_ITERATIONS_JOBS, DEFAULT_MEMORY_CAP, Job, JobPrompt, JobSession, parse_cron,
 };
 pub use discovery::{discover_plugin, find_program};
-pub use error::{ConfigError, KeyPath, Position, Segment};
+pub use error::{ConfigError, KeyPath, Position, Segment, UnknownKey};
 pub use giles::{CoreConfig, DEFAULT_HTTP_LISTEN, Identity, OwnerConfig};
 pub use hash::ConfigHash;
 pub use instances::{
@@ -94,6 +97,9 @@ pub struct Config {
     pub channels: BTreeMap<InstanceName, ChannelInstance>,
     /// `[toolset.<instance>]`, by instance name.
     pub toolsets: BTreeMap<InstanceName, ToolsetInstance>,
+    /// Every key of `giles.toml` that Giles doesn't recognize. They are ignored; the daemon logs
+    /// each once at startup.
+    pub unknown_keys: Vec<UnknownKey>,
     /// `[[routes]]` as written, unvalidated. Routes are managed in the web UI and stored in the
     /// database; these are imported once by [`Routes::open`](crate::routes::Routes::open) and then
     /// only reported (TASKS.md 5.2).
@@ -138,7 +144,7 @@ impl Config {
         file: &Path,
         source: &str,
     ) -> Result<Self, ConfigError> {
-        let mut raw: giles::RawGiles = parse_toml(file, source)?;
+        let (mut raw, unknown): (giles::RawGiles, Vec<KeyPath>) = parse_toml_lenient(file, source)?;
         // The same document as plain TOML, for hashing each instance's table as written.
         let document: toml::Table =
             toml::from_str(source).map_err(|e| ConfigError::syntax(file, source, &e))?;
@@ -185,6 +191,7 @@ impl Config {
             root,
             builtins: &options.builtins,
             resolver: &resolver,
+            unknown: RefCell::default(),
         };
         let mut providers = BTreeMap::new();
         for (name, instance) in std::mem::take(&mut raw.provider) {
@@ -267,12 +274,21 @@ impl Config {
         let provider_names: BTreeSet<&str> = providers.keys().map(InstanceName::as_str).collect();
         let agents = load_agents(root, &provider_names)?;
 
+        // In file order, as they are logged.
+        let mut unknown_keys: Vec<UnknownKey> = unknown
+            .into_iter()
+            .chain(ctx.unknown.into_inner())
+            .map(|key| UnknownKey::new(file, source, key))
+            .collect();
+        unknown_keys.sort_by_key(UnknownKey::order);
+
         Ok(Self {
             core,
             owner,
             providers,
             channels,
             toolsets,
+            unknown_keys,
             legacy_routes: std::mem::take(&mut raw.routes),
             agents,
         })
@@ -367,6 +383,26 @@ fn parse_toml<T: DeserializeOwned>(file: &Path, source: &str) -> Result<T, Confi
         toml::Deserializer::parse(source).map_err(|e| ConfigError::syntax(file, source, &e))?;
     serde_path_to_error::deserialize(deserializer)
         .map_err(|e| ConfigError::deserialize(file, source, &e))
+}
+
+/// Like [`parse_toml`], but keys `T` doesn't have are not errors: they are returned, in the order
+/// the parser meets them. A key `T` has with a value it can't take is still an error, found
+/// whether or not unknown keys come before it. Only the outermost unknown key is returned (not the
+/// keys inside an unknown table).
+fn parse_toml_lenient<T: DeserializeOwned>(
+    file: &Path,
+    source: &str,
+) -> Result<(T, Vec<KeyPath>), ConfigError> {
+    let deserializer =
+        toml::Deserializer::parse(source).map_err(|e| ConfigError::syntax(file, source, &e))?;
+    let mut unknown = Vec::new();
+    let mut record = |path: serde_ignored::Path<'_>| unknown.push(KeyPath::from(&path));
+    let value = serde_path_to_error::deserialize(serde_ignored::Deserializer::new(
+        deserializer,
+        &mut record,
+    ))
+    .map_err(|e| ConfigError::deserialize(file, source, &e))?;
+    Ok((value, unknown))
 }
 
 #[cfg(test)]

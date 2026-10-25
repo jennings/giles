@@ -3,8 +3,10 @@
 //!
 //! Every key at the instance level belongs to the core; only `config` goes to the component. A
 //! key that has no effect on an instance of its shape (e.g. `sandbox` on a built-in channel) is an
-//! error, not silently ignored.
+//! error, not silently ignored. A key the core doesn't know at all is ignored and reported
+//! (`Config::unknown_keys`), which serde finds for the typed tables and `auth` finds by hand.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -196,14 +198,12 @@ pub enum Program {
 // checked by hand: serde's type errors quote the offending value.
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct RawProvider {
     component: Option<String>,
     config: Option<toml::Value>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct RawChannel {
     component: Option<String>,
     config: Option<toml::Value>,
@@ -216,7 +216,6 @@ pub(crate) struct RawChannel {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct RawToolset {
     component: Option<String>,
     command: Option<String>,
@@ -239,6 +238,9 @@ pub(crate) struct Ctx<'a> {
     pub root: &'a DataRoot,
     pub builtins: &'a Builtins,
     pub resolver: &'a Resolver<'a>,
+    /// The keys found in `auth` tables that nothing recognizes: ignored, and reported by the
+    /// caller (the rest are found by serde, in `parse_toml_lenient`).
+    pub unknown: RefCell<Vec<KeyPath>>,
 }
 
 impl Ctx<'_> {
@@ -521,6 +523,9 @@ impl Ctx<'_> {
 
     /// `auth = { bearer = <credential> }` or
     /// `auth = { oauth = { token_url, client_id, client_secret = <credential>, scopes } }`.
+    ///
+    /// Exactly one of `bearer` and `oauth` must be there: without a method, ignoring the table
+    /// would silently leave the remote unauthenticated. Other keys are unknown and ignored.
     fn auth(&self, path: &KeyPath, auth: &toml::Value, oauth: bool) -> Result<Auth, ConfigError> {
         let shape = if oauth {
             "must be { bearer = ... } or { oauth = { ... } }"
@@ -529,15 +534,29 @@ impl Ctx<'_> {
         };
         let table = auth
             .as_table()
-            .filter(|t| t.len() == 1)
             .ok_or_else(|| self.err(path.clone(), shape))?;
-        let (method, value) = table.iter().next().expect("one entry");
+        let mut methods = table
+            .iter()
+            .filter(|(key, _)| matches!(key.as_str(), "bearer" | "oauth"));
+        let (method, value) = match (methods.next(), methods.next()) {
+            (Some(method), None) => method,
+            (None, None) if table.len() == 1 => {
+                let key = table.keys().next().expect("one entry");
+                return Err(self.err(path.key(key), format!("unknown auth method; {shape}")));
+            }
+            _ => return Err(self.err(path.clone(), shape)),
+        };
+        self.unknown.borrow_mut().extend(
+            table
+                .keys()
+                .filter(|key| *key != method)
+                .map(|key| path.key(key)),
+        );
         let at = path.key(method);
         match method.as_str() {
             "bearer" => Ok(Auth::Bearer(self.resolver.value(self.file, &at, value)?)),
             "oauth" if oauth => Ok(Auth::OAuth(Box::new(self.oauth(&at, value)?))),
-            "oauth" => Err(self.err(at, "remote toolsets support only `bearer` auth")),
-            _ => Err(self.err(at, format!("unknown auth method; {shape}"))),
+            _ => Err(self.err(at, "remote toolsets support only `bearer` auth")),
         }
     }
 
@@ -552,14 +571,17 @@ impl Ctx<'_> {
                 "must be a table with token_url, client_id, client_secret",
             )
         })?;
-        if let Some(key) = table.keys().find(|k| {
-            !matches!(
-                k.as_str(),
-                "token_url" | "client_id" | "client_secret" | "scopes"
-            )
-        }) {
-            return Err(self.err(path.key(key), format!("unknown field `{key}`")));
-        }
+        self.unknown.borrow_mut().extend(
+            table
+                .keys()
+                .filter(|key| {
+                    !matches!(
+                        key.as_str(),
+                        "token_url" | "client_id" | "client_secret" | "scopes"
+                    )
+                })
+                .map(|key| path.key(key)),
+        );
         let string = |key: &str| match table.get(key) {
             Some(toml::Value::String(s)) => Ok(s.clone()),
             Some(_) => Err(self.err(path.key(key), "must be a string")),

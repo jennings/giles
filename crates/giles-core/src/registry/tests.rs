@@ -293,7 +293,7 @@ fn builds_the_anthropic_provider_and_resolves_agent_models() {
 #[test]
 fn a_rejected_provider_config_names_the_key_without_the_secret() {
     let home = Home::new(
-        "[provider.anthropic]\nconfig = { api_key = \"sk-secret-value\", max_token = 5 }\n",
+        "[provider.anthropic]\nconfig = { api_key = \"sk-secret-value\", max_tokens = 0 }\n",
     );
     let err = home.build().unwrap_err();
     assert_config_error(
@@ -301,7 +301,7 @@ fn a_rejected_provider_config_names_the_key_without_the_secret() {
         &home.path("giles.toml"),
         (4, 1),
         "provider.anthropic.config",
-        "max_token",
+        "`max_tokens`",
     );
     assert!(!err.to_string().contains("sk-secret-value"), "{err}");
 }
@@ -369,14 +369,17 @@ fn builds_the_web_channel_once() {
     assert_eq!(registry.web_channel().unwrap().instance().as_str(), "chat");
     assert!(registry.pending().is_empty());
 
-    let home = Home::new("[channel.web]\nconfig = { bogus = 1 }\n");
+    // `proxy` stays strict.
+    let home = Home::new(
+        "[channel.web]\nconfig = { proxy = { identity_header = \"x-user\", lisen = 1 } }\n",
+    );
     let err = home.build().unwrap_err();
     assert_config_error(
         &err,
         &home.path("giles.toml"),
         (4, 1),
         "channel.web.config",
-        "unknown field `bogus`",
+        "proxy.lisen: unknown field `lisen`",
     );
 
     let home = Home::new("[channel.web]\n[channel.chat]\ncomponent = \"web\"\n");

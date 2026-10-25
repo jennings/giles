@@ -7,7 +7,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -54,6 +54,36 @@ impl Env {
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
         cmd
+    }
+}
+
+/// Runs `cmd` (a `giles serve` expected to fail at startup, stderr piped) to its exit, and returns
+/// what it printed. A daemon that starts when it shouldn't is killed after [`TIMEOUT`] instead of
+/// outliving the test.
+fn output_within_timeout(mut cmd: Command) -> Output {
+    let mut child = cmd.spawn().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    let reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.read_to_end(&mut bytes);
+        bytes
+    });
+    let deadline = Instant::now() + TIMEOUT;
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("giles did not exit; it should have failed at startup");
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    Output {
+        status,
+        stdout: Vec::new(),
+        stderr: reader.join().unwrap(),
     }
 }
 
@@ -128,6 +158,14 @@ impl Daemon {
         };
         self.log.extend(self.lines.iter());
         (status, self.log.join("\n"))
+    }
+}
+
+/// A daemon a test abandons (a failed assertion) must not outlive it.
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -250,7 +288,9 @@ fn long_root_puts_sockets_in_tmpdir() {
 #[test]
 fn missing_home_is_a_clear_error() {
     let env = Env::new();
-    let output = env.command(&["serve"]).env_remove("HOME").output().unwrap();
+    let mut cmd = env.command(&["serve"]);
+    cmd.env_remove("HOME");
+    let output = output_within_timeout(cmd);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -263,10 +303,7 @@ fn missing_home_is_a_clear_error() {
 fn missing_config_creates_the_layout_then_fails() {
     let env = Env::new();
     let home = env.path("home");
-    let output = env
-        .command(&["serve", "--home", home.to_str().unwrap()])
-        .output()
-        .unwrap();
+    let output = output_within_timeout(env.command(&["serve", "--home", home.to_str().unwrap()]));
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     let file = home.join("giles.toml");
@@ -279,23 +316,77 @@ fn missing_config_creates_the_layout_then_fails() {
 
 #[test]
 fn invalid_config_fails_with_the_file_and_key() {
+    // A typo next to the wrong-typed key doesn't change the error.
     let env = Env::new();
     let home = env.path("home");
     write_config(
         &home,
-        "[owner]\nidentities = [\"web:owner\"]\nnmae = \"me\"\n",
+        "[owner]\nidentities = \"web:owner\"\nnmae = \"me\"\n",
     );
-    let output = env
-        .command(&["serve", "--home", home.to_str().unwrap()])
-        .output()
-        .unwrap();
+    let output = output_within_timeout(env.command(&["serve", "--home", home.to_str().unwrap()]));
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     let expected = format!(
-        "{}:3:1: owner.nmae: unknown field `nmae`",
+        "{}:2:14: owner.identities: invalid type",
         home.join("giles.toml").display()
     );
     assert!(stderr.contains(&expected), "{stderr}");
+    assert!(!stderr.contains("unknown key"), "{stderr}");
+}
+
+#[test]
+fn a_misspelled_sandbox_key_stops_startup() {
+    let env = Env::new();
+    let home = env.path("home");
+    write_config(
+        &home,
+        "[owner]\nidentities = [\"web:owner\"]\n[toolset.t]\ncommand = \"/bin/true\"\n\
+         sandbox = { netwrok = false }\n",
+    );
+    let output = output_within_timeout(env.command(&["serve", "--home", home.to_str().unwrap()]));
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let expected = format!(
+        "{}:5:{}: toolset.t.sandbox.netwrok: unknown field `netwrok`",
+        home.join("giles.toml").display(),
+        "sandbox = { ".len() + 1
+    );
+    assert!(stderr.contains(&expected), "{stderr}");
+}
+
+#[test]
+fn unknown_config_keys_are_logged_once_and_do_not_stop_startup() {
+    let env = Env::new();
+    let home = env.path("home");
+    write_config(
+        &home,
+        "typo = 1\n[core]\nhttp_listen = \"127.0.0.1:0\"\nhttp_listn = 2\n\
+         [owner]\nidentities = [\"web:owner\"]\nnmae = \"me\"\n\
+         [toolset.t]\ncommand = \"/bin/true\"\nsandbox = { read = [\"/usr\"] }\n\
+         [channel.web]\nconfig = { public_ur = \"x\" }\n\
+         [provider.anthropic]\nconfig = { api_key = \"sk-x\", modle = 1 }\n\
+         [provider.local]\ncomponent = \"openai\"\n\
+         config = { models = { m = { contxt = 1 } } }\n",
+    );
+    let file = home.join("giles.toml").display().to_string();
+    let (status, log) =
+        Daemon::start(env.command(&["serve", "--home", home.to_str().unwrap()])).stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+    for key in [
+        "typo",
+        "core.http_listn",
+        "owner.nmae",
+        "channel.web.config.public_ur",
+        "provider.anthropic.config.modle",
+        "provider.local.config.models.m.contxt",
+    ] {
+        let expected = format!("unknown key `{key}` (ignored)");
+        assert_eq!(log.matches(&expected).count(), 1, "{expected}\n{log}");
+    }
+    assert!(
+        log.contains(&format!("{file}:1:1: unknown key `typo` (ignored)")),
+        "{log}"
+    );
 }
 
 /// The HTTP address in the `giles started` line (`http=http://<addr>/`).
@@ -348,10 +439,7 @@ fn busy_http_listen_fails_at_startup() {
         &home,
         &format!("[core]\nhttp_listen = \"{addr}\"\n\n[owner]\nidentities = [\"web:owner\"]\n"),
     );
-    let output = env
-        .command(&["serve", "--home", home.to_str().unwrap()])
-        .output()
-        .unwrap();
+    let output = output_within_timeout(env.command(&["serve", "--home", home.to_str().unwrap()]));
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -376,10 +464,7 @@ fn one_daemon_per_root_with_a_private_admin_socket_and_token() {
     assert_eq!(mode(&home.join("run/giles.lock")), 0o600);
 
     // A second daemon on the same root fails before touching anything, naming the first.
-    let output = env
-        .command(&["serve", "--home", home.to_str().unwrap()])
-        .output()
-        .unwrap();
+    let output = output_within_timeout(env.command(&["serve", "--home", home.to_str().unwrap()]));
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     let pid = daemon.child.id();
@@ -784,10 +869,8 @@ fn a_journal_mode_that_gives_up_the_journal_is_refused_at_startup() {
                 "[core]\njournal_mode = \"{mode}\"\n\n[owner]\nidentities = [\"web:owner\"]\n"
             ),
         );
-        let output = env
-            .command(&["serve", "--home", home.to_str().unwrap()])
-            .output()
-            .unwrap();
+        let output =
+            output_within_timeout(env.command(&["serve", "--home", home.to_str().unwrap()]));
         assert!(!output.status.success(), "{mode}");
         let stderr = String::from_utf8_lossy(&output.stderr);
         let file = home.join("giles.toml");
@@ -810,12 +893,9 @@ fn a_component_that_cannot_be_built_fails_with_the_file_and_key() {
     write_config(
         &home,
         "[owner]\nidentities = [\"web:owner\"]\n\
-         [provider.anthropic]\nconfig = { api_key = \"sk-secret-key\", bogus = 1 }\n",
+         [provider.anthropic]\nconfig = { api_key = \"sk-secret-key\", max_tokens = 0 }\n",
     );
-    let output = env
-        .command(&["serve", "--home", home.to_str().unwrap()])
-        .output()
-        .unwrap();
+    let output = output_within_timeout(env.command(&["serve", "--home", home.to_str().unwrap()]));
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     let expected = format!(
@@ -823,7 +903,7 @@ fn a_component_that_cannot_be_built_fails_with_the_file_and_key() {
         home.join("giles.toml").display()
     );
     assert!(stderr.contains(&expected), "{stderr}");
-    assert!(stderr.contains("bogus"), "{stderr}");
+    assert!(stderr.contains("`max_tokens`"), "{stderr}");
     assert!(!stderr.contains("sk-secret-key"), "{stderr}");
     assert!(!stderr.contains("giles started"), "{stderr}");
 }

@@ -18,8 +18,40 @@ Error: /home/me/.giles/giles.toml:12:12: channel.libera.max_blob: invalid size "
 number of bytes or an integer and a unit (B, KiB, MiB, GiB), e.g. "50 MiB"
 ```
 
-Unknown keys are errors too, so a typo never silently does nothing. The one exception is an
-instance's `config` table, which belongs to the component (see [Instances](#instances)).
+## Unknown Keys
+
+In `giles.toml`, a key Giles doesn't recognize is a warning, not an error: Giles ignores it and
+starts, logging one line per key with its full path, at every level (a misspelled `[core]` key, a
+misspelled key of a built-in component's `config` table, a whole unknown table):
+
+```text
+WARN /home/me/.giles/giles.toml:7:1: unknown key `core.http_listn` (ignored)
+WARN /home/me/.giles/giles.toml:12:30: unknown key `provider.anthropic.config.modle` (ignored)
+```
+
+Watch for these: a misspelled key does nothing, so the setting it was meant to change keeps its
+default. A key Giles does recognize, with a value of the wrong type or an invalid value
+(`http_listen = 5`, `parallel = "yes"`), is still an error that stops startup, even if the same
+file also has unknown keys.
+
+Some things stay strict, because ignoring a typo there would be unsafe or change what a route
+matches:
+
+- **`sandbox` tables.** A misspelled `network` or `min_abi` would leave the default (network
+  access on, no minimum ABI) and quietly widen the plugin's sandbox, so an unknown key in `sandbox`
+  is an error naming the key.
+- **`auth` tables.** An `auth` table needs one of `bearer` or `oauth`: ignoring a misspelled method
+  would leave the remote without credentials. Other keys next to the method are warnings.
+- **`[[routes]]`** that are still waiting to be imported ([Routes](#routes)): an unknown key in
+  a rule is an error, because a misspelled `channel` or `conversation` would make the route match
+  more than you meant.
+- **The web channel's `proxy` table**, which configures a listener and its shared secret.
+- **`agent.toml` files:** an unknown key there is an error, so a typo in an agent's `models` or
+  `jobs` never silently does nothing.
+
+An instance's `config` table belongs to the component. The built-in providers and the web channel
+warn about keys they don't know, as above; plugins check their own `config` and say what they
+accept ([Instances](#instances)), usually by refusing the instance.
 
 ## Value Formats
 
@@ -450,11 +482,11 @@ agent = "jeeves"
 ```
 
 If your `giles.toml` has `[[routes]]` like these, Giles imports them the first time it starts after
-the upgrade, in order, after checking them like any configuration (a route to a channel instance or
-agent that doesn't exist stops startup and names the route). It does this once. After that it never
-reads `[[routes]]` again, even if you delete every route in the web UI, and it logs a warning at
-every start while `giles.toml` still has them, and the Routes page says so: remove them from the
-file. A fresh install has no routes: add them in the web UI.
+the upgrade, in order, after checking them (a route to a channel instance or agent that doesn't
+exist, or a key the rule doesn't have, stops startup and names the route). It does this once. After
+that it never reads `[[routes]]` again, even if you delete every route in the web UI, and it logs a
+warning at every start while `giles.toml` still has them, and the Routes page says so: remove them
+from the file. A fresh install has no routes: add them in the web UI.
 
 ## `agents/<agent>/agent.toml`
 

@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use url::Url;
 
-use crate::config::Secret;
+use crate::config::{KeyPath, Secret};
 
 /// The shared-secret header a TCP proxy listener requires unless `secret_header` names another.
 pub const DEFAULT_SECRET_HEADER: &str = "x-giles-proxy-secret";
@@ -35,6 +35,10 @@ pub struct WebConfig {
     pub public_url: Option<String>,
     /// The trusted-proxy listener, if configured.
     pub proxy: Option<ProxyConfig>,
+    /// Keys of the config table that the web channel doesn't know: ignored, and reported by the
+    /// caller. Empty unless [`WebConfig::from_json`] found some. The `proxy` table is strict, so
+    /// none are ever inside it.
+    pub unknown_keys: Vec<KeyPath>,
 }
 
 /// A trusted reverse proxy (PLAN section 3.4): it authenticates people and names them in a header.
@@ -64,12 +68,13 @@ pub enum ProxyListen {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Raw {
     public_url: Option<String>,
     proxy: Option<RawProxy>,
 }
 
+/// Strict, unlike the rest of the table: this configures a listener and its shared secret, and a
+/// misspelled `secret_header` or `listen` would leave the proxy listener unprotected or elsewhere.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawProxy {
@@ -80,23 +85,30 @@ struct RawProxy {
 }
 
 impl WebConfig {
-    /// Parses the instance's `config` table (`PluginConfig::to_json`).
+    /// Parses the instance's `config` table (`PluginConfig::to_json`). Unknown keys are not errors:
+    /// they are ignored and listed in [`unknown_keys`](Self::unknown_keys). The exception is the
+    /// `proxy` table, where an unknown key is an error.
     ///
     /// # Errors
     ///
     /// The reason, naming the key at fault.
     pub fn from_json(value: &Value) -> Result<Self, String> {
-        let raw: Raw = serde_path_to_error::deserialize(value).map_err(|e| {
-            let path = e.path().to_string();
-            if path == "." {
-                e.into_inner().to_string()
-            } else {
-                format!("{path}: {}", e.into_inner())
-            }
-        })?;
+        let mut unknown_keys = Vec::new();
+        let mut record = |path: serde_ignored::Path<'_>| unknown_keys.push(KeyPath::from(&path));
+        let raw: Raw =
+            serde_path_to_error::deserialize(serde_ignored::Deserializer::new(value, &mut record))
+                .map_err(|e| {
+                    let path = e.path().to_string();
+                    if path == "." {
+                        e.into_inner().to_string()
+                    } else {
+                        format!("{path}: {}", e.into_inner())
+                    }
+                })?;
         Ok(Self {
             public_url: raw.public_url.as_deref().map(public_url).transpose()?,
             proxy: raw.proxy.map(proxy).transpose()?,
+            unknown_keys,
         })
     }
 
@@ -190,10 +202,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_table_is_the_default_and_unknown_keys_are_rejected() {
+    fn empty_table_is_the_default_and_unknown_keys_are_listed() {
         assert_eq!(WebConfig::from_json(&json!({})), Ok(WebConfig::default()));
-        let err = WebConfig::from_json(&json!({"bogus": 1})).unwrap_err();
-        assert!(err.contains("unknown field `bogus`"), "{err}");
+        let config = WebConfig::from_json(&json!({
+            "bogus": 1,
+            "public_url": "https://giles.example.com",
+            "nested": {"a": 1},
+        }))
+        .unwrap();
+        let mut keys: Vec<String> = config
+            .unknown_keys
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        keys.sort();
+        assert_eq!(keys, ["bogus", "nested"]);
+        assert_eq!(
+            config.public_url.as_deref(),
+            Some("https://giles.example.com")
+        );
+        // A known key with a bad value is an error, even next to an unknown key.
+        let err = WebConfig::from_json(&json!({"bogus": 1, "public_url": 5})).unwrap_err();
+        assert!(err.starts_with("public_url: "), "{err}");
+        // `proxy` stays strict: it configures a listener and a shared secret.
         let err = WebConfig::from_json(&json!({"proxy": {"identity_header": "x-user", "x": 1}}))
             .unwrap_err();
         assert!(err.starts_with("proxy.x: unknown field `x`"), "{err}");

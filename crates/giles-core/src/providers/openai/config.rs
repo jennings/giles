@@ -8,6 +8,7 @@ use giles_types::Error;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Map, Value};
 
+use crate::config::KeyPath;
 use crate::providers::http::{self, ApiKey, HttpOptions};
 use crate::providers::wire;
 
@@ -107,6 +108,9 @@ pub struct OpenAiConfig {
     pub models: BTreeMap<String, ModelSettings>,
     /// Connection and read timeouts.
     pub http: HttpOptions,
+    /// Keys of the config table (and of its `models.<id>` tables) that this provider doesn't know:
+    /// ignored, and reported by the caller. Empty unless [`from_json`](Self::from_json) found some.
+    pub unknown_keys: Vec<KeyPath>,
 }
 
 impl OpenAiConfig {
@@ -120,14 +124,16 @@ impl OpenAiConfig {
             defaults: ModelSettings::default(),
             models: BTreeMap::new(),
             http: HttpOptions::default(),
+            unknown_keys: Vec::new(),
         }
     }
 
     /// Validates an instance's `config` table, as JSON with secret references already resolved
     /// (PLAN section 7.7). Keys: `api_key`, `base_url`, `dialect`, `headers`, `max_tokens`,
     /// `media_types`, `context_window`, `reasoning`, and `models` (a table of model ids to
-    /// `max_tokens`, `media_types`, `context_window`, `reasoning`). Unknown keys are rejected so a
-    /// typo doesn't silently do nothing.
+    /// `max_tokens`, `media_types`, `context_window`, `reasoning`). Unknown keys are not errors: they
+    /// are ignored and listed in [`unknown_keys`](Self::unknown_keys). A known key with a bad value
+    /// is an error.
     ///
     /// Errors are [`Error::InvalidRequest`] naming the key; they never include the API key or a
     /// header value.
@@ -135,7 +141,7 @@ impl OpenAiConfig {
         let Value::Object(table) = config else {
             return Err(invalid("the provider config must be a table"));
         };
-        check_keys(table, &KEYS, "")?;
+        let mut unknown_keys = unknown_keys(table, &KEYS, &KeyPath::root());
 
         let api_key = match table.get("api_key") {
             Some(Value::String(key)) if key.is_empty() => {
@@ -186,10 +192,15 @@ impl OpenAiConfig {
                 if id.is_empty() {
                     return Err(invalid("`models` keys must not be empty"));
                 }
-                check_keys(model, &MODEL_KEYS, &path)?;
+                unknown_keys.extend(self::unknown_keys(
+                    model,
+                    &MODEL_KEYS,
+                    &KeyPath::root().key("models").key(id.as_str()),
+                ));
                 config.models.insert(id.clone(), settings(model, &path)?);
             }
         }
+        config.unknown_keys = unknown_keys;
         Ok(config)
     }
 
@@ -245,14 +256,13 @@ fn invalid(message: impl fmt::Display) -> Error {
     Error::InvalidRequest(format!("openai provider config: {message}"))
 }
 
-fn check_keys(table: &Map<String, Value>, keys: &[&str], path: &str) -> Result<(), Error> {
-    match table.keys().find(|key| !keys.contains(&key.as_str())) {
-        Some(key) => Err(invalid(format!(
-            "unknown key `{path}{key}` (expected one of: {})",
-            keys.join(", ")
-        ))),
-        None => Ok(()),
-    }
+/// The keys of `table`, at `path`, that aren't in `keys`.
+fn unknown_keys(table: &Map<String, Value>, keys: &[&str], path: &KeyPath) -> Vec<KeyPath> {
+    table
+        .keys()
+        .filter(|key| !keys.contains(&key.as_str()))
+        .map(|key| path.key(key.as_str()))
+        .collect()
 }
 
 fn string<'v>(value: &'v Value, key: &str) -> Result<&'v str, Error> {
@@ -491,7 +501,6 @@ mod tests {
         assert!(error(json!("sk")).contains("must be a table"));
         assert!(error(json!({"api_key": ""})).contains("must not be empty"));
         assert!(error(json!({"api_key": 5})).contains("must be a string"));
-        assert!(error(json!({"model": "x"})).contains("unknown key `model`"));
         assert!(error(json!({"base_url": "localhost:11434"})).contains("`base_url`"));
         assert!(error(json!({"base_url": "https://u:p@x"})).contains("credentials"));
         assert!(error(json!({"dialect": "azure"})).contains("`dialect`"));
@@ -515,14 +524,32 @@ mod tests {
         assert!(error(json!({"models": ["gpt-4o"]})).contains("`models`"));
         assert!(error(json!({"models": {"gpt-4o": true}})).contains("`models.gpt-4o`"));
         assert!(
-            error(json!({"models": {"gpt-4o": {"api_key": "k"}}}))
-                .contains("unknown key `models.gpt-4o.api_key`")
-        );
-        assert!(
             error(json!({"models": {"gpt-4o": {"max_tokens": 0}}}))
                 .contains("`models.gpt-4o.max_tokens`")
         );
         assert!(error(json!({"models": {"": {}}})).contains("must not be empty"));
+    }
+
+    #[test]
+    fn unknown_keys_are_listed_not_rejected() {
+        let config = OpenAiConfig::from_json(&json!({
+            "model": "x",
+            "max_tokens": 5,
+            "models": {"gpt-4o": {"api_key": "k", "reasoning": true}, "o3": {"contxt": 1}},
+        }))
+        .unwrap();
+        let mut keys: Vec<String> = config
+            .unknown_keys
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        keys.sort();
+        assert_eq!(keys, ["model", "models.gpt-4o.api_key", "models.o3.contxt"]);
+        assert_eq!(config.defaults.max_tokens, Some(5));
+        assert_eq!(config.models["gpt-4o"].reasoning, Some(true));
+        // A known key with a bad value is still an error, whatever else is unknown.
+        let message = error(json!({"model": "x", "models": {"m": {"zzz": 1, "max_tokens": 0}}}));
+        assert!(message.contains("`models.m.max_tokens`"), "{message}");
     }
 
     /// The TOML shapes in `Docs/user/providers.md` (secret references already resolved).

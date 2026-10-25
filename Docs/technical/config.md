@@ -22,8 +22,15 @@ not here).
 
 The steps:
 
-1. Read `giles.toml` (UTF-8) and deserialize it into private `Raw*` structs. Every struct has
-   `#[serde(deny_unknown_fields)]`; the only place unknown keys pass is an instance's `config`.
+1. Read `giles.toml` (UTF-8) and deserialize it into private `Raw*` structs through
+   `parse_toml_lenient`. The structs have no `#[serde(deny_unknown_fields)]`: the document goes
+   through `serde_ignored` (inside `serde_path_to_error`), so the keys the structs don't have
+   are exactly the ones serde skips, and the set of recognized keys can't drift from the types.
+   Each skipped key becomes an `UnknownKey` (file, position, full key path) in
+   `Config::unknown_keys`; only the outermost key of an unknown table is reported. An instance's
+   `config` and `env` tables and `[[routes]]` are raw `toml::Value`s that serde never skips, so
+   they produce none. `auth` tables are checked by hand in `instances.rs` (they hold credentials,
+   so serde never sees them) and report their own unknown keys through `Ctx::unknown`.
 2. Validate `[core]` and `[owner]`. `core.retired_instances` holds valid instance names that appear
    once and that no `[provider.*]`, `[channel.*]`, or `[toolset.*]` table uses; the core only
    stores them, for the startup check in [Instance Rename](instance-rename.md#startup-check).
@@ -61,9 +68,10 @@ failures). It displays as `<file>:<line>:<column>: <key>: <reason>`, leaving out
 
 - TOML syntax errors use the parser's message and span. The parser's own `Display` is never used,
   because it quotes the source line.
-- Type errors and unknown keys come from serde. The document is deserialized through
-  `serde_path_to_error`, which tracks the key path (including the unknown key itself), and the
-  `toml` error's span gives the position.
+- Type errors come from serde. The document is deserialized through `serde_path_to_error`, which
+  tracks the key path, and the `toml` error's span gives the position. `agent.toml` is strict:
+  its `Raw*` structs keep `#[serde(deny_unknown_fields)]`, so an unknown key there is one of these
+  errors.
 - Semantic errors (a route naming a missing agent, a key that doesn't apply to an instance's shape)
   are raised after deserialization with the key path. `ConfigError::located` then fills in the
   position: on the error path only, the file is parsed again into toml's span-keeping `DeTable`,
@@ -72,6 +80,49 @@ failures). It displays as `<file>:<line>:<column>: <key>: <reason>`, leaving out
 
 `KeyPath` displays as TOML writes keys: bare keys joined by `.`, other keys quoted, array indexes
 in brackets (`toolset.files.skills[1]`, `owner."odd key"`).
+
+## Unknown Keys
+
+`giles.toml` alone is lenient about keys it doesn't know: `Config::unknown_keys` lists each as an
+`UnknownKey { file, position, key }`, displayed as
+`<file>:<line>:<column>: unknown key `<key path>` (ignored)`. The position is found with
+`error::locate`, as for errors. Only a load that succeeds returns them; an error in the file,
+wherever it is, wins over any number of unknown keys, so a typo next to a wrong-typed key doesn't
+change the error.
+
+`serde_ignored` reports a key when the derived `Deserialize` skips it, so it covers every typed
+table (`[core]`, `[owner]`, instance tables) and recognizes exactly what the `Raw*` structs
+declare. A table serde skips as a whole is one entry (`[cores]` is `cores`, not `cores.x`).
+Hand-checked tables report theirs through `Ctx::unknown`: the keys of an `auth` table next to its
+method, and of an `oauth` table.
+
+Some tables stay strict, because a typo there would not be harmless:
+
+- `RawSandbox` keeps `#[serde(deny_unknown_fields)]`: a misspelled `network` or `min_abi` would
+  leave the default (network on, no ABI floor) and widen the plugin's sandbox. The error is
+  positioned at the key like any other.
+- An `auth` table with no `bearer` or `oauth` is an error: ignoring it would leave a remote without
+  credentials.
+- `[[routes]]` stay raw `toml::Value`s here, so `giles.toml` loading says nothing about them; the
+  import (`routes::import_rules`, `LegacyRoute` with `deny_unknown_fields`) rejects a stray key,
+  because a misspelled `channel` or `conversation` would make a route match everything.
+- `agent.toml` (see above) and the web channel's `proxy` table.
+
+An instance's `config` table is opaque to loading. The built-in components check it when the
+registry builds them, and are lenient the same way: `AnthropicConfig::from_json`,
+`OpenAiConfig::from_json` (also in `models.<id>` tables) and `WebConfig::from_json` (except `proxy`)
+put unknown keys in their `unknown_keys` instead of failing. `Registry::from_config` turns them into
+`UnknownKey`s with full paths (`provider.anthropic.config.modle`), and logs each once at `warn`;
+they are not added to `Config::unknown_keys`, which only carries what loading `giles.toml` found.
+Out-of-process plugins validate their own `config` in `Configure`
+and fail only their instance.
+
+`giles serve` logs the `UnknownKey`s found while loading once, right after the load, at `warn`;
+there is no status field for them. The configuration is read only at startup, so later changes (an
+agent created in the web UI) log nothing again.
+
+The hash of an instance's table (`ConfigHash`) covers the table as written, unknown keys included,
+so editing one only refreshes the toolset's cached tool list.
 
 ## Instances
 

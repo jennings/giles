@@ -6,6 +6,7 @@ use giles_types::Error;
 use reqwest::header::HeaderValue;
 use serde_json::Value;
 
+use crate::config::KeyPath;
 use crate::providers::http::{self, ApiKey, HttpOptions};
 
 /// The API endpoint used when `base_url` is not set.
@@ -30,6 +31,9 @@ pub struct AnthropicConfig {
     pub max_tokens: Option<u32>,
     /// Connection and read timeouts.
     pub http: HttpOptions,
+    /// Keys of the config table that this provider doesn't know: ignored, and reported by the
+    /// caller. Empty unless [`from_json`](Self::from_json) found some.
+    pub unknown_keys: Vec<KeyPath>,
 }
 
 impl AnthropicConfig {
@@ -42,24 +46,25 @@ impl AnthropicConfig {
             betas: Vec::new(),
             max_tokens: None,
             http: HttpOptions::default(),
+            unknown_keys: Vec::new(),
         }
     }
 
     /// Validates an instance's `config` table, as JSON with secret references already resolved
     /// (PLAN section 7.7). Keys: `api_key` (required), `base_url`, `anthropic_version`, `beta`,
-    /// `max_tokens`. Unknown keys are rejected so a typo doesn't silently do nothing.
+    /// `max_tokens`. Unknown keys are not errors: they are ignored and listed in
+    /// [`unknown_keys`](Self::unknown_keys). A known key with a bad value is an error.
     ///
     /// Errors are [`Error::InvalidRequest`] naming the key; they never include the API key.
     pub fn from_json(config: &Value) -> Result<Self, Error> {
         let Value::Object(table) = config else {
             return Err(invalid("the provider config must be a table"));
         };
-        if let Some(key) = table.keys().find(|key| !KEYS.contains(&key.as_str())) {
-            return Err(invalid(format!(
-                "unknown key `{key}` (expected one of: {})",
-                KEYS.join(", ")
-            )));
-        }
+        let unknown_keys = table
+            .keys()
+            .filter(|key| !KEYS.contains(&key.as_str()))
+            .map(|key| KeyPath::root().key(key.as_str()))
+            .collect();
 
         let api_key = match table.get("api_key") {
             Some(Value::String(key)) if key.is_empty() => {
@@ -77,6 +82,7 @@ impl AnthropicConfig {
             None => return Err(invalid("`api_key` is required")),
         };
         let mut config = Self::new(api_key);
+        config.unknown_keys = unknown_keys;
 
         if let Some(value) = table.get("base_url") {
             config.base_url = http::base_url(string(value, "base_url")?).map_err(invalid)?;
@@ -209,7 +215,6 @@ mod tests {
         assert!(error(json!({})).contains("`api_key` is required"));
         assert!(error(json!({"api_key": ""})).contains("must not be empty"));
         assert!(error(json!({"api_key": 5})).contains("must be a string"));
-        assert!(error(json!({"api_key": "k", "model": "x"})).contains("unknown key `model`"));
         for url in [
             "api.anthropic.com",
             "ftp://x",
@@ -235,6 +240,25 @@ mod tests {
         ] {
             assert!(error(json!({"api_key": "k", "max_tokens": max})).contains("`max_tokens`"));
         }
+    }
+
+    #[test]
+    fn unknown_keys_are_listed_not_rejected() {
+        let config = AnthropicConfig::from_json(
+            &json!({"api_key": "k", "model": "x", "max_tokens": 5, "beta": [], "base_urls": 1}),
+        )
+        .unwrap();
+        let mut keys: Vec<String> = config
+            .unknown_keys
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        keys.sort();
+        assert_eq!(keys, ["base_urls", "model"]);
+        assert_eq!(config.max_tokens, Some(5));
+        // A known key with a bad value is still an error, whatever else is unknown.
+        let message = error(json!({"api_key": "k", "model": "x", "max_tokens": "5", "zzz": 1}));
+        assert!(message.contains("`max_tokens`"), "{message}");
     }
 
     #[test]

@@ -23,7 +23,8 @@ config = { api_key = { secret = "anthropic" } }
 | `beta`              | `[]`                        | Beta feature names, sent in the `anthropic-beta` header            |
 | `max_tokens`        | the model's maximum         | Output limit for requests that set none (16384 for unknown models) |
 
-Unknown keys are an error, so a misspelled key doesn't silently do nothing.
+An unknown key is ignored with a warning at startup (a misspelled key does nothing, so the setting
+keeps its default); a known key with an invalid value stops startup.
 
 Notes:
 
@@ -79,7 +80,8 @@ models."qwen3:8b" = { reasoning = true, context_window = 40960 }
 | `models`         | none                        | Per-model settings: `max_tokens`, `media_types`, `context_window`, and `reasoning`           |
 
 Settings under `models."<model id>"` override the instance-level ones for that model. Unknown keys
-are an error, so a misspelled key doesn't silently do nothing.
+(in `models` too) are ignored with a warning at startup; a known key with an invalid value stops
+startup.
 
 Notes:
 

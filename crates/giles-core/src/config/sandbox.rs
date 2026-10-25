@@ -104,6 +104,8 @@ fn parse_port(entry: &str) -> Result<u16, String> {
         })
 }
 
+/// Strict, unlike the rest of `giles.toml`: a misspelled `network` or `min_abi` would silently
+/// leave the default (network on, no ABI floor) and widen the plugin's sandbox.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawSandbox {
