@@ -59,7 +59,8 @@ The job sets up Buildx (`docker/setup-buildx-action`), builds the image for `lin
 `docker/build-push-action`, loads it into the runner's Docker as `giles:test`, and smoke-tests it
 before anything is pushed:
 
-- `giles --version` runs, and both plugin binaries are in `/usr/local/bin/`.
+- `giles --version` runs, and the three plugin binaries (IRC, email, WhatsApp) are in
+  `/usr/local/bin/`.
 - `giles serve` starts with the default entrypoint, a fresh named volume at `/data` holding a
   `giles.toml` with only `http_listen = "0.0.0.0:8080"` and the owner, and the port published.
 - `giles status`, run in the container until the admin socket answers (up to 30 seconds), must

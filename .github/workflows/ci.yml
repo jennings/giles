@@ -129,7 +129,8 @@ jobs:
         run: |
           docker run --rm "$TEST_TAG" --version
           docker run --rm --entrypoint sh "$TEST_TAG" -c \
-            'ls -l /usr/local/bin/giles-channel-irc /usr/local/bin/giles-channel-email'
+            'ls -l /usr/local/bin/giles-channel-irc /usr/local/bin/giles-channel-email \
+             /usr/local/bin/giles-channel-whatsapp'
           # A new named volume takes /data's ownership (the giles user) from the image.
           docker run --rm --volume giles-smoke:/data --entrypoint sh "$TEST_TAG" -c \
             'printf "[core]\nhttp_listen = \"0.0.0.0:8080\"\n\n[owner]\nidentities = [\"web:owner\"]\n" > /data/giles.toml'

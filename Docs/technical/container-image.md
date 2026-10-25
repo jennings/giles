@@ -22,15 +22,23 @@ only when the pin changes. Protobuf code generation uses the vendored `protoc` (
 [Cargo Workspace](workspace.md)); no system `protoc` is installed.
 
 It then copies the context and runs one `cargo build --release --locked` for the binaries the image
-ships: `giles`, `giles-channel-irc`, and `giles-channel-email`. `giles-channel-echo` is a test-only
-plugin and stays out. The list is the `bins` variable in that `RUN` step; a new first-party plugin
-is added there.
+ships: `giles`, `giles-channel-irc`, `giles-channel-email`, and `giles-channel-whatsapp`.
+`giles-channel-echo` is a test-only plugin and stays out. The list is the `bins` variable in that
+`RUN` step; a new first-party plugin is added there.
 
 Three BuildKit cache mounts keep rebuilds incremental: the Cargo registry and git checkouts
 (`/usr/local/cargo/registry` and `/usr/local/cargo/git`) and `target/`. Each has a fixed `id` and
 `sharing=locked`, so concurrent builds wait for each other instead of corrupting a shared target
 directory. A cache mount isn't part of the layer, so the step copies the binaries out to `/out`,
 which the runtime stage copies from.
+
+`whatsapp-rust`, the library under the WhatsApp plugin, is the one dependency that doesn't come
+from crates.io: it's a git dependency pinned to a commit by `Cargo.toml` and `Cargo.lock`
+([WhatsApp Channel](whatsapp.md#the-library-and-why-its-a-git-dependency)). `--locked` still
+applies, and Cargo fetches it from GitHub with its built-in git support, so the build stage needs
+network access to `github.com` and no `git` binary. The git cache mount keeps the checkout between
+builds. A from-scratch release build of the plugin alone took about two minutes on a 10-core arm64
+Mac.
 
 The cache mounts live in the builder, so they help repeated local builds. In CI they don't: the
 GitHub Actions cache (`type=gha`) saves layers, not cache mounts, and each run starts a fresh
@@ -59,6 +67,12 @@ The image runs as `giles`, uid and gid 10001: a fixed id, so a bind-mounted data
 created owned by it with mode 0700 and declared a `VOLUME`; `GILES_HOME=/data` points Giles at it,
 and it is also the working directory. A fresh named volume copies that ownership from the image.
 
+The WhatsApp plugin is in the image but inert until an instance of component `whatsapp` is
+configured: the core launches a plugin only for a configured instance, so the smoke test (which
+configures none) never starts it, never opens a connection to WhatsApp, and only checks that the
+binary is there. A configured instance keeps its session in `/data/data/plugins/<instance>/`, on
+the volume, and needs outbound HTTPS only.
+
 `EXPOSE 8080` documents the web port; `giles.toml` must still set `http_listen = "0.0.0.0:8080"`,
 since the default listens on loopback only. The entrypoint is `tini -- giles` with `serve` as the
 default command, so the container runs `giles serve`, and arguments after the image name replace
@@ -80,4 +94,3 @@ CI image job checks it on GitHub's Ubuntu runners ([Continuous Integration](ci.m
 - `linux/arm64` images. The build is portable (it builds natively on arm64), but CI publishes
   only `linux/amd64`, since building under QEMU emulation is too slow; an arm64 runner can add it.
 - A `minimal` image with `giles` alone, as a second final stage.
-- The WhatsApp plugin, added to `bins` when it lands.

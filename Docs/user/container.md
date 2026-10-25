@@ -1,9 +1,9 @@
 # Running in a Container
 
 Giles can run as a Linux container. The image holds `giles` and the first-party channel plugins,
-[IRC](irc.md) and [Email](email.md), so configured instances of them start without installing
-anything. (The WhatsApp plugin joins them once it exists.) The built-in web channel and model
-providers are part of `giles` itself.
+[IRC](irc.md), [Email](email.md), and [WhatsApp](whatsapp.md), so configured instances of them
+start without installing anything. The built-in web channel and model providers are part of `giles`
+itself.
 
 ## Getting the Image
 
@@ -96,6 +96,13 @@ The image includes the time zone database and runs in UTC. Set the owner's time 
 
 The bundled plugins are in `/usr/local/bin/`, where Giles finds them on `$PATH`. Other plugin
 binaries go in `/data/plugins/`, which Giles searches first.
+
+A plugin only runs when `giles.toml` has an instance of it, so the WhatsApp plugin does nothing,
+and never contacts WhatsApp, until you add one. Its session (the credential that makes Giles a
+linked device) is kept in `/data/data/plugins/<instance>/`, so it survives the container being
+replaced as long as `/data` does. To link it, publish the web port as above and open the admin
+page ([Linking a Channel](web.md#linking-a-channel)) for the QR code, or set `link = "pair_code"`
+([WhatsApp](whatsapp.md#linking)).
 
 The plugin sandbox works in the container with Docker's default security settings; no
 `--privileged` or extra capabilities are needed. It does need Landlock in the host's kernel, since a
