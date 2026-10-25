@@ -6,6 +6,8 @@ mod backend;
 mod channel;
 mod config;
 mod datadir;
+#[cfg(test)]
+mod docs_tests;
 mod identity;
 mod inbound;
 mod media;

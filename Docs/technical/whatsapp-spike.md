@@ -7,6 +7,11 @@ reuses its saved session after a restart. Everything that needs no phone has bee
 live run, which links a real account, is the owner's: follow the [test plan](#owner-test-plan) and
 fill in [Results](#results). 1.13 stays open until then.
 
+**The owner chose not to wait.** The WhatsApp channel plugin (3.6, [WhatsApp
+Channel](whatsapp.md)) is built on `whatsapp-rust` on the assumption that it works, so the live
+run has not happened and the plugin's behavior with a real account is unverified. 1.13 stays
+open, and the test plan below is the way to verify both the spike and the plugin later.
+
 **Recommendation:** build 3.6 on `whatsapp-rust`, unless the live run fails one of the
 [decision criteria](#decision-criteria). It is actively maintained, MIT licensed, covers everything
 Giles needs, and keeps the plugin in Rust, so it can use `giles-plugin-sdk` (gRPC serving, the
@@ -50,7 +55,10 @@ From reading the 0.7.0 sources, building the spike, and one unscanned `link --qr
   `libsqlite3-sys` 0.37; `giles-store`'s `rusqlite` 0.40 uses 0.38. Cargo allows only one package
   per native `links` name in a resolve, so a 0.7.0 plugin can't be a member of the workspace. `main`
   already uses 0.38 and says it is meant to coexist with `rusqlite` 0.40. 3.6 should use the first
-  release after 0.7.0 (or pin a `main` commit).
+  release after 0.7.0 (or pin a `main` commit). *Resolved in 3.6:* there is no release after 0.7.0,
+  so the plugin pins the `main` commit `9b9fdb7e5c4211cdc7c837abb6a9ae9c597e35c5` (2026-10-23) as a
+  git dependency and is a workspace member
+  ([why and how](whatsapp.md#the-library-and-why-its-a-git-dependency)).
 - **Fixes not released yet.** On `main` since 0.7.0: DM sends silently skipping devices without a
   session ([#1361]) and WhatsApp Business phones failing to pair ([#1439]). If the live run hits
   one of these, retest on `main` (see [Testing `main`](#testing-main)) before counting it against
@@ -248,8 +256,9 @@ Switch to `whatsmeow` if any of these hold on both 0.7.0 and `main`:
 - Echoes can't be told apart from other messages.
 
 Not a reason to switch: a DM whose phone number is unknown (only a LID). That is the protocol, not
-the library; `whatsmeow` gets the same addresses. Record how often it happens; 3.6 then needs a rule
-for it (PLAN section 3.2 keys identities on the phone number).
+the library; `whatsmeow` gets the same addresses. Record how often it happens. 3.6's rule for it:
+the LID itself is the identity, `whatsapp:<lid>@lid`, which the owner lists in `[owner]
+identities` (PLAN section 3.2 keys identities on the phone number when there is one).
 
 ### Testing `main`
 
@@ -268,6 +277,29 @@ pings, so a dead connection goes unnoticed (0.7.0 isn't affected). The developme
 config rewrites `https://github.com/` to SSH, which Cargo's built-in git can't use; set
 `CARGO_NET_GIT_FETCH_WITH_CLI=true` so it fetches with the `git` CLI and your SSH agent. The API on
 `main` may differ from 0.7.0; fix compile errors in `src/main.rs` as needed.
+
+### Verifying the plugin
+
+The plugin (3.6) uses the same library at the commit under [Testing `main`](#testing-main), so the
+plan above checks it too, with the plugin's own surfaces in place of the spike's output. Link with
+`giles-channel-whatsapp` instead of `spikes/whatsapp`, on a throwaway `GILES_HOME` (never
+`~/.giles`), with a `[channel.whatsapp]` instance and the web chat's admin page open:
+
+- Steps 1 and 12 (QR and pair code): the admin page shows the QR code or the pair code (`link =
+  "pair_code"` with `phone_number`), the status turns to `connected`, and a restart reuses the
+  session (step 2) without a new code.
+- Steps 3 to 5 and 9 (DMs, echo, send, media): a DM from the second account reaches an agent routed
+  to `whatsapp`, the reply arrives with its markup, attachments arrive as attachments, and nothing
+  the linked account itself sends starts a turn. Note whether the sender is the phone number or
+  only the LID (`dropped inbound message` in the log shows the identity to list).
+- Step 6 (offline delivery): stop Giles, send two DMs, start it: both arrive once, in order. This
+  is the durability hook; also kill Giles (`kill -9`) right after a message arrives and check the
+  message is in its conversation exactly once after the restart.
+- Step 7 (reconnect): the status reports the outage only if it outlasts 10 seconds, then
+  `connected` again.
+- Step 8 (groups): the group's messages are reported as `group` and dropped by the core.
+- Step 11 (logout): the status says it was logged out; **Restart** on the admin page links a
+  new device.
 
 [#1361]: https://github.com/oxidezap/whatsapp-rust/issues/1361
 [#1439]: https://github.com/oxidezap/whatsapp-rust/issues/1439

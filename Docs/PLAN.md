@@ -102,7 +102,8 @@ can't claim another channel's identities.
 
 A channel may report other ids for the same sender in `InboundMessage.sender_aliases`; WhatsApp
 reports both the phone number and the LID, since group participants usually appear only by LID
-([Baileys JIDs](https://baileys.wiki/concepts/jids)). The core keys on the canonical id (`sender`)
+([Baileys JIDs](https://baileys.wiki/concepts/jids)); when it can't learn the number, the LID is
+the identity. The core keys on the canonical id (`sender`)
 and treats a message as from a known identity if the sender or any alias matches.
 
 Identity links map identities to users and live in SQLite. User records and roles live in TOML in

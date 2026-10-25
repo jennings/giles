@@ -21,6 +21,7 @@ so far is [the WhatsApp spike](whatsapp-spike.md).
 | `giles-store`        | lib      | no        | SQLite and file storage under `GILES_HOME`                   |
 | `giles-channel-echo` | bin      | no        | Test-only channel plugin for host and end-to-end tests       |
 | `giles-channel-irc`  | lib, bin | no        | The IRC channel plugin ([IRC Channel](irc.md))               |
+| `giles-channel-whatsapp` | bin  | no        | The WhatsApp channel plugin ([WhatsApp Channel](whatsapp.md)) |
 
 Dependencies between them:
 
@@ -36,6 +37,7 @@ flowchart TD
   store --> types
   echo[giles-channel-echo] --> sdk
   irc[giles-channel-irc] --> sdk
+  whatsapp[giles-channel-whatsapp] --> sdk
 ```
 
 `giles-types` is the contract shared by the core and plugins, so it depends on no other Giles

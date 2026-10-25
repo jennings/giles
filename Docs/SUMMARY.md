@@ -15,6 +15,7 @@
 - [Web Chat](user/web.md)
 - [IRC](user/irc.md)
 - [Email](user/email.md)
+- [WhatsApp](user/whatsapp.md)
 - [Skills and Memory Files](user/skills-and-memory.md)
 - [Writing a Plugin](user/writing-a-plugin.md)
 
@@ -43,6 +44,7 @@
 - [Web Channel](technical/web-channel.md)
 - [IRC Channel](technical/irc.md)
 - [Email Channel](technical/email.md)
+- [WhatsApp Channel](technical/whatsapp.md)
 - [gRPC Protocols](technical/protocols.md)
 - [Admin Service](technical/admin.md)
 - [Configuration](technical/config.md)

@@ -27,7 +27,8 @@ Answered by the owner before the build started:
 - Linux verification on the macOS development machine: an Apple `container` Linux container (arm64
   Debian bookworm, kernel 6.12). `buf` is installed locally.
 - 1.13 WhatsApp spike: an agent builds the spike and its test plan; the owner does the live device
-  linking. 1.13 stays open, and 3.6 waits for it, until then.
+  linking. 1.13 stays open until then. The owner later decided not to make 3.6 wait for it: 3.6 is
+  built on `whatsapp-rust` on the assumption that it works.
 - The draft decision records (`Docs/DECISIONS.md`, `Docs/decisions/`) stay off `main` for now.
 
 ## Phase 0: Project Setup
@@ -135,6 +136,10 @@ All parallel. Each task needs only Phase 0.
   - Spike built (`spikes/whatsapp/`, on `whatsapp-rust` 0.7.0); findings, recommendation, and the
     owner's live test plan and results table are in `Docs/technical/whatsapp-spike.md`. Open until
     the owner has run it.
+  - The owner chose to proceed on `whatsapp-rust` without the live run, and 3.6 is built that way,
+    so the plugin's behavior with a real account is unverified. The live test plan stays as the way
+    to verify the plugin later (the steps apply to it as much as to the spike). Not run: 1.13 stays
+    unticked.
 - [x] **1.14 HTTP server skeleton** (§9). `axum` on `http_listen`, `askama` layout, vendored `htmx`
   and its SSE extension embedded in the binary, `Content-Security-Policy: img-src 'self' data:`
   and related headers.
@@ -292,12 +297,17 @@ other and with the rest of this phase.
   `multipart/alternative` with `Auto-Submitted: auto-replied` and threading headers; attachments as
   blobs.
   **Needs:** 2.15, 1.7. End-to-end with the core needs 2.18.
-- [ ] **3.6 WhatsApp channel plugin** (§3.3, §10). `giles-channel-whatsapp` on the library chosen in
-  1.13: linking reported as `ChannelStatus` `NeedsAuth` (QR or pair code); session store in the data
-  dir; phone number identity with the LID as an alias; echoes of its own messages dropped; group
-  chats reported as group; WhatsApp markup; media as blobs; `giles-channel-whatsapp` added to the
-  container image's binaries (the `bins` list in the `Dockerfile`, 4.4). **Needs:** 2.15, 1.7, 1.13.
-  End-to-end with the core needs 2.18.
+- [x] **3.6 WhatsApp channel plugin** (§3.3, §10). `giles-channel-whatsapp` on `whatsapp-rust` (the
+  spike's recommendation; 1.13's live run was waived by the owner): linking reported as
+  `ChannelStatus` `NeedsAuth` (QR or pair code); session store in the data dir; phone number
+  identity with the LID as an alias; echoes of its own messages dropped; group chats reported as
+  group; WhatsApp markup; media as blobs; `giles-channel-whatsapp` added to the container image's
+  binaries (the `bins` list in the `Dockerfile`, 4.4). **Needs:** 2.15, 1.7. End-to-end with the
+  core needs 2.18.
+  - Built on `whatsapp-rust` pinned to `main` commit `9b9fdb7e5c42` as a git dependency: no
+    release after 0.7.0 exists, and 0.7.0 needs nightly and `libsqlite3-sys` 0.37 against the
+    workspace's 0.38 (`Docs/technical/whatsapp.md`).
+  - Tested against a fake WhatsApp client only: the live behavior is unverified (see 1.13).
 - [x] **3.7 Remote plugins** (§7.6). User-run gRPC plugins over TCP: optional TLS, plain TCP to a
   non-loopback address refused unless `insecure = true`; bearer token or OAuth client credentials;
   degraded with backoff while unreachable; the core only calls `Shutdown` and disconnects.
