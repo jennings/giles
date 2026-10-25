@@ -155,7 +155,9 @@ Definitions:
 
 - A name **has data** if it appears in `sessions.channel`, `inbox.instance`, `outbox.instance`, or
   `usage.provider` (not `routes.channel`, see above), or is a directory `data/plugins/<name>` or
-  `agents/*/groups/<name>`. Only directories with a valid name count (`.DS_Store` doesn't).
+  `agents/*/groups/<name>`. Only directories with a valid name count (`.DS_Store` doesn't). An
+  agent removed in the web UI lives in `trash/agents/`, outside `agents/`, so its directories
+  count for nothing here, and a rename neither reads nor rewrites its `agent.toml`.
 - A configured instance is **fresh** if its name has no data.
 - A name is **unused** if it has data, is not configured, and is not in `[core] retired_instances`.
 - An unused name **matches** a fresh instance if the kinds fit. Rows of `sessions`, `inbox`, or

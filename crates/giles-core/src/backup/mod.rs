@@ -333,9 +333,11 @@ fn pre_migration_stem_of(name: &str) -> Option<&str> {
 ///
 /// Left out: `secrets.toml` (credentials stay where the operator keeps them, so a backup copied
 /// elsewhere never carries them), the database (the `.db` file), `plugins/` (binaries, installed
-/// again), `data/plugins/` (state that belongs to plugins, which the core doesn't read), `backups/`,
-/// `run/`, and `cache/` (rebuilt). Symbolic links (with a warning for each, since memory files can
-/// be links) and other non-regular files are skipped, never followed. Files that vanish while the
+/// again), `data/plugins/` (state that belongs to plugins, which the core doesn't read),
+/// `backups/`, `trash/` (agents removed in the web UI: the operator put them there to be rid of
+/// them, and keeps them on this machine only), `run/`, and `cache/` (rebuilt). Symbolic links
+/// (with a warning for each, since memory files can be links) and other non-regular files are
+/// skipped, never followed. Files that vanish while the
 /// archive is written (a blob swept, a file edited by replacement) are skipped. A file that
 /// changes size while it is copied is copied up to the size its header recorded, or fails the
 /// backup if it shrank, so one entry can't corrupt the ones after it.

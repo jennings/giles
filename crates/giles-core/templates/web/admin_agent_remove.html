@@ -1,0 +1,40 @@
+{% extends "layout.html" %}
+
+{% block title %}Remove {{ id }} - Agents - Giles{% endblock %}
+
+{% block content %}
+{% include "web/admin_nav.html" %}
+<h1>Remove {{ label }}?</h1>
+{%- if let Some(error) = error %}
+<p class="error" role="alert">{{ error }}</p>
+{%- endif %}
+{%- if !routes.is_empty() %}
+<p class="state-bad">Giles won't remove an agent that routes still send conversations to. Change {% if routes.len() == 1 %}this route{% else %}these routes{% endif %} to another agent, or remove {% if routes.len() == 1 %}it{% else %}them{% endif %}, on the <a href="/admin/routes">routes page</a>, then come back:</p>
+<ul>
+{%- for route in routes %}
+<li><a href="/admin/routes#route-{{ route.id }}">Route {{ route.position }}</a>: {{ route.criteria }}</li>
+{%- endfor %}
+</ul>
+{%- endif %}
+{%- if busy %}
+<p class="state-bad">The agent is working on a chat or a scheduled job right now. Stop the chat (<code>/stop</code>) or wait until it's done, then come back.</p>
+{%- endif %}
+<p>Removing the agent <code>{{ id }}</code> does this:</p>
+<ul>
+<li>Moves its directory <code>agents/{{ id }}/</code> (<code>agent.toml</code>, <code>SOUL.md</code>, its memory, its jobs' prompt files, its skills) to <code>{{ trash }}/{{ id }}-&lt;date and time, UTC&gt;/</code> in Giles' data directory. Nothing is deleted. To bring the agent back, move that directory back to <code>agents/{{ id }}/</code> and restart Giles.</li>
+<li>Takes the agent out of the running Giles at once: it no longer shows in the lists or the chat chooser, a chat can't be started with it, and its existing chats can't be continued.</li>
+<li>{% if config_jobs == 0 %}It has no jobs in <code>agent.toml</code>.{% else %}Stops the {{ config_jobs }} job{% if config_jobs != 1 %}s{% endif %} in its <code>agent.toml</code>; they stay in the moved file.{% endif %}</li>
+<li>{% if runtime_jobs == 0 %}It has no jobs it scheduled itself.{% else %}Deletes the {{ runtime_jobs }} job{% if runtime_jobs != 1 %}s{% endif %} the agent scheduled itself (with the <code>schedule</code> tool). That can't be undone.{% endif %}</li>
+<li>Keeps its chats, messages, and usage in the database, out of sight. If you later create an agent with the same id, those chats belong to it again.</li>
+</ul>
+<p class="detail">The <code>trash</code> directory is not part of <code>giles backup</code>, and Giles never reads or empties it.</p>
+{%- if !routes.is_empty() || busy %}
+<p><a href="/admin/agents/{{ id }}">Back to the agent</a></p>
+{%- else %}
+<form class="inline-form" method="post" action="/admin/agents/{{ id }}/remove">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button type="submit">Remove agent</button>
+</form>
+<a href="/admin/agents/{{ id }}">Cancel</a>
+{%- endif %}
+{% endblock %}

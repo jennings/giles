@@ -35,6 +35,8 @@ environment.
     plugins/          DataRoot::plugin_data_root()
       <instance>/     DataRoot::plugin_data_dir(name)
   backups/            DataRoot::backups_dir()
+  trash/              DataRoot::trash_dir()         not in the layout: made at the first removal
+    agents/           removed agents: <agent>-<UTC time>/
   run/                DataRoot::run_dir()           mode 0700
     admin.sock        DataRoot::admin_socket()      unless it falls back (below)
     admin.token       DataRoot::admin_token_file()

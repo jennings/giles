@@ -311,6 +311,13 @@ impl DataRoot {
         self.root.join("backups")
     }
 
+    /// `trash/`: what the web UI took out of service and kept, in a sub-directory per kind
+    /// (`trash/agents/<agent>-<time>/`, a removed agent's directory). Giles creates it when it
+    /// first has something to put there, and never reads it. Backups leave it out.
+    pub fn trash_dir(&self) -> PathBuf {
+        self.root.join("trash")
+    }
+
     /// `run/`: runtime files, mode 0700.
     pub fn run_dir(&self) -> PathBuf {
         self.root.join("run")
@@ -664,6 +671,7 @@ mod tests {
             Path::new("/g/data/plugins/irc")
         );
         assert_eq!(r.backups_dir(), Path::new("/g/backups"));
+        assert_eq!(r.trash_dir(), Path::new("/g/trash"));
         assert_eq!(r.admin_token_file(), Path::new("/g/run/admin.token"));
         assert_eq!(r.lock_file(), Path::new("/g/run/giles.lock"));
         assert_eq!(r.pid_file("irc").unwrap(), Path::new("/g/run/pids/irc.pid"));

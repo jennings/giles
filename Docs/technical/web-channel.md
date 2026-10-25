@@ -44,6 +44,8 @@ Neither half touches the agent loop: posted messages go through the normal inbou
 | `GET /admin/agents/<agent>`    | The agent's settings and files.                                  |
 | `GET /admin/agents/<agent>/edit` | The form, filled in from the agent's files.                    |
 | `POST /admin/agents/<agent>/edit` | Saves the edit (CSRF-checked), 303 to the agent's page.       |
+| `GET /admin/agents/<agent>/remove` | What removing the agent would do, and the button.            |
+| `POST /admin/agents/<agent>/remove` | Removes the agent (CSRF-checked); 200 with what happened, or the page again with why not (409). |
 | `GET /admin/routes`            | Every route in order ([Route Pages](#route-pages)).              |
 | `GET /admin/routes/new`        | The form that adds a route.                                      |
 | `POST /admin/routes`           | Adds the route (CSRF-checked), 303 to the list.                  |
@@ -493,6 +495,8 @@ form has no id field.
   validation says "at least one model". Removing a key takes its leading comment with it, except
   at the first key of the file (a header: kept) and up to the last blank line above the key
   (standalone notes: kept); what is kept moves to the next key's decor.
+- **Line ends.** `toml_edit` reads every `\r\n` as `\n`, so `edited_toml` edits a file with CRLF
+  line ends as LF and writes the result back with CRLF; the rest of the file keeps its line ends.
 - **`edit`** (under the manager's one lock, shared with creation and removal): reads the files and
   returns `EditError::Stale` if `version` differs; checks `SOUL.md`'s length only if it changed
   (`SoulTooLong`; a hand-written longer file can still have its settings edited); builds the text
@@ -517,11 +521,69 @@ form has no id field.
   loaded). Core tools and the session manager's `AgentPolicies` read the live configuration at each
   use.
 
+### Removing
+
+`AgentManager::removal_preview(id)` and `AgentManager::remove(id)` (`agents/remove.rs`), behind
+`GET` and `POST /admin/agents/<agent>/remove` (`remove_page`, `remove` in `agents.rs`; templates
+`admin_agent_remove.html` and `admin_agent_removed.html`). The manager is built from
+`AgentManagerOptions`: the registry, the store, the `Routes`, the scheduler's `JobChanges`, and an
+`AgentActivity` (the daemon's `DaemonActivity`: the session manager's `Sessions::agent_busy` or the
+scheduler's `Scheduler::agent_busy`). The semantics are in the module docs; in short, under the
+manager's lock:
+
+1. `AgentActivity::is_busy`, a first look. `Sessions::agent_busy`: some session of the agent has a
+   driver, that is a running turn, a holder (`Sessions::hold`, which `dm` jobs use), or queued rows;
+   it reads the agent from the live session's key, or from the database for a driver that hasn't
+   loaded its session yet. `Scheduler::agent_busy`: a job run of the agent is in progress. An
+   isolated run's turn goes straight to the turn runner, so the session manager can't see it; the
+   scheduler counts each run (`JobsRunning`) from the moment a job's time comes, before the run
+   reads the agent's configuration, until it ends. Busy is `RemoveError::Busy` (a 409 page).
+2. `Routes::hold_unrouted(agent)` takes the routes' change lock, reads the stored routes, and
+   returns the guard only if none names the agent (`HoldError::Routed` otherwise, which the page
+   lists with links `/admin/routes#route-<id>`). `Routes::add` and `update` now validate (the
+   agent exists) *after* taking the same lock, so no route can be made for an agent between the
+   check and its removal, and none for a removed agent afterwards.
+3. `LiveConfig::remove_agent`, then `is_busy` again. From the take-out on no turn or job run can
+   start (a turn reads the agent when it starts; a job run reads it after it has been counted), so
+   what this second look sees is all there is. Work seen: the agent is put back with `add_agent`
+   (a new incarnation; its config job tasks restart) and the removal is refused. A scheduled job
+   whose time came between the take-out and its count finds no agent and its task ends for good
+   (a runtime job's too, until a restart); config job tasks of a put-back agent are started again by
+   the scheduler's reconcile.
+4. `move_aside`: creates `trash/agents/` (mode 0700; `DataRoot::trash_dir`), picks
+   `<agent>-<YYYYMMDDTHHMMSSZ>` (`-1`, `-2` while the name exists), renames `agents/<agent>/` to it
+   (one atomic rename inside the data root; `EXDEV` for a symlinked `agents/` on another file
+   system is an `Io` error), and fsyncs both parents (a failure there is logged, since the move
+   happened). If the move fails the agent is put back and the answer is a 500 page (logged) saying
+   nothing changed. Then the route guard is dropped.
+5. `Store::agent_jobs_delete` deletes the agent's runtime jobs and every `job_runs` row of the
+   agent, in one transaction; `JobChanges::notify` makes the scheduler stop the runtime jobs'
+   tasks. The scheduler stops the agent's config job tasks by itself, because it follows
+   `LiveConfig` ([Scheduler](scheduler.md#timing)). A database failure here is reported inside
+   `Removed::jobs_error` (the agent is already gone) and logged; the jobs can't run, since
+   `job_task` stops for an agent that isn't configured.
+
+Everything that looks agents up reads the running configuration, so the agent leaves the list,
+the chat chooser, `/chats/new?agent=`, the pages (404), the router (`AgentPolicies::policy` is
+`None`, so a chat started with that agent is dropped as `UnknownAgent`), the core tools, and the
+agent loop together. A chat of the removed agent stays in the chat list (labelled by the id) and
+its page is a 404. Sessions, messages, summaries, usage, and inbox rows are not touched; the id
+is free (creation checks the live configuration and the directory, neither of which has it), and
+creating it again gives it a new incarnation, so the old sessions' cached prompts are not reused
+([Agent Loop](agent-loop.md)). Whether to refuse creating an id that has history was decided
+against: reattaching the old chats is what the owner who recreates an agent most likely wants, and
+the page says so.
+
+`trash/` is outside `agents/`, so config loading, the agent list, the instance-rename walks
+(`agents/*/agent.toml`, `agents/*/groups/*`) and the startup check for unused instance data never
+see it, and the backup archive, whose list of trees is explicit, leaves it out
+([Backups](backups.md)); a test pins each.
+
 The new agent is usable at once because everything that looks agents up reads the running
 configuration: the agent loop and core tools through `Registry::config()`, the session manager's
-`AgentPolicies` and the router through the shared `LiveConfig`. Config jobs of agents created this
-way (added to `agent.toml` by hand) start at the next restart, with the rest of a configuration
-change; general reload stays deferred (D28).
+`AgentPolicies` and the router through the shared `LiveConfig`. Config jobs follow the live
+configuration too (a created, edited, or removed agent's jobs start, change, or stop); general
+reload stays deferred (D28).
 
 ## Route Pages
 

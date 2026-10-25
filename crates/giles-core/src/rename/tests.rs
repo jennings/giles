@@ -442,6 +442,65 @@ async fn renaming_a_provider_rewrites_the_models_that_use_it() {
     assert_eq!(home.rows().await["local"].usage, 1);
 }
 
+/// An agent removed in the web UI is moved to `trash/agents/<agent>-<time>/`, outside `agents/`:
+/// a rename doesn't read it, rewrite it, or move the group directories in it, and doesn't mind
+/// that the agent is gone.
+#[tokio::test]
+async fn an_agent_removed_in_the_web_ui_is_left_alone_by_a_rename() {
+    let home = Home::populated().await;
+    let trashed = home.path("trash/agents/jeeves-20261024T120000Z");
+    fs::create_dir_all(trashed.parent().unwrap()).unwrap();
+    fs::rename(home.path("agents/jeeves"), &trashed).unwrap();
+
+    let report = home.rename("ollama", "local").await.unwrap();
+    assert!(report.agent_files.is_empty(), "{:?}", report.agent_files);
+    assert_eq!(
+        fs::read_to_string(trashed.join("agent.toml")).unwrap(),
+        JEEVES,
+        "the trashed copy still says ollama"
+    );
+    assert_eq!(home.read("agents/bunter/agent.toml"), BUNTER);
+    assert!(
+        home.load()
+            .agents
+            .contains_key(&AgentId::new("bunter").unwrap())
+    );
+
+    // The channel's group memory in the trash stays where it is; the live agent's moves.
+    home.rename("libera", "oftc").await.unwrap();
+    assert!(trashed.join("groups/libera/%23giles/MEMORY.md").is_file());
+    assert!(!trashed.join("groups/oftc").exists());
+
+    // Nothing in `agents/` at all is fine too.
+    fs::remove_dir_all(home.path("agents")).unwrap();
+    home.rename("github", "gh").await.unwrap();
+    assert!(trashed.join("agent.toml").is_file());
+}
+
+/// A name that only a removed agent's trashed directories have data for doesn't make a fresh
+/// instance in `giles.toml` look like a rename that was never carried out; the same data in
+/// `agents/` does.
+#[tokio::test]
+async fn the_startup_check_does_not_read_the_trash() {
+    let home =
+        Home::new("[owner]\nidentities = [\"web:owner\"]\n[provider.anthropic]\n[channel.web]\n")
+            .await;
+    home.write("agents/jeeves/agent.toml", BUNTER);
+    home.write("agents/jeeves/groups/libera/%23giles/MEMORY.md", "quiet");
+    let refused = check_unused_instance_data(&home.root, &home.load(), &home.store)
+        .await
+        .unwrap_err();
+    assert!(refused.to_string().contains("libera"), "{refused}");
+
+    let trash = home.path("trash/agents/jeeves-20261024T120000Z");
+    fs::create_dir_all(trash.parent().unwrap()).unwrap();
+    fs::rename(home.path("agents/jeeves"), &trash).unwrap();
+    assert!(trash.join("groups/libera/%23giles/MEMORY.md").is_file());
+    check_unused_instance_data(&home.root, &home.load(), &home.store)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn renaming_a_toolset_rewrites_the_tool_globs_and_moves_its_directory() {
     let home = Home::populated().await;

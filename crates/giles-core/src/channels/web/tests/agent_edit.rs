@@ -93,7 +93,7 @@ fn jeeves_fields(version: &str, name: &str, models: &str, rest: &str) -> String 
 #[tokio::test]
 async fn only_the_owner_gets_the_edit_page_and_saves() {
     let env = env().await;
-    let manager = env.manager();
+    let manager = env.manager().await;
     for method in [Method::GET, Method::POST] {
         for (user, expected) in [
             (None, StatusCode::UNAUTHORIZED),
@@ -118,7 +118,7 @@ async fn only_the_owner_gets_the_edit_page_and_saves() {
 #[tokio::test]
 async fn saving_needs_the_csrf_token() {
     let env = env().await;
-    let manager = env.manager();
+    let manager = env.manager().await;
     let (_, html) = env.edit_page(&manager, "jeeves").await;
     let version = version_of(&html);
     let before = env.read_jeeves("agent.toml");
@@ -155,7 +155,7 @@ async fn saving_needs_the_csrf_token() {
 async fn the_form_shows_the_agent_as_its_files_have_it_and_says_the_id_is_fixed() {
     let env = env().await;
     env.hand_write_jeeves();
-    let manager = env.manager();
+    let manager = env.manager().await;
     let (status, html) = env.edit_page(&manager, "jeeves").await;
     assert_eq!(status, StatusCode::OK);
     for expected in [
@@ -204,7 +204,7 @@ async fn the_form_shows_the_agent_as_its_files_have_it_and_says_the_id_is_fixed(
 async fn an_edit_changes_only_what_the_form_manages_and_applies_to_new_chats_at_once() {
     let env = env().await;
     env.hand_write_jeeves();
-    let manager = env.manager();
+    let manager = env.manager().await;
     let (_, html) = env.edit_page(&manager, "jeeves").await;
     let version = version_of(&html);
 
@@ -304,7 +304,7 @@ async fn an_edit_changes_only_what_the_form_manages_and_applies_to_new_chats_at_
 async fn emptied_optional_fields_remove_their_keys() {
     let env = env().await;
     env.hand_write_jeeves();
-    let manager = env.manager();
+    let manager = env.manager().await;
     let (_, html) = env.edit_page(&manager, "jeeves").await;
     let version = version_of(&html);
     let (status, _, _) = env
@@ -341,7 +341,7 @@ async fn emptied_optional_fields_remove_their_keys() {
 async fn an_invalid_edit_is_shown_again_with_the_input_and_leaves_the_files_alone() {
     let env = env().await;
     env.hand_write_jeeves();
-    let manager = env.manager();
+    let manager = env.manager().await;
     let (_, html) = env.edit_page(&manager, "jeeves").await;
     let version = version_of(&html);
     let toml = env.read_jeeves("agent.toml");
@@ -399,7 +399,7 @@ async fn an_invalid_edit_is_shown_again_with_the_input_and_leaves_the_files_alon
 async fn a_change_made_by_hand_after_the_form_was_opened_is_never_overwritten() {
     let env = env().await;
     env.hand_write_jeeves();
-    let manager = env.manager();
+    let manager = env.manager().await;
     let (_, html) = env.edit_page(&manager, "jeeves").await;
     let version = version_of(&html);
 
@@ -464,7 +464,7 @@ async fn a_change_made_by_hand_after_the_form_was_opened_is_never_overwritten() 
 async fn an_edit_that_changes_nothing_writes_nothing_and_a_hand_edited_file_is_adopted() {
     let env = env().await;
     env.hand_write_jeeves();
-    let manager = env.manager();
+    let manager = env.manager().await;
     let (_, html) = env.edit_page(&manager, "jeeves").await;
     let version = version_of(&html);
     let modified = |file: &str| {
@@ -498,7 +498,7 @@ async fn an_edit_that_changes_nothing_writes_nothing_and_a_hand_edited_file_is_a
 #[tokio::test]
 async fn edits_creations_and_edits_run_one_at_a_time() {
     let env = env().await;
-    let manager = env.manager();
+    let manager = env.manager().await;
     let (_, html) = env.edit_page(&manager, "jeeves").await;
     let version = version_of(&html);
     let edit = |name: &str| AgentEdit {
@@ -558,7 +558,7 @@ async fn an_edit_replaces_the_configuration_for_new_work_and_keeps_the_agents_in
     // agent loop's cached session prompts follow the incarnation, which an edit keeps (see the
     // agent loop's tests), so running sessions go on with the prompt they started with.
     let env = env().await;
-    let manager = env.manager();
+    let manager = env.manager().await;
     let jeeves = AgentId::new("jeeves").unwrap();
     let before = env.registry.config();
     let incarnation = env.registry.live_config().incarnation(&jeeves);

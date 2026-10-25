@@ -59,6 +59,12 @@ fn populate(root: &DataRoot) {
     );
     put(&root.backups_dir().join("old.tar"), "an earlier backup");
     put(&root.cache_dir().join("describe.json"), "{}");
+    put(
+        &root
+            .trash_dir()
+            .join("agents/jeeves-20261024T120000Z/SOUL.md"),
+        "a removed agent\n",
+    );
     put(&root.admin_token_file(), "token");
     put(&r.join("data/giles.db-wal"), "wal");
 }
@@ -194,8 +200,8 @@ async fn the_archive_holds_what_a_restore_needs_and_nothing_else() {
             "users/owner",
             "users/owner/USER.md",
         ],
-        "no secrets.toml, plugins, plugin data, backups, run, cache, database, links, or blob puts \
-         in progress"
+        "no secrets.toml, plugins, plugin data, backups, run, cache, trash (removed agents), \
+         database, links, or blob puts in progress"
     );
     assert_eq!(text("giles.toml"), "[owner]\n");
     assert_eq!(text("agents/main/SOUL.md"), "I am Giles.\n");

@@ -296,6 +296,7 @@ job, keyed by agent and `JobKey`: `Config(id)` is stored as `config:<id>` and `R
 | `job_create`                         | New runtime job.                                 |
 | `job`, `jobs(agent?, creator?)`      | One job; jobs filtered by agent and creator, oldest first. |
 | `job_update_spec`, `job_delete`      | `false` if the job doesn't exist.                |
+| `agent_jobs_delete(agent)`           | Deletes the agent's runtime jobs and all its `job_runs` rows in one transaction (a removed agent, [Web Channel](web-channel.md#removing)); returns how many jobs. |
 | `job_last_run`, `job_set_last_run`   | Read and upsert the last run time.               |
 
 ## Usage

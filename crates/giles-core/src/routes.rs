@@ -586,6 +586,21 @@ fn describe(entries: &[Entry], config: &Config) -> Vec<RouteView> {
         .collect()
 }
 
+/// Why [`Routes::hold_unrouted`] didn't hold the routes.
+#[derive(Debug)]
+pub enum HoldError {
+    /// These routes name the agent.
+    Routed(Vec<RouteView>),
+    /// The stored routes couldn't be read.
+    Routes(RouteError),
+}
+
+/// Route changes held off by [`Routes::hold_unrouted`] until this is dropped.
+#[derive(Debug)]
+pub struct RoutesHold<'a> {
+    _changing: tokio::sync::MutexGuard<'a, ()>,
+}
+
 /// The ordered routes, in the database, and the [`RouteList`] the router reads. See the module
 /// documentation. Share it in an `Arc`.
 #[derive(Debug)]
@@ -708,8 +723,8 @@ impl Routes {
         spec: &RouteSpec,
         before: Option<RouteId>,
     ) -> Result<RouteId, RouteError> {
-        let route = validate(spec, &self.config.get())?;
         let _changing = self.changing.lock().await;
+        let route = validate(spec, &self.config.get())?;
         let old = self.load().await?;
         let at = match before {
             Some(id) => old
@@ -733,8 +748,8 @@ impl Routes {
     ///
     /// As [`add`](Self::add); [`RouteError::NotFound`] if there is no route `id`.
     pub async fn update(&self, id: RouteId, spec: &RouteSpec) -> Result<(), RouteError> {
-        let route = validate(spec, &self.config.get())?;
         let _changing = self.changing.lock().await;
+        let route = validate(spec, &self.config.get())?;
         let old = self.load().await?;
         let at = old
             .iter()
@@ -748,6 +763,32 @@ impl Routes {
         }
         self.publish(&new);
         Ok(())
+    }
+
+    /// Holds route changes off while the caller takes `agent` out of the running configuration:
+    /// returns the guard if no route names `agent`, else those routes, in order. A route can't be
+    /// added or changed to name an agent while the guard is held, and the check of an agent's
+    /// existence in [`add`](Self::add) and [`update`](Self::update) runs under the same lock, so
+    /// no route can end up naming an agent that is gone. Drop the guard once the agent is out.
+    ///
+    /// # Errors
+    ///
+    /// [`HoldError::Routed`] with the routes that name the agent (with their position and rule),
+    /// or [`HoldError::Routes`] if the stored routes can't be read.
+    pub async fn hold_unrouted(&self, agent: &AgentId) -> Result<RoutesHold<'_>, HoldError> {
+        let changing = self.changing.lock().await;
+        let entries = self.load().await.map_err(HoldError::Routes)?;
+        let naming: Vec<RouteView> = describe(&entries, &self.config.get())
+            .into_iter()
+            .filter(|view| view.route.agent == *agent)
+            .collect();
+        if naming.is_empty() {
+            Ok(RoutesHold {
+                _changing: changing,
+            })
+        } else {
+            Err(HoldError::Routed(naming))
+        }
     }
 
     /// Removes route `id`.
@@ -920,6 +961,48 @@ mod tests {
 
     fn message(err: RouteError) -> String {
         err.to_string()
+    }
+
+    #[tokio::test]
+    async fn an_agent_can_be_held_unrouted_only_while_no_route_names_it() {
+        let h = Harness::new().await;
+        let bunter = AgentId::new("bunter").unwrap();
+        let catch_all = h.add("", "", "jeeves").await;
+        let specific = h
+            .routes
+            .add(&spec(LIBERA, "", "#giles", "bunter"), Some(catch_all))
+            .await
+            .unwrap();
+
+        // Named by routes: they come back, in order, with where they are.
+        let Err(HoldError::Routed(named)) = h.routes.hold_unrouted(&bunter).await else {
+            panic!("bunter is routed");
+        };
+        assert_eq!(
+            named.iter().map(|v| (v.id, v.position)).collect::<Vec<_>>(),
+            [(specific, 1)]
+        );
+        assert!(named[0].route.criteria().contains("#giles"), "{named:?}");
+
+        // Once they're gone, the hold is granted, and while it is held no route can be added for
+        // the agent, however the add got there first (the check is under the same lock).
+        h.routes.remove(specific).await.unwrap();
+        let hold = h.routes.hold_unrouted(&bunter).await.unwrap();
+        let late = spec(LIBERA, "", "#other", "bunter");
+        let racing = h.routes.add(&late, None);
+        tokio::pin!(racing);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut racing)
+                .await
+                .is_err(),
+            "an add waits for the hold"
+        );
+        // The agent goes while the add waits: the add is then refused.
+        h.routes.config().remove_agent(&bunter).unwrap();
+        drop(hold);
+        let refused = racing.await.unwrap_err();
+        assert!(matches!(refused, RouteError::Invalid { .. }), "{refused}");
+        assert_eq!(h.agents().await, ["jeeves"]);
     }
 
     #[tokio::test]

@@ -112,8 +112,11 @@ The routes are the `routes` table (`Docs/technical/storage.md`), not config. `ro
 - **Liveness.** `Routes::list()` is the `RouteList` the router holds. Every successful change
   reloads the stored list and replaces the snapshot. A snapshot, instead of a database read per
   message, keeps `classify` synchronous and off the database, including for messages it drops.
-  One async lock spans read, validate, write, and replace, so concurrent changes serialize and
-  the snapshot always equals what is stored. Only this process writes the table.
+  One async lock spans read, validate (including that the agent exists, checked under the lock),
+  write, and replace, so concurrent changes serialize and the snapshot always equals what is
+  stored. Only this process writes the table. `hold_unrouted(agent)` takes the same lock for the
+  caller if no route names the agent, which is how removing an agent in the web UI keeps a route
+  from being made for it in between ([Web Channel](web-channel.md#removing)).
 - **Operations.** `add(spec, before)`, `update(id, spec)`, `remove(id)`, `move_route(id, up)`,
   and `view()` (every route with what is wrong with it now). Routes have stable ids, so a stale
   page can't act on another route (`RouteError::NotFound`).

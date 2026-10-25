@@ -99,6 +99,8 @@ struct FakeRunner {
     /// The next turn deletes this job (and tells the scheduler) before it answers.
     cancel_own: Mutex<Option<giles_store::RuntimeJobId>>,
     changes: JobChanges,
+    /// While set, a turn waits for it to be notified before it answers.
+    gate: Mutex<Option<Arc<tokio::sync::Notify>>>,
 }
 
 #[async_trait]
@@ -109,6 +111,10 @@ impl TurnRunner for FakeRunner {
         assert!(turn.messages.is_empty());
         // Like the model calling `schedule cancel` on its own job mid-turn; a turn that sees
         // its cancel token fire ends `Cancelled`, as the agent loop would.
+        let gate = self.gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            gate.notified().await;
+        }
         let cancel_own = self.cancel_own.lock().unwrap().take();
         if let Some(id) = cancel_own {
             self.store.job_delete(id).await.unwrap();
@@ -249,6 +255,7 @@ impl Harness {
             ran: ran_tx,
             cancel_own: Mutex::default(),
             changes: changes.clone(),
+            gate: Mutex::default(),
         });
         let shutdown = CancellationToken::new();
         let sessions = Sessions::start(
@@ -950,6 +957,7 @@ async fn an_edit_that_changes_the_jobs_moves_them_and_other_edits_leave_them_be(
 async fn tasks_are_kept_while_an_agents_jobs_are_unchanged() {
     let h = Harness::new(MORNING, &[]).await;
     let context = Arc::new(Context {
+        running: JobsRunning::default(),
         store: h.store.clone(),
         registry: h.registry.clone(),
         sessions: h.sessions.clone(),
@@ -1034,5 +1042,39 @@ async fn a_runtime_job_of_a_removed_agent_does_not_run() {
         h.store.job(job.id).await.unwrap().is_some(),
         "a job that couldn't run isn't treated as done"
     );
+    h.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_agent_is_busy_for_as_long_as_one_of_its_job_runs_is() {
+    let mut h = Harness::new(MORNING, &[]).await;
+    let gate = Arc::new(tokio::sync::Notify::new());
+    *h.replies.gate.lock().unwrap() = Some(gate.clone());
+    h.start().await;
+    let agent = AgentId::new(AGENT).unwrap();
+    let scheduler = h.scheduler.clone().unwrap();
+    assert!(!scheduler.agent_busy(&agent));
+
+    // 08:00 in Los Angeles: the isolated run's turn starts and waits at the gate. It's a turn
+    // the session manager knows nothing about, so only the scheduler can say the agent is busy.
+    h.advance_to(ts("2026-10-22T15:00:01Z")).await;
+    assert!(scheduler.agent_busy(&agent));
+    assert!(!scheduler.agent_busy(&AgentId::new("bunter").unwrap()));
+    assert!(!h.sessions.agent_busy(&agent).await);
+    let activity = crate::agents::remove::DaemonActivity {
+        sessions: h.sessions.clone(),
+        scheduler: scheduler.clone(),
+    };
+    assert!(crate::agents::AgentActivity::is_busy(&activity, &agent).await);
+
+    gate.notify_one();
+    h.ran().await;
+    h.delivered(1).await;
+    h.settle().await;
+    assert!(
+        !scheduler.agent_busy(&agent),
+        "idle again once the run is over"
+    );
+    assert!(!crate::agents::AgentActivity::is_busy(&activity, &agent).await);
     h.stop().await;
 }

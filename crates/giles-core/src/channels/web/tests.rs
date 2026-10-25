@@ -40,6 +40,7 @@ use crate::sessions::{
 
 mod admin;
 mod agent_edit;
+mod agent_remove;
 mod agents;
 mod routes;
 
@@ -55,6 +56,12 @@ struct Env {
     /// The registry of the configuration [`load_config`] wrote; the app reads its running
     /// configuration. No component is registered.
     registry: Arc<crate::registry::Registry>,
+    /// The routes the agent manager checks before it removes an agent, opened when first needed.
+    routes: tokio::sync::OnceCell<Arc<crate::routes::Routes>>,
+    /// What the agent manager is told about agents being busy.
+    activity: Arc<crate::agents::remove::FakeActivity>,
+    /// What the agent manager tells the scheduler about runtime jobs.
+    jobs: crate::scheduler::JobChanges,
     app: WebApp,
     shutdown: CancellationToken,
 }
@@ -156,6 +163,9 @@ async fn env_with(config: WebConfig, identities: &[&str]) -> Env {
         blobs,
         channel,
         registry,
+        routes: tokio::sync::OnceCell::new(),
+        activity: Arc::default(),
+        jobs: crate::scheduler::JobChanges::default(),
         app,
         shutdown,
     }
@@ -1964,6 +1974,9 @@ async fn the_agent_loop_streams_a_reply_live_to_the_page() {
         blobs: runtime.blobs.clone(),
         channel: runtime.registry.web_channel().unwrap(),
         registry: runtime.registry.clone(),
+        routes: tokio::sync::OnceCell::from(runtime.routes.clone()),
+        activity: Arc::default(),
+        jobs: runtime.jobs.clone(),
         app: WebApp::from_runtime(&runtime, shutdown.clone()).unwrap(),
         shutdown,
         _dir: dir,

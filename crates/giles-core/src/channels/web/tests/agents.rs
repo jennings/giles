@@ -2,7 +2,10 @@
 
 use std::os::unix::fs::symlink;
 
-use crate::agents::{AgentManager, CreateError, DEFAULT_SOUL, MAX_FILE_BYTES, MAX_FILES, NewAgent};
+use crate::agents::{
+    AgentManager, AgentManagerOptions, CreateError, DEFAULT_SOUL, MAX_FILE_BYTES, MAX_FILES,
+    NewAgent,
+};
 use crate::config::{Config, LoadOptions};
 use crate::http::assets;
 use crate::paths::DataRoot;
@@ -68,8 +71,31 @@ impl Env {
         }
     }
 
-    pub(super) fn manager(&self) -> Arc<AgentManager> {
-        Arc::new(AgentManager::new(self.registry.clone()))
+    /// The routes the manager uses; route pages made from this object share its state.
+    pub(super) async fn shared_routes(&self) -> Arc<crate::routes::Routes> {
+        self.routes
+            .get_or_init(async || {
+                Arc::new(
+                    crate::routes::Routes::open(
+                        self.store.clone(),
+                        self.registry.live_config().clone(),
+                    )
+                    .await
+                    .unwrap(),
+                )
+            })
+            .await
+            .clone()
+    }
+
+    pub(super) async fn manager(&self) -> Arc<AgentManager> {
+        Arc::new(AgentManager::new(AgentManagerOptions {
+            registry: self.registry.clone(),
+            store: self.store.clone(),
+            routes: self.shared_routes().await,
+            jobs: self.jobs.clone(),
+            activity: self.activity.clone(),
+        }))
     }
 
     /// `method path` as the owner; the status and body. Every answer is `no-store`.
@@ -116,7 +142,7 @@ fn form(id: &str, model: &str, extra: &str) -> String {
 #[tokio::test]
 async fn only_the_owner_gets_the_agent_pages() {
     let env = env().await;
-    let manager = env.manager();
+    let manager = env.manager().await;
     let cases = [
         (Method::GET, "/admin/agents"),
         (Method::GET, "/admin/agents/new"),
@@ -148,7 +174,7 @@ async fn only_the_owner_gets_the_agent_pages() {
 #[tokio::test]
 async fn the_list_shows_every_agent_with_its_models_and_links() {
     let env = env().await;
-    let manager = env.manager();
+    let manager = env.manager().await;
     let (status, html, _) = env
         .agents_call(&manager, Method::GET, "/admin/agents", None)
         .await;
@@ -167,7 +193,7 @@ async fn the_list_shows_every_agent_with_its_models_and_links() {
 #[tokio::test]
 async fn an_agents_page_shows_its_files_escaped_and_refuses_links() {
     let env = env().await;
-    let manager = env.manager();
+    let manager = env.manager().await;
     let dir = env.root().agents_dir().join("jeeves");
     let write = |relative: &str, contents: &[u8]| {
         let path = dir.join(relative);
@@ -241,7 +267,7 @@ async fn an_agents_page_shows_its_files_escaped_and_refuses_links() {
 #[tokio::test]
 async fn a_page_lists_at_most_max_files() {
     let env = env().await;
-    let manager = env.manager();
+    let manager = env.manager().await;
     let notes = env.root().agents_dir().join("bunter/notes");
     std::fs::create_dir_all(&notes).unwrap();
     for i in 0..MAX_FILES + 5 {
@@ -269,7 +295,7 @@ async fn creating_an_agent_writes_files_that_load_and_makes_it_usable_at_once() 
             Arc::new(ListingProvider),
         )
         .unwrap();
-    let manager = env.manager();
+    let manager = env.manager().await;
     let (status, html, _) = env
         .agents_call(&manager, Method::GET, "/admin/agents/new", None)
         .await;
@@ -346,7 +372,7 @@ async fn creating_an_agent_writes_files_that_load_and_makes_it_usable_at_once() 
 #[tokio::test]
 async fn the_new_form_asks_for_the_name_before_the_id_and_starts_the_soul() {
     let env = env().await;
-    let manager = env.manager();
+    let manager = env.manager().await;
     let (status, html, _) = env
         .agents_call(&manager, Method::GET, "/admin/agents/new", None)
         .await;
@@ -371,7 +397,7 @@ async fn the_new_form_asks_for_the_name_before_the_id_and_starts_the_soul() {
 #[tokio::test]
 async fn the_new_form_loads_its_script_from_an_embedded_asset_the_policy_allows() {
     let env = env().await;
-    let manager = env.manager();
+    let manager = env.manager().await;
     let page = call(
         env.agents_router(&manager, Some(owner())),
         Method::GET,
@@ -423,7 +449,7 @@ async fn the_new_form_loads_its_script_from_an_embedded_asset_the_policy_allows(
 #[tokio::test]
 async fn a_post_without_an_id_derives_it_from_the_name() {
     let env = env().await;
-    let manager = env.manager();
+    let manager = env.manager().await;
     // No id and no soul field, as a client without scripts (or curl) might post.
     let (status, _, location) = env
         .agents_call(
@@ -461,7 +487,7 @@ async fn a_post_without_an_id_derives_it_from_the_name() {
 #[tokio::test]
 async fn a_form_posted_without_an_id_comes_back_with_the_derived_id_and_what_was_typed() {
     let env = env().await;
-    let manager = env.manager();
+    let manager = env.manager().await;
     let cases = [
         // A model that doesn't exist: the derived id is shown, the soul as typed (here: emptied).
         (
@@ -511,7 +537,7 @@ async fn a_form_posted_without_an_id_comes_back_with_the_derived_id_and_what_was
 #[tokio::test]
 async fn a_browsers_crlf_line_breaks_in_the_soul_are_stored_as_lf() {
     let env = env().await;
-    let manager = env.manager();
+    let manager = env.manager().await;
     let (status, _, _) = env
         .agents_call(
             &manager,
@@ -532,7 +558,7 @@ async fn a_browsers_crlf_line_breaks_in_the_soul_are_stored_as_lf() {
 #[tokio::test]
 async fn an_invalid_form_is_shown_again_and_writes_nothing() {
     let env = env().await;
-    let manager = env.manager();
+    let manager = env.manager().await;
     let cases = [
         ("Bad%20Id", "fake/m", "", StatusCode::BAD_REQUEST, "invalid"),
         ("..%2Fx", "fake/m", "", StatusCode::BAD_REQUEST, "invalid"),
@@ -630,7 +656,7 @@ async fn an_invalid_form_is_shown_again_and_writes_nothing() {
 #[tokio::test]
 async fn creating_an_agent_needs_the_csrf_token() {
     let env = env().await;
-    let manager = env.manager();
+    let manager = env.manager().await;
     for (headers, form) in [
         (&[][..], "id=butler&models=fake/m".to_owned()),
         (&[][..], "csrf=wrong&id=butler&models=fake/m".to_owned()),
@@ -665,7 +691,7 @@ async fn creating_an_agent_needs_the_csrf_token() {
 #[tokio::test]
 async fn of_two_creations_with_the_same_id_one_wins() {
     let env = env().await;
-    let manager = env.manager();
+    let manager = env.manager().await;
     let agent = |soul: &str| NewAgent {
         id: "butler".into(),
         models: vec!["fake/m".into()],
@@ -687,7 +713,7 @@ async fn of_two_creations_with_the_same_id_one_wins() {
 
     // A second manager over the same registry (another page) can't take it either, and neither
     // can a directory someone made by hand.
-    let other = env.manager();
+    let other = env.manager().await;
     assert!(matches!(
         other.create(&agent("again")).await,
         Err(CreateError::Exists(_))
@@ -725,7 +751,7 @@ async fn a_staging_directory_left_by_a_crash_breaks_nothing() {
     .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(loaded.agents.len(), 2);
 
-    let manager = env.manager();
+    let manager = env.manager().await;
     assert!(!stale.exists());
     let (_, list, _) = env
         .agents_call(&manager, Method::GET, "/admin/agents", None)

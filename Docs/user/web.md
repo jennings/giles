@@ -33,7 +33,8 @@ To talk to a particular agent, pick it under **Chat with** on the chat list and 
 The list has every configured agent, including one you've just created ([Agents](#agents)), and
 that chat always goes to the agent you picked, whatever your
 [routes](#routes) say. The chat list and the chat page show which agent such a chat is with. If that
-agent is later removed from the configuration, its chats can't be opened any more.
+agent is later removed ([Removing an agent](#removing-an-agent)), its chats can't be opened any
+more, though they stay in the chat list.
 
 A chat page shows the conversation so far (the last 200 messages) and a box to write in. Replies
 appear as the agent writes them, without reloading. Formatting is Markdown. Links open other sites;
@@ -90,8 +91,9 @@ reports that it's connected, the code disappears and the reloading stops.
 
 ## Agents
 
-**Agents** in the admin pages' menu (`/admin/agents`) lists every agent with its models, a link
-to its page, **Chat** to start a chat with it, and **Edit**. Only the owner can open these pages.
+**Agents** in the admin pages' menu (`/admin/agents`) lists every agent with its models, a link to
+its page, **Chat** to start a chat with it, **Edit**, and **Remove**. Only the owner can open these
+pages.
 
 An agent's page shows its models, tools, and time zone, then every file in `agents/<agent>/`:
 `agent.toml`, `SOUL.md`, `MEMORY.md`, what it remembers about each user
@@ -167,6 +169,43 @@ as they were. Otherwise it saves, and the agent changed without a restart:
 - Changing `[[jobs]]` or other settings by hand still needs a restart to take effect (unless you
   then save this form, which loads the whole file).
 
+### Removing an agent
+
+**Remove**, on the list and on an agent's page, opens a page that says what removing the agent
+does, with a **Remove agent** button. Nothing happens until you press it.
+
+- **The files are moved, not deleted.** `agents/<id>/` (`agent.toml`, `SOUL.md`, `MEMORY.md`, the
+  memory of each user and group, job prompt files, skills) is renamed to
+  `trash/agents/<id>-<date and time in UTC>/` in the data directory, for example
+  `trash/agents/jeeves-20261024T120000Z/`. To bring the agent back, move that directory to
+  `agents/<id>/` and restart Giles. Giles never reads, empties, or backs up `trash/`
+  ([Backups](backups.md)); delete what you don't want, whenever you like.
+- **The agent is out of Giles at once**, without a restart: it disappears from the agent list and
+  the **Chat with** chooser, a chat can't be started with it, and its existing chats can't be
+  opened or continued.
+- **Its jobs stop.** The `[[jobs]]` in its `agent.toml` stop running (they stay in the moved file),
+  and the jobs it scheduled itself with the `schedule` tool are deleted. The page counts both.
+- **Its history stays** in the database, out of sight: chats, messages, and usage. They are not
+  deleted. If you later create an agent with the same id, those old chats belong to the new agent
+  again (it answers them with its own settings and `SOUL.md`). To start clean, pick another id.
+- **The id is free right away**: you can create a new agent with the same id, and removing that
+  one too gives it another directory in `trash/` (`-1`, `-2` after the time if two removals fall in
+  the same second).
+
+Giles refuses to remove an agent in two cases, and the page says which:
+
+- **Routes still name it.** The page lists them, each linking to the [routes page](#routes). Point
+  each at another agent, or remove it, then come back. Giles doesn't change your routes for you.
+- **It is working right now**: a chat turn is running or messages are waiting for one, or one of
+  its jobs is running (a scheduled job's run counts from the moment its time comes). Stop the
+  chat with `/stop` or wait, then try again.
+
+Giles takes the agent out of use and checks for work once more before it moves any files, so a
+chat message or job that starts just as you press the button either is seen (the removal is
+refused and the agent stays as it was) or finds the agent already gone and does nothing. If the
+files can't be moved, the agent is put back as it was. A job whose time comes in that very instant
+doesn't run that time; it stops for good until Giles restarts.
+
 ## Routes
 
 **Routes** in the admin pages' menu (`/admin/routes`) is where you decide which agent answers each
@@ -194,12 +233,12 @@ page), with these buttons:
 
 A route that sets nothing but the agent matches every conversation; keep it last.
 
-Giles checks a route like it checks configuration. The channel instance and the agent must exist.
-It also refuses a route that nothing could ever reach, and says why: an earlier route already
-matches everything it matches (a duplicate is the plainest case), or the change would put a route
-in front of one it hides. Adding, editing, and moving all follow this rule, so to put a broad route
-first you move the specific ones above it. The form comes back with the problem and nothing is
-changed. A route that has stopped working anyway (its agent's directory was removed, or its channel
+Giles checks a route like it checks configuration. The channel instance and the agent must exist. It
+also refuses a route that nothing could ever reach, and says why: an earlier route already matches
+everything it matches (a duplicate is the plainest case), or the change would put a route in front
+of one it hides. Adding, editing, and moving all follow this rule, so to put a broad route first you
+move the specific ones above it. The form comes back with the problem and nothing is changed. A
+route that has stopped working anyway (its agent's directory was removed by hand, or its channel
 instance dropped from `giles.toml` before a restart) stays in the list with a warning under it, as
 does one that an earlier route hides, which can happen to routes imported from an old `giles.toml`.
 

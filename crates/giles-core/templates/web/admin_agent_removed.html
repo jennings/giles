@@ -1,0 +1,18 @@
+{% extends "layout.html" %}
+
+{% block title %}Removed {{ id }} - Agents - Giles{% endblock %}
+
+{% block content %}
+{% include "web/admin_nav.html" %}
+<h1>Removed {{ label }}</h1>
+<ul>
+<li>The agent's directory is now <code>{{ trash }}</code>. To bring the agent back, move it back to <code>agents/{{ id }}/</code> and restart Giles.</li>
+<li>The agent is out of the running Giles: nothing can chat with it, and its id can be used for a new agent.</li>
+<li>{% if config_jobs == 0 %}It had no jobs in <code>agent.toml</code>.{% else %}The {{ config_jobs }} job{% if config_jobs != 1 %}s{% endif %} in its <code>agent.toml</code> stopped.{% endif %}</li>
+<li>{% if runtime_jobs == 0 %}It had no jobs it scheduled itself.{% else %}The {{ runtime_jobs }} job{% if runtime_jobs != 1 %}s{% endif %} it scheduled itself {% if runtime_jobs != 1 %}were{% else %}was{% endif %} deleted.{% endif %}</li>
+</ul>
+{%- if let Some(error) = jobs_error %}
+<p class="state-bad">Its scheduled jobs could not be deleted ({{ error }}). They won't run, because the agent is gone; they are deleted for good when an agent with this id is removed again.</p>
+{%- endif %}
+<p><a href="/admin/agents">Back to the agents</a></p>
+{% endblock %}

@@ -370,3 +370,25 @@ Added by the owner after the v1 plan.
   - Tests for every mode, switching, concurrency, backups; user and technical docs.
 
   **Needs:** 1.2, 4.1.
+
+- [x] **5.4 Edit and remove agents in the web UI** (added by the owner) (§8.7, §11.2, §11.3).
+  Builds on 5.1:
+  - Edit: an owner-only, CSRF-protected form changes an agent's name, models, tools, ask list, time
+    zone, and `SOUL.md`, validated like creation and hand-written config. The id is shown, not
+    editable. Only those keys of `agent.toml` are rewritten (`toml_edit`): comments, `[[jobs]]`,
+    limits, and any other key stay as written, and an emptied field removes its key. Both files are
+    replaced or neither; an edit that would not load is refused with the input kept; a change made
+    by hand while the form was open is refused, not overwritten. New sessions use the edited agent
+    without a restart; running ones keep their prompt.
+  - Remove: owner-only, POST with CSRF behind a confirmation page that says what happens.
+    `agents/<id>/` moves to `trash/agents/<id>-<UTC time>/` (kept, not backed up); the agent leaves
+    the running configuration, the lists, and the chat chooser; its config jobs stop and its runtime
+    jobs are deleted; refused while a stored route names it (listed, linking to the routes page) or
+    while it is working (a chat turn running or messages queued, or a job run in progress, an
+    isolated job's included). The agent is taken out of the running configuration before the files
+    move and checked for work again, and put back if work is seen or the move fails. History stays
+    in SQLite; the id is free to create again.
+  - Edit and Remove on the agent list and the agent page; docs; tests for each of the above,
+    including serialization with creation, the scheduler, instance rename, and backups.
+
+  **Needs:** 5.1, 5.2.

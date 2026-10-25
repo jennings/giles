@@ -1,6 +1,7 @@
 //! The agent pages (TASKS.md 5.1, 5.4): every agent, one agent's configuration and files, and the
-//! forms that create and edit an agent while the core runs. Next to the admin pages (`admin.rs`) and like them:
-//! behind the login, the owner only, every answer `no-store`, the form post CSRF-checked.
+//! forms that create and edit an agent and the page that removes one while the core runs. Next to
+//! the admin pages (`admin.rs`) and like them: behind the login, the owner only, every answer
+//! `no-store`, the form post CSRF-checked.
 //!
 //! The pages call the core's agent management ([`crate::agents`]) in-process. File contents are
 //! shown as escaped text in `<pre>`, within the caps of [`list_files`]; `agent.toml` holds no
@@ -24,8 +25,8 @@ use super::auth::{WebUser, check_csrf};
 use super::pages::{WebApp, agent_label, error_page, no_store};
 use crate::agents::{
     AgentEdit, AgentFile, AgentForm, AgentManager, Content, CreateError, DEFAULT_SOUL, EditError,
-    MAX_FILE_BYTES, MAX_FILES, MAX_TOTAL_BYTES, NewAgent, agent_id_from_name, list_files,
-    split_list,
+    MAX_FILE_BYTES, MAX_FILES, MAX_TOTAL_BYTES, NewAgent, RemovalPreview, RemoveError, Removed,
+    agent_id_from_name, list_files, split_list,
 };
 use crate::config::AgentConfig;
 use crate::http::{self, RouterBuilder};
@@ -53,6 +54,10 @@ impl WebApp {
                 .route("/admin/agents/new", get(new_agent_page))
                 .route("/admin/agents/{agent}", get(agent_page))
                 .route("/admin/agents/{agent}/edit", get(edit_page).post(edit))
+                .route(
+                    "/admin/agents/{agent}/remove",
+                    get(remove_page).post(remove),
+                )
                 .with_state(AgentPages { manager })
                 .route_layer(auth)
                 .route_layer(map_response(async |response: Response| no_store(response))),
@@ -516,4 +521,159 @@ async fn edit(
             response
         }
     }
+}
+
+/// Where removed agents go, under the data root (shown on the pages).
+const TRASH: &str = "trash/agents";
+
+#[derive(Template)]
+#[template(path = "web/admin_agent_remove.html")]
+struct RemovePage<'a> {
+    csrf: &'a str,
+    id: String,
+    label: String,
+    routes: Vec<RouteLink>,
+    runtime_jobs: usize,
+    config_jobs: usize,
+    busy: bool,
+    trash: &'static str,
+    error: Option<String>,
+}
+
+/// A route that keeps an agent from being removed.
+struct RouteLink {
+    id: String,
+    position: usize,
+    criteria: String,
+}
+
+#[derive(Template)]
+#[template(path = "web/admin_agent_removed.html")]
+struct RemovedPage {
+    id: String,
+    label: String,
+    trash: String,
+    runtime_jobs: usize,
+    config_jobs: usize,
+    jobs_error: Option<String>,
+}
+
+/// The confirmation page for `preview`'s agent, with `error` if a removal was just refused.
+fn confirm_page(
+    pages: &AgentPages,
+    user: &WebUser,
+    preview: RemovalPreview,
+    error: Option<String>,
+) -> Response {
+    let config = pages.manager.config().get();
+    http::render(&RemovePage {
+        csrf: &user.csrf,
+        label: agent_label(&config, &preview.id),
+        id: preview.id.to_string(),
+        routes: preview
+            .routes
+            .into_iter()
+            .map(|route| RouteLink {
+                id: route.id.to_string(),
+                position: route.position,
+                criteria: route.criteria,
+            })
+            .collect(),
+        runtime_jobs: preview.runtime_jobs,
+        config_jobs: preview.config_jobs,
+        busy: preview.busy,
+        trash: TRASH,
+        error,
+    })
+}
+
+/// The page for a removal that failed for a reason that isn't the owner's to fix.
+fn remove_failed(error: &RemoveError, id: &str) -> Response {
+    match error {
+        RemoveError::NotFound(_) => error_page(
+            StatusCode::NOT_FOUND,
+            "No such agent",
+            "There is no agent with that name.",
+        ),
+        other => {
+            error!(agent = %id, error = %other, "removing an agent failed");
+            error_page(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Agent not removed",
+                "Giles couldn't move the agent's files or read what it needs. Nothing was changed. The error is in its log.",
+            )
+        }
+    }
+}
+
+/// `GET /admin/agents/<agent>/remove`: what removing the agent would do, and the button.
+async fn remove_page(
+    State(pages): State<AgentPages>,
+    user: WebUser,
+    Path(agent): Path<String>,
+) -> Response {
+    if !may_administer(&user) {
+        return forbidden();
+    }
+    match pages.manager.removal_preview(&agent).await {
+        Ok(preview) => confirm_page(&pages, &user, preview, None),
+        Err(err) => remove_failed(&err, &agent),
+    }
+}
+
+/// `POST /admin/agents/<agent>/remove` (CSRF-checked): removes the agent and says what happened.
+/// A removal that is refused (routes name the agent, or it's busy) shows the confirmation page
+/// again with why (409), and nothing changes.
+async fn remove(
+    State(pages): State<AgentPages>,
+    user: WebUser,
+    Path(agent): Path<String>,
+    headers: HeaderMap,
+    Form(form): Form<CsrfForm>,
+) -> Response {
+    if !may_administer(&user) {
+        return forbidden();
+    }
+    if let Err(rejected) = check_csrf(&user, &headers, form.csrf.as_deref()) {
+        return rejected.into_response();
+    }
+    let label = AgentId::new(&agent)
+        .map(|id| agent_label(&pages.manager.config().get(), &id))
+        .unwrap_or_else(|_| agent.clone());
+    match pages.manager.remove(&agent).await {
+        Ok(Removed {
+            trash,
+            runtime_jobs,
+            config_jobs,
+            jobs_error,
+        }) => http::render(&RemovedPage {
+            id: agent,
+            label,
+            trash: trash.display().to_string(),
+            runtime_jobs,
+            config_jobs,
+            jobs_error,
+        }),
+        Err(err) if err.is_blocked() && !matches!(err, RemoveError::NotFound(_)) => {
+            let message = err.to_string();
+            match pages.manager.removal_preview(&agent).await {
+                Ok(preview) => {
+                    let mut response = confirm_page(&pages, &user, preview, Some(message));
+                    if response.status().is_success() {
+                        *response.status_mut() = StatusCode::CONFLICT;
+                    }
+                    response
+                }
+                Err(err) => remove_failed(&err, &agent),
+            }
+        }
+        Err(err) => remove_failed(&err, &agent),
+    }
+}
+
+/// A form with nothing but the CSRF token.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct CsrfForm {
+    csrf: Option<String>,
 }

@@ -18,7 +18,7 @@ mod tests;
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -180,10 +180,63 @@ impl fmt::Debug for SchedulerOptions {
 #[derive(Debug, Clone)]
 pub struct Scheduler {
     tasks: TaskTracker,
+    running: JobsRunning,
+}
+
+/// The job runs in progress, per agent: from the moment a job's time comes until its run is over
+/// (waiting for a busy DM and the turn included). The web UI won't remove an agent that has one
+/// ([`Scheduler::agent_busy`]).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct JobsRunning(Arc<Mutex<HashMap<AgentId, usize>>>);
+
+/// One job run in progress; dropping it ends the count.
+pub(crate) struct RunningJob {
+    running: JobsRunning,
+    agent: AgentId,
+}
+
+impl JobsRunning {
+    /// Counts a run of a job of `agent` until the result is dropped.
+    pub(crate) fn begin(&self, agent: &AgentId) -> RunningJob {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(agent.clone())
+            .or_default() += 1;
+        RunningJob {
+            running: self.clone(),
+            agent: agent.clone(),
+        }
+    }
+
+    fn is_running(&self, agent: &AgentId) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(agent)
+    }
+}
+
+impl Drop for RunningJob {
+    fn drop(&mut self) {
+        let mut counts = self
+            .running
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(count) = counts.get_mut(&self.agent) {
+            *count -= 1;
+            if *count == 0 {
+                counts.remove(&self.agent);
+            }
+        }
+    }
 }
 
 /// Everything a job's task uses.
 pub(crate) struct Context {
+    pub(crate) running: JobsRunning,
     pub(crate) store: Store,
     pub(crate) registry: Arc<Registry>,
     pub(crate) sessions: Sessions,
@@ -200,7 +253,9 @@ impl Scheduler {
     /// Everything stops when `shutdown` is cancelled; a running job turn is cancelled with it.
     pub fn start(options: SchedulerOptions, shutdown: CancellationToken) -> Self {
         let tasks = TaskTracker::new();
+        let in_progress = JobsRunning::default();
         let context = Arc::new(Context {
+            running: in_progress.clone(),
             store: options.store,
             registry: options.registry,
             sessions: options.sessions,
@@ -220,7 +275,18 @@ impl Scheduler {
         ));
         let changes = options.changes.subscribe();
         tasks.spawn(runtime_jobs(context, changes, tasks.clone()));
-        Self { tasks }
+        Self {
+            tasks,
+            running: in_progress,
+        }
+    }
+
+    /// Whether a job run of `agent` is in progress now: a job's time has come and its run isn't
+    /// over, whether it waits for the DM or its turn is running (an isolated run's turn is not a
+    /// session the session manager knows). The count starts before the run reads the agent's
+    /// configuration, so a run that read it before the agent was taken out is counted.
+    pub fn agent_busy(&self, agent: &AgentId) -> bool {
+        self.running.is_running(agent)
     }
 
     /// Waits until every task has stopped. Call it after cancelling the shutdown token.
@@ -399,6 +465,9 @@ async fn job_task(context: Arc<Context>, job: JobDef, stop: CancellationToken) {
         if !sleep_until(&*context.clock, at, &stop).await {
             return;
         }
+        // Before the agent is read, so that removing the agent (which takes it out of the
+        // configuration and then looks here) sees every run that read it.
+        let _running = context.running.begin(&job.agent);
         let config = context.registry.config();
         let Some(agent) = config.agents.get(&job.agent) else {
             info!(job = %label, agent = %job.agent, "the job's agent was removed; the job stops");

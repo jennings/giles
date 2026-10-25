@@ -104,6 +104,7 @@ On start, `giles serve` creates any missing directories of the layout, readable 
   plugins/          plugin binaries
   data/             the database, attachments, and plugin state
   backups/          backups and pre-upgrade snapshots
+  trash/            agents removed in the web UI, kept (made when you first remove one)
   run/              runtime files: the admin socket and token, the lock, plugin pid files and
                     sandbox specs
   cache/            caches Giles can rebuild

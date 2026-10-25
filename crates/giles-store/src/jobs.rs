@@ -146,6 +146,22 @@ impl Store {
         .await
     }
 
+    /// Deletes every runtime job of `agent`, and the last-run times of the agent's config jobs
+    /// too (those of runtime jobs go with the jobs). Returns how many runtime jobs there were.
+    /// For an agent that was removed: nothing of its schedule is left to run again if the id is
+    /// used again.
+    pub async fn agent_jobs_delete(&self, agent: AgentId) -> Result<usize> {
+        self.write(move |conn| {
+            let jobs = conn
+                .prepare_cached("DELETE FROM jobs WHERE agent = ?1")?
+                .execute([agent.as_str()])?;
+            conn.prepare_cached("DELETE FROM job_runs WHERE agent = ?1")?
+                .execute([agent.as_str()])?;
+            Ok(jobs)
+        })
+        .await
+    }
+
     /// When the job last ran, if ever.
     pub async fn job_last_run(&self, agent: AgentId, job: JobKey) -> Result<Option<Timestamp>> {
         self.read(move |conn| {
@@ -187,6 +203,42 @@ mod tests {
 
     fn user(name: &str) -> UserId {
         UserId::new(name).unwrap()
+    }
+
+    #[tokio::test]
+    async fn deleting_an_agents_jobs_leaves_every_other_agents_alone() {
+        let (_dir, store) = store().await;
+        let spec = json!({ "cron": "0 8 * * *", "prompt": "hi" });
+        let gone = store
+            .job_create(agent("jeeves"), user("owner"), spec.clone(), at(1))
+            .await
+            .unwrap();
+        let other = store
+            .job_create(agent("bunter"), user("owner"), spec.clone(), at(2))
+            .await
+            .unwrap();
+        let mut runs = vec![(agent("jeeves"), JobKey::Config("morning".into()))];
+        runs.push((agent("jeeves"), JobKey::Runtime(gone.id)));
+        runs.push((agent("bunter"), JobKey::Config("morning".into())));
+        runs.push((agent("bunter"), JobKey::Runtime(other.id)));
+        for (agent, key) in &runs {
+            store
+                .job_set_last_run(agent.clone(), key.clone(), at(5))
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(store.agent_jobs_delete(agent("jeeves")).await.unwrap(), 1);
+        assert_eq!(store.job(gone.id).await.unwrap(), None);
+        assert_eq!(store.job(other.id).await.unwrap(), Some(other.clone()));
+        for (agent, key) in runs {
+            let kept = agent.as_str() == "bunter";
+            let last = store.job_last_run(agent.clone(), key).await.unwrap();
+            assert_eq!(last.is_some(), kept, "{agent}");
+        }
+        // Nothing left to delete: zero, and no error.
+        assert_eq!(store.agent_jobs_delete(agent("jeeves")).await.unwrap(), 0);
+        assert_eq!(store.agent_jobs_delete(agent("nobody")).await.unwrap(), 0);
     }
 
     #[tokio::test]

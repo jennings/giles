@@ -1,24 +1,48 @@
 //! [`AgentManager`]: what the web UI's agent pages call to change the agents of the running core
-//! (TASKS.md 5.1). Every change to the agents runs under the manager's one lock, so creations (and
-//! whatever else changes an agent) are serialized. What each change does is in its own module:
-//! [`create`](super::create).
+//! (TASKS.md 5.1, 5.4). Creating, editing, and removing an agent run under the manager's one lock,
+//! so they are serialized with each other. What each does is in its own module:
+//! [`create`](super::create), [`edit`](super::edit), [`remove`](super::remove).
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use tracing::debug;
 
+use giles_store::Store;
+
 use super::create::remove_stale_staging;
+use super::remove::AgentActivity;
 use crate::config::LiveConfig;
 use crate::registry::Registry;
+use crate::routes::Routes;
+use crate::scheduler::JobChanges;
 
 /// How long the form waits for each provider's model list.
 const LIST_MODELS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// What an [`AgentManager`] works with.
+#[derive(Debug, Clone)]
+pub struct AgentManagerOptions {
+    /// The data root and the running configuration the agents are in.
+    pub registry: Arc<Registry>,
+    /// The database: the runtime jobs of a removed agent.
+    pub store: Store,
+    /// The routes, which keep an agent from being removed while they name it.
+    pub routes: Arc<Routes>,
+    /// Tells the scheduler that runtime jobs were deleted.
+    pub jobs: JobChanges,
+    /// Whether an agent is being worked on, which keeps it from being removed.
+    pub activity: Arc<dyn AgentActivity>,
+}
 
 /// Manages the agents of the running core. Shared as `Arc<AgentManager>`.
 #[derive(Debug)]
 pub struct AgentManager {
     pub(super) registry: Arc<Registry>,
+    pub(super) store: Store,
+    pub(super) routes: Arc<Routes>,
+    pub(super) jobs: JobChanges,
+    pub(super) activity: Arc<dyn AgentActivity>,
     /// Held for a whole change, so changes to agents run one at a time.
     pub(super) lock: tokio::sync::Mutex<()>,
 }
@@ -28,10 +52,14 @@ impl AgentManager {
     /// builds one at startup, before it serves; building it removes the staging directories a
     /// creation cut off by a crash left in `agents/` (`.<agent>.creating/`). Blocking (a
     /// directory listing).
-    pub fn new(registry: Arc<Registry>) -> Self {
-        remove_stale_staging(&registry.root().agents_dir());
+    pub fn new(options: AgentManagerOptions) -> Self {
+        remove_stale_staging(&options.registry.root().agents_dir());
         Self {
-            registry,
+            registry: options.registry,
+            store: options.store,
+            routes: options.routes,
+            jobs: options.jobs,
+            activity: options.activity,
             lock: tokio::sync::Mutex::new(()),
         }
     }

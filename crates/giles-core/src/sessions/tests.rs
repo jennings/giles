@@ -521,6 +521,32 @@ async fn dropped_messages_are_acked_and_not_stored() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn an_agent_is_busy_while_a_turn_runs_or_messages_are_queued_for_it() {
+    let (mut h, events) = Harness::new(queue()).await;
+    let other = AgentId::new("bunter").unwrap();
+    assert!(!h.sessions.agent_busy(&agent()).await);
+
+    send(&events, message("e1", "one"));
+    h.ack().await;
+    let turn = h.turn().await;
+    assert!(h.sessions.agent_busy(&agent()).await);
+    assert!(
+        !h.sessions.agent_busy(&other).await,
+        "another agent's work isn't this one's"
+    );
+
+    // Still busy while a message waits behind the running turn, and until it has had its turn.
+    send(&events, message("e2", "two"));
+    h.ack().await;
+    turn.complete();
+    let second = h.turn().await;
+    assert!(h.sessions.agent_busy(&agent()).await);
+    second.complete();
+    h.settle().await;
+    assert!(!h.sessions.agent_busy(&agent()).await);
+}
+
+#[tokio::test(start_paused = true)]
 async fn one_turn_at_a_time_and_the_queue_runs_next_as_one_batch() {
     let (mut h, events) = Harness::new(queue()).await;
     send(&events, message("e1", "one"));

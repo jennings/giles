@@ -303,6 +303,31 @@ impl Sessions {
         })
     }
 
+    /// Whether some session of `agent` is being worked on: a turn is running in it, someone holds
+    /// it, or messages are queued for it. A session whose driver has just started and hasn't
+    /// loaded its session yet is looked up in the database. For the web UI, which won't remove an
+    /// agent in the middle of its work.
+    pub async fn agent_busy(&self, agent: &AgentId) -> bool {
+        let live: Vec<(SessionId, Option<AgentId>)> = lock(&self.inner.live)
+            .iter()
+            .map(|(id, live)| (*id, live.key.as_ref().map(|key| key.agent.clone())))
+            .collect();
+        for (id, known) in live {
+            let owner = match known {
+                Some(owner) => Some(owner),
+                None => match self.inner.store.session(id).await {
+                    Ok(session) => session.map(|session| session.agent),
+                    // A session that can't be read can't be worked on either.
+                    Err(_) => None,
+                },
+            };
+            if owner.as_ref() == Some(agent) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Waits until `session` has no running turn, no hold, and nothing queued (a job's
     /// `idle_only`, PLAN section 6.11), or until shutdown.
     pub async fn wait_idle(&self, session: SessionId) {

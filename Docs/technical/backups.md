@@ -38,12 +38,13 @@ files:
 | `agents/`, `users/`, `skills/` (whole trees) | Config and Markdown people and memory tools write. Taken whole, not filtered by extension, since a skill can carry scripts and the trees hold nothing else. |
 | `data/blobs/` (whole tree)                 | Attachments; the database holds their metadata.              |
 
-Left out: `secrets.toml` (a backup is meant to leave the machine, and credentials are the
-operator's to keep), `plugins/` (binaries), `data/plugins/` (plugin-owned state, the core doesn't
-read it), `data/giles.db*` (the `.db` file), `backups/`, `run/`, `cache/`, and
-`data/blobs/sha256/tmp/` (the blob store's puts in progress, which it deletes when it opens).
-A file that vanishes while the walk runs is skipped. Directories are recorded (with their modes) so
-a restore into an empty root gets the same private layout.
+Left out: `secrets.toml` (a backup is meant to leave the machine, and credentials are the operator's
+to keep), `plugins/` (binaries), `data/plugins/` (plugin-owned state, the core doesn't read it),
+`data/giles.db*` (the `.db` file), `backups/`, `trash/` (agents removed in the web UI, TASKS.md 5.4:
+the list of what is archived is explicit, so nothing outside it, the trash included, is picked up),
+`run/`, `cache/`, and `data/blobs/sha256/tmp/` (the blob store's puts in progress, which it deletes
+when it opens). A file that vanishes while the walk runs is skipped. Directories are recorded (with
+their modes) so a restore into an empty root gets the same private layout.
 
 Every entry, including `giles.toml` and the four tree roots, goes through `Walk::visit`, which
 uses `symlink_metadata`:
