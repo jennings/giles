@@ -1,0 +1,38 @@
+[package]
+name = "giles-channel-whatsapp"
+description = "The Giles WhatsApp channel plugin: a linked device on the WhatsApp Web protocol."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+futures.workspace = true
+giles-plugin-sdk.workspace = true
+serde.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust", rev = "9b9fdb7e5c4211cdc7c837abb6a9ae9c597e35c5", default-features = false, features = [
+  "sqlite-storage",
+  "sqlite-storage-bundled",
+  "tokio-native",
+  "tokio-runtime",
+  "tokio-transport",
+  "ureq-client",
+] }
+
+[dev-dependencies]
+giles-proto.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["net"] }
+tonic.workspace = true
+
+[lints]
+workspace = true
