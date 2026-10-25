@@ -10,6 +10,8 @@ mod datadir;
 mod docs_tests;
 mod identity;
 mod inbound;
+#[cfg(test)]
+mod license_tests;
 mod media;
 mod outbound;
 mod real;

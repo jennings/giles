@@ -6,7 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
-license.workspace = true
+# Not the workspace's `MIT OR Apache-2.0`: the binary links `wacore-libsignal`, which is
+# AGPL-3.0-only (see README.md).
+license = "AGPL-3.0-only"
 publish = false
 
 [dependencies]

@@ -57,7 +57,10 @@ The three crates a third-party plugin author needs (`giles-types`, `giles-proto`
   `rustfmt`, and the `x86_64-unknown-linux-gnu` target); rustup picks it up automatically.
   `Cargo.lock` is committed.
 - Every crate inherits `version`, `edition` (2024), `rust-version`, `authors`, `repository`, and
-  `license` (`MIT OR Apache-2.0`) from `[workspace.package]`.
+  `license` (`MIT OR Apache-2.0`) from `[workspace.package]`, except
+  `plugins/giles-channel-whatsapp`, which sets its own `license = "AGPL-3.0-only"` and carries
+  `LICENSE-AGPL-3.0` ([Licensing](whatsapp.md#licensing)). No other crate depends on it or on the
+  library that brings the AGPL code, and a test in that crate checks it.
 
 ## Lints
 

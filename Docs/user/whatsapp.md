@@ -27,6 +27,20 @@ message from your own WhatsApp to the account's number, and give the conversatio
 > a real account with this plugin yet. Expect rough edges, and look at the
 > [live test plan](../technical/whatsapp-spike.md#owner-test-plan) before relying on it.
 
+## Licensing
+
+The repository is `MIT OR Apache-2.0`, except `plugins/giles-channel-whatsapp`, which is
+`AGPL-3.0-only`. The plugin is built on `whatsapp-rust`, whose Signal protocol code
+(`wacore-libsignal`, from Signal's `libsignal`) is licensed `AGPL-3.0-only`, so the plugin binary
+is a combined work under that license. The Giles core and the other plugins aren't affected: the
+plugin is a separate process that talks to Giles over gRPC, and Giles doesn't link it.
+
+What that means in practice: you may run the plugin and use it with Giles as you like. If you
+distribute the binary (as the container image does), you must offer its source under the AGPL; the
+image does so in `/usr/share/doc/giles/THIRD-PARTY`. If you modify the plugin and other people use
+your modified version over a network, the AGPL requires you to offer them your source. This is a
+description of how the code is licensed, not legal advice.
+
 ## Settings
 
 The `config` table of the instance. All keys are optional. An unknown key is an error, and an

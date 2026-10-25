@@ -21,7 +21,9 @@ webhooks, passkeys) is not listed; see `IDEA.md` "Out of Scope for v1" and §1.1
 
 Answered by the owner before the build started:
 
-- License: `MIT OR Apache-2.0` for every crate.
+- License: `MIT OR Apache-2.0` for every crate, except `plugins/giles-channel-whatsapp`, which is
+  `AGPL-3.0-only` because `whatsapp-rust` includes AGPL code (`wacore-libsignal`); the owner decided
+  to keep that library and isolate the AGPL in that one crate (`Docs/technical/whatsapp.md`).
 - Repository: public at `github.com/jennings/giles`; `main` is pushed after each landed task and CI
   runs there.
 - Linux verification on the macOS development machine: an Apple `container` Linux container (arm64

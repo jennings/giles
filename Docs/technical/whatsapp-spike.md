@@ -13,11 +13,13 @@ run has not happened and the plugin's behavior with a real account is unverified
 open, and the test plan below is the way to verify both the spike and the plugin later.
 
 **Recommendation:** build 3.6 on `whatsapp-rust`, unless the live run fails one of the
-[decision criteria](#decision-criteria). It is actively maintained, MIT licensed, covers everything
-Giles needs, and keeps the plugin in Rust, so it can use `giles-plugin-sdk` (gRPC serving, the
-`whatsapp()` renderer, unacked-event storage). A Go plugin on `whatsmeow` would have to rebuild all
-of that in Go. The risks are its age (one year), a single main author, a fast-moving API, and fixes
-that are on `main` but not in a release yet (see [Findings](#findings-for-36)).
+[decision criteria](#decision-criteria). It is actively maintained, covers everything Giles needs,
+and keeps the plugin in Rust, so it can use `giles-plugin-sdk` (gRPC serving, the `whatsapp()`
+renderer, unacked-event storage). A Go plugin on `whatsmeow` would have to rebuild all of that in
+Go. The risks are its age (one year), a single main author, a fast-moving API, and fixes that are on
+`main` but not in a release yet (see [Findings](#findings-for-36)). Its manifests say MIT, but the
+Signal protocol code in `wacore-libsignal` is `AGPL-3.0-only`, which makes anything that links it
+AGPL ([Licensing](whatsapp.md#licensing)).
 
 ## The libraries
 
@@ -25,7 +27,7 @@ Data from crates.io and GitHub on 2026-10-22.
 
 |                     | [`whatsapp-rust`][wr]                                   | [`whatsmeow`][wm]                                   |
 | ------------------- | ------------------------------------------------------- | --------------------------------------------------- |
-| Language, license   | Rust, MIT                                               | Go, MPL-2.0                                         |
+| Language, license   | Rust, MIT (manifests); AGPL-3.0-only in `wacore-libsignal` | Go, MPL-2.0                                         |
 | Age, releases       | Repo 2025-07; 0.1.0 (2025-10) to [0.7.0][wr-crate] (2026-08-07) | Repo 2021-10; no tagged releases (Go pseudo-versions) |
 | Activity            | Commits daily; 203 issues filed, 3 open issues/PRs; ~80k downloads/90 d | Last commit 2026-10-17; 85 open issues/PRs |
 | Maintainers         | `jlucaso1` (~1,700 commits); next human contributor 19  | `tulir` (~1,270 commits); next contributor 135      |

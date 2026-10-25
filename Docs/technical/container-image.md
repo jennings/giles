@@ -79,7 +79,18 @@ default command, so the container runs `giles serve`, and arguments after the im
 the subcommand (`docker run --rm <image> --version`).
 
 The OCI labels name the source repository (which links a GitHub Container Registry package to it),
-the title, a description, and the license, `MIT OR Apache-2.0`.
+the title, a description, and the license: `(MIT OR Apache-2.0) AND AGPL-3.0-only`. The repository
+is `MIT OR Apache-2.0`, except `plugins/giles-channel-whatsapp`, which is `AGPL-3.0-only`
+([Licensing](whatsapp.md#licensing)); the image ships that binary, so its label names both. The CI
+label override in `ci.yml` sets the same expression, since GitHub's own repository license detection
+would otherwise replace it.
+
+`/usr/share/doc/giles/` holds `LICENSE-MIT` and `LICENSE-APACHE`, the AGPL text
+(`LICENSE-AGPL-3.0`), and `THIRD-PARTY`, which names the AGPL component of the WhatsApp plugin and
+is the source offer for its binary: the repository at the image's commit (the
+`org.opencontainers.image.revision` label, set by the CI metadata step) and the pinned
+`whatsapp-rust` revision. The files come from the repository (`plugins/giles-channel-whatsapp/`
+for the last two), and the smoke test checks that they're in the image.
 
 ## The Sandbox in a Container
 

@@ -97,6 +97,11 @@ The image includes the time zone database and runs in UTC. Set the owner's time 
 The bundled plugins are in `/usr/local/bin/`, where Giles finds them on `$PATH`. Other plugin
 binaries go in `/data/plugins/`, which Giles searches first.
 
+The image contains the WhatsApp plugin, which is licensed `AGPL-3.0-only`; the rest of Giles is
+`MIT OR Apache-2.0`. The image's license label says `(MIT OR Apache-2.0) AND AGPL-3.0-only`, and
+`/usr/share/doc/giles/` has the license texts and `THIRD-PARTY`, which says where the plugin's
+source is ([Licensing](whatsapp.md#licensing)).
+
 A plugin only runs when `giles.toml` has an instance of it, so the WhatsApp plugin does nothing,
 and never contacts WhatsApp, until you add one. Its session (the credential that makes Giles a
 linked device) is kept in `/data/data/plugins/<instance>/`, so it survives the container being

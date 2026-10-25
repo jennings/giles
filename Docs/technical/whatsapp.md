@@ -59,6 +59,32 @@ rewrites `https://github.com/` to SSH, fetching the git source needs
 `CARGO_NET_GIT_FETCH_WITH_CLI=true` and an SSH agent, or `GIT_CONFIG_GLOBAL=/dev/null` with the
 same variable.
 
+## Licensing
+
+`giles-channel-whatsapp` is `AGPL-3.0-only`; the rest of the repository is `MIT OR Apache-2.0`.
+
+- **Why.** The dependency tree has one AGPL component: `wacore-libsignal`, a crate of
+  `whatsapp-rust` (a port of Signal's `libsignal`). Its 31 source files carry
+  `SPDX-License-Identifier: AGPL-3.0-only` and `Copyright Signal Messenger, LLC`, although its
+  manifest, like the rest of `whatsapp-rust`, says `MIT`. Checked by searching the pinned
+  checkout for `AGPL` and by reading the license field of every crate in `cargo metadata`: no
+  other crate in the tree is AGPL (`self_cell` offers `GPL-2.0-only` as an alternative to
+  Apache-2.0, which isn't chosen). The binary links that code, so it is a combined work.
+- **How it's kept to one crate.** The crate sets its own `license = "AGPL-3.0-only"` instead of
+  inheriting the workspace's, and has `LICENSE-AGPL-3.0`, a `README.md` explaining the license,
+  and `THIRD-PARTY`, the notices and source offer. `whatsapp-rust` is a dependency of this crate
+  alone, not of `[workspace.dependencies]`, and nothing depends on the plugin: it is a binary run
+  as its own process, which talks to the core over gRPC (`giles-plugin-sdk`) and is found by
+  name. `license_tests` checks the license field, that `THIRD-PARTY` names the pinned revision,
+  and that no other manifest mentions the plugin or the library.
+- **The image.** It ships the plugin binary, so the OCI license label is `(MIT OR Apache-2.0) AND
+  AGPL-3.0-only`, and the license texts and `THIRD-PARTY` (the AGPL source offer: the repository
+  at the image's commit, and the pinned library revision) are in `/usr/share/doc/giles/`
+  ([Container Image](container-image.md)).
+- **Not legal advice.** This records how the code is licensed and what the project does about it.
+  A decision to relicense the plugin or drop the library would change this section, the crate's
+  `license`, the image label, and `ci.yml` together.
+
 ## Modules
 
 | Module      | Contents                                                                           |

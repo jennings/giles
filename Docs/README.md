@@ -19,6 +19,13 @@ Giles is under construction. Chapters are added as the features they describe la
   two differ, the plan wins, and where the implementation differs from the plan, the User Guide and
   Technical chapters describe what was actually built.
 
+## License
+
+Giles is licensed under `MIT OR Apache-2.0` (`LICENSE-MIT`, `LICENSE-APACHE`), except
+`plugins/giles-channel-whatsapp`, which is `AGPL-3.0-only` because it links AGPL-licensed code
+([Licensing](technical/whatsapp.md#licensing)). The plugin is a separate process, and nothing else
+in the repository depends on it.
+
 The book is built with [mdBook](https://rust-lang.github.io/mdBook/) from the `Docs/` directory of
 the repository:
 

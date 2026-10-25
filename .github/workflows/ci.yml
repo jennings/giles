@@ -110,7 +110,7 @@ jobs:
           tags: |
             type=raw,value=latest
           labels: |
-            org.opencontainers.image.licenses=MIT OR Apache-2.0
+            org.opencontainers.image.licenses=(MIT OR Apache-2.0) AND AGPL-3.0-only
       # amd64 only: an arm64 Rust release build under QEMU emulation is too slow.
       - name: Build
         uses: docker/build-push-action@v7
@@ -131,6 +131,9 @@ jobs:
           docker run --rm --entrypoint sh "$TEST_TAG" -c \
             'ls -l /usr/local/bin/giles-channel-irc /usr/local/bin/giles-channel-email \
              /usr/local/bin/giles-channel-whatsapp'
+          docker run --rm --entrypoint sh "$TEST_TAG" -c \
+            'ls -l /usr/share/doc/giles/LICENSE-MIT /usr/share/doc/giles/LICENSE-APACHE \
+             /usr/share/doc/giles/LICENSE-AGPL-3.0 /usr/share/doc/giles/THIRD-PARTY'
           # A new named volume takes /data's ownership (the giles user) from the image.
           docker run --rm --volume giles-smoke:/data --entrypoint sh "$TEST_TAG" -c \
             'printf "[core]\nhttp_listen = \"0.0.0.0:8080\"\n\n[owner]\nidentities = [\"web:owner\"]\n" > /data/giles.toml'

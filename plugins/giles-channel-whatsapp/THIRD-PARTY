@@ -1,0 +1,40 @@
+giles-channel-whatsapp: third-party notices and source offer
+=============================================================
+
+The `giles-channel-whatsapp` binary is licensed under the GNU Affero General Public License,
+version 3 only (AGPL-3.0-only). The text is in LICENSE-AGPL-3.0, next to this file.
+
+Why: the binary includes the crate `wacore-libsignal` from the whatsapp-rust project, a port of
+Signal's libsignal. Its source files say:
+
+    Copyright Signal Messenger, LLC
+    SPDX-License-Identifier: AGPL-3.0-only
+
+(The crate's manifest says MIT; the files are what we follow.) Everything else in the binary is
+under the licenses of its crates (mostly MIT, Apache-2.0, and BSD-style; `Cargo.lock` lists them
+and `cargo metadata` shows each license field).
+
+The other programs in this image (giles, giles-channel-irc, giles-channel-email) are licensed
+under MIT OR Apache-2.0 (LICENSE-MIT and LICENSE-APACHE). They don't link the WhatsApp code: the
+plugin is a separate process that talks to giles over gRPC.
+
+Corresponding source of the giles-channel-whatsapp binary (AGPL section 6)
+--------------------------------------------------------------------------
+
+- Giles, including this plugin, the build files, and Cargo.lock:
+  https://github.com/jennings/giles
+  at the commit named in the image's `org.opencontainers.image.revision` label (the image tag
+  `sha-<first 7 characters of the commit>` names the same commit).
+- whatsapp-rust, including wacore-libsignal (in wacore/libsignal), pinned by Cargo.toml and
+  Cargo.lock to the commit
+  9b9fdb7e5c4211cdc7c837abb6a9ae9c597e35c5:
+  https://github.com/oxidezap/whatsapp-rust/tree/9b9fdb7e5c4211cdc7c837abb6a9ae9c597e35c5
+- Every other Rust dependency is the crates.io release recorded in Cargo.lock.
+
+Build it with the pinned toolchain from rust-toolchain.toml:
+`cargo build --release --locked -p giles-channel-whatsapp`.
+
+If you change this plugin and let others use it over a network, AGPL section 13 requires you to
+offer them the source of your version.
+
+This is a statement of how the code is licensed, not legal advice.

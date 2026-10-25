@@ -45,12 +45,16 @@ RUN groupadd --gid 10001 giles \
 
 # Plugin discovery finds the plugins on `$PATH` (PLAN section 7.3), so the data root stays pure data.
 COPY --from=build /out/ /usr/local/bin/
+# The repository is MIT OR Apache-2.0, except plugins/giles-channel-whatsapp, which is
+# AGPL-3.0-only (it links AGPL code): its license text and source offer ship with the binary.
 COPY LICENSE-MIT LICENSE-APACHE /usr/share/doc/giles/
+COPY plugins/giles-channel-whatsapp/LICENSE-AGPL-3.0 plugins/giles-channel-whatsapp/THIRD-PARTY \
+    /usr/share/doc/giles/
 
 LABEL org.opencontainers.image.title="Giles" \
       org.opencontainers.image.description="A personal agent daemon with chat channel plugins." \
       org.opencontainers.image.source="https://github.com/jennings/giles" \
-      org.opencontainers.image.licenses="MIT OR Apache-2.0"
+      org.opencontainers.image.licenses="(MIT OR Apache-2.0) AND AGPL-3.0-only"
 
 ENV GILES_HOME=/data
 VOLUME ["/data"]
