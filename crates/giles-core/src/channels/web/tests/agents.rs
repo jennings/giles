@@ -49,11 +49,15 @@ impl giles_types::Provider for ListingProvider {
 }
 
 impl Env {
-    fn root(&self) -> &DataRoot {
+    pub(super) fn root(&self) -> &DataRoot {
         self.registry.root()
     }
 
-    fn agents_router(&self, manager: &Arc<AgentManager>, user: Option<WebUser>) -> axum::Router {
+    pub(super) fn agents_router(
+        &self,
+        manager: &Arc<AgentManager>,
+        user: Option<WebUser>,
+    ) -> axum::Router {
         let app = self
             .app
             .install_agents(self.app.install(RouterBuilder::new()), manager.clone())
@@ -64,12 +68,12 @@ impl Env {
         }
     }
 
-    fn manager(&self) -> Arc<AgentManager> {
+    pub(super) fn manager(&self) -> Arc<AgentManager> {
         Arc::new(AgentManager::new(self.registry.clone()))
     }
 
     /// `method path` as the owner; the status and body. Every answer is `no-store`.
-    async fn agents_call(
+    pub(super) async fn agents_call(
         &self,
         manager: &Arc<AgentManager>,
         method: Method,
@@ -94,7 +98,7 @@ impl Env {
     }
 
     /// The names in `agents/`.
-    fn agent_dirs(&self) -> Vec<String> {
+    pub(super) fn agent_dirs(&self) -> Vec<String> {
         let mut names: Vec<String> = std::fs::read_dir(self.root().agents_dir())
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())

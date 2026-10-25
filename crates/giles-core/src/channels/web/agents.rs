@@ -1,5 +1,5 @@
-//! The agent pages (TASKS.md 5.1): every agent, one agent's configuration and files, and the form
-//! that creates an agent while the core runs. Next to the admin pages (`admin.rs`) and like them:
+//! The agent pages (TASKS.md 5.1, 5.4): every agent, one agent's configuration and files, and the
+//! forms that create and edit an agent while the core runs. Next to the admin pages (`admin.rs`) and like them:
 //! behind the login, the owner only, every answer `no-store`, the form post CSRF-checked.
 //!
 //! The pages call the core's agent management ([`crate::agents`]) in-process. File contents are
@@ -23,8 +23,9 @@ use super::admin::{forbidden, may_administer};
 use super::auth::{WebUser, check_csrf};
 use super::pages::{WebApp, agent_label, error_page, no_store};
 use crate::agents::{
-    AgentFile, AgentManager, Content, CreateError, DEFAULT_SOUL, MAX_FILE_BYTES, MAX_FILES,
-    MAX_TOTAL_BYTES, NewAgent, agent_id_from_name, list_files, split_list,
+    AgentEdit, AgentFile, AgentForm, AgentManager, Content, CreateError, DEFAULT_SOUL, EditError,
+    MAX_FILE_BYTES, MAX_FILES, MAX_TOTAL_BYTES, NewAgent, agent_id_from_name, list_files,
+    split_list,
 };
 use crate::config::AgentConfig;
 use crate::http::{self, RouterBuilder};
@@ -51,6 +52,7 @@ impl WebApp {
                 .route("/admin/agents", get(agents_page).post(create))
                 .route("/admin/agents/new", get(new_agent_page))
                 .route("/admin/agents/{agent}", get(agent_page))
+                .route("/admin/agents/{agent}/edit", get(edit_page).post(edit))
                 .with_state(AgentPages { manager })
                 .route_layer(auth)
                 .route_layer(map_response(async |response: Response| no_store(response))),
@@ -348,6 +350,170 @@ async fn create(
                 "Agent not created",
                 "Giles couldn't write the agent's files. The error is in its log.",
             )
+        }
+    }
+}
+
+/// The edit form's fields, as posted and as shown (again after an error). The lists are the text
+/// the owner types, separated by commas.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct EditForm {
+    csrf: Option<String>,
+    name: String,
+    models: String,
+    tools: String,
+    ask: String,
+    timezone: String,
+    soul: String,
+    /// What the form was rendered from ([`AgentForm::version`]), posted back unchanged.
+    version: String,
+}
+
+impl EditForm {
+    /// The form for an agent as its files have it.
+    fn of(agent: AgentForm) -> Self {
+        let list = |items: &[String]| items.join(", ");
+        Self {
+            csrf: None,
+            models: list(&agent.models),
+            tools: list(&agent.tools),
+            ask: list(&agent.ask),
+            name: agent.name,
+            timezone: agent.timezone,
+            soul: agent.soul,
+            version: agent.version,
+        }
+    }
+}
+
+#[derive(Template)]
+#[template(path = "web/admin_agent_edit.html")]
+struct EditAgentPage<'a> {
+    csrf: &'a str,
+    id: &'a str,
+    label: String,
+    form: &'a EditForm,
+    error: Option<String>,
+    /// The files changed since the form was opened: offer a reload.
+    stale: bool,
+    /// `<provider>/<model>` the providers list, offered as suggestions.
+    known_models: Vec<String>,
+}
+
+async fn render_edit_form(
+    pages: &AgentPages,
+    user: &WebUser,
+    id: &str,
+    form: &EditForm,
+    error: Option<String>,
+    stale: bool,
+) -> Response {
+    let config = pages.manager.config().get();
+    let label = AgentId::new(id)
+        .map(|agent| agent_label(&config, &agent))
+        .unwrap_or_else(|_| id.to_owned());
+    http::render(&EditAgentPage {
+        csrf: &user.csrf,
+        id,
+        label,
+        form,
+        error,
+        stale,
+        known_models: pages.manager.known_models().await,
+    })
+}
+
+/// The page for an agent that can't be edited: gone, or its files can't be edited with the form.
+fn edit_failed(error: &EditError, id: &str) -> Response {
+    match error {
+        EditError::NotFound(_) => error_page(
+            StatusCode::NOT_FOUND,
+            "No such agent",
+            "There is no agent with that name.",
+        ),
+        EditError::Io { .. } | EditError::Task(_) => {
+            error!(agent = %id, error = %error, "editing an agent failed");
+            error_page(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Agent not changed",
+                "Giles couldn't read or write the agent's files. The error is in its log.",
+            )
+        }
+        other => error_page(
+            StatusCode::CONFLICT,
+            "Can't edit this agent",
+            &other.form_message(),
+        ),
+    }
+}
+
+/// `GET /admin/agents/<agent>/edit`: the form, filled in from the agent's files.
+async fn edit_page(
+    State(pages): State<AgentPages>,
+    user: WebUser,
+    Path(agent): Path<String>,
+) -> Response {
+    if !may_administer(&user) {
+        return forbidden();
+    }
+    match pages.manager.edit_form(&agent).await {
+        Ok(form) => render_edit_form(&pages, &user, &agent, &EditForm::of(form), None, false).await,
+        Err(err) => edit_failed(&err, &agent),
+    }
+}
+
+/// `POST /admin/agents/<agent>/edit` (CSRF-checked): saves the edit, then 303 to the agent's page.
+/// A form that can't be saved is shown again with the problem and what was typed (400; 409 if
+/// the files changed since the form was opened), and nothing is written.
+async fn edit(
+    State(pages): State<AgentPages>,
+    user: WebUser,
+    Path(agent): Path<String>,
+    headers: HeaderMap,
+    Form(form): Form<EditForm>,
+) -> Response {
+    if !may_administer(&user) {
+        return forbidden();
+    }
+    if let Err(rejected) = check_csrf(&user, &headers, form.csrf.as_deref()) {
+        return rejected.into_response();
+    }
+    let change = AgentEdit {
+        id: agent.clone(),
+        name: form.name.clone(),
+        models: split_list(&form.models),
+        tools: split_list(&form.tools),
+        ask: split_list(&form.ask),
+        timezone: form.timezone.clone(),
+        // Browsers submit a textarea's line breaks as CRLF; the file keeps plain LF.
+        soul: form.soul.replace("\r\n", "\n"),
+        version: form.version.clone(),
+    };
+    match pages.manager.edit(&change).await {
+        Ok(edited) => Redirect::to(&format!("/admin/agents/{}", edited.id)).into_response(),
+        Err(err @ (EditError::NotFound(_) | EditError::Io { .. } | EditError::Task(_))) => {
+            edit_failed(&err, &agent)
+        }
+        Err(err) => {
+            let stale = matches!(err, EditError::Stale);
+            let status = match err {
+                EditError::Stale | EditError::Unsupported(_) => StatusCode::CONFLICT,
+                _ => StatusCode::BAD_REQUEST,
+            };
+            let mut response = render_edit_form(
+                &pages,
+                &user,
+                &agent,
+                &form,
+                Some(err.form_message()),
+                stale,
+            )
+            .await;
+            if response.status().is_success() {
+                *response.status_mut() = status;
+            }
+            response
         }
     }
 }

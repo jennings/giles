@@ -39,6 +39,7 @@ use crate::sessions::{
 };
 
 mod admin;
+mod agent_edit;
 mod agents;
 mod routes;
 

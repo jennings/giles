@@ -46,10 +46,10 @@ several users and group chats are the design for later; v1 builds this subset of
 - Web login: only the `giles admin login-link` one-time URL and the trusted-proxy header.
 - Tool approvals: answered by the owner.
 - Models: each agent uses the first model in `models`, with no fallback.
-- Config: read at startup; changes need a restart, except agents created in the web UI, which join
-  the running configuration (section 8.7), and routes, which the web UI changes for the next
-  message (section 6.1). Agent Markdown files are read per turn. v1 keeps the owner and instances
-  in `giles.toml`; they move to the web UI later (section 11.2).
+- Config: read at startup; changes need a restart, except agents created and edited in the web UI,
+  which change the running configuration (section 8.7), and routes, which the web UI changes for the
+  next message (section 6.1). Agent Markdown files are read per turn. v1 keeps the owner and
+  instances in `giles.toml`; they move to the web UI later (section 11.2).
 
 Deferred decisions, each with what v1 does meanwhile and when to revisit it, are in
 `Docs/decisions/`: D28, D49, D57, D58, D63, D65, D66.
@@ -1151,10 +1151,17 @@ separate the core from its plugins, which run as the same user.
 v1 reads config at startup and has no reload RPC; reload is deferred (D28). The Users and Pairing
 RPCs belong to multi-user support (section 1.1) and are added to `giles.admin.v1` with it.
 
-The web UI's agent pages (list an agent's configuration and files, create an agent) are owner-only
-admin pages, but have no RPCs yet: they call the core's agent management in-process. A created
-agent is written as `agent.toml` and `SOUL.md`, validated like startup config, and added to the
-running configuration without a reload; nothing else changes until a restart. Web chats can be
+The web UI's agent pages (list an agent's configuration and files, create an agent, edit an agent)
+are owner-only admin pages, but have no RPCs yet: they call the core's agent management in-process.
+A created agent is written as `agent.toml` and `SOUL.md`, validated like startup config, and added
+to the running configuration without a reload; nothing else changes until a restart. An edit
+changes only the keys the form manages (`name`, `models`, `tools`, `ask`, `timezone`) and
+`SOUL.md`, in place: everything else in `agent.toml` (comments, jobs, limits, any other key) stays
+as the owner wrote it. The result is validated like startup config before anything is replaced,
+both files are replaced or neither, and the edit is refused if the files changed on disk since the
+form was opened. The edited agent replaces the old one in the running configuration: chats started
+afterwards use it, and a session already running keeps the tools and `system` it started with
+(section 6.3). Web chats can be
 started with a chosen agent, which routes them to it ahead of the stored routes. Who sees which
 agent file is one per-viewer check: the owner sees all of them; with multi-user support a user sees
 only their own per-user memory.

@@ -42,6 +42,8 @@ Neither half touches the agent loop: posted messages go through the normal inbou
 | `GET /admin/agents/new`        | The form that creates an agent.                                  |
 | `POST /admin/agents`           | Creates the agent (CSRF-checked), 303 to its page.               |
 | `GET /admin/agents/<agent>`    | The agent's settings and files.                                  |
+| `GET /admin/agents/<agent>/edit` | The form, filled in from the agent's files.                    |
+| `POST /admin/agents/<agent>/edit` | Saves the edit (CSRF-checked), 303 to the agent's page.       |
 | `GET /admin/routes`            | Every route in order ([Route Pages](#route-pages)).              |
 | `GET /admin/routes/new`        | The form that adds a route.                                      |
 | `POST /admin/routes`           | Adds the route (CSRF-checked), 303 to the list.                  |
@@ -397,13 +399,13 @@ aren't part of `Status`, and remote URLs can't carry credentials (config validat
 
 ## Agent Pages
 
-TASKS.md 5.1, in `agents.rs`: `web.install_agents(builder, Arc<agents::AgentManager>)`, which
-`serve` calls after `install_admin` with a manager over the runtime's registry (so the chat list,
-reading the same `LiveConfig`, offers a new agent at once). Like the admin pages: the same
+TASKS.md 5.1 and 5.4, in `agents.rs`: `web.install_agents(builder, Arc<agents::AgentManager>)`,
+which `serve` calls after `install_admin` with a manager over the runtime's registry (so the chat
+list, reading the same `LiveConfig`, offers a new agent at once). Like the admin pages: the same
 authentication middleware, `may_administer` (the owner only; a guest gets 403, no login 401) on
 every route including the POST, `no-store` on every answer, and `check_csrf` on the POST. Unlike
-them, they call the core directly (`giles_core::agents`) rather than the admin service: there are
-no agent RPCs yet (PLAN section 8.7).
+them, they call the core directly (`giles_core::agents`) rather than the admin service: there are no
+agent RPCs yet (PLAN section 8.7).
 
 - The list reads the running configuration: id, label (`Name (id)`), models, and links to the
   page and to `/chats/new?agent=<id>` ([Choosing an Agent](#choosing-an-agent)).
@@ -465,6 +467,55 @@ no agent RPCs yet (PLAN section 8.7).
   on disk. An invalid form comes back with `CreateError::form_message` (key and reason, never a
   file path): 409 for a taken id, else 400. Write failures are logged and answered 500.
   The handler stores `SOUL.md` with `\n` line breaks: browsers submit a textarea's as `\r\n`.
+
+### Editing
+
+`AgentManager::edit_form(id)` and `AgentManager::edit(&AgentEdit)` (`agents/edit.rs`), behind
+`GET` and `POST /admin/agents/<agent>/edit` (`EditForm`, `edit_page`, `edit` in `agents.rs`). The
+id in the path must be a configured agent, exactly (anything else, `..` included, is a 404); the
+form has no id field.
+
+- **What the form is rendered from.** The files on disk, not the running configuration: `agent.toml`
+  is read with `toml_edit` for `name`, `models`, `tools`, `ask`, `timezone` (a key that isn't a
+  string or list of strings shows empty), and `SOUL.md` (CRLF shown as LF). `AgentForm::version` is
+  the SHA-256 of both files (name, whether it exists, length, and bytes of each), carried in a
+  hidden field. `read_text` refuses what the form must not write through: a symbolic link (the
+  rename would replace the link), anything but a regular file, more than `MAX_EDIT_FILE_BYTES`
+  (1 MiB), text that isn't UTF-8, and TOML that doesn't parse (`EditError::Unsupported`, a 409
+  page on `GET`).
+- **`edited_toml`.** A pure function from the text and the edit to the new text, with `toml_edit`.
+  A managed key whose value already equals the field is not touched (so an unchanged form gives
+  the file back byte for byte, and the text is returned as is rather than re-serialized when
+  nothing changed); a changed one gets a new value that copies the decor of the old one (the space
+  and the comment after it), keeping its place; a missing one is appended to the top-level
+  table (`toml_edit` prints key-values before sub-tables, so never inside `[[jobs]]`); an empty
+  one (`name`, `tools`, `ask`, `timezone`) is removed. `models` is always written, even empty, so
+  validation says "at least one model". Removing a key takes its leading comment with it, except
+  at the first key of the file (a header: kept) and up to the last blank line above the key
+  (standalone notes: kept); what is kept moves to the next key's decor.
+- **`edit`** (under the manager's one lock, shared with creation and removal): reads the files and
+  returns `EditError::Stale` if `version` differs; checks `SOUL.md`'s length only if it changed
+  (`SoulTooLong`; a hand-written longer file can still have its settings edited); builds the text
+  and validates it with `Config::validate_agent` (`Invalid`); writes only the files that changed,
+  through `commit`: each to `.<name>.edit.tmp` in the agent's directory (fsynced, the mode of the
+  file it replaces), then reads both files again and compares with what it started from (`Stale`
+  again, narrowing the window for a hand edit to the renames), then renames `SOUL.md` and
+  `agent.toml` into place and fsyncs the directory. A failed second rename puts the first file
+  back from the contents read earlier (`restore`); temporary files are removed on every path.
+  Then `LiveConfig::replace_agent`. The form's `\r\n` become `\n` before the comparison, so a
+  `SOUL.md` the owner didn't touch isn't rewritten.
+- **Failures** come back as the form with the input and the same `version` (400 for invalid
+  values, 409 for `Stale` and `Unsupported`; `Stale` adds a reload link), or as error pages
+  (404, 500 for `Io` and `Task`, which are logged).
+- **Taking effect.** `replace_agent` swaps in the validated `AgentConfig` and bumps
+  `LiveConfig::subscribe`'s counter but keeps the agent's incarnation. New sessions read the new
+  agent (the session prompt is assembled at a session's first turn); the agent loop's cached prompt
+  of a running session is untouched, so it keeps its tools and `system` until compaction rebuilds
+  `system` (PLAN section 6.3). The scheduler reads the agent again at every job run and restarts the
+  agent's config job tasks only if its `[[jobs]]` changed ([Scheduler](scheduler.md#timing)), which
+  also covers `[[jobs]]` the owner changed by hand before saving the form (the whole file is
+  loaded). Core tools and the session manager's `AgentPolicies` read the live configuration at each
+  use.
 
 The new agent is usable at once because everything that looks agents up reads the running
 configuration: the agent loop and core tools through `Registry::config()`, the session manager's

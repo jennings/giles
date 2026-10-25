@@ -18,7 +18,7 @@
 <tr id="agent-{{ agent.id }}">
 <td><a href="/admin/agents/{{ agent.id }}">{{ agent.label }}</a></td>
 <td><code>{{ agent.models }}</code></td>
-<td><a href="/chats/new?agent={{ agent.id }}">Chat</a></td>
+<td><a href="/chats/new?agent={{ agent.id }}">Chat</a> <a href="/admin/agents/{{ agent.id }}/edit">Edit</a></td>
 </tr>
 {%- endfor %}
 </tbody>

@@ -1,0 +1,31 @@
+{% extends "layout.html" %}
+
+{% block title %}Edit {{ id }} - Agents - Giles{% endblock %}
+
+{% block content %}
+{% include "web/admin_nav.html" %}
+<h1>Edit {{ label }}</h1>
+{%- if let Some(error) = error %}
+<p class="error" role="alert">{{ error }}</p>
+{%- endif %}
+{%- if stale %}
+<p><a href="/admin/agents/{{ id }}/edit">Reload the current values</a>. What you typed here is not saved.</p>
+{%- endif %}
+<form class="agent-form" method="post" action="/admin/agents/{{ id }}/edit">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="version" value="{{ form.version }}">
+<label for="name">Name</label>
+<input id="name" name="name" value="{{ form.name }}">
+<p class="detail">The display name, such as <code>Jeeves</code>. Empty for none.</p>
+<span class="label">Id</span>
+<code>{{ id }}</code>
+<p class="detail">The id is the agent's directory name, <code>agents/{{ id }}/</code>, so it can't be changed. To use another id, create a new agent and remove this one.</p>
+{% include "web/admin_agent_fields.html" %}
+<label for="soul">SOUL.md</label>
+<textarea id="soul" name="soul" rows="12">
+{{ form.soul }}</textarea>
+<p class="detail">Who the agent is: its instructions, in Markdown.</p>
+<p class="detail">Saving changes only the settings above and <code>SOUL.md</code>. Everything else in <code>agent.toml</code> stays as written: comments, jobs, limits, and any other setting. A setting you empty is removed from the file. The change applies to chats started afterwards; a chat already going keeps the tools and instructions it started with.</p>
+<button type="submit">Save</button>
+</form>
+{% endblock %}

@@ -91,7 +91,7 @@ reports that it's connected, the code disappears and the reloading stops.
 ## Agents
 
 **Agents** in the admin pages' menu (`/admin/agents`) lists every agent with its models, a link
-to its page, and **Chat** to start a chat with it. Only the owner can open these pages.
+to its page, **Chat** to start a chat with it, and **Edit**. Only the owner can open these pages.
 
 An agent's page shows its models, tools, and time zone, then every file in `agents/<agent>/`:
 `agent.toml`, `SOUL.md`, `MEMORY.md`, what it remembers about each user
@@ -133,6 +133,39 @@ form comes back with the problem and nothing is written. Otherwise Giles writes
 with it from its page or the chat list. It runs with the defaults for everything the form doesn't
 ask (see [Configuration](configuration.md)); edit `agent.toml` by hand for the rest, which, like
 any other configuration change, takes effect at the next restart.
+
+### Editing an agent
+
+**Edit**, on the list and on an agent's page, opens the same form filled in from the agent's files
+(`agent.toml` and `SOUL.md`) as they are on disk now. The **Id** is shown but can't be changed: it
+is the agent's directory name, `agents/<id>/`. To use another id, create a new agent and remove the
+old one.
+
+Giles checks the edit as it checks a new agent or a hand-written `agent.toml` at startup. If
+something is wrong, the form comes back with the problem and what you typed, and the files are left
+as they were. Otherwise it saves, and the agent changed without a restart:
+
+- A chat you start afterwards uses the new models, tools, ask list, time zone, and `SOUL.md`, and so
+  does the next run of the agent's [jobs](configuration.md#jobs) (they're read when they run). A
+  chat already going keeps the tools and instructions it started with; use `/new` to start a fresh
+  one, or let it be (`SOUL.md` is read again when a long chat is compacted).
+- Giles changes only what the form manages: `name`, `models`, `tools`, `ask`, `timezone`, and
+  `SOUL.md`. Everything else in `agent.toml` stays as you wrote it: comments, `[[jobs]]`,
+  `compaction_model`, `busy_mode`, `memory_cap`, the iteration limits, `idle_reset`, and any
+  setting added later. A setting you leave as it was isn't rewritten at all, and one you empty
+  (name, tools, ask first, time zone) is removed from the file. A comment right above a removed
+  setting goes with it, except the comments at the very top of the file and any set off by a blank
+  line.
+- Both files are written, or neither: Giles writes each to a temporary file and moves them into
+  place, and puts the first back if the second fails.
+- If you edit `agent.toml` or `SOUL.md` by hand while the form is open, saving the form is
+  refused ("changed on disk") rather than overwriting your change. The form stays as you typed it,
+  with a link to reload the current values.
+- A file Giles won't write through is left to you, and the form says so: an `agent.toml` that
+  isn't valid TOML, a file bigger than 1 MiB, one that isn't UTF-8, and a `SOUL.md` or `agent.toml`
+  that is a symbolic link.
+- Changing `[[jobs]]` or other settings by hand still needs a restart to take effect (unless you
+  then save this form, which loads the whole file).
 
 ## Routes
 

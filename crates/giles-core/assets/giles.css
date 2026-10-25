@@ -57,6 +57,11 @@ button,
   gap: 1rem;
 }
 
+.page-head .actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
 /* The chat list. */
 .chats {
   list-style: none;
@@ -251,7 +256,8 @@ button,
   max-width: 40rem;
 }
 
-.agent-form label {
+.agent-form label,
+.agent-form .label {
   font-weight: 600;
   margin-top: 0.6rem;
 }
