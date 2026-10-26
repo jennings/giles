@@ -16,6 +16,7 @@
 - [IRC](user/irc.md)
 - [Email](user/email.md)
 - [WhatsApp](user/whatsapp.md)
+- [Discord](user/discord.md)
 - [Skills and Memory Files](user/skills-and-memory.md)
 - [Writing a Plugin](user/writing-a-plugin.md)
 

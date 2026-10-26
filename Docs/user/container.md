@@ -1,9 +1,9 @@
 # Running in a Container
 
 Giles can run as a Linux container. The image holds `giles` and the first-party channel plugins,
-[IRC](irc.md), [Email](email.md), [WhatsApp](whatsapp.md), and Discord, so configured instances of
-them start without installing anything. The built-in web channel and model providers are part of
-`giles` itself.
+[IRC](irc.md), [Email](email.md), [WhatsApp](whatsapp.md), and [Discord](discord.md), so
+configured instances of them start without installing anything. The built-in web channel and model
+providers are part of `giles` itself.
 
 ## Getting the Image
 
@@ -110,11 +110,10 @@ page ([Linking a Channel](web.md#linking-a-channel)) for the QR code, or set `li
 ([WhatsApp](whatsapp.md#linking)).
 
 The Discord plugin is just as inert until `giles.toml` has an instance of it, and it needs no
-linking: it takes a bot token from `secrets.toml` or the container's environment
-([Secrets From the Environment](#secrets-from-the-environment)). It reaches Discord over outbound
-HTTPS, so no port needs publishing for it, and it keeps its catch-up state in
-`/data/data/plugins/<instance>/` with the rest of `/data`. It adds nothing to the licensing above:
-it is `MIT OR Apache-2.0` like the rest.
+linking: put the bot token in `secrets.toml` or the container's environment
+([Discord](discord.md#the-token)). It reaches Discord over outbound HTTPS, so no port needs
+publishing for it, and it keeps its catch-up state in `/data/data/plugins/<instance>/` with the
+rest of `/data`. It adds nothing to the licensing above: it is `MIT OR Apache-2.0` like the rest.
 
 The plugin sandbox works in the container with Docker's default security settings; no
 `--privileged` or extra capabilities are needed. It does need Landlock in the host's kernel, since a

@@ -42,6 +42,8 @@ tonic.workspace = true
 # The `log` crate's records (`hyper`, `reqwest`) into the captured `tracing` output of
 # `tests/logs.rs`, which is where the plugin's own `main` sends them too.
 tracing-log = "0.2"
+# The guide's TOML examples (`tests/docs.rs`).
+toml.workspace = true
 # A Gateway server for `tests/gateway.rs`.
 tokio-websockets = { version = "0.13.3", features = ["server"] }
 
