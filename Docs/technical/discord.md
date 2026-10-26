@@ -628,6 +628,8 @@ as the IRC plugin's do; nothing in it is an API for anyone else.
 | `config` | `Config` as written (unknown keys refused) and `Settings` as validated; `Secret`, whose `Debug` is `<redacted>` |
 | `client` | The `Discord` trait and `GatewayEvent`: the seam |
 | `status` | `classify`: a Gateway event to `Up`, `Down`, or `Final(ChannelStatus)`; the status messages |
+| `state` | `StateFile`: `discord-state.json`, the DM channels, their cursors and users ([The State File](#the-state-file)) |
+| `snowflake` | Snowflake arithmetic: the time of an id, the first id of a time |
 | `session` | `Session`, `Timing`, and `run`: the task that owns the connection ([State Machine](#state-machine)) |
 | `channel` | `DiscordChannel` (the SDK's `Channel`), `configure`, `configure_with`, and the `SessionSlot` that lets `main` stop the session |
 | `fake` | `FakeDiscord`, the scripted client for tests |
@@ -671,6 +673,28 @@ sketch:
 - `next_event` can be dropped while pending without losing an event (the session does, to stop),
   and a client that isn't polled doesn't reconnect: both are properties of `twilight-gateway`'s
   `Shard` that the trait states as its contract.
+
+### The State File
+
+`state::StateFile` is the plugin's one persistent file, `<data dir>/discord-state.json`, in the
+format under [Catch-Up](#catch-up) (`version` 1; ids as strings). It is a cloneable handle on a
+map from DM channel id to `{ cursor, user }`, shared by everything that needs it:
+
+- `advance(channel, message)` moves a cursor forward (never back) and adds the channel if it is new.
+- `record_dm(channel, user)` adds a channel, or sets its user, without touching the cursor. It is
+  what a send calls after Create DM (issue #17), and what the inbound path calls for the first
+  message of a channel it hasn't seen.
+- `channels()`, `get(channel)`, and `channel_for_user(user)` read it.
+
+Every change that changes something is written before the call returns (a call that changes
+nothing writes nothing): a temporary file in the same directory, `fsync`, rename over the state
+file, `fsync` of the directory. The write is synchronous: the file is a few kilobytes, and the
+calls come from the one task that hands events to the SDK and from the sends. A failed write is
+logged at `warn` and the change stays in memory, so the next change writes it again; the worst
+case is a cursor that is behind after a crash, which costs a few messages fetched twice and
+deduplicated. A file that doesn't read, doesn't parse, has another `version`, or holds an id that
+isn't a number is renamed to `discord-state.json.corrupt` (replacing an older one) and the plugin
+starts empty, never deleting it. Unknown fields are ignored.
 
 ### State Machine
 
