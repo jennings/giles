@@ -14,6 +14,8 @@ use serde_json::{Value, json};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_websockets::{CloseCode, Message, ServerBuilder, WebSocketStream};
 
+pub mod rest;
+
 /// A token-shaped string for tests. Not a real credential.
 pub const TOKEN: &str = "MTIzNDU2.Gabcde.not-a-real-token-1234567890";
 
@@ -157,6 +159,11 @@ pub fn settings() -> Settings {
 /// A client pointed at the Gateway at `url`.
 pub fn client(url: &str) -> RealDiscord {
     RealDiscord::with_gateway_url(&settings(), url)
+}
+
+/// A client whose REST calls go to `rest_host` (`127.0.0.1:<port>`) and whose Gateway is not used.
+pub fn rest_client(rest_host: &str) -> RealDiscord {
+    RealDiscord::with_urls(&settings(), "ws://127.0.0.1:9", rest_host)
 }
 
 pub async fn next(client: &RealDiscord) -> Option<GatewayEvent> {

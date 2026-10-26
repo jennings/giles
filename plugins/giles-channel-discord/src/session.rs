@@ -178,6 +178,7 @@ pub async fn run(session: Session) {
                         dropped_at = None;
                         reporter.report(status).await;
                     }
+                    Outcome::Unchanged => {}
                 }
             }
         }

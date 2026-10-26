@@ -643,20 +643,31 @@ twilight Shard ── real ──GatewayEvent──▶ session ──ChannelEven
 ### The Seam as Built
 
 [The Client Seam](#the-client-seam) lists the six methods the finished plugin needs. The trait
-today has the two that the Gateway connection needs, `next_event` and `shutdown`. `create_message`
-and `create_dm` (issue #17), `messages_after` (issue #16), and `download` (issue #18) are added
-by the issue that calls them, together with their `real` implementations, their fake, and their
-tests: a method defined now would have no caller, and its real implementation would be a stub that
-looks like it works. `twilight-http` and `twilight-model` are likewise added by those issues. Two
-deliberate differences from the sketch:
+today has `next_event` and `shutdown` (the Gateway connection, issue #15) and `messages_after`
+(channel history for catch-up, issue #16). `create_message` and `create_dm` (issue #17) and
+`download` (issue #18) are added by the issue that calls them, together with their `real`
+implementations, their fake, and their tests: a method defined now would have no caller, and its
+real implementation would be a stub that looks like it works. Ids are plain `u64`s (the sketch's
+`ChannelId`, `MessageId`, and `UserId` would only rename them). Deliberate differences from the
+sketch:
 
-- `GatewayEvent` is `Ready { user_id }`, `Resumed`, and `Closed { code: Option<u16> }`;
-  `Message` arrives with issue #16. `Closed` has no `fatal` or `reconnecting` flag: whether a close
+- `GatewayEvent` is `Ready { user_id }`, `Resumed`, `Message(DiscordMessage)`, and `Closed { code:
+  Option<u16> }`. `Closed` has no `fatal` or `reconnecting` flag: whether a close
   code is final is the plugin's policy (`status::classify`, the table under [Status](#status)),
   tested against the fake, rather than a flag the client sets. The client agrees with it by
   construction: the codes the policy calls final (4004, 4010 to 4014) are the ones
   `twilight-gateway` ends its stream on, and a stream that ends without one is an error status of
   its own.
+- `messages_after` returns a `Page { messages, received, last }`. `messages` are the ones the plugin
+  could read, **oldest first** whatever the order on the wire (`real` sorts them, so no caller has
+  to know Discord sends them newest first). `received` and `last` are the count and the highest id
+  of the raw JSON list: the library's models are strict, so a message that doesn't deserialize is
+  skipped with a warning, and paging goes by what Discord sent. A full page with one unreadable
+  message is still full, and the next request starts after its highest id. `RestError` is as the
+  sketch says (`Unauthorized`, `Api { status, code }`, `RateLimited`, `TooLarge`, `Transport`); a
+  call that outlasts the plugin's 60 seconds (the library queues behind a rate limit and sends a 429
+  again without limit) is `RateLimited`, and an error response the library can't parse as Discord's
+  JSON error (a proxy's HTML page) is `Transport`, since the library keeps no status for it.
 - `next_event` can be dropped while pending without losing an event (the session does, to stop),
   and a client that isn't polled doesn't reconnect: both are properties of `twilight-gateway`'s
   `Shard` that the trait states as its contract.
@@ -749,17 +760,20 @@ can have installed the provider first, checks it.
 
 ### Dependencies
 
-`twilight-gateway` 0.17.1 only, with default features off and `rustls-webpki-roots` (the manifest
-says why); no `twilight-http` and no `twilight-model` yet, since nothing here calls REST or names
-a model type. New to `Cargo.lock`: `twilight-gateway`, `twilight-gateway-queue`, `twilight-model`,
-`ordered-float` 2, `serde-value`, `serde_repr`, and `sha1_smol`.
+`twilight-gateway` and `twilight-http` 0.17.1, with default features off and `rustls-webpki-roots`
+(the manifest says why), and `twilight-model` 0.17.1 (the models of both; only `real` names them).
+`serde_json` is a normal dependency for the state file and the history pages. New to `Cargo.lock`
+with the skeleton: `twilight-gateway`, `twilight-gateway-queue`, `twilight-model`,
+`ordered-float` 2, `serde-value`, `serde_repr`, and `sha1_smol`; with REST (issue #16):
+`twilight-http`, `twilight-http-ratelimiting`, and `twilight-validate`.
 `tokio-websockets` was already in the tree through the WhatsApp plugin; it gains `fastrand`,
 `sha1_smol`, and `webpki-roots` there. All are MIT, Apache-2.0, ISC, BSD-3-Clause, or
 CDLA-Permissive-2.0, as [Licence Check](#licence-check) says for the whole tree, so the licensing
 of the repository is unchanged. `cargo tree -d` shows one `rustls` (0.23.46), one `rustls-webpki`,
 and one `aws-lc-rs` for the plugin, no `ring` in its tree, and no duplicate of anything heavy
 (the duplicates it lists, `hashbrown` and `syn`, are in the workspace already). The tests add
-`tokio-websockets` with its `server` feature as a dev-dependency.
+`tokio-websockets` with its `server` feature as a dev-dependency, and `tokio`'s `io-util` for the
+REST server of `tests/loopback/rest.rs`.
 
 ### Running the Tests
 
@@ -781,8 +795,8 @@ No test contacts Discord, and none needs a token or a network beyond loopback.
   `tracing` caches whether a call site is enabled, which makes a subscriber installed for one test
   unreliable next to tests without one.
 - `tests/gateway.rs`: `RealDiscord` against a Gateway server written in the test on loopback
-  (`ConfigBuilder::proxy_url`, which the shard also uses for the `ws://` URL of this server; the
-  REST override is for the issues that use REST): Hello, Identify (the token and exactly the
+  (`ConfigBuilder::proxy_url`, which the shard also uses for the `ws://` URL of this server):
+  Hello, Identify (the token and exactly the
   `DIRECT_MESSAGES` intent), heartbeats and ACKs, `Ready`, a close with 4004 and the end of the
   stream, a dropped connection resumed with the same session, an invalid session that Identifies
   again, a reconnect request that resumes, a server that isn't there, and the clean close at
@@ -790,7 +804,14 @@ No test contacts Discord, and none needs a token or a network beyond loopback.
   `tests/loopback/mod.rs`, shared with `tests/logs.rs`. It plays Discord from its documentation, so
   it shows that the glue does what the library does, not that Discord behaves so (issue #20). The
   shard's one-second delay before each connect makes it take a few seconds.
-- `real`: the conversions from the library's events, from a documented READY payload.
+- `tests/rest.rs`: `RealDiscord::messages_after` against a REST server written in the test on
+  loopback (`ClientBuilder::proxy` with plain HTTP, `tests/loopback/rest.rs`): the request (path,
+  `after` and `limit`, the `Bot` authorization, a `Discord` user agent), a page sent newest first
+  and handed over oldest first, an id of 0 asked for as 1, API errors with status and code, a body
+  that isn't JSON, a 401 (and nothing more sent after it), a 429 waited out with its rate limit
+  headers, a message the library can't read, and a server that isn't there.
+- `real`: the conversions from the library's events (a documented READY payload and a DM with a
+  reply, a file, and a sticker), a history page, and the 60 second bound on a REST call.
 
 ## What Needs a Real Bot
 

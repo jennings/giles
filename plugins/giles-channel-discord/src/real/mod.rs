@@ -1,11 +1,13 @@
-//! The Discord client on `twilight-gateway`: the only code that touches the library's types.
+//! The Discord client on `twilight-gateway` and `twilight-http`: the only code that touches the
+//! library's types.
 //!
 //! It is thin on purpose. The decisions (what to report, how long to wait before reconnecting,
-//! what is final) are in [`status`](crate::status) and [`session`](crate::session) and are tested
-//! against a fake client; this file maps the library's events to the plugin's and closes the
-//! shard. [`convert`] is pure and tested from JSON fixtures of the documented payloads, and
-//! `tests/gateway.rs` drives the whole client against a Gateway server of its own on loopback.
-//! Nothing here has talked to Discord itself (issue #20).
+//! what is final, what to deliver) are in [`status`](crate::status), [`session`](crate::session),
+//! and [`inbound`](crate::inbound) and are tested against a fake client; this file maps the
+//! library's events to the plugin's, closes the shard, and makes the REST calls. [`convert`] is
+//! pure and tested from JSON fixtures of the documented payloads, and `tests/gateway.rs` and
+//! `tests/rest.rs` drive the whole client against a Gateway and a REST server of their own on
+//! loopback. Nothing here has talked to Discord itself (issue #20).
 
 use std::pin::Pin;
 use std::task::Poll;
@@ -19,9 +21,13 @@ use twilight_gateway::error::{ReceiveMessageError, ReceiveMessageErrorType};
 use twilight_gateway::{
     CloseFrame, ConfigBuilder, Event, EventTypeFlags, Intents, Message, Shard, ShardId, ShardState,
 };
+use twilight_http::Client as Http;
 
-use crate::client::{Discord, GatewayEvent};
+use crate::client::{Discord, GatewayEvent, Page, RestError};
 use crate::config::Settings;
+
+mod message;
+mod rest;
 
 /// What the plugin asks Discord for: direct messages. Not `MESSAGE_CONTENT`: Discord delivers the
 /// content of a bot's DMs without it, so no privileged intent has to be enabled in the Developer
@@ -31,7 +37,9 @@ const INTENTS: Intents = Intents::DIRECT_MESSAGES;
 /// The events the client deserializes; `twilight-gateway` skips the rest without parsing them.
 /// Closes always come through. Reconnect requests and invalid sessions are handled inside the
 /// shard, which closes the connection, and the close is what the plugin sees.
-const EVENTS: EventTypeFlags = EventTypeFlags::READY.union(EventTypeFlags::RESUMED);
+const EVENTS: EventTypeFlags = EventTypeFlags::READY
+    .union(EventTypeFlags::RESUMED)
+    .union(EventTypeFlags::MESSAGE_CREATE);
 
 /// How long [`shutdown`](Discord::shutdown) waits for Discord's answer to the close frame. It must
 /// stay under the second `twilight-gateway` sleeps before every connect: if the peer ends the TCP
@@ -39,9 +47,10 @@ const EVENTS: EventTypeFlags = EventTypeFlags::READY.union(EventTypeFlags::RESUM
 /// back online after it was shut down), and the wait must be over before that can happen.
 const CLOSE_WAIT: Duration = Duration::from_millis(900);
 
-/// A Gateway shard, polled by the session.
+/// A Gateway shard, polled by the session, and a REST client.
 pub struct RealDiscord {
     state: Mutex<State>,
+    http: Http,
 }
 
 /// The shard, and what the client has noticed about it.
@@ -62,35 +71,45 @@ fn install_crypto_provider() {
 }
 
 impl RealDiscord {
-    /// A shard for the bot `settings.token` belongs to. It connects when first polled.
+    /// A shard for the bot `settings.token` belongs to, and a REST client for it. The shard
+    /// connects when first polled.
     ///
     /// Installs the process's default crypto provider first, which is why this is the one place a
     /// connection is set up.
     pub fn new(settings: &Settings) -> Self {
-        install_crypto_provider();
-        Self::from_builder(ConfigBuilder::new(
-            settings.token.expose().to_owned(),
-            INTENTS,
-        ))
+        Self::build(settings, None, None)
     }
 
     /// Like [`new`](Self::new), connecting to the Gateway at `url` (`ws://...`, no TLS) instead of
     /// Discord's. For tests that run a Gateway of their own.
     pub fn with_gateway_url(settings: &Settings, url: &str) -> Self {
-        install_crypto_provider();
-        Self::from_builder(
-            ConfigBuilder::new(settings.token.expose().to_owned(), INTENTS)
-                .proxy_url(url.to_owned()),
-        )
+        Self::build(settings, Some(url), None)
     }
 
-    fn from_builder(builder: ConfigBuilder) -> Self {
+    /// Like [`with_gateway_url`](Self::with_gateway_url), with REST calls going to `rest_host`
+    /// (`127.0.0.1:<port>`, plain HTTP) instead of `discord.com`. For tests that run a REST
+    /// server of their own.
+    pub fn with_urls(settings: &Settings, gateway_url: &str, rest_host: &str) -> Self {
+        Self::build(settings, Some(gateway_url), Some(rest_host))
+    }
+
+    fn build(settings: &Settings, gateway_url: Option<&str>, rest_host: Option<&str>) -> Self {
+        install_crypto_provider();
+        let mut gateway = ConfigBuilder::new(settings.token.expose().to_owned(), INTENTS);
+        if let Some(url) = gateway_url {
+            gateway = gateway.proxy_url(url.to_owned());
+        }
+        let mut http = Http::builder().token(settings.token.expose().to_owned());
+        if let Some(host) = rest_host {
+            http = http.proxy(host.to_owned(), true);
+        }
         Self {
             state: Mutex::new(State {
-                shard: Shard::with_config(ShardId::ONE, builder.build()),
+                shard: Shard::with_config(ShardId::ONE, gateway.build()),
                 up: false,
                 ended: false,
             }),
+            http: http.build(),
         }
     }
 }
@@ -146,6 +165,7 @@ fn convert(event: &Event) -> Option<GatewayEvent> {
             user_id: ready.user.id.get(),
         }),
         Event::Resumed => Some(GatewayEvent::Resumed),
+        Event::MessageCreate(create) => Some(GatewayEvent::Message(message::convert(&create.0))),
         Event::GatewayClose(frame) => Some(GatewayEvent::Closed {
             code: frame.as_ref().map(|frame| frame.code),
         }),
@@ -207,6 +227,10 @@ impl Discord for RealDiscord {
                 }
             }
         }
+    }
+
+    async fn messages_after(&self, channel: u64, after: u64, limit: u8) -> Result<Page, RestError> {
+        rest::messages_after(&self.http, channel, after, limit).await
     }
 
     async fn shutdown(&self) {

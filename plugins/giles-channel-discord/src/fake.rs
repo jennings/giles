@@ -1,6 +1,7 @@
 //! A fake Discord client for tests: the Gateway is a queue the test pushes events into, and the
 //! calls the plugin makes are recorded. For this crate's tests and integration tests only.
 
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -8,9 +9,24 @@ use giles_plugin_sdk::async_trait;
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 
-use crate::client::{Discord, GatewayEvent};
+use crate::client::{Discord, DiscordMessage, GatewayEvent, Page, RestError};
 
-/// A fake Gateway connection. Share it as an `Arc`; every method takes `&self`.
+/// One call of [`Discord::messages_after`] the fake received.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistoryCall {
+    /// The channel asked about.
+    pub channel: u64,
+    /// The message id the page had to follow.
+    pub after: u64,
+    /// The page size asked for.
+    pub limit: u8,
+}
+
+/// A fake Gateway connection and a fake REST API. Share it as an `Arc`; every method takes `&self`.
+///
+/// The Gateway is a queue of events the test pushes. The REST API keeps a message history per
+/// channel and answers [`messages_after`](Discord::messages_after) from it as Discord does
+/// (the messages after the id, oldest first, up to the limit), after any errors the test queued.
 pub struct FakeDiscord {
     events: Mutex<Option<mpsc::UnboundedSender<GatewayEvent>>>,
     queue: tokio::sync::Mutex<mpsc::UnboundedReceiver<GatewayEvent>>,
@@ -18,6 +34,11 @@ pub struct FakeDiscord {
     polled: watch::Sender<usize>,
     shutdowns: AtomicUsize,
     hang_on_shutdown: AtomicBool,
+    history: Mutex<HashMap<u64, Vec<DiscordMessage>>>,
+    history_errors: Mutex<VecDeque<RestError>>,
+    history_calls: Mutex<Vec<HistoryCall>>,
+    history_called: watch::Sender<usize>,
+    history_open: watch::Sender<bool>,
 }
 
 impl Default for FakeDiscord {
@@ -30,6 +51,11 @@ impl Default for FakeDiscord {
             polled: watch::channel(0).0,
             shutdowns: AtomicUsize::new(0),
             hang_on_shutdown: AtomicBool::new(false),
+            history: Mutex::default(),
+            history_errors: Mutex::default(),
+            history_calls: Mutex::default(),
+            history_called: watch::channel(0).0,
+            history_open: watch::channel(true).0,
         }
     }
 }
@@ -80,6 +106,48 @@ impl FakeDiscord {
     pub fn shutdowns(&self) -> usize {
         self.shutdowns.load(Ordering::SeqCst)
     }
+
+    /// Adds `message` to the history of its channel, where [`messages_after`] finds it. Messages
+    /// may be added in any order.
+    ///
+    /// [`messages_after`]: Discord::messages_after
+    pub fn add_history(&self, message: DiscordMessage) {
+        let mut history = self.history.lock().unwrap();
+        let channel = history.entry(message.channel_id).or_default();
+        channel.push(message);
+        channel.sort_by_key(|message| message.id);
+    }
+
+    /// Makes the next [`messages_after`](Discord::messages_after) call that has no error before
+    /// it fail with `error`. Queued errors are used in order, one per call.
+    pub fn fail_history(&self, error: RestError) {
+        self.history_errors.lock().unwrap().push_back(error);
+    }
+
+    /// Holds every [`messages_after`](Discord::messages_after) call (after it has been recorded)
+    /// until [`resume_history`](Self::resume_history), like a slow Discord.
+    pub fn pause_history(&self) {
+        self.history_open.send_replace(false);
+    }
+
+    /// Lets the held [`messages_after`](Discord::messages_after) calls, and later ones, through.
+    pub fn resume_history(&self) {
+        self.history_open.send_replace(true);
+    }
+
+    /// The [`messages_after`](Discord::messages_after) calls so far, in order.
+    pub fn history_calls(&self) -> Vec<HistoryCall> {
+        self.history_calls.lock().unwrap().clone()
+    }
+
+    /// Waits until [`messages_after`](Discord::messages_after) has been called `n` times in all.
+    pub async fn history_called(&self, n: usize) {
+        let mut called = self.history_called.subscribe();
+        called
+            .wait_for(|count| *count >= n)
+            .await
+            .expect("the sender is held");
+    }
 }
 
 #[async_trait]
@@ -92,6 +160,39 @@ impl Discord for FakeDiscord {
         };
         self.polled.send_replace(count);
         self.queue.lock().await.recv().await
+    }
+
+    async fn messages_after(&self, channel: u64, after: u64, limit: u8) -> Result<Page, RestError> {
+        let count = {
+            let mut calls = self.history_calls.lock().unwrap();
+            calls.push(HistoryCall {
+                channel,
+                after,
+                limit,
+            });
+            calls.len()
+        };
+        self.history_called.send_replace(count);
+        self.history_open
+            .subscribe()
+            .wait_for(|open| *open)
+            .await
+            .expect("the sender is held");
+        if let Some(error) = self.history_errors.lock().unwrap().pop_front() {
+            return Err(error);
+        }
+        let history = self.history.lock().unwrap();
+        Ok(history
+            .get(&channel)
+            .map_or_else(Vec::new, |messages| {
+                messages
+                    .iter()
+                    .filter(|message| message.id > after)
+                    .take(usize::from(limit))
+                    .cloned()
+                    .collect()
+            })
+            .into())
     }
 
     async fn shutdown(&self) {

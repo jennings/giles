@@ -27,12 +27,16 @@ pub enum Outcome {
     /// The connection is over for good until the plugin is restarted: report this status and stop
     /// reconnecting.
     Final(ChannelStatus),
+    /// Nothing about the connection: a message arrived, which says what happened in a
+    /// conversation, not how the connection is.
+    Unchanged,
 }
 
 /// What `event` means for the connection.
 pub fn classify(event: &GatewayEvent) -> Outcome {
     match event {
         GatewayEvent::Ready { .. } | GatewayEvent::Resumed => Outcome::Up,
+        GatewayEvent::Message(_) => Outcome::Unchanged,
         GatewayEvent::Closed { code } => match code {
             Some(code) => close(*code),
             None => Outcome::Down,

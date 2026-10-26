@@ -13,20 +13,24 @@ publish = false
 futures.workspace = true
 giles-plugin-sdk.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
-# The Gateway client. Default features off: no `twilight-http` (the Gateway needs no REST call),
-# no `zstd` (a C build for compression DM traffic doesn't need), and the Mozilla roots compiled in
-# (`webpki-roots`) instead of the platform verifier, like every other TLS client in Giles.
+# The Gateway client. Default features off: no `zstd` (a C build for compression DM traffic
+# doesn't need), and the Mozilla roots compiled in (`webpki-roots`) instead of the platform
+# verifier, like every other TLS client in Giles.
 twilight-gateway = { version = "0.17.1", default-features = false, features = ["rustls-webpki-roots"] }
+# The REST client (channel history, and sends). The same features, and no `decompression` (brotli).
+twilight-http = { version = "0.17.1", default-features = false, features = ["rustls-webpki-roots"] }
+# The model types of both. The plugin's own types cross the `Discord` trait; only `real` names these.
+twilight-model = "0.17.1"
 
 [dev-dependencies]
 giles-proto.workspace = true
-serde_json.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["net", "test-util"] }
+tokio = { workspace = true, features = ["io-util", "net", "test-util"] }
 tonic.workspace = true
 # A Gateway server for `tests/gateway.rs`.
 tokio-websockets = { version = "0.13.3", features = ["server"] }
