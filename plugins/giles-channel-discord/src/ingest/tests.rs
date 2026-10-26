@@ -683,6 +683,27 @@ fn a_rejected_token_reports_it_stops_asking_and_releases_every_channel() {
 }
 
 #[test]
+fn a_token_a_send_found_rejected_stops_the_asking_and_releases_every_channel_once() {
+    let mut rig = Rig::with(DAY, |state| {
+        state.record_dm(CHANNEL, USER);
+        state.record_dm(OTHER_CHANNEL, OTHER_USER);
+    });
+    rig.ready();
+    rig.ingest.on_message(dm(200, "one"));
+    rig.ingest
+        .on_message(dm_in(OTHER_CHANNEL, OTHER_USER, 100, "two"));
+
+    let outs = rig.ingest.on_token_rejected();
+    // The session reports the status; the ingest only lets go of what it held back.
+    assert!(statuses(&outs).is_empty());
+    assert_eq!(texts(&outs), ["one", "two"]);
+    assert_eq!(rig.next(), Next::Idle);
+    assert!(rig.ingest.on_token_rejected().is_empty());
+    rig.ready();
+    assert_eq!(rig.next(), Next::Idle);
+}
+
+#[test]
 fn an_answer_nobody_asked_for_is_ignored() {
     let mut rig = Rig::with(DAY, |state| state.record_dm(CHANNEL, USER));
     rig.ready();

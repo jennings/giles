@@ -127,6 +127,8 @@ async fn a_rejected_token_needs_auth_and_is_never_retried() {
     // what keeps Discord from seeing a stream of bad Identifies.
     h.silent_for(HOUR).await;
     assert_eq!(h.client.polls().len(), 1);
+    // REST stops too: Discord asks for no requests with a rejected token.
+    assert!(h.channel.token().is_rejected());
     let handle = h.channel.take_session();
     handle.shutdown(shutdown_wait()).await;
     assert_eq!(h.client.shutdowns(), 1);
@@ -135,6 +137,70 @@ async fn a_rejected_token_needs_auth_and_is_never_retried() {
     let mut restarted = Harness::start().await;
     restarted.client.push(ready());
     assert_eq!(restarted.status().await, ChannelStatus::Connected);
+}
+
+fn needs_auth() -> ChannelStatus {
+    ChannelStatus::NeedsAuth {
+        challenge: AuthChallenge::Url {
+            url: "https://discord.com/developers/applications".into(),
+        },
+        expires_at: None,
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_rest_401_reports_needs_auth_and_the_gateway_session_goes_on() {
+    let mut h = Harness::start().await;
+    h.client.push(ready());
+    assert_eq!(h.status().await, ChannelStatus::Connected);
+
+    h.channel.token().reject();
+    assert_eq!(h.status().await, needs_auth());
+    // Live messages still flow: the Gateway is polled as before. A resumed session doesn't turn
+    // the status back to Connected while sends are refused.
+    h.client.push(GatewayEvent::Resumed);
+    h.silent_for(HOUR).await;
+    assert_eq!(h.client.polls().len(), 3);
+    h.channel.take_session().shutdown(shutdown_wait()).await;
+    assert_eq!(h.client.shutdowns(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn after_a_rest_401_the_status_stays_needs_auth_through_drops_and_reconnects() {
+    let mut h = Harness::start().await;
+    h.client.push(ready());
+    assert_eq!(h.status().await, ChannelStatus::Connected);
+    h.channel.token().reject();
+    assert_eq!(h.status().await, needs_auth());
+
+    // A drop that outlasts the grace period is not "disconnected" over the NeedsAuth, and the
+    // new session that follows is not "connected" over it.
+    h.client.push(closed(1006));
+    h.silent_for(Duration::from_secs(30)).await;
+    h.client.push(ready());
+    h.silent_for(HOUR).await;
+    assert!(h.client.polls().len() >= 3, "the client was polled again");
+    assert!(h.channel.token().is_rejected());
+
+    // The Gateway saying the same (4004) is final and the same status.
+    h.client.push(closed(4004));
+    h.silent_for(HOUR).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_rest_401_while_waiting_to_reconnect_is_reported_and_the_reconnecting_goes_on() {
+    let mut h = Harness::start().await;
+    h.client.push(ready());
+    h.status().await;
+    h.client.push(closed(1006));
+    // The session has taken the close and is in the reconnect delay (1 s).
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(h.client.polls().len(), 2);
+    h.channel.token().reject();
+    assert_eq!(h.status().await, needs_auth());
+    h.client.push(ready());
+    h.silent_for(HOUR).await;
+    assert_eq!(h.client.polls().len(), 4, "the reconnect went on");
 }
 
 #[tokio::test(start_paused = true)]

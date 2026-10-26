@@ -569,6 +569,8 @@ async fn a_rejected_token_during_catch_up_needs_auth_and_live_messages_still_flo
         rig.status().await,
         ChannelStatus::NeedsAuth { .. }
     ));
+    // The sends stop too: a 401 on any REST call means the token is rejected.
+    assert!(rig.channel.token().is_rejected());
     assert_eq!(rig.texts(1).await, ["live while waiting"]);
     // No more requests for anything, including a channel seen for the first time.
     rig.push(GatewayEvent::Message(dm_in(
@@ -578,6 +580,52 @@ async fn a_rejected_token_during_catch_up_needs_auth_and_live_messages_still_flo
         "new",
     )));
     assert_eq!(rig.texts(1).await, ["new"]);
+    assert_eq!(client.history_calls().len(), 1);
+
+    // The Gateway drops and a new session starts: the status stays NeedsAuth (nothing is
+    // announced), no history is asked for, and messages still come live.
+    rig.push(GatewayEvent::Closed { code: Some(1006) });
+    rig.ready();
+    rig.silent_for(Duration::from_secs(120)).await;
+    rig.push(GatewayEvent::Message(dm(900, "after the reconnect")));
+    assert_eq!(rig.texts(1).await, ["after the reconnect"]);
+    assert_eq!(client.history_calls().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_rejected_token_found_by_a_send_stops_catch_up_but_live_messages_still_flow() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = Arc::new(FakeDiscord::default());
+    client.add_history(dm(4000, "never delivered"));
+    let mut rig = Rig::start_with(dir.path(), client.clone(), DAY).await;
+    rig.state.record_dm(CHANNEL, USER);
+    client.pause_history();
+    rig.ready();
+    assert!(is_connected(&rig.status().await));
+    client.history_called(1).await;
+    rig.push(GatewayEvent::Message(dm(5000, "live while waiting")));
+    rig.settled().await;
+
+    // A send gets a 401 while the history request is in flight, as a 401 on the page would: the
+    // request is dropped, nothing more is asked of Discord, and what was held back is delivered.
+    rig.channel.token().reject();
+    assert!(matches!(
+        rig.status().await,
+        ChannelStatus::NeedsAuth { .. }
+    ));
+    assert_eq!(rig.texts(1).await, ["live while waiting"]);
+    client.resume_history();
+    rig.settled().await;
+    assert_eq!(client.history_calls().len(), 1);
+    assert!(rig.channel.token().is_rejected());
+
+    // The Gateway session goes on: a reconnect doesn't announce `Connected` over the NeedsAuth,
+    // and messages still arrive.
+    rig.push(GatewayEvent::Closed { code: Some(1006) });
+    rig.ready();
+    rig.silent_for(Duration::from_secs(120)).await;
+    rig.push(GatewayEvent::Message(dm(4900, "after the reconnect")));
+    assert_eq!(rig.texts(1).await, ["after the reconnect"]);
     assert_eq!(client.history_calls().len(), 1);
 }
 

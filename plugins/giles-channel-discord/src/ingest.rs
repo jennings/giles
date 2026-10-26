@@ -383,6 +383,18 @@ impl Ingest {
         wait.map_or(Next::Idle, Next::Wait)
     }
 
+    /// A send found the token rejected: no more requests, as after a 401 on a page, and every
+    /// channel that was waiting for one is live. The session reports the status itself. Nothing
+    /// happens the second time.
+    pub fn on_token_rejected(&mut self) -> Vec<Out> {
+        let mut outs = Vec::new();
+        if !self.rejected {
+            self.rejected = true;
+            self.stop_fetching(&mut outs);
+        }
+        outs
+    }
+
     /// The answer to `fetch`. One that doesn't belong to a queued request (the session started
     /// over since) is ignored.
     pub fn on_page(

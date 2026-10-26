@@ -19,6 +19,7 @@ use crate::ingest::{Clock, Cursor, Ingest, Params};
 use crate::real::RealDiscord;
 use crate::session::{self, Outgoing, Session, Timing};
 use crate::state::StateFile;
+use crate::token::TokenState;
 
 /// Events buffered for the SDK, which persists each before taking the next. When it's full, the
 /// session waits.
@@ -149,6 +150,7 @@ pub struct DiscordChannel {
     events: Arc<Mutex<mpsc::Receiver<Outgoing>>>,
     state: StateFile,
     stop: CancellationToken,
+    token: Arc<TokenState>,
     task: std::sync::Mutex<Option<JoinHandle<()>>>,
     _guard: DropGuard,
 }
@@ -166,12 +168,14 @@ impl DiscordChannel {
             retry_min: timing.catch_up_retry_min,
             retry_max: timing.catch_up_retry_max,
         });
+        let token = Arc::new(TokenState::default());
         let task = tokio::spawn(session::run(Session {
             client,
             timing,
             out,
             stop: stop.clone(),
             ingest,
+            token: Arc::clone(&token),
         }));
         Self {
             info: ChannelInfo {
@@ -182,9 +186,15 @@ impl DiscordChannel {
             events: Arc::new(Mutex::new(events)),
             state: inbound.state,
             stop: stop.clone(),
+            token,
             task: std::sync::Mutex::new(Some(task)),
             _guard: stop.drop_guard(),
         }
+    }
+
+    /// Whether Discord has rejected the bot token, and the way to say it has.
+    pub fn token(&self) -> &Arc<TokenState> {
+        &self.token
     }
 
     /// The session task, to be stopped and awaited by whoever outlives the channel. Only the first

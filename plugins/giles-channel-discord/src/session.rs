@@ -17,7 +17,11 @@
 //!
 //! The statuses are in [`crate::status`]. A drop is reported only if it outlasts the grace period; a
 //! rejected token and the other closes the client never retries are final: the session reports them
-//! and then only waits to be stopped.
+//! and then only waits to be stopped. A 401 on REST is not final: a send that gets one
+//! ([`TokenState::reject`]) and a history request that gets one both stop all REST (the sends
+//! refuse, nothing is fetched, every channel goes live) and report `NeedsAuth`, but the Gateway
+//! session is still up, so live messages keep arriving, and the status stays `NeedsAuth` through
+//! drops and reconnects until the Gateway itself says the token is bad (4004), or a restart.
 //!
 //! Messages go through [`Ingest`] ([`crate::ingest`]), which decides what is delivered and which
 //! channel's history to fetch next. The session makes the one history request in flight, in the same
@@ -38,6 +42,7 @@ use tokio_util::sync::CancellationToken;
 use crate::client::{Discord, GatewayEvent, Page, RestError};
 use crate::ingest::{Cursor, Fetch, Ingest, Next, Out};
 use crate::status::{self, Outcome};
+use crate::token::TokenState;
 
 /// The session's delays. [`Default`] is what the plugin uses; tests that need other values can
 /// build their own.
@@ -97,6 +102,9 @@ pub struct Session {
     pub stop: CancellationToken,
     /// What is delivered, and what is fetched.
     pub ingest: Ingest,
+    /// Whether Discord has rejected the token: the session ends when a send says so, and says so
+    /// to the sends when the Gateway or a history request does.
+    pub token: Arc<TokenState>,
 }
 
 /// The history request in flight, and what it asked.
@@ -135,6 +143,8 @@ enum Step {
     Fetched(Fetch, Result<Page, RestError>),
     /// A history request has waited out its retry delay.
     RetryDue,
+    /// A send found the token rejected.
+    Rejected,
 }
 
 /// Runs the connection until the channel is stopped: reports statuses, delivers messages and
@@ -147,6 +157,7 @@ pub async fn run(session: Session) {
         out,
         stop,
         mut ingest,
+        token,
     } = session;
     let mut reporter = Reporter::new(out, stop.clone());
     // The delay the next close will impose, and when to poll after the last one.
@@ -163,8 +174,11 @@ pub async fn run(session: Session) {
     let mut finished = false;
     loop {
         let step = if finished {
-            stop.cancelled().await;
-            Step::Stop
+            tokio::select! {
+                biased;
+                () = stop.cancelled() => Step::Stop,
+                () = token.rejection() => Step::Rejected,
+            }
         } else {
             // Start the next history request, or find out when one is due.
             let mut retry_at = None;
@@ -199,6 +213,7 @@ pub async fn run(session: Session) {
                 biased;
                 () = stop.cancelled() => Step::Stop,
                 () = grace_over => Step::GraceOver,
+                () = token.rejection() => Step::Rejected,
                 (request, page) = fetched => Step::Fetched(request, page),
                 () = retry_due => Step::RetryDue,
                 event = poll.as_mut() => Step::Event(event),
@@ -208,11 +223,30 @@ pub async fn run(session: Session) {
             Step::Stop => break,
             Step::GraceOver => {
                 dropped_at = None;
-                reporter.report(status::disconnected()).await;
+                reporter
+                    .report(if token.is_rejected() {
+                        status::rejected_token()
+                    } else {
+                        status::disconnected()
+                    })
+                    .await;
             }
             Step::RetryDue => {}
+            Step::Rejected => {
+                // The same as a 401 on a history page: no more requests, every channel waiting
+                // for one goes live, and the Gateway session goes on.
+                fetch = None;
+                let outs = ingest.on_token_rejected();
+                tracing::error!("Discord rejected the bot token on a REST call");
+                reporter.report(status::rejected_token()).await;
+                reporter.emit(outs).await;
+            }
             Step::Fetched(request, page) => {
                 fetch = None;
+                if matches!(page, Err(RestError::Unauthorized)) {
+                    // The ingest reports the status and stops fetching; the sends stop too.
+                    token.note_rejected();
+                }
                 let outs = ingest.on_page(request, page, Instant::now());
                 reporter.emit(outs).await;
             }
@@ -245,7 +279,15 @@ pub async fn run(session: Session) {
                             }
                             _ => tracing::info!("resumed the Discord session"),
                         }
-                        reporter.report(ChannelStatus::Connected).await;
+                        // A rejected token (a 401 on REST) stays what the owner has to fix,
+                        // however well the Gateway connection is doing.
+                        reporter
+                            .report(if token.is_rejected() {
+                                status::rejected_token()
+                            } else {
+                                ChannelStatus::Connected
+                            })
+                            .await;
                     }
                     Outcome::Down => {
                         let now = Instant::now();
@@ -264,6 +306,10 @@ pub async fn run(session: Session) {
                         tracing::error!("the Discord connection is over: {event:?}");
                         finished = true;
                         dropped_at = None;
+                        if status == status::rejected_token() {
+                            // REST stops too: Discord asks for no more requests with a bad token.
+                            token.note_rejected();
+                        }
                         reporter.report(status).await;
                     }
                     Outcome::Unchanged => {}

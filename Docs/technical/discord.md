@@ -525,9 +525,9 @@ every config error.
 
 | Event | Status | Then |
 | --- | --- | --- |
-| `Ready` (new session) or `Resumed` | `Connected` | Catch-up runs after `Ready`, not after `Resumed` |
+| `Ready` (new session) or `Resumed` | `Connected` (still `NeedsAuth` if REST rejected the token) | Catch-up runs after `Ready`, not after `Resumed` |
 | Close **4004** (authentication failed) | `NeedsAuth { Url("https://discord.com/developers/applications") }` | Final: no reconnect until the plugin is restarted with a new token |
-| REST **401** on any call | The same `NeedsAuth` | Final; REST calls stop (catch-up: no more requests, and every channel goes live) |
+| REST **401** on any call (a send or a history request) | `NeedsAuth` (the same) | Not final: all REST stops (sends refuse, catch-up asks for nothing more and every channel goes live), but the Gateway session goes on, live messages still arrive, and the status stays `NeedsAuth` through drops and reconnects |
 | Close **4014** (disallowed intents) or **4013** (invalid intents) | `Error`: "Discord refused the intents the plugin requests (close 4014/4013); this is a bug or a change at Discord, please report it" | Final. With `DIRECT_MESSAGES` only, neither can happen unless Discord changes DM intent rules. Not `NeedsAuth`: the owner can't fix it |
 | Close **4010**, **4011**, **4012** | `Error` with the code and its meaning (4011: the bot is in too many servers to run unsharded) | Final |
 | Any other close (4000 to 4003, 4005, 4007 to 4009, 1006 and other transport closes, no close frame), Reconnect (op 7), Invalid Session (op 9), a missed heartbeat ACK, a failed connect | Nothing if `Ready` or `Resumed` follows within **10 seconds** (the grace WhatsApp uses); otherwise `Error`: "disconnected from Discord, reconnecting" | The library resumes or re-identifies; the plugin's backoff above applies |
@@ -655,6 +655,7 @@ as the IRC plugin's do; nothing in it is an API for anyone else.
 | `state` | `StateFile`: `discord-state.json`, the DM channels, their cursors and users ([The State File](#the-state-file)) |
 | `snowflake` | Snowflake arithmetic: the time of an id, the first id of a time |
 | `session` | `Session`, `Timing`, and `run`: the task that owns the connection and the history request in flight ([State Machine](#state-machine)) |
+| `token` | `TokenState`: whether Discord rejected the token, shared by the session and everything that calls REST ([A Rejected Token](#a-rejected-token)) |
 | `channel` | `DiscordChannel` (the SDK's `Channel`) and the event stream that moves the cursor, `configure`, `configure_with`, and the `SessionSlot` that lets `main` stop the session |
 | `fake` | `FakeDiscord`, the scripted client for tests: a Gateway queue and a REST history per channel |
 | `real` | `RealDiscord`, the client on `twilight-gateway` and `twilight-http`: the only module with twilight types |
@@ -803,6 +804,7 @@ what `status::classify` says about each event:
 | History answered | Hand it to `Ingest` and send what that returns. The next request is started at the top of the loop |
 | `Closed` with a code the client recovers from (or no code) | Start the grace timer if none is running. Reset the delay to 1 s if this session had been up for a minute. Do not poll the client until the delay is over, then double the delay (cap 5 minutes). A history request in flight goes on: REST doesn't need the Gateway |
 | `Closed` with 4004 | Report `NeedsAuth` (the Developer Portal URL) and stop polling for good |
+| A send reported a 401 (`TokenState::reject`), in any state, even after another final status | Drop the request in flight, release every channel waiting for history (`Ingest::on_token_rejected`), and report `NeedsAuth`; the Gateway is polled as before. The same as a 401 on a history page |
 | `Closed` with 4010 to 4014 | Report an `Error` that says what happened and stop polling for good |
 | The stream ended (`None`) with no final close before it | Report an `Error` ("restart this plugin") and stop polling for good: nothing starts another shard, for the reason in [Rate Limits](#rate-limits) |
 | The grace timer ran out (10 s after the first close with no `Ready` or `Resumed`) | Report `Error` "disconnected from Discord, reconnecting"; the client is still trying |
@@ -844,6 +846,31 @@ by the plugin's delay to one per 5 minutes in the end. Reconnect requests (op 7)
 sessions (op 9) are handled by the shard, which sends a close frame (code 1000 for a session that
 can't be resumed, so it Identifies again; 4000 otherwise, so it resumes) and surfaces Discord's
 answering close as a `Closed` event; the plugin relies on that answer to count them.
+
+### A Rejected Token
+
+Discord asks apps to stop making requests once a token is invalid, and `twilight-http` refuses
+every request after its first 401. The plugin makes that one state for every REST caller and the
+Gateway, a `TokenState` that the channel creates and shares with the session:
+
+- A 401 from a send (`reject`) wakes the session, which drops its history request, lets every
+  channel waiting for one go live (`Ingest::on_token_rejected`), and reports `NeedsAuth`. The
+  wake-up is stored, so it isn't lost if the session is busy, and it works after another final
+  status too (the `NeedsAuth` replaces the `Error`, since the owner can act on it).
+- A 401 on a history request makes `Ingest` report `NeedsAuth` and stop fetching, and the session
+  marks the token rejected (`note_rejected`), so sends stop too.
+- A 4004 on the Gateway is final (the session polls nothing more) and marks the token rejected the
+  same way, so sends stop.
+
+So a 401 on REST, of either kind, has one policy: all REST stops and the owner is told, and the
+Gateway session, which Discord hasn't said anything against, goes on, so live messages still
+arrive. The status is `NeedsAuth` whichever way it comes, and it **stays** `NeedsAuth` while the
+token is rejected: a new Gateway session (`Ready` or `Resumed`) does not announce `Connected`
+over it, and a drop that outlasts the grace period does not announce "disconnected" over it, since
+the sends stay refused until the plugin is restarted with a new token. A repeat of the last status
+isn't sent again.
+
+Callers of REST that send check the state before they send, and send nothing once it is set.
 
 ### Shutdown
 
@@ -919,12 +946,15 @@ No test contacts Discord, and none needs a token or a network beyond loopback.
   and as a filter, paging over 237 messages and over exactly 100, the page cap, the buffer merge,
   the buffer cap and the second pass, a restart not delivering again what the cursor passed,
   catch-up off, retries (1, 2, 4, 8, 8 s with a cap), a failing channel not holding up the others,
-  a 4xx skipping the channel, a 401 releasing everything, an answer nobody asked for, and the
-  empty-message count.
+  a 4xx skipping the channel, a 401 releasing everything (also one a send found), an answer
+  nobody asked for, and the empty-message count.
 - `session`: the state machine against `FakeDiscord` on paused time: statuses and the grace period,
   the delay sequence (1, 2, 4, ... 300 s), its reset after a healthy minute (and not after 59
   seconds), an invalid-session loop that must not Identify in a tight loop, a rejected token that is
-  never polled again and a corrected restart, final closes, a stream that ends, and shutdown
+  never polled again and a corrected restart, a REST 401 from a send that reports `NeedsAuth` and
+  leaves the Gateway session going (also while waiting to reconnect, and while a history request
+  is held), a status that stays `NeedsAuth` through a drop, a grace period, and a new session,
+  final closes, a stream that ends, and shutdown
   (closed once, even mid-delay, and bounded when the client hangs). `session::messages` is the
   whole channel with the fake: a DM reaching the stream, the cursor moving only when the stream is
   polled again (and not when the SDK never persisted), nothing delivered twice after a restart,
