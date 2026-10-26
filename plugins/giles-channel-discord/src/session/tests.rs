@@ -9,10 +9,12 @@ use giles_plugin_sdk::giles_types::{
 };
 use tokio::time::Instant;
 
-use crate::channel::{DiscordChannel, shutdown_wait};
+use crate::channel::{DiscordChannel, Inbound, shutdown_wait};
 use crate::client::GatewayEvent;
 use crate::fake::FakeDiscord;
+use crate::ingest::Clock;
 use crate::session::Timing;
+use crate::state::StateFile;
 
 use std::sync::Arc;
 
@@ -22,17 +24,28 @@ struct Harness {
     client: Arc<FakeDiscord>,
     channel: DiscordChannel,
     events: BoxStream<'static, Result<ChannelEvent>>,
+    _dir: tempfile::TempDir,
 }
 
 impl Harness {
     async fn start() -> Self {
+        let dir = tempfile::tempdir().unwrap();
         let client = Arc::new(FakeDiscord::default());
-        let channel = DiscordChannel::start(client.clone(), Timing::default());
+        let channel = DiscordChannel::start(
+            client.clone(),
+            Timing::default(),
+            Inbound {
+                state: StateFile::open(dir.path()),
+                catch_up_max_age: HOUR * 24,
+                clock: Clock::system(),
+            },
+        );
         let events = channel.events().await.unwrap();
         Self {
             client,
             channel,
             events,
+            _dir: dir,
         }
     }
 

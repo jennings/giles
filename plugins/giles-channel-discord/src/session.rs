@@ -2,9 +2,10 @@
 //! reconnects.
 //!
 //! ```text
-//! Discord::next_event ──GatewayEvent──▶ session ──ChannelEvent::Status──▶ Channel::events ──▶ SDK
-//!        ▲                                  │
-//!        └── polled again only after the ───┘ reconnect delay
+//! Discord::next_event ──GatewayEvent──▶ session ──Outgoing──▶ Channel::events ──▶ SDK
+//!        ▲                               │  ▲  │
+//!        └── polled again only after the ┘  │  └─ Ingest: marks, buffers, catch-up passes
+//!            reconnect delay                └──── Discord::messages_after (one page at a time)
 //! ```
 //!
 //! The client reconnects, resumes, and re-identifies by itself, but only while it is polled, so the
@@ -17,6 +18,12 @@
 //! The statuses are in [`crate::status`]. A drop is reported only if it outlasts the grace period; a
 //! rejected token and the other closes the client never retries are final: the session reports them
 //! and then only waits to be stopped.
+//!
+//! Messages go through [`Ingest`] ([`crate::ingest`]), which decides what is delivered and which
+//! channel's history to fetch next. The session makes the one history request in flight, in the same
+//! `select!` as the Gateway poll, so a slow or failing request never holds up a live event (the
+//! ingest buffers the live events of the channel being caught up, and hands the rest over at once),
+//! and a stop ends it like everything else.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -28,7 +35,8 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::client::{Discord, GatewayEvent};
+use crate::client::{Discord, GatewayEvent, Page, RestError};
+use crate::ingest::{Cursor, Fetch, Ingest, Next, Out};
 use crate::status::{self, Outcome};
 
 /// The session's delays. [`Default`] is what the plugin uses; tests that need other values can
@@ -47,6 +55,10 @@ pub struct Timing {
     pub stable_after: Duration,
     /// How long closing the connection may take.
     pub shutdown_wait: Duration,
+    /// The delay before a failed history request is tried again, doubling on every failure.
+    pub catch_up_retry_min: Duration,
+    /// The longest delay between tries of a history request.
+    pub catch_up_retry_max: Duration,
 }
 
 impl Default for Timing {
@@ -57,8 +69,20 @@ impl Default for Timing {
             reconnect_max: Duration::from_secs(300),
             stable_after: Duration::from_secs(60),
             shutdown_wait: Duration::from_secs(5),
+            catch_up_retry_min: Duration::from_secs(1),
+            catch_up_retry_max: Duration::from_secs(60),
         }
     }
+}
+
+/// What the session hands to the channel's event stream.
+#[derive(Debug)]
+pub struct Outgoing {
+    /// The event for the SDK, if there is one: a message or a status.
+    pub event: Option<ChannelEvent>,
+    /// Where the channel's cursor goes once the SDK has taken the event after this item, which
+    /// it does after persisting this one: the next poll of the stream confirms it.
+    pub cursor: Option<Cursor>,
 }
 
 /// What [`run`] works with.
@@ -68,9 +92,24 @@ pub struct Session {
     /// The delays.
     pub timing: Timing,
     /// Events for the SDK.
-    pub out: mpsc::Sender<ChannelEvent>,
+    pub out: mpsc::Sender<Outgoing>,
     /// Cancelled when the channel is dropped or the plugin is stopping.
     pub stop: CancellationToken,
+    /// What is delivered, and what is fetched.
+    pub ingest: Ingest,
+}
+
+/// The history request in flight, and what it asked.
+type Fetching = Pin<Box<dyn Future<Output = (Fetch, Result<Page, RestError>)> + Send>>;
+
+/// Asks `client` for the page `fetch` describes.
+fn fetching(client: Arc<dyn Discord>, fetch: Fetch) -> Fetching {
+    Box::pin(async move {
+        let page = client
+            .messages_after(fetch.channel, fetch.after, fetch.limit)
+            .await;
+        (fetch, page)
+    })
 }
 
 /// The future of one [`Discord::next_event`] call, started after the reconnect delay.
@@ -92,16 +131,22 @@ enum Step {
     GraceOver,
     /// The client reported something, or ended.
     Event(Option<GatewayEvent>),
+    /// The history request in flight has an answer.
+    Fetched(Fetch, Result<Page, RestError>),
+    /// A history request has waited out its retry delay.
+    RetryDue,
 }
 
-/// Runs the connection until the channel is stopped: reports statuses, delays polling after a
-/// close, and closes the client at the end.
+/// Runs the connection until the channel is stopped: reports statuses, delivers messages and
+/// fetches the history that catch-up needs, delays polling after a close, and closes the client
+/// at the end.
 pub async fn run(session: Session) {
     let Session {
         client,
         timing,
         out,
         stop,
+        mut ingest,
     } = session;
     let mut reporter = Reporter::new(out, stop.clone());
     // The delay the next close will impose, and when to poll after the last one.
@@ -112,6 +157,8 @@ pub async fn run(session: Session) {
     let mut up_since: Option<Instant> = None;
     let mut dropped_at: Option<Instant> = None;
     let mut pending: Option<Poll<'_>> = None;
+    // The history request in flight (one at a time).
+    let mut fetch: Option<Fetching> = None;
     // A final close, or the client ending: nothing more is polled.
     let mut finished = false;
     loop {
@@ -119,6 +166,15 @@ pub async fn run(session: Session) {
             stop.cancelled().await;
             Step::Stop
         } else {
+            // Start the next history request, or find out when one is due.
+            let mut retry_at = None;
+            if fetch.is_none() {
+                match ingest.next(Instant::now()) {
+                    Next::Now(request) => fetch = Some(fetching(Arc::clone(&client), request)),
+                    Next::Wait(at) => retry_at = Some(at),
+                    Next::Idle => {}
+                }
+            }
             let poll =
                 pending.get_or_insert_with(|| Box::pin(poll_at(&*client, poll_after.take())));
             let grace_over = async {
@@ -127,10 +183,24 @@ pub async fn run(session: Session) {
                     None => std::future::pending().await,
                 }
             };
+            let retry_due = async {
+                match retry_at {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            };
+            let fetched = async {
+                match fetch.as_mut() {
+                    Some(request) => request.await,
+                    None => std::future::pending().await,
+                }
+            };
             tokio::select! {
                 biased;
                 () = stop.cancelled() => Step::Stop,
                 () = grace_over => Step::GraceOver,
+                (request, page) = fetched => Step::Fetched(request, page),
+                () = retry_due => Step::RetryDue,
                 event = poll.as_mut() => Step::Event(event),
             }
         };
@@ -140,23 +210,41 @@ pub async fn run(session: Session) {
                 dropped_at = None;
                 reporter.report(status::disconnected()).await;
             }
+            Step::RetryDue => {}
+            Step::Fetched(request, page) => {
+                fetch = None;
+                let outs = ingest.on_page(request, page, Instant::now());
+                reporter.emit(outs).await;
+            }
             Step::Event(None) => {
                 pending = None;
                 finished = true;
                 tracing::warn!("the Discord client ended its event stream");
                 reporter.report(status::stopped()).await;
             }
+            Step::Event(Some(GatewayEvent::Message(message))) => {
+                pending = None;
+                let outs = ingest.on_message(message);
+                reporter.emit(outs).await;
+            }
             Step::Event(Some(event)) => {
                 pending = None;
                 match status::classify(&event) {
                     Outcome::Up => {
                         let now = Instant::now();
-                        match event {
-                            GatewayEvent::Resumed => tracing::info!("resumed the Discord session"),
-                            _ => tracing::info!("connected to Discord with a new session"),
-                        }
                         up_since = Some(now);
                         dropped_at = None;
+                        match event {
+                            GatewayEvent::Ready { user_id } => {
+                                tracing::info!("connected to Discord with a new session");
+                                // A new session: what was sent while there was none is not
+                                // replayed, so every channel is caught up over REST. A request
+                                // of the session before is dropped.
+                                fetch = None;
+                                ingest.on_ready(user_id);
+                            }
+                            _ => tracing::info!("resumed the Discord session"),
+                        }
                         reporter.report(ChannelStatus::Connected).await;
                     }
                     Outcome::Down => {
@@ -183,8 +271,10 @@ pub async fn run(session: Session) {
             }
         }
     }
-    // The pending poll holds the client; end it before closing the connection.
+    // The pending poll holds the client; end it before closing the connection. A history request
+    // in flight is abandoned: nothing was handled of it, and the cursor didn't move.
     drop(pending);
+    drop(fetch);
     if tokio::time::timeout(timing.shutdown_wait, client.shutdown())
         .await
         .is_err()
@@ -193,21 +283,46 @@ pub async fn run(session: Session) {
     }
 }
 
-/// Sends status events, skipping a repeat of the last one.
+/// Sends what the session produces to the channel's event stream, and statuses among it,
+/// skipping a repeat of the last status.
 struct Reporter {
-    out: mpsc::Sender<ChannelEvent>,
+    out: mpsc::Sender<Outgoing>,
     stop: CancellationToken,
     last: Option<ChannelStatus>,
     counter: u64,
 }
 
 impl Reporter {
-    fn new(out: mpsc::Sender<ChannelEvent>, stop: CancellationToken) -> Self {
+    fn new(out: mpsc::Sender<Outgoing>, stop: CancellationToken) -> Self {
         Self {
             out,
             stop,
             last: None,
             counter: 0,
+        }
+    }
+
+    /// Hands over what [`Ingest`] says, in order. A full buffer (the SDK is persisting) holds the
+    /// session until there is room, or until it is stopped.
+    async fn emit(&mut self, outs: Vec<Out>) {
+        for out in outs {
+            match out {
+                Out::Deliver { event, cursor } => {
+                    self.send(Outgoing {
+                        event: Some(*event),
+                        cursor: Some(cursor),
+                    })
+                    .await;
+                }
+                Out::Advance(cursor) => {
+                    self.send(Outgoing {
+                        event: None,
+                        cursor: Some(cursor),
+                    })
+                    .await;
+                }
+                Out::Status(status) => self.report(status).await,
+            }
         }
     }
 
@@ -225,13 +340,23 @@ impl Reporter {
             return;
         };
         let event = ChannelEvent::Status { id, status };
+        self.send(Outgoing {
+            event: Some(event),
+            cursor: None,
+        })
+        .await;
+    }
+
+    async fn send(&self, outgoing: Outgoing) {
         tokio::select! {
             () = self.stop.cancelled() => {}
-            // Fails only once the channel is gone, when nobody needs the status.
-            _ = self.out.send(event) => {}
+            // Fails only once the channel is gone, when nobody needs it.
+            _ = self.out.send(outgoing) => {}
         }
     }
 }
 
+#[cfg(test)]
+mod messages;
 #[cfg(test)]
 mod tests;

@@ -15,16 +15,7 @@ const CHANNEL: u64 = 319_674_150_115_610_528;
 
 /// A DM from a person, as Discord documents a message object.
 fn message(id: u64, content: &str) -> Value {
-    json!({
-        "id": id.to_string(), "channel_id": CHANNEL.to_string(), "type": 0,
-        "content": content, "timestamp": "2026-10-24T12:00:00.000000+00:00",
-        "edited_timestamp": null, "tts": false, "mention_everyone": false, "mentions": [],
-        "mention_roles": [], "pinned": false, "flags": 0, "embeds": [], "attachments": [],
-        "author": {
-            "id": "11111111111111111", "username": "alice", "discriminator": "0",
-            "global_name": "Alice", "avatar": null
-        }
-    })
+    loopback::message_json(id, CHANNEL, 11_111_111_111_111_111, content)
 }
 
 async fn history(client: &impl Discord, after: u64, limit: u8) -> Result<Vec<u64>, RestError> {
@@ -200,4 +191,17 @@ async fn a_server_that_is_not_there_is_a_transport_error() {
     };
     let client = rest_client(&host);
     assert_eq!(history(&client, 1, 100).await, Err(RestError::Transport));
+}
+
+#[tokio::test]
+async fn a_message_has_the_time_its_json_says() {
+    let id = giles_channel_discord::snowflake::at_unix_ms(1_792_843_200_123) + 5;
+    let server =
+        RestServer::start(move |_, _| Response::json(200, &json!([message(id, "x")]))).await;
+    let client = rest_client(&server.host);
+    let page = client.messages_after(CHANNEL, 1, 1).await.unwrap().messages;
+    // The fixture writes the time its id encodes, to the millisecond, and the plugin reads it back.
+    assert_eq!(page[0].timestamp_ms, 1_792_843_200_123);
+    assert_eq!(page[0].author.id, 11_111_111_111_111_111);
+    assert_eq!(page[0].content, "x");
 }

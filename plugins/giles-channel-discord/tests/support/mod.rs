@@ -149,3 +149,39 @@ pub async fn wait_until(mut check: impl FnMut() -> bool) {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
+
+/// The next event of either kind, decoded.
+pub async fn next_event(events: &mut Streaming<EventsResponse>) -> ChannelEvent {
+    let response = tokio::time::timeout(WAIT, events.message())
+        .await
+        .expect("an event in time")
+        .unwrap()
+        .expect("the stream is open");
+    event_from_proto(response.event.unwrap()).unwrap()
+}
+
+/// The next event, which must be a message: its id and the message.
+pub async fn next_message(
+    events: &mut Streaming<EventsResponse>,
+) -> (String, giles_plugin_sdk::giles_types::InboundMessage) {
+    match next_event(events).await {
+        ChannelEvent::Message { id, message } => (id.to_string(), message),
+        other => panic!("not a message: {other:?}"),
+    }
+}
+
+impl Served {
+    /// The data directory the plugin runs in.
+    pub fn data_dir(&self) -> &std::path::Path {
+        &self.data
+    }
+
+    /// The cursor the plugin has recorded for a DM channel, if any.
+    pub fn cursor(&self, channel: u64) -> Option<String> {
+        let bytes = std::fs::read(self.data.join("discord-state.json")).ok()?;
+        let state: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        state["dm_channels"][channel.to_string()]["cursor"]
+            .as_str()
+            .map(str::to_owned)
+    }
+}

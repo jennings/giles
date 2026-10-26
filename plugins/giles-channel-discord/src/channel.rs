@@ -15,8 +15,10 @@ use tokio_util::sync::{CancellationToken, DropGuard};
 
 use crate::client::Discord;
 use crate::config::Settings;
+use crate::ingest::{Clock, Cursor, Ingest, Params};
 use crate::real::RealDiscord;
-use crate::session::{self, Session, Timing};
+use crate::session::{self, Outgoing, Session, Timing};
+use crate::state::StateFile;
 
 /// Events buffered for the SDK, which persists each before taking the next. When it's full, the
 /// session waits.
@@ -62,7 +64,15 @@ pub async fn configure_with(
         catch_up_max_age = ?settings.catch_up_max_age,
         "Discord channel configured"
     );
-    let channel = DiscordChannel::start(connect(&settings), timing);
+    let channel = DiscordChannel::start(
+        connect(&settings),
+        timing,
+        Inbound {
+            state: StateFile::open(ctx.data_dir()),
+            catch_up_max_age: settings.catch_up_max_age,
+            clock: Clock::system(),
+        },
+    );
     slot.set(channel.take_session());
     Ok(channel)
 }
@@ -122,26 +132,46 @@ impl SessionSlot {
     }
 }
 
+/// What the channel needs to receive messages besides the connection.
+#[derive(Clone)]
+pub struct Inbound {
+    /// The plugin's state file: the DM channels and their cursors.
+    pub state: StateFile,
+    /// How far back catch-up reaches; zero turns it off.
+    pub catch_up_max_age: Duration,
+    /// The time, for the age limit.
+    pub clock: Clock,
+}
+
 /// A Discord bot as a [`Channel`]. Dropping it stops the session task.
 pub struct DiscordChannel {
     info: ChannelInfo,
-    events: Arc<Mutex<mpsc::Receiver<ChannelEvent>>>,
+    events: Arc<Mutex<mpsc::Receiver<Outgoing>>>,
+    state: StateFile,
     stop: CancellationToken,
     task: std::sync::Mutex<Option<JoinHandle<()>>>,
     _guard: DropGuard,
 }
 
 impl DiscordChannel {
-    /// Starts the session task: it polls `client` and reports its status. Must be called inside a
-    /// Tokio runtime.
-    pub fn start(client: Arc<dyn Discord>, timing: Timing) -> Self {
+    /// Starts the session task: it polls `client`, delivers its messages, catches up after
+    /// downtime, and reports its status. Must be called inside a Tokio runtime.
+    pub fn start(client: Arc<dyn Discord>, timing: Timing, inbound: Inbound) -> Self {
         let (out, events) = mpsc::channel(EVENT_BUFFER);
         let stop = CancellationToken::new();
+        let ingest = Ingest::new(Params {
+            state: inbound.state.clone(),
+            catch_up_max_age: inbound.catch_up_max_age,
+            clock: inbound.clock,
+            retry_min: timing.catch_up_retry_min,
+            retry_max: timing.catch_up_retry_max,
+        });
         let task = tokio::spawn(session::run(Session {
             client,
             timing,
             out,
             stop: stop.clone(),
+            ingest,
         }));
         Self {
             info: ChannelInfo {
@@ -150,6 +180,7 @@ impl DiscordChannel {
                 can_initiate: true,
             },
             events: Arc::new(Mutex::new(events)),
+            state: inbound.state,
             stop: stop.clone(),
             task: std::sync::Mutex::new(Some(task)),
             _guard: stop.drop_guard(),
@@ -178,11 +209,34 @@ impl Channel for DiscordChannel {
     }
 
     async fn events(&self) -> Result<BoxStream<'static, Result<ChannelEvent>>> {
+        // The cursor of a channel moves when the SDK asks for the event after a message, never
+        // earlier: the SDK persists each event before polling the stream again, so a poll is the
+        // proof that the event handed out last is on disk (PLAN section 8.5). An event the SDK
+        // took but didn't persist (it failed, or the process ended) leaves the cursor behind it,
+        // and catch-up fetches it again after a restart.
         let events = Arc::clone(&self.events);
-        Ok(stream::unfold(events, |events| async move {
-            let event = events.lock().await.recv().await?;
-            Some((Ok(event), events))
-        })
+        let state = self.state.clone();
+        Ok(stream::unfold(
+            (events, state, None::<Cursor>),
+            |(events, state, persisted)| async move {
+                if let Some(cursor) = persisted {
+                    state.advance(cursor.channel, cursor.message);
+                }
+                loop {
+                    let item = events.lock().await.recv().await?;
+                    match item.event {
+                        Some(event) => return Some((Ok(event), (events, state, item.cursor))),
+                        // Done with, not delivered: everything before it has been persisted,
+                        // since the stream was polled to get here.
+                        None => {
+                            if let Some(cursor) = item.cursor {
+                                state.advance(cursor.channel, cursor.message);
+                            }
+                        }
+                    }
+                }
+            },
+        )
         .boxed())
     }
 

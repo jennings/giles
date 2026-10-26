@@ -6,11 +6,12 @@ messages (DMs) over the Discord Gateway and sends over the REST API, as a separa
 plugin SDK ([Plugin SDK](plugin-sdk.md)). `ChannelInfo { identity_namespace: "discord", output:
 Blocks, can_initiate: true }`.
 
-**Status: designed, and built as far as issue #15** ([Implementation](#implementation): the
-Gateway connection, the status, the configuration). This page records the decisions of issue #13:
-the library, the Gateway intents, the catch-up algorithm, the status mapping, the configuration, and
-the client seam the tests use. The rest of the plugin is built by issues #16 to #19 and verified
-against a real bot by issue #20; those issues extend this page with what they build. Facts about
+**Status: designed, and built as far as issue #16** ([Implementation](#implementation): the
+Gateway connection, the status, the configuration, inbound direct messages, and catch-up). This
+page records the decisions of issue #13: the library, the Gateway intents, the catch-up algorithm,
+the status mapping, the configuration, and the client seam the tests use. The rest of the plugin is
+built by issues #17 to #19 and verified against a real bot by issue #20; those issues extend this
+page with what they build. Facts about
 Discord were checked against the official documentation on 2026-10-25 and link to it; where the
 documentation is silent or two pages disagree, the text says so, and [What Needs a Real
 Bot](#what-needs-a-real-bot) lists what issue #20 must confirm.
@@ -30,7 +31,7 @@ Bot](#what-needs-a-real-bot) lists what issue #20 must confirm.
 | Catch-up | A cursor per DM channel in the plugin's data directory, REST `after=<id>` paging after every new session, 24 h default age limit ([Catch-Up](#catch-up)) |
 | Status | Rejected token (close 4004, REST 401) is `NeedsAuth` with a `Url`; every other failure is `Error` ([Status](#status)) |
 | Config keys | `token`, `max_blob`, `catch_up_max_age` ([Configuration](#configuration)) |
-| Seam | A `Discord` trait with six methods in the end (two so far, [Implementation](#the-seam-as-built)); the twilight types stay in one `real` module ([The Client Seam](#the-client-seam)) |
+| Seam | A `Discord` trait with six methods in the end (three so far, [Implementation](#the-seam-as-built)); the twilight types stay in one `real` module ([The Client Seam](#the-client-seam)) |
 
 ## The Library
 
@@ -110,8 +111,10 @@ What twilight costs, and how it is contained:
   the API, so it has no bucket to rate limit.
 - **Strict models.** `twilight-model` fails a whole event it can't deserialize. A MESSAGE_CREATE
   that doesn't parse is logged by event type only (never the body) and costs the live copy of
-  one message; the cursor did not move past it, so the next catch-up fetches it again
-  ([Catch-Up](#catch-up)).
+  one message. A message of a history page that doesn't parse is skipped the same way, and paging
+  goes by the raw page (its length and highest id), so one bad message never ends a pass early.
+  Neither is fetched again later: the channel's mark moves on with the next message, and the
+  channel id of a live event that doesn't parse isn't known to re-fetch it ([Catch-Up](#catch-up)).
 
 Feature set (one manifest, `plugins/giles-channel-discord`; nothing joins `[workspace.dependencies]`
 except what a second crate would share):
@@ -256,13 +259,15 @@ and it is checked only against documentation, so the plugin guards it cheaply:
 
 - A DM from a person with no text, no attachment, and no sticker is dropped (nothing to answer), at
   `debug`.
-- **Three such DMs in a row** (reset by any DM that has text) set `Error { message: "Discord is
-  delivering direct messages without their text; enable Message Content under Privileged Gateway
-  Intents in the Developer Portal and restart" }`, and the next message with text sets
-  `Connected` again. The message is honest about the cause being a guess (polls, forwards, and
-  other content the plugin doesn't deliver also arrive empty), and it makes a changed Discord
-  behaviour visible instead of silent. The intent is not requested automatically: asking for a
-  privileged intent that isn't enabled closes the connection with 4014.
+- **Three such DMs in a row** set `Error` (the text is in [Status](#status)), and the next DM
+  that is delivered sets `Connected` again. (The sketch said "reset by a DM with text"; a DM with
+  only a file or a sticker proves the same thing, that Discord is sending content, so any
+  delivered DM resets the count.) The message is honest about the cause being a guess (polls,
+  forwards, and other content the plugin doesn't deliver also arrive empty), and it makes a
+  changed Discord behaviour visible instead of silent. It does **not** tell the operator to enable
+  `Message Content` in the Developer Portal, as the sketch did: the plugin never requests that
+  privileged intent, so the toggle alone would change nothing, and asking for it when it isn't
+  enabled closes the connection with 4014. It says to report it.
 
 ## Identity
 
@@ -306,7 +311,10 @@ unique, so unique within the instance and stable across restarts, PLAN section 8
 deduplicates on it for 30 days), `reply_to` the referenced message id of a REPLY, `sent_at` the
 message timestamp, `text` the `content`, `attachments` as blobs ([Attachments](#attachments)).
 Stickers become `[sticker: <name>]` appended to the text; embeds are ignored (a user's own message
-carries its links in `content`); other content (polls, forwards) is not delivered.
+carries its links in `content`); other content (polls, forwards) is not delivered. Files are
+`[attachment: <name>]` lines in the text until issue #18 downloads them. Edits and deletes are
+ignored: an edit or a delete after delivery doesn't change what the agent was asked, and a
+message edited while the plugin was down arrives with its edited text.
 
 Durability is the SDK's: it writes each event to its spool before the plugin's stream is polled
 again, and resends unacked events when `Events` reopens
@@ -359,14 +367,17 @@ the plugin saw live was the third.
 
 1. Mark the channel `CatchingUp`. Live events for it are buffered in memory (in order) instead of
    delivered.
-2. `after` is the cursor, or, with none, the snowflake of `now − catch_up_max_age`
-   (`(ms − 1420070400000) << 22`).
+2. `after` is the later of the channel's high-water mark (which starts at the cursor) and the
+   snowflake of `now − catch_up_max_age` (`(ms − 1420070400000) << 22`), so a cursor older than the
+   limit starts at the limit and a channel with no cursor starts there too.
 3. `GET /channels/{id}/messages?after=<after>&limit=100`. The page, newest first on the wire, is
-   reversed and handled oldest first. Each message goes through the same inbound mapping as a
-   live one; a message older than `catch_up_max_age` is dropped (the cursor still passes it).
-   After each message the cursor candidate becomes its id. `after` for the next request is the
-   largest id of the page. A page with fewer than 100 messages ends the loop; a hard cap of 100
-   pages (10 000 messages) also ends it with a warning, and the rest are lost.
+   handed over oldest first (`real` sorts it). Each message goes through the same inbound mapping as
+   a live one; a message older than `catch_up_max_age` (which Discord shouldn't send for this
+   `after`) is not delivered, and the cursor passes it. After each message the cursor candidate
+   becomes its id. `after` for the next request is the largest id Discord sent in the page
+   (unreadable messages included). A page with fewer than 100 messages sent ends the loop; a hard
+   cap of 100 pages (10 000 messages) also ends it with a warning, and the messages after them, up
+   to the live ones, are skipped (paging goes forward).
 4. Drain the buffer: every buffered live event with an id above the channel's high-water mark is
    handled; the rest (already fetched) are duplicates and dropped. Mark the channel `Live`.
 5. In `Live`, events with an id at or below the high-water mark are dropped (a replayed duplicate
@@ -381,19 +392,27 @@ at most 30 days for that reason.
 
 **Moving the cursor.** The same rule as the email plugin's UID cursor ([Delivery and the
 Cursor](email.md#delivery-and-the-cursor)): the SDK writes each event to disk before polling the
-stream again, so the persisted cursor moves to a message's id when the stream is next polled (and
-a drop moves it at once). A crash between the SDK's write and the state write refetches that one
-message, with the same event id, which the spool or the core deduplicates.
+stream again, so the persisted cursor moves to a message's id when the stream is next polled. A
+message that is dropped (a bot's, an empty one) moves the cursor too, but in order: it goes through
+the same queue as the events, so the cursor never passes a delivered message the SDK hasn't
+persisted. A crash between the SDK's write and the state write refetches that one message, with the
+same event id, which the spool or the core deduplicates. An event the SDK took and never persisted
+(it was stopping, or its disk failed) leaves the cursor behind it, and the next catch-up fetches it
+again.
 
 **Bounds, and what is lost.**
 
 - Page size 100; at most 100 pages per channel per pass; `catch_up_max_age` (default 24 hours,
   `"0s"` turns catch-up off): older messages are skipped, with a count logged at `info` (no
   content).
-- A failed fetch (network, 5xx, 429 beyond the bounded wait) is retried with backoff while the
-  session lasts; live events for the channel stay buffered, to a cap of 1000, after which new live
-  events are discarded and the channel is caught up again when the first pass finishes (the cursor
-  never passed them). A 401 is the auth failure of [Status](#status).
+- A failed fetch (network, 5xx, 429 beyond the bounded wait) is retried while the session lasts,
+  after 1 second, then 2, doubling to a minute. The channel's live events stay buffered, to a cap
+  of 1000, after which new live events are discarded and the channel is caught up again when the
+  pass finishes (the cursor never passed them). One channel's failing fetch doesn't hold up the
+  others: its retry waits while the next channel's pass goes on, and channels that are already
+  live deliver at once. A 4xx that asking again can't fix (a channel that is gone, one the bot
+  can't see) skips that channel's pass with a warning and releases its buffer. A 401 is the auth
+  failure of [Status](#status): `NeedsAuth`, no more requests, and every channel goes live.
 - Lost for good: messages older than the age limit or beyond the page cap; messages deleted
   before the fetch; a message edited while the plugin was down arrives with its edited text, and
   later edits are ignored; **messages from a user the plugin has never seen, sent while it was
@@ -506,14 +525,14 @@ every config error.
 
 | Event | Status | Then |
 | --- | --- | --- |
-| `Ready` (new session) or `Resumed` | `Connected` | Catch-up runs after `Ready` |
+| `Ready` (new session) or `Resumed` | `Connected` | Catch-up runs after `Ready`, not after `Resumed` |
 | Close **4004** (authentication failed) | `NeedsAuth { Url("https://discord.com/developers/applications") }` | Final: no reconnect until the plugin is restarted with a new token |
-| REST **401** on any call | The same `NeedsAuth` | Final; REST calls stop |
+| REST **401** on any call | The same `NeedsAuth` | Final; REST calls stop (catch-up: no more requests, and every channel goes live) |
 | Close **4014** (disallowed intents) or **4013** (invalid intents) | `Error`: "Discord refused the intents the plugin requests (close 4014/4013); this is a bug or a change at Discord, please report it" | Final. With `DIRECT_MESSAGES` only, neither can happen unless Discord changes DM intent rules. Not `NeedsAuth`: the owner can't fix it |
 | Close **4010**, **4011**, **4012** | `Error` with the code and its meaning (4011: the bot is in too many servers to run unsharded) | Final |
 | Any other close (4000 to 4003, 4005, 4007 to 4009, 1006 and other transport closes, no close frame), Reconnect (op 7), Invalid Session (op 9), a missed heartbeat ACK, a failed connect | Nothing if `Ready` or `Resumed` follows within **10 seconds** (the grace WhatsApp uses); otherwise `Error`: "disconnected from Discord, reconnecting" | The library resumes or re-identifies; the plugin's backoff above applies |
-| Three empty DMs in a row | `Error` as in [Detecting a Missing Intent](#detecting-a-missing-intent) | Cleared by a DM with text |
-| 429, 5xx, timeout on a send or a catch-up page | None; the send returns `Unavailable` | Retried by the outbox or the pass |
+| Three empty DMs in a row | `Error`: "Discord is sending direct messages with no text, files, or stickers, so the plugin can't read them; Discord may have changed what a bot receives without the Message Content intent, please report it (polls and forwards look the same)" | Said again for each further empty DM (not repeated to the SDK); cleared by the next DM that is delivered |
+| 429, 5xx, timeout on a send or a catch-up page | None; the send returns `Unavailable` | Retried by the outbox or the pass (1 s doubling to 60 s) |
 | Plugin stopping | None | The shard is closed with 1000 (the bot goes offline); the stream ends |
 
 The 4004 case also covers a token Discord reset after the Identify limit. The `NeedsAuth` URL is
@@ -606,15 +625,18 @@ No test may contact Discord, and none needs a token.
 - **`real`, offline.** Its conversions are unit-tested from fixtures. Its loop is driven without
   Discord: `ConfigBuilder::proxy_url` points a shard at `ws://127.0.0.1:<port>`, and a Gateway
   server written in the test plays Hello, Ready, a close with 4004, and so on, which checks the
-  glue (close-code mapping, resume, the clean close) without the network. Issue #15 built it
-  ([Implementation](#running-the-tests)); a REST counterpart with `ClientBuilder::proxy(..,
-  use_http = true)` is for the issues that use REST, and has not been tried.
+  glue (close-code mapping, resume, the clean close, a DM becoming a message) without the network.
+  Issue #15 built it ([Implementation](#running-the-tests)). Its REST counterpart, a plain HTTP
+  server on loopback reached with `ClientBuilder::proxy(.., use_http = true)`, checks the history
+  requests, their errors, and a 429 (issue #16), and with both servers the whole inbound path
+  runs through `RealDiscord` ([Running the Tests](#running-the-tests)).
 
 ## Implementation
 
-What issue #15 built: the crate, the configuration, the Gateway connection, and the status. It
-receives no message and sends none yet: inbound mapping and catch-up are issue #16, sends are
-issue #17, and attachments are issue #18. Each extends this section with what it adds.
+What issues #15 and #16 built: the crate, the configuration, the Gateway connection, and the
+status (#15); direct messages in, the state file, and catch-up after downtime (#16). It sends
+nothing yet: sends are issue #17, and attachments are issue #18. Each extends this section with
+what it adds.
 
 `plugins/giles-channel-discord` is a library and a binary (`publish = false`, `MIT OR Apache-2.0`
 like the workspace; the new dependencies are listed under [Dependencies](#dependencies)). The
@@ -629,18 +651,22 @@ as the IRC plugin's do; nothing in it is an API for anyone else.
 | `client` | The `Discord` trait and `GatewayEvent`: the seam |
 | `status` | `classify`: a Gateway event to `Up`, `Down`, or `Final(ChannelStatus)`; the status messages |
 | `inbound` | `map`: a `DiscordMessage` to an `InboundMessage`, `Empty`, or `Dropped(reason)`; pure ([The Mapping](#the-mapping)) |
+| `ingest` | `Ingest`: the per-channel marks, buffers, and catch-up passes, merging live and fetched messages; no I/O ([Ingest](#ingest)) |
 | `state` | `StateFile`: `discord-state.json`, the DM channels, their cursors and users ([The State File](#the-state-file)) |
 | `snowflake` | Snowflake arithmetic: the time of an id, the first id of a time |
-| `session` | `Session`, `Timing`, and `run`: the task that owns the connection ([State Machine](#state-machine)) |
-| `channel` | `DiscordChannel` (the SDK's `Channel`), `configure`, `configure_with`, and the `SessionSlot` that lets `main` stop the session |
+| `session` | `Session`, `Timing`, and `run`: the task that owns the connection and the history request in flight ([State Machine](#state-machine)) |
+| `channel` | `DiscordChannel` (the SDK's `Channel`) and the event stream that moves the cursor, `configure`, `configure_with`, and the `SessionSlot` that lets `main` stop the session |
 | `fake` | `FakeDiscord`, the scripted client for tests: a Gateway queue and a REST history per channel |
 | `real` | `RealDiscord`, the client on `twilight-gateway` and `twilight-http`: the only module with twilight types |
 | `main` | Logging, `ChannelPlugin::new("discord", ..).output(Blocks).can_initiate(true).serve(..)`, then the session is stopped |
 
 ```text
-twilight Shard ── real ──GatewayEvent──▶ session ──ChannelEvent::Status──▶ Channel::events ──▶ SDK
-      ▲                                     │
-      └───── polled again only after ───────┘ the reconnect delay
+twilight Shard ── real ──GatewayEvent──▶ session ──Outgoing──▶ Channel::events ──▶ SDK
+      ▲                                   │   ▲                      │
+      └── polled again only after ────────┘   │                      └─ moves the cursor in the
+          the reconnect delay                 │                         state file when polled again
+                      Ingest: marks, buffers, catch-up passes
+                      real ◀── messages_after ── session (one page at a time)
 ```
 
 ### The Seam as Built
@@ -715,20 +741,64 @@ with no text (after trimming), no file, and no sticker is `Empty`, and everythin
   line of its own. Files are not downloaded yet (issue #18), so the note is all of a file there is;
   `attachments` is empty.
 
+### Ingest
+
+`ingest::Ingest` holds what catch-up needs and has no I/O: the session feeds it Gateway events and
+the answers to the history requests it asked for, and it returns what to hand over (`Out`:
+`Deliver` an event with the cursor to move once the SDK has persisted it, `Advance` a cursor for a
+message that is done with, `Status`). Per DM channel it keeps the high-water mark (the highest id
+handled, starting at the state file's cursor) and a mode, `Live` or `CatchingUp` with a buffer of
+live messages (at most 1000, then it discards and remembers that it did). The algorithm under
+[Catch-Up](#catch-up) is this module, with these details:
+
+- **Calls.** `on_ready(bot)` (a new session): every known channel, the ones in the state file and
+  the ones the process has seen, becomes `CatchingUp` with a queued pass, lower id first; passes
+  of the session before are dropped, buffers are kept. `on_message(message)` (live). `next(now)`
+  says what to do about history: `Now(request)`, `Wait(until)` for a request in its retry delay,
+  or `Idle`. `on_page(request, result, now)` takes the answer; one that matches no queued request
+  (the pass was restarted meanwhile) is ignored.
+- **First sight.** A message of a channel the process doesn't know is mapped first: from a bot, the
+  plugin itself, a webhook, or a server it is ignored and teaches nothing; from a person (even a
+  system message) it records the channel and the user in the state file, marks the channel
+  `CatchingUp`, queues a pass, and buffers the message. The pass starts at the state file's cursor
+  if the channel has one (a channel a send created has none) and at the age limit if not.
+- **A pass.** One request at a time, 100 messages, `after` the later of the mark and the first id
+  of `now − catch_up_max_age`. Each message of the page goes through the same handling as a live
+  one; the page's largest id is the next `after`; a short page, or the 100th page, ends it. Then
+  the buffer is handed over (ids at or below the mark were fetched already), and the channel is
+  `Live`, or another pass is queued if live messages were discarded.
+- **Handling a message.** At or below the mark: ignored (a replay, or fetched already). Above it:
+  the mark moves, and the message is delivered, or counted as empty, or dropped (both move the
+  cursor in order, as `Advance`).
+- **The empty-message check** lives here too: a count of empty DMs in a row, reset by any message
+  that is delivered, and the `Error` and `Connected` statuses ([Status](#status)). It counts
+  across channels and across live and fetched messages, in the order they are handled.
+- **Failures.** A request that fails for a reason that can go away (transport, 429 that outlasted
+  the bound, 5xx) gets a retry time `1 s × 2ⁿ` after the nth failure in a row, at most a minute;
+  the queue goes on with the next channel whose retry time has come. A 4xx that won't go away
+  skips the pass; a 401 reports `NeedsAuth`, stops all requests (also for channels first seen
+  later), and releases every buffer. `Timing` holds the two delays, so tests run on paused time.
+- **Time.** The age limit reads an injected `Clock` (milliseconds since the Unix epoch), not
+  `tokio::time`: the limit is about when Discord created a message, which paused test time can't
+  say.
+
 ### State Machine
 
-`session::run` is one loop over three things: the stop signal, the grace timer, and the pending
-`next_event` call. It reacts to what `status::classify` says about each event:
+`session::run` is one loop over five things: the stop signal, the grace timer, the history request
+in flight, the retry timer of a queued request, and the pending `next_event` call. It reacts to
+what `status::classify` says about each event:
 
 | Event | Reaction |
 | --- | --- |
-| `Ready` or `Resumed` | Report `Connected` (a repeat of the last status is not sent), clear the drop timer, note when the session came up. `Ready` is a new session and `Resumed` the old one; both are `Connected`, and the log says which. Catch-up (issue #16) will run after `Ready` only |
-| `Closed` with a code the client recovers from (or no code) | Start the grace timer if none is running. Reset the delay to 1 s if this session had been up for a minute. Do not poll the client until the delay is over, then double the delay (cap 5 minutes) |
+| `Message` | Hand it to `Ingest`, and send what that returns to the channel's stream (`Outgoing`: an event, a cursor to move once the SDK has persisted it, or both). A full buffer (the SDK is persisting) holds the session until there is room or until it is stopped; Gateway heartbeats go out only while the client is polled, so a persist that takes a minute drops the connection, which resumes, and replays what was missed |
+| `Ready` or `Resumed` | Report `Connected` (a repeat of the last status is not sent), clear the drop timer, note when the session came up. `Ready` is a new session and `Resumed` the old one; both are `Connected`, and the log says which. After `Ready` the request in flight is dropped and `Ingest` starts every channel's pass over; after `Resumed` nothing is caught up |
+| History answered | Hand it to `Ingest` and send what that returns. The next request is started at the top of the loop |
+| `Closed` with a code the client recovers from (or no code) | Start the grace timer if none is running. Reset the delay to 1 s if this session had been up for a minute. Do not poll the client until the delay is over, then double the delay (cap 5 minutes). A history request in flight goes on: REST doesn't need the Gateway |
 | `Closed` with 4004 | Report `NeedsAuth` (the Developer Portal URL) and stop polling for good |
 | `Closed` with 4010 to 4014 | Report an `Error` that says what happened and stop polling for good |
 | The stream ended (`None`) with no final close before it | Report an `Error` ("restart this plugin") and stop polling for good: nothing starts another shard, for the reason in [Rate Limits](#rate-limits) |
 | The grace timer ran out (10 s after the first close with no `Ready` or `Resumed`) | Report `Error` "disconnected from Discord, reconnecting"; the client is still trying |
-| Stop | End the pending poll, call `shutdown` on the client once, bounded by 5 s |
+| Stop | End the pending poll and the request in flight (nothing of it was handled, and the cursor didn't move), call `shutdown` on the client once, bounded by 5 s |
 
 "For good" means until the plugin is restarted: the session keeps its status, polls nothing, and
 waits to be stopped. A bad token therefore costs Discord one Identify, not a stream of them, and an
@@ -792,8 +862,8 @@ own `Config` also redacts it). The validation errors never repeat it, a pasted `
 own message, and `tests/logs.rs` captures `tracing` at `TRACE` around two runs and asserts the token
 is in no line: the plugin served by the SDK with the fake client, and the real client against the
 loopback Gateway through Identify, a dropped connection, Resume, and a rejected token (the library's
-own logs are in the capture). `max_blob` and `catch_up_max_age` are validated and logged at startup;
-nothing reads them until issues #16 and #18.
+own logs are in the capture). `max_blob` and `catch_up_max_age` are validated and logged at
+startup; `catch_up_max_age` is read by catch-up, and nothing reads `max_blob` until issue #18.
 
 `RealDiscord::new` installs `rustls`'s `aws-lc-rs` provider as the process default (a provider
 that is already installed is left alone), because `twilight-gateway` panics building its TLS
@@ -826,15 +896,44 @@ cargo test -p giles-channel-discord
 
 No test contacts Discord, and none needs a token or a network beyond loopback.
 
-- `config`, `status`: unit tests, the validation table and the status mapping.
+- `config`, `status`, `snowflake`: unit tests, the validation table, the status mapping, and the
+  arithmetic (against the snowflake in Discord's documentation).
+- `state`: the file's shape, a round trip through a new process, a cursor that only moves forward,
+  a write that replaces the file whole and leaves nothing behind, a change that changes nothing
+  not being written, nine kinds of unusable file set aside and kept as `.corrupt`, and a write that
+  fails keeping the state in memory.
+- `inbound`: the mapping table (a person, a bot, the plugin itself, a webhook, a server, fifteen
+  system message types, empty), reply ids, display names, the order of text, files, and stickers,
+  and names that try to break out of their note.
+- `ingest`: the algorithm move by move with no I/O and a fixed clock: live messages, replays, a
+  cursor from the state file, first sight of a channel (the history before the first message, the
+  message in the page and in the buffer once), passes in channel order, the age limit as the start
+  and as a filter, paging over 237 messages and over exactly 100, the page cap, the buffer merge,
+  the buffer cap and the second pass, a restart not delivering again what the cursor passed,
+  catch-up off, retries (1, 2, 4, 8, 8 s with a cap), a failing channel not holding up the others,
+  a 4xx skipping the channel, a 401 releasing everything, an answer nobody asked for, and the
+  empty-message count.
 - `session`: the state machine against `FakeDiscord` on paused time: statuses and the grace period,
   the delay sequence (1, 2, 4, ... 300 s), its reset after a healthy minute (and not after 59
   seconds), an invalid-session loop that must not Identify in a tight loop, a rejected token that is
   never polled again and a corrected restart, final closes, a stream that ends, and shutdown
-  (closed once, even mid-delay, and bounded when the client hangs).
+  (closed once, even mid-delay, and bounded when the client hangs). `session::messages` is the
+  whole channel with the fake: a DM reaching the stream, the cursor moving only when the stream is
+  polled again (and not when the SDK never persisted), nothing delivered twice after a restart,
+  bots dropped, servers not reported, the empty-DM status and its recovery, catch-up from the
+  cursor and from the age limit, no catch-up after `Resumed` and one after a new session, a live
+  message while a page is held, a full page followed by the next, catch-up off, retries with
+  paused-time delays (and live channels flowing meanwhile), a rejected token, and stopping while a
+  page is held.
 - `tests/sdk.rs`: the plugin served over loopback TCP by the real SDK with the fake client:
   `Describe`, `Configure` errors naming the key, a status that survives until the core acks it, and
-  `NeedsAuth` over the wire. `tests/logs.rs` is the redaction test, a binary of its own because
+  `NeedsAuth` over the wire; a DM that is in the SDK's spool before the core has it, comes again
+  with the same id until acked, and moves the plugin's cursor only after the SDK moved on; messages
+  in order; an SDK spool that can't be written (permissions on `events/`, skipped where they don't
+  bind, as for root) offering nothing and moving no cursor until it recovers; and a new channel's
+  history reaching the core before its first message. `tests/logs.rs` is the redaction test, which
+  also checks that no message text, name, file name, or signed URL is in any line at `TRACE`, with
+  the fake and with the real client; it is a binary of its own because
   `tracing` caches whether a call site is enabled, which makes a subscriber installed for one test
   unreliable next to tests without one.
 - `tests/gateway.rs`: `RealDiscord` against a Gateway server written in the test on loopback
@@ -852,7 +951,12 @@ No test contacts Discord, and none needs a token or a network beyond loopback.
   `after` and `limit`, the `Bot` authorization, a `Discord` user agent), a page sent newest first
   and handed over oldest first, an id of 0 asked for as 1, API errors with status and code, a body
   that isn't JSON, a 401 (and nothing more sent after it), a 429 waited out with its rate limit
-  headers, a message the library can't read, and a server that isn't there.
+  headers, a message the library can't read, a server that isn't there, and a message's time.
+- `tests/catch_up.rs`: the whole inbound path through `RealDiscord` with both servers: 150
+  messages of history paged in two requests `after` the cursor and the last id of the first page,
+  a live replay of the last of them and a newer live message, each delivered once in order, the
+  cursor on disk at the end; and a 401 on the first page giving `NeedsAuth` with live messages
+  still arriving and no second request.
 - `real`: the conversions from the library's events (a documented READY payload and a DM with a
   reply, a file, and a sticker), a history page, and the 60 second bound on a REST call.
 
@@ -865,7 +969,8 @@ Issue #20 confirms, in addition to its own list:
    so on two pages and a third warns otherwise).
 2. `after=<id>` returns the 100 messages **just after** the cursor, not the newest 100, so
    paging forward by the page's largest id has no gap. The documentation says only "newest to
-   oldest".
+   oldest". Also that an `after` built from a time (the age limit) behaves the same, and that a
+   DM channel's history still has what the bot was sent while it was offline.
 3. The DM upload limit for a bot is 20 MiB per file and 25 MiB per request; how many files a
    message takes; which error a 21 MiB file gets.
 4. The 2000-character limit counted on emoji (scalars or UTF-16 units).
@@ -880,8 +985,12 @@ Issue #20 confirms, in addition to its own list:
 9. Resume after a short network drop (no catch-up pass, no duplicate), and a fresh Identify plus
    catch-up after a long one.
 10. A signed attachment URL downloaded on arrival, and one refused after its `ex` time.
-11. That a message with only a sticker, poll, or forward behaves as the inbound table says.
-12. That no `MESSAGE_CREATE` ever arrives for a server channel with this intent set.
+11. That a message with only a sticker, poll, or forward behaves as the inbound table says, and
+    that a DM with nothing but an attachment arrives with its `attachments` (the empty-message
+    count depends on it).
+12. That no `MESSAGE_CREATE` ever arrives for a server channel with this intent set, and that the
+    plugin's own messages come back as events with `bot: true` and the bot's id (they are
+    dropped), in the same channel as the user's.
 13. That Discord answers with a close frame when the shard closes the connection after a Reconnect
     (op 7) or an Invalid Session (op 9), which is how the plugin counts them for its reconnect
     delay ([The Library's Silent Reconnect](#the-librarys-silent-reconnect)), and what the first
@@ -889,6 +998,13 @@ Issue #20 confirms, in addition to its own list:
     one-second sleep). Also how Discord ends a connection it drops: with a close frame, with a plain
     TCP close (which the client reports itself), or before Hello (which it cannot see: no status,
     retried about once a second, nothing sent).
+14. That a first message from a new user arrives as a `MESSAGE_CREATE` with no `guild_id` and
+    type 0, in the channel `POST /users/@me/channels` returns for that user, and what a DM
+    channel's first history page looks like (does it hold a system message, such as the start of
+    a call, before the first message, and does the plugin drop it as it should).
+15. That the REST history of a DM is available to a bot that was never in the channel's server
+    (403 or 50001 would mean catch-up skips the channel with a warning), and how the 60 second
+    bound relates to what Discord actually does under a 429.
 
 What can't be verified at all without a real bot: Discord's real error codes under real
 conditions, the rate limits' actual numbers (documented as variable), and the Resume window.

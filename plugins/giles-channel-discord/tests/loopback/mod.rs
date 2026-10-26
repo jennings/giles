@@ -171,3 +171,53 @@ pub async fn next(client: &RealDiscord) -> Option<GatewayEvent> {
         .await
         .expect("an event in time")
 }
+
+/// A message object as Discord documents it, from a person in a DM: `author` writes `content` in
+/// `channel`. The time is the one the id encodes.
+pub fn message_json(id: u64, channel: u64, author: u64, content: &str) -> Value {
+    let ms = giles_channel_discord::snowflake::unix_ms(id);
+    let seconds = i64::try_from(ms / 1000).unwrap();
+    let timestamp = rfc3339(seconds, ms % 1000);
+    json!({
+        "id": id.to_string(), "channel_id": channel.to_string(), "type": 0,
+        "content": content, "timestamp": timestamp,
+        "edited_timestamp": null, "tts": false, "mention_everyone": false, "mentions": [],
+        "mention_roles": [], "pinned": false, "flags": 0, "embeds": [], "attachments": [],
+        "author": {
+            "id": author.to_string(), "username": format!("user{author}"), "discriminator": "0",
+            "global_name": null, "avatar": null
+        }
+    })
+}
+
+/// A `MESSAGE_CREATE` dispatch with sequence number `seq`.
+pub fn message_create(seq: u64, message: Value) -> Value {
+    json!({"op": 0, "s": seq, "t": "MESSAGE_CREATE", "d": message})
+}
+
+/// `seconds` since the Unix epoch and `millis` as an RFC 3339 timestamp in UTC.
+fn rfc3339(seconds: i64, millis: u64) -> String {
+    let days = seconds.div_euclid(86_400);
+    let rest = seconds.rem_euclid(86_400);
+    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let day_of_era = z.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{millis:03}000+00:00",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
+}

@@ -45,6 +45,8 @@ pub struct HistoryCall {
     pub after: u64,
     /// The page size asked for.
     pub limit: u8,
+    /// When it was made (Tokio time, which a test can pause).
+    pub at: Instant,
 }
 
 /// A fake Gateway connection and a fake REST API. Share it as an `Arc`; every method takes `&self`.
@@ -194,6 +196,7 @@ impl Discord for FakeDiscord {
                 channel,
                 after,
                 limit,
+                at: Instant::now(),
             });
             calls.len()
         };

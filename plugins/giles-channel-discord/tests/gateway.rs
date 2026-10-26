@@ -11,7 +11,7 @@ mod loopback;
 use std::time::Duration;
 
 use giles_channel_discord::client::{Discord, GatewayEvent};
-use loopback::{BOT, Frame, Gateway, TOKEN, WAIT, client, next};
+use loopback::{BOT, Frame, Gateway, TOKEN, WAIT, client, message_create, message_json, next};
 use serde_json::json;
 
 #[tokio::test]
@@ -241,4 +241,51 @@ async fn shutdown_does_not_reconnect_when_the_close_is_never_answered() {
     let (code, reconnected) = server.await.unwrap();
     assert_eq!(code, 1000);
     assert!(!reconnected, "the client connected again after shutdown");
+}
+
+#[tokio::test]
+async fn a_dm_dispatch_is_a_message_and_edits_deletes_and_broken_events_are_skipped() {
+    let gateway = Gateway::bind().await;
+    let client = client(&gateway.url);
+    let user = 11_111_111_111_111_111;
+    let channel = 319_674_150_115_610_528;
+    let id = 1_234_567_890_123_456_789;
+    let server = tokio::spawn(async move {
+        let mut connection = gateway.accept(41_250).await;
+        connection.expect_identify().await;
+        connection.send(gateway.ready()).await;
+        // Edits and deletes of a DM arrive with the DM intent, and the plugin never asks for
+        // them to be parsed. (The shard skips events not in its wanted set.)
+        connection
+            .send(json!({"op": 0, "s": 2, "t": "MESSAGE_UPDATE", "d": message_json(id, channel, user, "edited")}))
+            .await;
+        connection
+            .send(json!({"op": 0, "s": 3, "t": "MESSAGE_DELETE", "d": {"id": id.to_string(), "channel_id": channel.to_string()}}))
+            .await;
+        // A message the library's models can't read (no author): logged by type, skipped, and
+        // the connection and the stream go on.
+        connection
+            .send(json!({"op": 0, "s": 4, "t": "MESSAGE_CREATE", "d": {"id": "1", "content": "no author"}}))
+            .await;
+        connection
+            .send(message_create(5, message_json(id, channel, user, "hello")))
+            .await;
+        connection.recv_close_unanswered().await;
+    });
+
+    assert_eq!(
+        next(&client).await,
+        Some(GatewayEvent::Ready { user_id: BOT })
+    );
+    let Some(GatewayEvent::Message(message)) = next(&client).await else {
+        panic!("not a message");
+    };
+    assert_eq!(
+        (message.id, message.channel_id, message.author.id),
+        (id, channel, user)
+    );
+    assert_eq!(message.content, "hello");
+    assert!(!message.guild && !message.webhook && !message.author.bot);
+    tokio::time::timeout(WAIT, client.shutdown()).await.unwrap();
+    server.await.unwrap();
 }
