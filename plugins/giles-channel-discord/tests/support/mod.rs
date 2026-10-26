@@ -34,6 +34,8 @@ pub const WAIT: Duration = Duration::from_secs(10);
 
 /// A Discord plugin served over loopback TCP, in this process.
 pub struct Served {
+    /// Where the plugin listens, for a core to connect to.
+    pub addr: SocketAddr,
     channel: Channel,
     data: PathBuf,
     pub client: Arc<FakeDiscord>,
@@ -70,6 +72,7 @@ impl Served {
             .await
             .unwrap();
         Self {
+            addr,
             channel,
             data: dir.path().to_owned(),
             client,

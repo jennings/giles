@@ -45,8 +45,8 @@ fn a_dm_from_a_person_is_a_direct_message_from_their_user_id() {
     assert_eq!(inbound.conversation.id.as_str(), CHANNEL.to_string());
     assert_eq!(inbound.conversation.kind, ConversationKind::Direct);
     assert_eq!(inbound.conversation.title, None);
-    // The immutable id, not the name.
-    assert_eq!(inbound.sender.as_str(), format!("discord:{USER}"));
+    // The immutable id, not the name, and the native one: the core adds the `discord:` namespace.
+    assert_eq!(inbound.sender.as_str(), USER.to_string());
     assert!(inbound.sender_aliases.is_empty());
     assert!(inbound.sender_authenticated);
     assert_eq!(inbound.sender_display_name.as_deref(), Some("Alice"));

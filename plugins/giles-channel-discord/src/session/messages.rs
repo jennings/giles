@@ -177,7 +177,7 @@ async fn a_dm_reaches_the_sdk_as_an_inbound_event() {
         "event id is the message id"
     );
     assert_eq!(message.text, "hello there");
-    assert_eq!(message.sender.as_str(), format!("discord:{USER}"));
+    assert_eq!(message.sender.as_str(), USER.to_string());
     assert!(message.sender_authenticated);
     assert_eq!(message.sender_display_name.as_deref(), Some("Alice"));
     assert_eq!(message.conversation.id.as_str(), CHANNEL.to_string());

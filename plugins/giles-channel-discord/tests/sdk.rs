@@ -151,7 +151,7 @@ async fn a_dm_is_persisted_before_it_is_acknowledged_and_comes_again_until_it_is
     let (event_id, message) = next_message(&mut events).await;
     assert_eq!(event_id, sent.id.to_string());
     assert_eq!(message.text, "hello over the wire");
-    assert_eq!(message.sender.as_str(), format!("discord:{USER}"));
+    assert_eq!(message.sender.as_str(), USER.to_string());
     assert!(message.sender_authenticated);
     assert_eq!(message.conversation.id.as_str(), CHANNEL.to_string());
     // On disk with the SDK before the core had it, and the plugin's cursor follows once the SDK

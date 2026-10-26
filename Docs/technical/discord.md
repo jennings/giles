@@ -26,7 +26,7 @@ issue #20 must confirm.
 | Missing `MESSAGE_CONTENT` | Not a failure mode. A defensive check reports three DMs in a row with no text, no attachment, and no sticker |
 | Servers (guilds) | Not subscribed (no `GUILD_MESSAGES`), so guild messages never arrive and are never reported as groups |
 | Conversation id | The DM channel id, kind `Direct` |
-| Identity | `discord:<user id>`, `sender_authenticated = true` ([Identity](#identity)) |
+| Identity | `discord:<user id>` (the plugin sends the bare `<user id>`; the core adds the namespace), `sender_authenticated = true` ([Identity](#identity)) |
 | Output mode | `Blocks`; no edits, no typing indicator ([Output](#output)) |
 | Catch-up | A cursor per DM channel in the plugin's data directory, REST `after=<id>` paging after every new session, 24 h default age limit ([Catch-Up](#catch-up)) |
 | Status | Rejected token (close 4004, REST 401) is `NeedsAuth` with a `Url`; every other failure is `Error` ([Status](#status)) |
@@ -284,6 +284,14 @@ and it is checked only against documentation, so the plugin guards it cheaply:
   the username, global name, and the retired discriminator. The owner lists `discord:<id>` in
   `[owner] identities`. `sender_display_name` is `global_name`, falling back to `username`; it is
   display only and never used for routing.
+- **The plugin deals in native ids, the core in identities.** `InboundMessage.sender` is the bare
+  user id (`82198898841029460`), as the WhatsApp plugin sends `+15551234567` and not
+  `whatsapp:+15551234567`. The core joins it to the namespace `Configure` returned (`discord`) to
+  get the identity it matches against `[owner] identities` (`OwnerIdentities::contains`), and strips
+  the namespace from an identity before it hands a proactive send's `recipient` to `Send`
+  (`outbox::route`). A plugin that put `discord:` in the sender would arrive as
+  `discord:discord:<id>` and be dropped as not the owner (issue #22). The same holds in the other
+  direction: the `recipient` is the bare user id too.
 - **`sender_authenticated = true`.** The author id is set by Discord, not by the sender: it
   arrives on the Gateway connection that the bot authenticated with its token over TLS, and in a
   DM the author is either the bot or the one other participant. A message can't claim another
@@ -356,7 +364,7 @@ plugin's), written by a temp file, `fsync`, and rename:
 ```
 
 - `cursor`: the highest message id of that channel the plugin has finished handling (delivered to
-  the SDK's spool, or dropped). `user`: the other participant, for resolving `discord:<id>` to a
+  the SDK's spool, or dropped). `user`: the other participant, for resolving a user id to a
   channel without asking Discord. Both are strings, because snowflakes exceed what JSON numbers
   carry safely, and ids compare as `u64`.
 - Losing the file is harmless: the channels are rediscovered by live messages and by sends, and
@@ -455,9 +463,10 @@ again.
 ## Send
 
 `send` for a `Conversation(<DM channel id>)` target posts to that channel. For a
-`Recipient(discord:<user id>)` target (the outbox, jobs, proactive sends) it resolves the channel
-first: the state file's `user` mapping, else `POST /users/@me/channels`, whose result is recorded
-there (so a restart remembers it, and catch-up covers the channel).
+`Recipient(<user id>)` target (the outbox, jobs, proactive sends; the core has taken the `discord:`
+namespace off the identity) it resolves the channel first: the state file's `user` mapping, else
+`POST /users/@me/channels`, whose result is recorded there (so a restart remembers it, and catch-up
+covers the channel).
 
 - Each chunk of the rendered text is one `POST /channels/{id}/messages`, in order, sequentially,
   with `allowed_mentions: { "parse": [] }` and the `SUPPRESS_EMBEDS` flag always (no user, role,
@@ -482,7 +491,7 @@ there (so a restart remembers it, and catch-up covers the channel).
 | 10003 on a recorded channel | Forget it (state file), create the DM channel again once, retry the chunk; a second 10003 is `NotFound` |
 | 10003 on a `Conversation` target | `NotFound` |
 | 40005, 50045 (file too large), 50006, 50035 | `InvalidRequest`, with Discord's status and error code (not its text): a plugin bug or an oversize send |
-| Malformed `discord:<id>`, an id that isn't a snowflake | `InvalidRequest` |
+| A recipient that isn't a bare snowflake (including `discord:<id>`, which the core never sends) | `InvalidRequest` |
 | 60 s without an answer (`TimedOut`), 5xx, transport error | `Unavailable` |
 | Any other error code (50001, 50013, ...) | `Unavailable` too: the outbox retries until the message expires, which costs a request now and then, and a message is never dropped for a code the plugin doesn't know |
 
@@ -892,8 +901,9 @@ a webhook, a server, and a type other than 0 and 19 are `Dropped` with that reas
 with no text (after trimming), no file, and no sticker is `Empty`, and everything else is an
 `InboundMessage`:
 
-- `sender` is `discord:<author id>`, `sender_authenticated` is `true`, and the display name is the
-  global name or else the username. The conversation is the channel id, `Direct`, with no title.
+- `sender` is the author id alone (the native id: the core adds the `discord:` namespace),
+  `sender_authenticated` is `true`, and the display name is the global name or else the username.
+  The conversation is the channel id, `Direct`, with no title.
 - The event id and `message_id` are the message id, and `reply_to` is the referenced message of a
   type 19 message only (a forward or a crosspost refers to a message too).
 - `text` is the content exactly as written, then one line per sticker, `[sticker: <name>]`. Names
@@ -1030,9 +1040,9 @@ Callers of REST that send check the state before they send, and send nothing onc
 the `TokenState`, and the `StateFile` only, so every case below is a test against `FakeDiscord`.
 
 - **Targets.** A `Conversation` id must be a nonzero number that fits 64 bits; a `Recipient` the
-  same, with an optional `discord:` prefix (the core strips the namespace before it calls `send`).
-  Anything else, including another namespace (`whatsapp:+1555...`), is `InvalidRequest` before any
-  request is made. `reply_to` is ignored.
+  same: the core strips the namespace before it calls `send`, so a recipient is a bare user id.
+  Anything else, including an identity with its namespace (`discord:8219...`) and another namespace
+  (`whatsapp:+1555...`), is `InvalidRequest` before any request is made. `reply_to` is ignored.
 - **Text.** `render::discord(markdown, DISCORD_MAX_CHARS)`; nothing left after rendering (empty or
   whitespace) with no attachment is `InvalidRequest("nothing to send")`; files are
   [Attachments](#attachments). No typing indicator ([Output](#output)).
@@ -1250,27 +1260,32 @@ No test contacts Discord, and none needs a token or a network beyond loopback.
   cursor on disk at the end; and a 401 on the first page giving `NeedsAuth` with live messages
   still arriving and no second request.
 - `outbound`: against `FakeDiscord` on paused time: rendering and masked links, a 6 000-character
-  reply split into ordered parts of at most 2 000 characters with nothing lost, mentions defused
-  in the text, empty text and attachments refused, a recipient's DM channel opened once and
-  reused (with and without the `discord:` prefix), 50007, 50278, 10013, and 40003 on `create_dm`
-  and on posting (`Unavailable`, not remembered), twelve malformed targets, the whole error table
-  (15 errors, each its kind), a failure after two of several parts of a send to a user (the later
-  ones never posted; the retry posting the part that failed and the ones after it, and a new
-  identical send then posting in full), a part that fails every time (240000) retried alone while
-  the parts before it are never posted again, a send cut off at the outbox's 60 seconds that
-  leaves its progress, a cut-off reply into a conversation that is not remembered (its error
-  promises no retry, and the same text later goes out in full), an
-  invalid part after one went out (forgotten, so the same text later goes out in full), a
-  forgotten DM channel opened again once and then remembered (and gone from the state file), 10003
-  twice as `NotFound` without a loop, 10003 for a reply and for a fresh DM, a DM channel
-  remembered across a restart, one recorded by a send and caught up on the next `Ready`, one
-  recorded by the inbound side used without `create_dm`, a 401 on posting and on `create_dm`
-  (`NeedsAuth`, then no request of any kind), a 401 after another final status, a 4004 and a 401
-  of a history request each stopping sends, a rate-limited call, and two concurrent sends that
-  don't interleave. The map of unfinished sends has unit tests of its own: progress kept and
-  cleared, sends told apart by destination and text, eviction of the oldest at the bound (and no
-  growth past it over 10 000 sends), the 24 hour expiry moving with progress, and expired entries
-  making room first.
+  reply split into ordered parts of at most 2 000 characters with nothing lost, mentions defused in
+  the text, empty text and attachments refused, a recipient's DM channel opened once and reused (the
+  same bare id twice), 50007, 50278, 10013, and 40003 on `create_dm` and on posting (`Unavailable`,
+  not remembered), thirteen malformed targets (an identity with its `discord:` namespace among
+  them), the whole error table (15 errors, each its kind), a failure after two of several parts of a
+  send to a user (the later ones never posted; the retry posting the part that failed and the ones
+  after it, and a new identical send then posting in full), a part that fails every time (240000)
+  retried alone while the parts before it are never posted again, a send cut off at the outbox's 60
+  seconds that leaves its progress, a cut-off reply into a conversation that is not remembered (its
+  error promises no retry, and the same text later goes out in full), an invalid part after one went
+  out (forgotten, so the same text later goes out in full), a forgotten DM channel opened again once
+  and then remembered (and gone from the state file), 10003 twice as `NotFound` without a loop,
+  10003 for a reply and for a fresh DM, a DM channel remembered across a restart, one recorded by a
+  send and caught up on the next `Ready`, one recorded by the inbound side used without `create_dm`,
+  a 401 on posting and on `create_dm` (`NeedsAuth`, then no request of any kind), a 401 after
+  another final status, a 4004 and a 401 of a history request each stopping sends, a rate-limited
+  call, and two concurrent sends that don't interleave. The map of unfinished sends has unit tests
+  of its own: progress kept and cleared, sends told apart by destination and text, eviction of the
+  oldest at the bound (and no growth past it over 10 000 sends), the 24 hour expiry moving with
+  progress, and expired entries making room first.
+- `tests/core.rs` runs the plugin, served over loopback with the fake client, under a real core
+  (`PluginHost`, `RemoteChannel`, the router, sessions, the outbox) with `[owner] identities`
+  `discord:<id>`: the owner's DM reaches a turn while another user's is dropped, the reply goes
+  back to the conversation, and a proactive send to the owner's default identity reaches `send`
+  as the bare user id and opens the DM. It is the test that sees the namespace added and stripped
+  (issue #22).
 - `tests/sdk.rs` also sends over the wire: a recipient (DM opened, message posted, the id back), a
   reply, `UNAVAILABLE` for 50007 and `INVALID_ARGUMENT` for another namespace.
 - `real`: the conversions from the library's events (a documented READY payload and a DM with a

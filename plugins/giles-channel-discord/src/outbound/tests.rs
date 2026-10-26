@@ -227,9 +227,9 @@ async fn nothing_to_send_is_refused_before_anything_is_sent() {
 #[tokio::test(start_paused = true)]
 async fn a_recipient_gets_a_dm_channel_that_is_opened_once() {
     let h = Harness::start().await;
-    // The core strips the namespace; the prefix is accepted all the same.
+    // The core strips the namespace before it calls `send`: the recipient is the bare user id.
     h.to_user(&USER.to_string(), "one").await.unwrap();
-    h.to_user(&format!("discord:{USER}"), "two").await.unwrap();
+    h.to_user(&USER.to_string(), "two").await.unwrap();
     h.reply("elsewhere").await.unwrap();
     assert_eq!(h.client.dms(), [USER], "one POST /users/@me/channels");
     assert_eq!(
@@ -289,6 +289,8 @@ async fn a_target_that_is_not_a_discord_id_is_invalid_and_costs_no_request() {
         "discord:",
         "discord:abc",
         "discord:discord:5",
+        // Valid as an identity, but the core never hands a recipient over with its namespace.
+        "discord:82198898841029460",
     ] {
         let error = h.to_user(recipient, "hi").await.unwrap_err();
         assert!(

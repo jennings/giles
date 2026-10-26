@@ -110,13 +110,10 @@ fn inbound(message: &DiscordMessage) -> InboundMessage {
             kind: ConversationKind::Direct,
             title: None,
         },
-        // The id, not the name: names change. Discord sets the author id itself.
-        sender: NativeId::new(format!(
-            "{}:{}",
-            crate::channel::NAMESPACE,
-            message.author.id
-        ))
-        .expect("a prefixed id is never empty"),
+        // The user id, not the name: names change. Discord sets the author id itself. It is the
+        // channel's native id: the core adds the identity namespace (`discord:<id>`), so the
+        // namespace must not be in it.
+        sender: NativeId::new(id(message.author.id)).expect("a number is never an empty id"),
         sender_aliases: Vec::new(),
         // The Gateway connection is authenticated with the bot's token, and the author id of a
         // message on it is Discord's, not the sender's claim.

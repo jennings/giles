@@ -2,7 +2,7 @@
 //! Discord's limit, attaching files, and posting the messages in order.
 //!
 //! - A `Conversation` target is a DM channel id and is posted to as it is. A `Recipient` target is
-//!   an identity's user id (the core hands over the part after `discord:`): the plugin finds the DM
+//!   an identity's user id, bare (the core strips the `discord:` namespace): the plugin finds the DM
 //!   channel in the state file, where inbound messages and earlier sends recorded it, or opens it
 //!   with `POST /users/@me/channels` and records it there, so a restart remembers it and the
 //!   catch-up of [`ingest`](crate::ingest) covers channels first made for a send.
@@ -61,10 +61,6 @@ mod unfinished;
 use plan::Post;
 pub use plan::{FILE_LIMIT, FILES_PER_MESSAGE, REQUEST_LIMIT};
 use unfinished::{Key, Unfinished};
-
-/// The identity namespace, which the core strips before it hands over a recipient. A recipient
-/// that still has it is accepted too.
-const NAMESPACE_PREFIX: &str = "discord:";
 
 /// "Cannot send messages to this user": the user doesn't take DMs from the bot, or has blocked it.
 const CANNOT_MESSAGE_USER: u32 = 50_007;
@@ -450,17 +446,16 @@ fn parse_target(target: &SendTarget) -> Result<Destination> {
                 ))
             }),
         SendTarget::Recipient(id) => {
-            let native = id
-                .as_str()
-                .strip_prefix(NAMESPACE_PREFIX)
-                .unwrap_or_else(|| id.as_str());
-            snowflake(native).map(Destination::User).ok_or_else(|| {
-                Error::InvalidRequest(format!(
-                    "{:?} is not a Discord user (a number like 82198898841029460, \
-                     or discord: and one)",
-                    id.as_str()
-                ))
-            })
+            // The native id: the core strips the identity namespace (`discord:`) before it calls
+            // `send`, so a recipient that still has it is not one of the core's.
+            snowflake(id.as_str())
+                .map(Destination::User)
+                .ok_or_else(|| {
+                    Error::InvalidRequest(format!(
+                        "{:?} is not a Discord user id (a number like 82198898841029460)",
+                        id.as_str()
+                    ))
+                })
         }
         _ => Err(Error::InvalidRequest(
             "this kind of target isn't supported by the Discord plugin".to_owned(),
