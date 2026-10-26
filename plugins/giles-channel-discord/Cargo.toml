@@ -1,0 +1,20 @@
+[package]
+name = "giles-channel-discord"
+description = "The Giles Discord channel plugin: a bot account that receives and sends direct messages."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+giles-plugin-sdk.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

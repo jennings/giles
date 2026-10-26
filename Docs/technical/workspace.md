@@ -22,6 +22,7 @@ so far is [the WhatsApp spike](whatsapp-spike.md).
 | `giles-channel-echo` | bin      | no        | Test-only channel plugin for host and end-to-end tests       |
 | `giles-channel-irc`  | lib, bin | no        | The IRC channel plugin ([IRC Channel](irc.md))               |
 | `giles-channel-whatsapp` | bin  | no        | The WhatsApp channel plugin ([WhatsApp Channel](whatsapp.md)) |
+| `giles-channel-discord` | lib   | no        | The Discord channel plugin ([Discord Channel](discord.md))   |
 
 Dependencies between them:
 
@@ -38,6 +39,7 @@ flowchart TD
   echo[giles-channel-echo] --> sdk
   irc[giles-channel-irc] --> sdk
   whatsapp[giles-channel-whatsapp] --> sdk
+  discord[giles-channel-discord] --> sdk
 ```
 
 `giles-types` is the contract shared by the core and plugins, so it depends on no other Giles

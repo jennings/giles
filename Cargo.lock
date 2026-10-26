@@ -1486,6 +1486,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "giles-channel-discord"
+version = "0.1.0"
+dependencies = [
+ "giles-plugin-sdk",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "giles-channel-echo"
 version = "0.1.0"
 dependencies = [
