@@ -10,12 +10,15 @@ license.workspace = true
 publish = false
 
 [dependencies]
+bytes.workspace = true
 futures.workspace = true
 giles-plugin-sdk.workspace = true
+# Downloads from the Discord CDN: `twilight-http` is not a general HTTP client.
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
-tokio-util.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "rt-multi-thread", "sync", "time"] }
+tokio-util = { workspace = true, features = ["io"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 # The Gateway client. Default features off: no `zstd` (a C build for compression DM traffic
@@ -32,6 +35,9 @@ giles-proto.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "test-util"] }
 tonic.workspace = true
+# The `log` crate's records (`hyper`, `reqwest`) into the captured `tracing` output of
+# `tests/logs.rs`, which is where the plugin's own `main` sends them too.
+tracing-log = "0.2"
 # A Gateway server for `tests/gateway.rs`.
 tokio-websockets = { version = "0.13.3", features = ["server"] }
 

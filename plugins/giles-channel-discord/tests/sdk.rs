@@ -334,3 +334,92 @@ async fn a_send_over_the_wire_posts_a_message_and_failures_have_their_codes() {
         .unwrap_err();
     assert_eq!(status.code(), Code::InvalidArgument, "{status:?}");
 }
+
+// Attachments through the SDK's real blob store.
+
+/// The files in the SDK's blob directory (inbound blobs and their sidecars, and the core's
+/// uploads under `outbound/`): zero when nothing is kept.
+fn blob_files(served: &Served) -> usize {
+    std::fs::read_dir(served.data_dir().join("giles-sdk/blobs")).map_or(0, Iterator::count)
+}
+
+#[tokio::test]
+async fn a_downloaded_attachment_is_a_blob_the_core_fetches_and_it_goes_with_the_ack() {
+    use giles_channel_discord::client::Attachment;
+    use giles_channel_discord::fake::Served as Cdn;
+    use giles_proto::plugin::v1::{GetBlobRequest, blob_chunk};
+
+    let served = configured().await;
+    let (acks, mut events) = served.events().await;
+    served.client.push(GatewayEvent::Ready { user_id: 7 });
+    let (status_id, _) = next_status(&mut events).await;
+    acks.unbounded_send(ack(&status_id)).unwrap();
+
+    let url = "https://cdn.discordapp.com/attachments/1/2/photo.png?ex=1&is=2&hm=3";
+    served
+        .client
+        .serve(url, Cdn::file(b"\x89PNG not really a png"));
+    let mut sent = direct_message(id_now(1), CHANNEL, USER, "a photo");
+    sent.attachments.push(Attachment {
+        url: url.to_owned(),
+        filename: "photo.png".to_owned(),
+        content_type: Some("image/png".to_owned()),
+        size: 21,
+    });
+    served.client.push(GatewayEvent::Message(sent));
+    let (id, message) = next_message(&mut events).await;
+    assert_eq!(message.text, "a photo");
+    let [media] = &message.attachments[..] else {
+        panic!("one attachment: {message:?}");
+    };
+    assert_eq!(media.media_type, "image/png");
+    assert_eq!(media.name.as_deref(), Some("photo.png"));
+    assert_eq!(media.size, 21);
+
+    // The core fetches the bytes with GetBlob.
+    let mut stream = served
+        .plugin()
+        .get_blob(GetBlobRequest {
+            id: media.id.to_string(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let mut bytes = Vec::new();
+    while let Some(response) = stream.message().await.unwrap() {
+        if let blob_chunk::Part::Data(data) = response.chunk.unwrap().part.unwrap() {
+            bytes.extend(data);
+        }
+    }
+    assert_eq!(bytes, b"\x89PNG not really a png");
+    assert!(blob_files(&served) > 0, "kept until the event is acked");
+
+    // The ack releases it.
+    acks.unbounded_send(ack(&id)).unwrap();
+    wait_until(|| blob_files(&served) == 0 && served.spooled() == 0).await;
+}
+
+#[tokio::test]
+async fn an_attachment_that_cannot_be_downloaded_still_delivers_the_message_with_a_note() {
+    use giles_channel_discord::client::Attachment;
+
+    let served = configured().await;
+    let (_acks, mut events) = served.events().await;
+    served.client.push(GatewayEvent::Ready { user_id: 7 });
+    next_status(&mut events).await;
+    let mut sent = direct_message(id_now(1), CHANNEL, USER, "");
+    sent.attachments.push(Attachment {
+        url: "https://cdn.discordapp.com/attachments/1/2/gone.pdf?ex=1".to_owned(),
+        filename: "gone.pdf".to_owned(),
+        content_type: None,
+        size: 1,
+    });
+    served.client.push(GatewayEvent::Message(sent));
+    let (_, message) = next_message(&mut events).await;
+    assert!(message.attachments.is_empty());
+    assert_eq!(
+        message.text,
+        "[attachment not received: gone.pdf is no longer available from Discord]"
+    );
+    assert_eq!(blob_files(&served), 0, "nothing half-written is left");
+}

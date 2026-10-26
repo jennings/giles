@@ -6,12 +6,13 @@ messages (DMs) over the Discord Gateway and sends over the REST API, as a separa
 plugin SDK ([Plugin SDK](plugin-sdk.md)). `ChannelInfo { identity_namespace: "discord", output:
 Blocks, can_initiate: true }`.
 
-**Status: designed, and built as far as issues #16 and #17** ([Implementation](#implementation):
-the Gateway connection, the status, the configuration, inbound direct messages, catch-up, and
-sending text). This page records the decisions of issue #13: the library, the Gateway intents, the
-catch-up algorithm, the status mapping, the configuration, and the client seam the tests use. The
-rest of the plugin is built by issues #18 and #19 and verified against a real bot by issue #20;
-those issues extend this page with what they build. Facts about
+**Status: designed, and built as far as issues #16 and #17, and the inbound half of #18**
+([Implementation](#implementation): the Gateway connection, the status, the configuration,
+inbound direct messages with their attachments, catch-up, and sending text). This page records
+the decisions of issue #13: the library, the Gateway intents, the catch-up algorithm, the status
+mapping, the configuration, and the client seam the tests use. The rest of the plugin is built by
+issue #19 and the upload of attachments (#18) and verified against a real bot by issue #20; those
+issues extend this page with what they build. Facts about
 Discord were checked against the official documentation on 2026-10-25 and link to it; where the
 documentation is silent or two pages disagree, the text says so, and [What Needs a Real
 Bot](#what-needs-a-real-bot) lists what issue #20 must confirm.
@@ -31,7 +32,8 @@ Bot](#what-needs-a-real-bot) lists what issue #20 must confirm.
 | Catch-up | A cursor per DM channel in the plugin's data directory, REST `after=<id>` paging after every new session, 24 h default age limit ([Catch-Up](#catch-up)) |
 | Status | Rejected token (close 4004, REST 401) is `NeedsAuth` with a `Url`; every other failure is `Error` ([Status](#status)) |
 | Config keys | `token`, `max_blob`, `catch_up_max_age` ([Configuration](#configuration)) |
-| Seam | A `Discord` trait with six methods in the end (three so far, [Implementation](#the-seam-as-built)); the twilight types stay in one `real` module ([The Client Seam](#the-client-seam)) |
+| Attachments | In: streamed from the CDN into blobs under `max_blob`, a note in the text for a file that can't be fetched ([Attachments](#attachments)) |
+| Seam | A `Discord` trait with six methods ([Implementation](#the-seam-as-built)); the twilight types stay in one `real` module ([The Client Seam](#the-client-seam)) |
 
 ## The Library
 
@@ -312,9 +314,10 @@ deduplicates on it for 30 days), `reply_to` the referenced message id of a REPLY
 message timestamp, `text` the `content`, `attachments` as blobs ([Attachments](#attachments)).
 Stickers become `[sticker: <name>]` appended to the text; embeds are ignored (a user's own message
 carries its links in `content`); other content (polls, forwards) is not delivered. Files are
-`[attachment: <name>]` lines in the text until issue #18 downloads them. Edits and deletes are
-ignored: an edit or a delete after delivery doesn't change what the agent was asked, and a
-message edited while the plugin was down arrives with its edited text.
+downloaded into blobs, and one that can't be is an `[attachment not received: ...]` line at the
+end of the text ([Attachments](#attachments)). Edits and deletes are ignored: an edit or a delete
+after delivery doesn't change what the agent was asked, and a message edited while the plugin was
+down arrives with its edited text.
 
 Durability is the SDK's: it writes each event to its spool before the plugin's stream is polled
 again, and resends unacked events when `Events` reopens
@@ -455,9 +458,8 @@ there (so a restart remembers it, and catch-up covers the channel).
   escaped: the renderer is the first layer, these are the second) and no `message_reference`:
   `reply_to` is ignored, because in a DM a reply link only adds clutter. The returned `MessageId`
   is the last chunk's.
-- A caller that sends text with attachments gets the text as the first message's content and the
-  files on it ([Attachments](#attachments)); text too long for one message goes in the chunks
-  before the files.
+- A send with attachments is `InvalidRequest` until they can be uploaded
+  ([Attachments](#attachments)).
 - Every REST call is bounded: `twilight-http` queues behind the rate limiter and sends a request
   that got a 429 back through it (the code has no retry count), so `RealDiscord` gives up after
   60 seconds per call with `RateLimited`.
@@ -484,22 +486,65 @@ identical replies ("ok", twice).
 
 ## Attachments
 
-Both directions are issue #18; the facts it needs are recorded here.
+Issue #18 built the download of attachments. Discord's facts are in [Discord Facts](#discord-facts);
+how the code is laid out is in [Attachments in the Code](#attachments-in-the-code).
 
-- Inbound: an attachment's `url` is a signed CDN URL (`ex`, `is`, `hm` query parameters) and
-  valid when the message arrives live or is fetched, and expires afterwards, so the plugin
-  downloads at once. It uses `reqwest` (see [The Library](#the-library)), streams, and counts
-  bytes against `max_blob` (default 50 MiB, like the other plugins), aborting at the limit; the
-  declared `size` rejects a too-large file before the request. An expired or refused URL, or one
-  over the limit, is replaced by a note in the text. URLs are never logged above `debug`
-  (the query string is a credential); logs carry the host and file name.
-- Outbound: the limit is 20 MiB per file and 25 MiB per request. The bot has no Nitro and a DM
-  has no boost tier, so 20 MiB is expected to apply; the plugin refuses a larger file locally with
-  `InvalidRequest` before anything is sent (`min(max_blob, 20 MiB)` per file, 25 MiB in total),
-  and maps 40005 and 50045 the same way. Files per message: the documentation states no limit
-  (10 is the commonly used figure, unverified), so the plugin sends at most 10 per message and
-  more in follow-up messages. The upload is `twilight-http`'s `create_message` with `Attachment`s
-  (the file bytes are held in memory, bounded by the limit).
+**Limits.** Each is a named constant or a config key, and each is enforced by the plugin before
+Discord is asked, because the plugin can say what is wrong and Discord's answer to some of them
+is only a status.
+
+| Limit | Value | Where it comes from | Enforced |
+| --- | --- | --- | --- |
+| File size, in | `max_blob`, default 50 MiB | Config | The declared `size` before the request; the CDN's `Content-Length` before the body; the bytes as they arrive, whatever either said |
+| Files per message, in | 10 (`MAX_FILES`) | The same figure; a message with more is not Discord's | The rest are notes, not downloaded |
+| Time, in | 10 s to connect, 30 s of silence, 5 min in all | The plugin | `reqwest` timeouts |
+
+### Inbound
+
+- An attachment's `url` is a signed CDN URL (`ex`, `is`, `hm` query parameters), valid when the
+  message arrives live or is fetched, and expiring afterwards, so the plugin downloads at once:
+  before the message is handed to the SDK, so a message and its files are one event.
+- `reqwest` (see [The Library](#the-library)), with the SDK's bundled roots, streams the body into
+  `Blobs::put_reader`: the plugin holds a chunk and the blob store's 64 KiB buffer, never a file,
+  and `max_blob` is counted as bytes arrive (`client::limited`), whatever size Discord or the CDN
+  declared. A file the declared size or `Content-Length` puts over the limit is never requested or
+  read.
+- The media type is Discord's `content_type` when it is a `type/subtype` (parameters dropped,
+  `application/octet-stream` ignored), else the one the file's extension says (a table of about
+  thirty common types), else `application/octet-stream`. The plugin does not sniff content: the
+  SDK's other plugins don't either. The blob's name is Discord's file name with control characters
+  removed, `/`, `\` and `"` replaced, cut to 100 characters.
+- **A file that doesn't arrive is a note**, appended to the text after the words and the stickers
+  (`[attachment not received: photo.png is over the limit of 50 MiB]`), and the message goes on:
+  over the limit (declared or counted), expired or deleted (403, 404, 410: "is no longer
+  available from Discord"), any other failure (a status, a timeout, a body cut short, a URL the
+  client won't fetch: "could not be downloaded"), a blob store that can't keep it ("could not be
+  stored"), and the eleventh file of a message. A failed download leaves no blob. Retrying would
+  not help (the link expires and the message is delivered once), and a note is honest where
+  silence is not. The note quotes the name the way stickers are quoted: control characters and
+  brackets removed, so a name can't end its note and start a line of its own.
+- **Embeds are ignored; stickers are `[sticker: <name>]`** ([Inbound](#inbound)): a user's own
+  links are in `content`, and an embed is Discord's preview of one.
+- **Never logged:** the URL, its query string, the file name. A log line says "an attachment was
+  not received", the CDN host, and the reason in words. `tests/logs.rs` captures `tracing` at
+  `TRACE`, with the `log` records of `hyper` and `reqwest` bridged in, around downloads through the
+  plugin and through the real client (a success, an expired link, a redirect, an oversize body, a
+  refused URL), and checks that no line has the signature, the query, or the name.
+- **Only Discord's CDN.** A URL in a message is a stranger's data: the client refuses (`BadUrl`,
+  nothing requested) any URL that isn't `https` on `cdn.discordapp.com` or
+  `media.discordapp.net`, port 443, with no user name or password; that rules out every address
+  and `localhost`, so a crafted attachment can't make the plugin request its own network (SSRF). A
+  redirect is followed to such a URL only, at most 3 times; any other is not followed and is an
+  error. No `Authorization`, cookie, or `Referer` is ever sent: the bot token must not reach the
+  CDN.
+
+### Outbound
+
+Not built yet: a send with attachments is `InvalidRequest`. The facts it needs: the limit is
+20 MiB per file and 25 MiB per request ("The default limit is 20 MiB for all users", higher only
+with Nitro or a server's boost tier; the maximum request size is 25 MiB), a bot in a DM has
+neither Nitro nor a boost tier, and the documentation states no limit on files per message (10
+is the figure Discord's own clients and libraries use, unverified).
 
 ## Rate Limits
 
@@ -568,7 +613,7 @@ error (`invalid config: token: ...`), unknown keys refused like the other plugin
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `token` | required | The bot token (`{ secret = "..." }` in practice). A credential: `Secret`-wrapped, never logged, `<redacted>` in `Debug`, never in a status. Non-empty, no whitespace or control characters (a pasted `Bot` prefix is refused with a message to paste the token alone) |
-| `max_blob` | `"50 MiB"` | The largest attachment downloaded or sent; outbound is also capped by Discord's 20 MiB per file |
+| `max_blob` | `"50 MiB"` | The largest attachment downloaded (a larger one becomes a note in the text); sends are also capped by Discord's 20 MiB per file |
 | `catch_up_max_age` | `"24h"` | How far back catch-up fetches. `"0s"` turns it off; at most `"30d"`, the core's deduplication window |
 
 Nothing else is configurable on purpose: the API version, the intents, the page size, the grace
@@ -653,10 +698,10 @@ No test may contact Discord, and none needs a token.
 
 ## Implementation
 
-What issues #15 to #17 built: the crate, the configuration, the Gateway connection, and the
+What issues #15 to #18 built: the crate, the configuration, the Gateway connection, and the
 status (#15); direct messages in, the state file, and catch-up after downtime (#16); text out, to
-a conversation or to a user, and the handling of a rejected token (#17). Attachments are
-issue #18. Each extends this section with what it adds.
+a conversation or to a user, and the handling of a rejected token (#17); and attachments in both
+directions (#18). Each extends this section with what it adds.
 
 `plugins/giles-channel-discord` is a library and a binary (`publish = false`, `MIT OR Apache-2.0`
 like the workspace; the new dependencies are listed under [Dependencies](#dependencies)). The
@@ -670,39 +715,41 @@ as the IRC plugin's do; nothing in it is an API for anyone else.
 | `config` | `Config` as written (unknown keys refused) and `Settings` as validated; `Secret`, whose `Debug` is `<redacted>` |
 | `client` | The `Discord` trait and `GatewayEvent`: the seam |
 | `status` | `classify`: a Gateway event to `Up`, `Down`, or `Final(ChannelStatus)`; the status messages |
-| `inbound` | `map`: a `DiscordMessage` to an `InboundMessage`, `Empty`, or `Dropped(reason)`; pure ([The Mapping](#the-mapping)) |
+| `inbound` | `map`: a `DiscordMessage` to a `Delivery` (an `InboundMessage` and the files to download into it), `Empty`, or `Dropped(reason)`; pure ([The Mapping](#the-mapping)) |
 | `ingest` | `Ingest`: the per-channel marks, buffers, and catch-up passes, merging live and fetched messages; no I/O ([Ingest](#ingest)) |
 | `state` | `StateFile`: `discord-state.json`, the DM channels, their cursors and users ([The State File](#the-state-file)) |
 | `snowflake` | Snowflake arithmetic: the time of an id, the first id of a time |
 | `outbound` | `Outbound`: `send` for `DiscordChannel`: target parsing, rendering, the parts in order, finding or opening the DM channel, the error mapping, and the progress of unfinished sends ([Sending](#sending)) |
+| `deliver` | The task between the session and the SDK: downloads a message's files into blobs and notes the ones that fail ([Attachments in the Code](#attachments-in-the-code)) |
+| `media` | The SDK's `Blobs` as a `MediaStore`, and the media types and file names of attachments |
 | `session` | `Session`, `Timing`, and `run`: the task that owns the connection and the history request in flight ([State Machine](#state-machine)) |
 | `token` | `TokenState`: whether Discord rejected the token, shared by the session and everything that calls REST ([A Rejected Token](#a-rejected-token)) |
 | `channel` | `DiscordChannel` (the SDK's `Channel`) and the event stream that moves the cursor, `configure`, `configure_with`, and the `SessionSlot` that lets `main` stop the session |
-| `fake` | `FakeDiscord`, the scripted client for tests: a Gateway queue and a REST history per channel |
-| `real` | `RealDiscord`, the client on `twilight-gateway` and `twilight-http`: the only module with twilight types |
+| `fake` | `FakeDiscord`, the scripted client for tests: a Gateway queue, a REST history per channel, a CDN, and the messages posted; `FakeMedia`, a blob store in memory |
+| `real` | `RealDiscord`, the client on `twilight-gateway` and `twilight-http`: the only module with twilight types; `real::cdn` (downloads on `reqwest`) |
 | `main` | Logging, `ChannelPlugin::new("discord", ..).output(Blocks).can_initiate(true).serve(..)`, then the session is stopped |
 
 ```text
-twilight Shard ── real ──GatewayEvent──▶ session ──Outgoing──▶ Channel::events ──▶ SDK
-      ▲                                   │   ▲                      │
-      └── polled again only after ────────┘   │                      └─ moves the cursor in the
-          the reconnect delay                 │                         state file when polled again
-                      Ingest: marks, buffers, catch-up passes
-                      real ◀── messages_after ── session (one page at a time)
+twilight Shard ── real ──GatewayEvent──▶ session ──Staged──▶ deliver
+      ▲                                   │   ▲                │
+      └── polled again only after ────────┘   │                ├─ Discord::download ──▶ MediaStore
+          the reconnect delay                 │                │   (a message's files into blobs)
+                      Ingest: marks, buffers, catch-up passes  │
+                      real ◀── messages_after ── session       ▼
+                                                    Outgoing ──▶ Channel::events ──▶ SDK
+                    (the cursor moves in the state file when the stream is polled again)
 ```
 
 ### The Seam as Built
 
-[The Client Seam](#the-client-seam) lists the six methods the finished plugin needs. The trait
-today has `next_event` and `shutdown` (the Gateway connection, issue #15), `messages_after`
-(channel history for catch-up, issue #16), and `create_message` and `create_dm` (sends, issue #17).
-`download` (issue #18) is added by the issue that calls it, together with its `real`
-implementation, its fake, and its tests: a method defined now would have no caller, and its
-real implementation would be a stub that looks like it works. Ids are plain `u64`s (the sketch's
-`ChannelId`, `MessageId`, and `UserId` would only rename them). Deliberate differences from the
-sketch:
+[The Client Seam](#the-client-seam) lists the six methods the finished plugin needs, and the trait
+has all six: `next_event` and `shutdown` (the Gateway connection, issue #15), `messages_after`
+(channel history for catch-up, issue #16), `create_message` and `create_dm` (sends, issue #17), and
+`download` (attachments, issue #18), each added with its `real` implementation, its fake, and its
+tests by the issue that calls it. Ids are plain `u64`s (the sketch's `ChannelId`, `MessageId`, and
+`UserId` would only rename them). Deliberate differences from the sketch:
 
-- `create_message` takes a `NewMessage` that holds the text for now (files arrive with issue #18).
+- `create_message` takes a `NewMessage` that holds the text for now (files come with the upload).
   `allowed_mentions: { "parse": [] }` and the `SUPPRESS_EMBEDS` flag are part of the
   contract of `create_message`, not fields of `NewMessage`: the real client puts them on every
   message, and `tests/rest.rs` checks the JSON that goes out. Only the `id` is read from the
@@ -710,6 +757,14 @@ sketch:
   Discord accepted must not turn into an error, and a duplicate on retry, because another field
   changed. The library refusing the request itself (a text over its limit) is `Api { 400, 50035 }`
   and a 413 is `TooLarge`.
+- `download` returns the body as a stream of `Bytes` chunks (`Body`), not a `Download`: the
+  status and the declared length are checked before it returns, so the stream is only a body.
+  It is **not** cut off at `max` by the client: the caller wraps it in `client::limited(body,
+  max)`, which replaces the chunk that crosses the limit with `TooLarge` and ends the stream. One
+  helper enforces the limit for every client, the fake included, so the guarantee of the plugin
+  ("never more than `max_blob` bytes, whatever the sender says") is tested once against the
+  fake and doesn't depend on a client behaving. `RestError` has a variant more than the sketch:
+  `BadUrl`, for a URL the client refuses to request.
 - `GatewayEvent` is `Ready { user_id }`, `Resumed`, `Message(DiscordMessage)`, and `Closed { code:
   Option<u16> }`. `Closed` has no `fatal` or `reconnecting` flag: whether a close
   code is final is the plugin's policy (`status::classify`, the table under [Status](#status)),
@@ -768,11 +823,11 @@ with no text (after trimming), no file, and no sticker is `Empty`, and everythin
   global name or else the username. The conversation is the channel id, `Direct`, with no title.
 - The event id and `message_id` are the message id, and `reply_to` is the referenced message of a
   type 19 message only (a forward or a crosspost refers to a message too).
-- `text` is the content exactly as written, then one line per file, `[attachment: <name>]`, and one
-  per sticker, `[sticker: <name>]`. Names come from the sender: control characters and brackets are
-  removed and the name is cut to 100 characters, so a name can't close its note and start another
-  line of its own. Files are not downloaded yet (issue #18), so the note is all of a file there is;
-  `attachments` is empty.
+- `text` is the content exactly as written, then one line per sticker, `[sticker: <name>]`. Names
+  come from the sender: control characters and brackets are removed and the name is cut to 100
+  characters, so a name can't close its note and start another line of its own. The files of the
+  message travel beside it in the `Delivery`; `deliver` downloads them into `attachments` and
+  appends a note for each that fails ([Attachments](#attachments)).
 
 ### Ingest
 
@@ -907,7 +962,8 @@ the `TokenState`, and the `StateFile` only, so every case below is a test agains
   request is made. `reply_to` is ignored.
 - **Text.** `render::discord(markdown, DISCORD_MAX_CHARS)`; nothing left after rendering (empty or
   whitespace) is `InvalidRequest("nothing to send")`. A send with attachments is `InvalidRequest`
-  until issue #18, so a file is never dropped silently. No typing indicator ([Output](#output)).
+  until the files can be uploaded, so a file is never dropped silently. No typing indicator
+  ([Output](#output)).
 - **Recipients.** The DM channel with a user is `StateFile::channel_for_user`, which the inbound
   path fills from live messages and catch-up, else `create_dm`, whose answer is recorded with
   `record_dm`: a restart remembers it, and the channel is known to catch-up from then on (the next
@@ -983,13 +1039,40 @@ own message, and `tests/logs.rs` captures `tracing` at `TRACE` around two runs a
 is in no line: the plugin served by the SDK with the fake client, and the real client against the
 loopback Gateway through Identify, a dropped connection, Resume, and a rejected token (the library's
 own logs are in the capture). `max_blob` and `catch_up_max_age` are validated and logged at
-startup; `catch_up_max_age` is read by catch-up, and nothing reads `max_blob` until issue #18.
+startup; `catch_up_max_age` is read by catch-up, and `max_blob` by the downloads
+([Attachments](#attachments)); a send is not limited by it yet.
 
 `RealDiscord::new` installs `rustls`'s `aws-lc-rs` provider as the process default (a provider
 that is already installed is left alone), because `twilight-gateway` panics building its TLS
 connector without one. The design said `main` would do it; doing it where the shard is built means
 no caller can forget it, and `tests/crypto_provider.rs`, a binary of its own so that no other test
 can have installed the provider first, checks it.
+
+### Attachments in the Code
+
+- **Inbound.** `inbound::map` returns a `Delivery`: the `InboundMessage` (text, no attachments) and
+  the message's files. `Ingest` passes both on in `Out::Deliver`, the session stages them
+  (`deliver::Staged`) into a bounded channel, and the `deliver` task, which `DiscordChannel::start`
+  spawns, downloads one file at a time through `Discord::download` and `client::limited` into
+  `MediaStore::put_reader` (the SDK's `Blobs::put_reader`, which writes a temporary file, hashes
+  it, and deletes it if the reader fails), and then passes the item to the event stream. The
+  session task never waits for a download, so the Gateway keeps being polled (and heartbeating)
+  while one runs, and the order of messages is the order they were staged.
+  `session::messages::attachments` tests it against the fake, including a held download.
+- **Tests.** `media.rs`, `real/cdn.rs` (unit tests), `session/messages/attachments.rs` (the whole
+  channel against the fake: a file with its type, name, and bytes; a file alone; type fallbacks;
+  several files and a failed one; oversize by declared size, by bytes, and by a body that never
+  ends (read only up to the limit); expired and refused links; a refused URL and a body that
+  breaks off; a store that fails; more than ten files; hostile names; a held download that
+  holds up neither the Gateway nor the order; catch-up; the cursor), `tests/cdn.rs` (the real
+  client against a CDN on loopback: no credentials, other hosts never contacted, redirects,
+  status codes, a declared length, an endless body cut at the limit with the connection dropped,
+  a truncated body, silence, a stall, a slow drip, a missing server), `tests/sdk.rs` (the real
+  blob store over the wire: a download fetched with `GetBlob` and released by the ack, a note
+  for a dead link), and `tests/logs.rs` (no URL, signature, or file name at `TRACE`, with the
+  `hyper` and `reqwest` records bridged in).
+- **Dependencies.** `reqwest` (already in the workspace; HTTP/1.1 and TLS with the SDK's roots) for
+  downloads, and `bytes`. Dev: `tracing-log`.
 
 ### Dependencies
 
@@ -1137,7 +1220,10 @@ Issue #20 confirms, in addition to its own list:
    leave the plugin silently disconnected.
 9. Resume after a short network drop (no catch-up pass, no duplicate), and a fresh Identify plus
    catch-up after a long one.
-10. A signed attachment URL downloaded on arrival, and one refused after its `ex` time.
+10. A signed attachment URL downloaded on arrival, and one refused after its `ex` time; that
+    every attachment URL is on `cdn.discordapp.com` or `media.discordapp.net` (a host outside
+    the list is refused by the plugin), whether the CDN ever redirects, and which status an
+    expired link gets (the plugin treats 403, 404, and 410 as "no longer available").
 11. That a message with only a sticker, poll, or forward behaves as the inbound table says, and
     that a DM with nothing but an attachment arrives with its `attachments` (the empty-message
     count depends on it).

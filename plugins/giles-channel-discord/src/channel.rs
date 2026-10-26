@@ -14,7 +14,9 @@ use tokio_util::sync::{CancellationToken, DropGuard};
 
 use crate::client::Discord;
 use crate::config::Settings;
+use crate::deliver::{self, Fetcher};
 use crate::ingest::{Clock, Cursor, Ingest, Params};
+use crate::media::MediaStore;
 use crate::outbound::Outbound;
 use crate::real::RealDiscord;
 use crate::session::{self, Outgoing, Session, Timing};
@@ -72,6 +74,8 @@ pub async fn configure_with(
             state: StateFile::open(ctx.data_dir()),
             catch_up_max_age: settings.catch_up_max_age,
             clock: Clock::system(),
+            media: Arc::new(ctx.blobs().clone()),
+            max_blob: settings.max_blob,
         },
     );
     slot.set(channel.take_session());
@@ -133,7 +137,8 @@ impl SessionSlot {
     }
 }
 
-/// What the channel needs to receive messages besides the connection.
+/// What the channel needs to receive messages besides the connection, and the blob store both
+/// directions use.
 #[derive(Clone)]
 pub struct Inbound {
     /// The plugin's state file: the DM channels and their cursors.
@@ -142,6 +147,10 @@ pub struct Inbound {
     pub catch_up_max_age: Duration,
     /// The time, for the age limit.
     pub clock: Clock,
+    /// The SDK's blob store: inbound attachments are put in it.
+    pub media: Arc<dyn MediaStore>,
+    /// The most bytes of one attachment downloaded (`max_blob`).
+    pub max_blob: u64,
 }
 
 /// A Discord bot as a [`Channel`]. Dropping it stops the session task.
@@ -161,6 +170,7 @@ impl DiscordChannel {
     /// downtime, and reports its status. Must be called inside a Tokio runtime.
     pub fn start(client: Arc<dyn Discord>, timing: Timing, inbound: Inbound) -> Self {
         let (out, events) = mpsc::channel(EVENT_BUFFER);
+        let (staged, staging) = mpsc::channel(EVENT_BUFFER);
         let stop = CancellationToken::new();
         let ingest = Ingest::new(Params {
             state: inbound.state.clone(),
@@ -175,10 +185,20 @@ impl DiscordChannel {
             Arc::clone(&token),
             inbound.state.clone(),
         );
+        tokio::spawn(deliver::run(
+            Fetcher {
+                client: Arc::clone(&client),
+                media: inbound.media,
+                max_blob: inbound.max_blob,
+            },
+            staging,
+            out,
+            stop.clone(),
+        ));
         let task = tokio::spawn(session::run(Session {
             client,
             timing,
-            out,
+            out: staged,
             stop: stop.clone(),
             ingest,
             token: Arc::clone(&token),

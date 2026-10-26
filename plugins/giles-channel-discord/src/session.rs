@@ -2,7 +2,7 @@
 //! reconnects.
 //!
 //! ```text
-//! Discord::next_event ──GatewayEvent──▶ session ──Outgoing──▶ Channel::events ──▶ SDK
+//! Discord::next_event ──GatewayEvent──▶ session ──Staged──▶ deliver ──Outgoing──▶ Channel::events
 //!        ▲                               │  ▲  │
 //!        └── polled again only after the ┘  │  └─ Ingest: marks, buffers, catch-up passes
 //!            reconnect delay                └──── Discord::messages_after (one page at a time)
@@ -40,6 +40,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::client::{Discord, GatewayEvent, Page, RestError};
+use crate::deliver::Staged;
 use crate::ingest::{Cursor, Fetch, Ingest, Next, Out};
 use crate::status::{self, Outcome};
 use crate::token::TokenState;
@@ -96,8 +97,9 @@ pub struct Session {
     pub client: Arc<dyn Discord>,
     /// The delays.
     pub timing: Timing,
-    /// Events for the SDK.
-    pub out: mpsc::Sender<Outgoing>,
+    /// Events for the SDK, by way of [`deliver`](crate::deliver), which downloads the files of a
+    /// message into it.
+    pub out: mpsc::Sender<Staged>,
     /// Cancelled when the channel is dropped or the plugin is stopping.
     pub stop: CancellationToken,
     /// What is delivered, and what is fetched.
@@ -332,14 +334,14 @@ pub async fn run(session: Session) {
 /// Sends what the session produces to the channel's event stream, and statuses among it,
 /// skipping a repeat of the last status.
 struct Reporter {
-    out: mpsc::Sender<Outgoing>,
+    out: mpsc::Sender<Staged>,
     stop: CancellationToken,
     last: Option<ChannelStatus>,
     counter: u64,
 }
 
 impl Reporter {
-    fn new(out: mpsc::Sender<Outgoing>, stop: CancellationToken) -> Self {
+    fn new(out: mpsc::Sender<Staged>, stop: CancellationToken) -> Self {
         Self {
             out,
             stop,
@@ -353,18 +355,28 @@ impl Reporter {
     async fn emit(&mut self, outs: Vec<Out>) {
         for out in outs {
             match out {
-                Out::Deliver { event, cursor } => {
-                    self.send(Outgoing {
-                        event: Some(*event),
-                        cursor: Some(cursor),
+                Out::Deliver {
+                    event,
+                    files,
+                    cursor,
+                } => {
+                    self.send(Staged {
+                        outgoing: Outgoing {
+                            event: Some(*event),
+                            cursor: Some(cursor),
+                        },
+                        files,
                     })
                     .await;
                 }
                 Out::Advance(cursor) => {
-                    self.send(Outgoing {
-                        event: None,
-                        cursor: Some(cursor),
-                    })
+                    self.send(
+                        Outgoing {
+                            event: None,
+                            cursor: Some(cursor),
+                        }
+                        .into(),
+                    )
                     .await;
                 }
                 Out::Status(status) => self.report(status).await,
@@ -386,18 +398,21 @@ impl Reporter {
             return;
         };
         let event = ChannelEvent::Status { id, status };
-        self.send(Outgoing {
-            event: Some(event),
-            cursor: None,
-        })
+        self.send(
+            Outgoing {
+                event: Some(event),
+                cursor: None,
+            }
+            .into(),
+        )
         .await;
     }
 
-    async fn send(&self, outgoing: Outgoing) {
+    async fn send(&self, staged: Staged) {
         tokio::select! {
             () = self.stop.cancelled() => {}
             // Fails only once the channel is gone, when nobody needs it.
-            _ = self.out.send(outgoing) => {}
+            _ = self.out.send(staged) => {}
         }
     }
 }

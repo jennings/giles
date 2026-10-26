@@ -40,8 +40,13 @@ impl<'a> MakeWriter<'a> for Capture {
     }
 }
 
-/// Logs everything on this thread into the returned capture, until the guard is dropped.
+/// Logs everything on this thread into the returned capture, until the guard is dropped: the
+/// `tracing` events of the plugin and of twilight, and the `log` records of `hyper` and `reqwest`
+/// (which the plugin's `main` also turns into the same output).
 fn capture_logs() -> (Capture, tracing::subscriber::DefaultGuard) {
+    // Once for the process; the records go to the subscriber of the thread that logs them.
+    let _ = tracing_log::LogTracer::init();
+    tracing_log::log::set_max_level(tracing_log::log::LevelFilter::Trace);
     let capture = Capture::default();
     let guard = tracing::subscriber::set_default(
         tracing_subscriber::fmt()
@@ -289,7 +294,7 @@ async fn no_message_text_is_in_any_log_line_through_the_real_client() {
 async fn a_send_never_logs_its_text_or_the_token() {
     use giles_channel_discord::channel::{DiscordChannel, Inbound};
     use giles_channel_discord::client::{NewMessage, RestError};
-    use giles_channel_discord::fake::FakeDiscord;
+    use giles_channel_discord::fake::{FakeDiscord, FakeMedia};
     use giles_channel_discord::ingest::Clock;
     use giles_channel_discord::session::Timing;
     use giles_channel_discord::state::StateFile;
@@ -317,6 +322,8 @@ async fn a_send_never_logs_its_text_or_the_token() {
             state: StateFile::open(dir.path()),
             catch_up_max_age: std::time::Duration::from_secs(3600),
             clock: Clock::system(),
+            media: Arc::new(FakeMedia::default()),
+            max_blob: 50 * 1024 * 1024,
         },
     );
     client.script_messages([
@@ -359,4 +366,129 @@ async fn a_send_never_logs_its_text_or_the_token() {
     assert!(logs.contains("sending to Discord failed"), "{logs}");
     assert!(!logs.contains(TEXT), "{logs}");
     assert!(!logs.contains("not-a-real-token"), "{logs}");
+}
+
+/// A signed URL's credential: nothing may log it.
+const SIGNATURE: &str = "hm=secret-signature-0123456789";
+
+#[tokio::test]
+async fn downloads_never_log_a_url_a_file_name_or_a_signature_through_the_plugin() {
+    use giles_channel_discord::client::Attachment;
+    use giles_channel_discord::fake::Served as Cdn;
+
+    let (capture, _logging) = capture_logs();
+    let served = Served::start().await;
+    served
+        .configure(serde_json::json!({"token": TOKEN, "max_blob": "1 MiB"}))
+        .await
+        .unwrap();
+    let (_acks, mut events) = served.events().await;
+    served.client.push(GatewayEvent::Ready { user_id: 7 });
+    next_status(&mut events).await;
+
+    let url =
+        |name: &str| format!("https://cdn.discordapp.com/a/{MARKER}/{name}?ex=1&is=2&{SIGNATURE}");
+    let file = |name: &str, size: u64| Attachment {
+        url: url(name),
+        filename: format!("{MARKER}-{name}"),
+        content_type: Some("image/png".to_owned()),
+        size,
+    };
+    served.client.serve(&url("ok.png"), Cdn::file(b"bytes"));
+    served.client.serve(&url("gone.png"), Cdn::status(403));
+    served.client.serve(
+        &url("broken.png"),
+        Cdn::Refused(giles_channel_discord::client::RestError::BadUrl),
+    );
+    let mut message = direct_message(now_id(1), 319_674_150_115_610_528, 1234, "files");
+    message.attachments = vec![
+        file("ok.png", 5),
+        file("gone.png", 5),
+        file("broken.png", 5),
+        file("huge.png", 10 * 1024 * 1024),
+    ];
+    served.client.push(GatewayEvent::Message(message));
+    loop {
+        if let giles_plugin_sdk::giles_types::ChannelEvent::Message { message, .. } =
+            support::next_event(&mut events).await
+        {
+            // One arrived, three are notes, and the notes are the only place the names are.
+            assert_eq!(message.attachments.len(), 1);
+            assert_eq!(message.text.lines().count(), 4, "{}", message.text);
+            break;
+        }
+    }
+
+    let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+    assert!(logs.contains("an attachment was not received"), "{logs}");
+    assert!(
+        logs.contains("cdn.discordapp.com"),
+        "the host is logged: {logs}"
+    );
+    for private in [MARKER, SIGNATURE, "ex=1", "/a/", ".png", TOKEN] {
+        assert!(!logs.contains(private), "{private} is in the logs: {logs}");
+    }
+}
+
+#[tokio::test]
+async fn downloads_never_log_a_url_a_file_name_or_a_signature_through_the_real_client() {
+    use futures::StreamExt as _;
+    use giles_channel_discord::real::CdnPolicy;
+
+    let (capture, _logging) = capture_logs();
+    let server = loopback::rest::RestServer::start(|request, _| {
+        let path = request.target.split('?').next().unwrap();
+        match path {
+            "/ok" => loopback::rest::Response {
+                status: 200,
+                headers: vec![],
+                body: format!("the file says {MARKER}"),
+            },
+            "/moved" => loopback::rest::Response {
+                status: 302,
+                headers: vec![(
+                    "location".into(),
+                    format!("http://localhost:1/{MARKER}?{SIGNATURE}"),
+                )],
+                body: String::new(),
+            },
+            "/big" => loopback::rest::Response {
+                status: 200,
+                headers: vec![],
+                body: "x".repeat(2 * 1024 * 1024),
+            },
+            _ => loopback::rest::Response {
+                status: 403,
+                headers: vec![],
+                body: format!("<html>{MARKER}</html>"),
+            },
+        }
+    })
+    .await;
+    let client = loopback::rest_client("127.0.0.1:9").with_cdn(CdnPolicy::loopback(&["127.0.0.1"]));
+    for path in ["ok", "moved", "big", "expired", MARKER] {
+        let url = format!("http://{}/{path}?ex=1&is=2&{SIGNATURE}", server.host);
+        if let Ok(body) = client.download(&url, 1024 * 1024).await {
+            let mut body = giles_channel_discord::client::limited(body, 1024 * 1024);
+            while body.next().await.is_some_and(|chunk| chunk.is_ok()) {}
+        }
+    }
+    // A URL that is refused before anything is requested.
+    for url in [
+        format!("https://evil.example/{MARKER}?{SIGNATURE}"),
+        format!("http://localhost:{}/{MARKER}?{SIGNATURE}", 9),
+    ] {
+        assert!(client.download(&url, 1024).await.is_err());
+    }
+
+    let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+    assert!(logs.contains("the CDN refused a download"), "{logs}");
+    assert!(logs.contains("refused to download from a URL"), "{logs}");
+    // The capture saw the HTTP libraries too (their `log` records), so their silence about URLs
+    // is a finding and not a blind spot.
+    assert!(logs.contains("starting new connection"), "{logs}");
+    assert!(logs.contains(&server.host), "the host is logged: {logs}");
+    for private in [MARKER, SIGNATURE, "ex=1", "evil.example", TOKEN] {
+        assert!(!logs.contains(private), "{private} is in the logs: {logs}");
+    }
 }

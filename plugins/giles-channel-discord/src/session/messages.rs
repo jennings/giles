@@ -12,7 +12,7 @@ use giles_plugin_sdk::giles_types::{
 
 use crate::channel::{DiscordChannel, Inbound, shutdown_wait};
 use crate::client::{DiscordMessage, GatewayEvent, RestError};
-use crate::fake::{FakeDiscord, direct_message};
+use crate::fake::{FakeDiscord, FakeMedia, direct_message};
 use crate::ingest::Clock;
 use crate::session::Timing;
 use crate::snowflake::at_unix_ms;
@@ -28,6 +28,10 @@ const USER: u64 = 11;
 const CHANNEL: u64 = 5000;
 const OTHER_USER: u64 = 12;
 const OTHER_CHANNEL: u64 = 6000;
+/// `max_blob` of every test channel.
+const MAX_BLOB: u64 = 1024 * 1024;
+
+mod attachments;
 
 /// A message id created `ms_ago` before [`NOW`]; `n` orders ids of one millisecond.
 fn id(ms_ago: u64, n: u64) -> u64 {
@@ -47,6 +51,7 @@ struct Rig {
     channel: DiscordChannel,
     events: BoxStream<'static, Result<ChannelEvent>>,
     state: StateFile,
+    media: Arc<FakeMedia>,
     /// Events pushed into the fake Gateway so far.
     pushed: usize,
 }
@@ -59,6 +64,7 @@ impl Rig {
 
     async fn start_with(dir: &Path, client: Arc<FakeDiscord>, max_age: Duration) -> Self {
         let state = StateFile::open(dir);
+        let media = Arc::new(FakeMedia::default());
         let channel = DiscordChannel::start(
             client.clone(),
             Timing::default(),
@@ -66,6 +72,8 @@ impl Rig {
                 state: state.clone(),
                 catch_up_max_age: max_age,
                 clock: Clock::new(|| NOW),
+                media: media.clone(),
+                max_blob: MAX_BLOB,
             },
         );
         let events = channel.events().await.unwrap();
@@ -74,6 +82,7 @@ impl Rig {
             channel,
             events,
             state,
+            media,
             pushed: 0,
         }
     }

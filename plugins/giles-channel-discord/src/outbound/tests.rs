@@ -14,7 +14,7 @@ use giles_plugin_sdk::giles_types::{
 
 use crate::channel::{DiscordChannel, Inbound};
 use crate::client::{GatewayEvent, RestError};
-use crate::fake::{FakeDiscord, dm_channel_of};
+use crate::fake::{FakeDiscord, FakeMedia, dm_channel_of};
 use crate::ingest::Clock;
 use crate::session::Timing;
 use crate::state::StateFile;
@@ -52,6 +52,8 @@ impl Harness {
                 state: state.clone(),
                 catch_up_max_age: HOUR * 24,
                 clock: Clock::system(),
+                media: Arc::new(FakeMedia::default()),
+                max_blob: 50 * 1024 * 1024,
             },
         );
         let events = channel.events().await.unwrap();

@@ -5,17 +5,17 @@
 //! runs without a network, a token, or a bot. No library type crosses it, which is also what keeps
 //! a library upgrade inside `real`.
 //!
-//! The design (`Docs/technical/discord.md`) lists six methods. This one has the Gateway's events,
-//! a clean close, the channel history that catch-up reads, and the two REST calls a send needs
-//! (`create_message`, `create_dm`). `download` arrives with the issue that uses it (attachments),
-//! together with its real implementation, so that no method here is defined and left
-//! unimplemented.
+//! The design (`Docs/technical/discord.md`) lists six methods. This one has them all: the Gateway's
+//! events, a clean close, the channel history that catch-up reads, the two REST calls a send
+//! needs (`create_message`, `create_dm`), and `download` for an attachment's CDN URL.
 //!
 //! Discord ids are snowflakes, plain `u64`s here: they sort by creation time, and the Discord
 //! API writes them as strings because JSON numbers can't carry them safely.
 
 use std::fmt;
 
+use bytes::Bytes;
+use futures::stream::{BoxStream, StreamExt as _};
 use giles_plugin_sdk::async_trait;
 
 /// Something the Gateway connection reports.
@@ -123,13 +123,46 @@ pub struct Attachment {
     pub size: u64,
 }
 
+/// The body of a download: chunks as they arrive, ending after an error.
+pub type Body = BoxStream<'static, Result<Bytes, RestError>>;
+
+/// `body`, cut off as soon as more than `max` bytes have come through: the chunk that crosses the
+/// limit is replaced by [`RestError::TooLarge`] (its bytes are never passed on), and nothing
+/// follows, so a body of any length costs at most `max` bytes plus a chunk. Enforced as bytes
+/// arrive, whatever the size the sender declared.
+pub fn limited(body: Body, max: u64) -> Body {
+    body.scan((0_u64, false), move |(seen, over), item| {
+        let next = if *over {
+            None
+        } else {
+            Some(match item {
+                Ok(chunk) => {
+                    *seen = seen.saturating_add(chunk.len() as u64);
+                    if *seen > max {
+                        *over = true;
+                        Err(RestError::TooLarge)
+                    } else {
+                        Ok(chunk)
+                    }
+                }
+                Err(error) => {
+                    *over = true;
+                    Err(error)
+                }
+            })
+        };
+        std::future::ready(next)
+    })
+    .boxed()
+}
+
 /// Why a REST call failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RestError {
     /// Discord rejected the bot token (401). The client refuses every later request.
     Unauthorized,
     /// Discord answered with an error status. `code` is its JSON error code, when the body has
-    /// one (for example 10003, an unknown channel).
+    /// one (for example 10003, an unknown channel). A CDN answers with a status and no code.
     Api {
         /// The HTTP status.
         status: u16,
@@ -140,6 +173,9 @@ pub enum RestError {
     RateLimited,
     /// A file over a limit.
     TooLarge,
+    /// A URL the client won't download from: not `https`, not a Discord CDN host, or with
+    /// credentials in it. Nothing was requested.
+    BadUrl,
     /// The request didn't complete: a network error, a timeout, or an answer the client couldn't
     /// read.
     Transport,
@@ -156,6 +192,7 @@ impl fmt::Display for RestError {
             Self::Api { status, code: None } => write!(f, "Discord answered {status}"),
             Self::RateLimited => f.write_str("rate limited by Discord"),
             Self::TooLarge => f.write_str("the file is too large"),
+            Self::BadUrl => f.write_str("not a URL the plugin downloads from"),
             Self::Transport => f.write_str("the request to Discord failed"),
         }
     }
@@ -201,6 +238,20 @@ pub trait Discord: Send + Sync + 'static {
     /// existing channel if there is one, so calling it again is harmless. Bounded like
     /// [`create_message`](Self::create_message).
     async fn create_dm(&self, user: u64) -> Result<u64, RestError>;
+
+    /// Downloads an attachment from its signed CDN `url`: the status is checked and the body
+    /// handed over as it arrives, never buffered whole.
+    ///
+    /// Only `https` URLs of Discord's CDN hosts are fetched ([`RestError::BadUrl`] for any
+    /// other, with nothing requested), no redirect leaves them, no credential is sent, and every
+    /// step is bounded by a timeout. A declared length over `max` is [`RestError::TooLarge`]
+    /// before the body is read. The body itself is not cut off: the caller wraps it in
+    /// [`limited`] with the same `max`, which ends it as soon as more than `max` bytes have
+    /// arrived (dropping the body then closes the connection), so a sender can't make the
+    /// plugin read or hold more. A refused or expired URL is `Api` with the CDN's status (403,
+    /// 404, 410). The URL carries a credential in its query string: implementations never log
+    /// it above `debug` (the real one never logs it at all).
+    async fn download(&self, url: &str, max: u64) -> Result<Body, RestError>;
 
     /// Closes the connection cleanly (close code 1000, so the bot shows as offline and the
     /// session ends) and waits for Discord to answer. Called once, after the last

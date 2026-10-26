@@ -11,7 +11,7 @@ use tokio::time::Instant;
 
 use crate::channel::{DiscordChannel, Inbound, shutdown_wait};
 use crate::client::GatewayEvent;
-use crate::fake::FakeDiscord;
+use crate::fake::{FakeDiscord, FakeMedia};
 use crate::ingest::Clock;
 use crate::session::Timing;
 use crate::state::StateFile;
@@ -38,6 +38,8 @@ impl Harness {
                 state: StateFile::open(dir.path()),
                 catch_up_max_age: HOUR * 24,
                 clock: Clock::system(),
+                media: Arc::new(FakeMedia::default()),
+                max_blob: 50 * 1024 * 1024,
             },
         );
         let events = channel.events().await.unwrap();

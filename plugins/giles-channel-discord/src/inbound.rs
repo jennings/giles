@@ -10,7 +10,7 @@ use giles_plugin_sdk::giles_types::{
     NativeId, Timestamp,
 };
 
-use crate::client::DiscordMessage;
+use crate::client::{Attachment, DiscordMessage};
 
 /// The message type of a plain message.
 const DEFAULT: u8 = 0;
@@ -42,11 +42,22 @@ impl Dropped {
     }
 }
 
+/// A message to deliver: what it is, and the files that have yet to be downloaded into it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Delivery {
+    /// The message, with its text and no attachments yet.
+    pub message: InboundMessage,
+    /// The files Discord says are attached, in order. [`crate::deliver`] downloads them: a file
+    /// that arrives becomes an attachment of `message`, one that doesn't becomes a note in its
+    /// text.
+    pub files: Vec<Attachment>,
+}
+
 /// What a message is.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mapped {
     /// A message to deliver.
-    Message(Box<InboundMessage>),
+    Message(Box<Delivery>),
     /// From a person, with no text, no attachment, and no sticker. Nothing to answer, and a sign
     /// that Discord may not be sending message content (`Docs/technical/discord.md`, "Detecting a
     /// Missing Intent").
@@ -78,7 +89,10 @@ pub fn map(message: &DiscordMessage, bot: Option<u64>) -> Mapped {
     {
         return Mapped::Empty;
     }
-    Mapped::Message(Box::new(inbound(message)))
+    Mapped::Message(Box::new(Delivery {
+        message: inbound(message),
+        files: message.attachments.clone(),
+    }))
 }
 
 /// The event id of a message: its snowflake, which is unique across Discord and the same after a
@@ -114,7 +128,7 @@ fn inbound(message: &DiscordMessage) -> InboundMessage {
             .filter(|name| !name.trim().is_empty())
             .or_else(|| Some(message.author.username.clone()).filter(|name| !name.is_empty())),
         text: text(message),
-        // Downloading them is issue #18; until then they are in the text.
+        // The files are downloaded into it by `deliver`.
         attachments: Vec::new(),
         message_id: Some(MessageId::new(id(message.id)).expect("a number is never an empty id")),
         reply_to: message
@@ -125,19 +139,12 @@ fn inbound(message: &DiscordMessage) -> InboundMessage {
     }
 }
 
-/// The text as the sender wrote it, then a line for each file and sticker the plugin doesn't
-/// carry itself.
+/// The text as the sender wrote it, then a line for each sticker.
 fn text(message: &DiscordMessage) -> String {
     let mut lines = Vec::new();
     if !message.content.is_empty() {
         lines.push(message.content.clone());
     }
-    lines.extend(
-        message
-            .attachments
-            .iter()
-            .map(|attachment| note("attachment", &attachment.filename)),
-    );
     lines.extend(
         message
             .stickers
@@ -147,18 +154,25 @@ fn text(message: &DiscordMessage) -> String {
     lines.join("\n")
 }
 
-/// `[kind: name]`, with the name stripped of control characters and brackets, and cut to a
-/// sensible length: it comes from the sender and ends up in the agent's prompt.
-fn note(kind: &str, name: &str) -> String {
+/// `name` as it can be quoted in a note: stripped of control characters and brackets, and cut to
+/// a sensible length. It comes from the sender and ends up in the agent's prompt, so it must not
+/// be able to close its note and start another line of its own. Empty when nothing is left.
+pub fn quotable(name: &str) -> String {
     let name: String = name
         .chars()
         .filter(|c| !c.is_control() && !matches!(c, '[' | ']'))
         .take(NAME_LIMIT)
         .collect();
-    if name.trim().is_empty() {
+    name.trim().to_owned()
+}
+
+/// `[kind: name]`, with the name made [`quotable`].
+fn note(kind: &str, name: &str) -> String {
+    let name = quotable(name);
+    if name.is_empty() {
         format!("[{kind}]")
     } else {
-        format!("[{kind}: {}]", name.trim())
+        format!("[{kind}: {name}]")
     }
 }
 

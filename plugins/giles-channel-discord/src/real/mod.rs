@@ -23,11 +23,14 @@ use twilight_gateway::{
 };
 use twilight_http::Client as Http;
 
-use crate::client::{Discord, GatewayEvent, NewMessage, Page, RestError};
+use crate::client::{Body, Discord, GatewayEvent, NewMessage, Page, RestError};
 use crate::config::Settings;
 
+mod cdn;
 mod message;
 mod rest;
+
+pub use cdn::{CdnPolicy, MAX_REDIRECTS};
 
 /// What the plugin asks Discord for: direct messages. Not `MESSAGE_CONTENT`: Discord delivers the
 /// content of a bot's DMs without it, so no privileged intent has to be enabled in the Developer
@@ -47,10 +50,11 @@ const EVENTS: EventTypeFlags = EventTypeFlags::READY
 /// back online after it was shut down), and the wait must be over before that can happen.
 const CLOSE_WAIT: Duration = Duration::from_millis(900);
 
-/// A Gateway shard, polled by the session, and a REST client.
+/// A Gateway shard, polled by the session, a REST client, and a client for the CDN.
 pub struct RealDiscord {
     state: Mutex<State>,
     http: Http,
+    cdn: cdn::Cdn,
 }
 
 /// The shard, and what the client has noticed about it.
@@ -110,7 +114,16 @@ impl RealDiscord {
                 ended: false,
             }),
             http: http.build(),
+            cdn: cdn::Cdn::new(CdnPolicy::discord()),
         }
+    }
+
+    /// This client downloading under `policy` instead of Discord's. For tests that run a CDN of
+    /// their own on loopback.
+    #[must_use]
+    pub fn with_cdn(mut self, policy: CdnPolicy) -> Self {
+        self.cdn = cdn::Cdn::new(policy);
+        self
     }
 }
 
@@ -239,6 +252,10 @@ impl Discord for RealDiscord {
 
     async fn create_dm(&self, user: u64) -> Result<u64, RestError> {
         rest::create_dm(&self.http, user).await
+    }
+
+    async fn download(&self, url: &str, max: u64) -> Result<Body, RestError> {
+        self.cdn.download(url, max).await
     }
 
     async fn shutdown(&self) {

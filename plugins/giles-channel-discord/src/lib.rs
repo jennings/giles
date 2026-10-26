@@ -8,9 +8,11 @@
 pub mod channel;
 pub mod client;
 pub mod config;
+pub mod deliver;
 pub mod fake;
 pub mod inbound;
 pub mod ingest;
+pub mod media;
 pub mod outbound;
 pub mod real;
 pub mod session;

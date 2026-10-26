@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use futures::stream::{BoxStream, StreamExt as _};
 use giles_channel_discord::channel::{DiscordChannel, Inbound, shutdown_wait};
+use giles_channel_discord::fake::FakeMedia;
 use giles_channel_discord::ingest::Clock;
 use giles_channel_discord::real::RealDiscord;
 use giles_channel_discord::session::Timing;
@@ -101,6 +102,8 @@ async fn start(
             state: state.clone(),
             catch_up_max_age: Duration::from_secs(24 * 3600),
             clock: Clock::system(),
+            media: Arc::new(FakeMedia::default()),
+            max_blob: 50 * 1024 * 1024,
         },
     );
     let events = channel.events().await.unwrap();

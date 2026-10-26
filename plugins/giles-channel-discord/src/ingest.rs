@@ -26,8 +26,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use giles_plugin_sdk::giles_types::{ChannelEvent, ChannelStatus};
 use tokio::time::Instant;
 
-use crate::client::{DiscordMessage, Page, RestError};
-use crate::inbound::{self, Mapped};
+use crate::client::{Attachment, DiscordMessage, Page, RestError};
+use crate::inbound::{self, Delivery, Mapped};
 use crate::snowflake;
 use crate::state::StateFile;
 use crate::status;
@@ -96,11 +96,13 @@ pub struct Cursor {
 /// What to do with the result of handling a message.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Out {
-    /// Hand this event to the SDK. Once the SDK has taken the event after it, which it does after
-    /// writing this one to disk, the cursor moves.
+    /// Hand this event to the SDK, with the `files` downloaded into it first. Once the SDK has
+    /// taken the event after it, which it does after writing this one to disk, the cursor moves.
     Deliver {
-        /// The event.
+        /// The event, with no attachments yet.
         event: Box<ChannelEvent>,
+        /// The files of the message, for [`crate::deliver`] to download into the event.
+        files: Vec<Attachment>,
         /// Where the cursor goes when the SDK has persisted the event.
         cursor: Cursor,
     },
@@ -330,13 +332,18 @@ impl Ingest {
             message: message.id,
         };
         match inbound::map(&message, self.bot) {
-            Mapped::Message(inbound) => {
+            Mapped::Message(delivery) => {
                 let alarmed = std::mem::take(&mut self.empty_run) >= EMPTY_RUN;
+                let Delivery {
+                    message: inbound,
+                    files,
+                } = *delivery;
                 outs.push(Out::Deliver {
                     event: Box::new(ChannelEvent::Message {
                         id: inbound::event_id(message.id),
-                        message: *inbound,
+                        message: inbound,
                     }),
+                    files,
                     cursor,
                 });
                 if alarmed {
