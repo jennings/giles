@@ -150,9 +150,10 @@ the plugin's next start. For an outbound attachment, read it in `send` with `blo
 ## Sending
 
 `send` gets the reply as CommonMark. The SDK's `render` module converts it for the service:
-`render::html`, `render::plain_text`, `render::irc` (split into lines that fit), and
-`render::whatsapp`. If a recipient can't be reached right now (for instance an IRC account that
-isn't online), return `Error::Unavailable`: Giles retries later rather than giving up.
+`render::html`, `render::plain_text`, `render::irc` (split into lines that fit),
+`render::whatsapp`, and `render::discord` (split into messages that fit). If a recipient can't be
+reached right now (for instance an IRC account that isn't online), return `Error::Unavailable`:
+Giles retries later rather than giving up.
 
 ## TLS
 

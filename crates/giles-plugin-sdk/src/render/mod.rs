@@ -4,10 +4,12 @@
 //! lists. Raw HTML in the input is never passed through: each renderer shows it as literal text.
 //! Control characters other than tab and newline never reach the output.
 
+mod discord;
 mod html;
 mod irc;
 mod text;
 
+pub use discord::{DISCORD_MAX_CHARS, discord};
 pub use html::{html, is_local_image};
 pub use irc::irc;
 pub use text::{plain_text, whatsapp};

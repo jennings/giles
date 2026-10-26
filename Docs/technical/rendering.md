@@ -12,6 +12,7 @@ built-in web channel and the Rust channel plugins share one implementation (§10
 | `plain_text(markdown)`          | Email (text part)      | Readable plain text                       |
 | `irc(markdown, max_line_bytes)` | IRC                    | Message lines with IRC formatting codes   |
 | `whatsapp(markdown)`            | WhatsApp               | WhatsApp markup                           |
+| `discord(markdown, max_chars)`  | Discord                | Messages in Discord's Markdown            |
 
 ## Shared Rules
 
@@ -186,3 +187,141 @@ Limits:
   `a_b_c`), is probably shown with its markers rather than styled.
 - `pulldown-cmark` has no bare-URL detection, so markup inside a bare URL (`https://x/*a*`) is
   parsed as emphasis before any renderer sees it. The same holds for every format.
+
+## Discord
+
+`discord(markdown, max_chars)` returns the messages to send, each at most `max_chars` characters;
+`DISCORD_MAX_CHARS` (2000) is Discord's limit. It writes Discord's flavor of Markdown, which most
+of CommonMark already is, so the renderer mostly normalizes and escapes. What Discord renders comes
+from its help article "Markdown Text 101" and the developer documentation ("Message Formatting",
+"Create Message"); no Discord client was used to test the output.
+
+- Strong text is `**bold**`, emphasis `*italic*` (`*` works at any position; `_` is reportedly
+  not read inside a word, though the article shows both), strikethrough `~~struck~~`, inline code
+  `` `code` ``. Underline (`__x__`) and spoilers (`||x||`) have no CommonMark form, so `__x__` is
+  strong, as CommonMark says, and the model's `||` is escaped.
+- Headings are `#`, `##`, and `###`, the three levels Discord has; levels 4 to 6 are `###`.
+  A heading is one line, so a line break inside it is a space.
+- Lists use `-` and `1.` (an ordered list keeps its start number), nested by indenting the marker's
+  width (the article shows two spaces for `-`). Quotes prefix every line with `> `, empty lines
+  too, since the article says Discord wants a space after the `>` (not tried in a client). Discord
+  has no syntax for tables, images, or HTML.
+- Styles close before each line break and reopen after it, as in WhatsApp, so a message that ends
+  at a line break never holds an open style.
+- Control characters other than tab and newline are dropped, as in every renderer.
+
+### Escaping
+
+Text the model wrote as plain text must stay plain, so `\`, `*`, `~`, `` ` ``, `[`, and `]` get a
+backslash, which Discord removes when it renders. Three exceptions keep text readable: `_` inside
+a word (`snake_case`: Discord needs a word boundary there), `|` unless next to another `|`, and `<`
+before a space (`2 < 3`). Block markers only matter at the start of a line, so a leading `#`, `>`,
+`-` or `+` followed by a space, `-#`, and the dot of `1.` are escaped there and nowhere else. A
+digit can't be escaped, which is why the dot is. Raw HTML is shown as text, one escaped line at a
+time, so a line inside an HTML block can't become a heading or a list.
+
+### Mentions
+
+Discord reads mentions out of the message content: `@everyone`, `@here`, `<@id>`, `<@!id>`,
+`<@&id>`, `<#id>`, and the other `<...>` forms (slash commands, custom emoji, timestamps, guild
+navigation). A mention in model output must not ping, and the documentation doesn't say that a
+backslash stops the scan, so the renderer breaks each form with a zero-width space (U+200B): it
+changes nothing about how the text reads, and `discord.js` breaks code fences the same way
+(`cleanCodeBlockContent`). The backslash is added for the client's sake:
+
+- `@` is followed by a zero-width space where `everyone` or `here` follows (any case), or where
+  the text ends inside either word or before it starts.
+- `<` is followed by one where a `<...>` form follows (`@`, `#`, `:`, `$`, `</name:id>`, or a name
+  and a colon), or where the text ends inside one.
+- The text can end there because the renderer writes text in pieces: an empty link, an entity,
+  or a style marker that a table cell drops can sit between `@` and `everyone`, or between `<`
+  and `@1>`, and the pieces join in the output (`@[]()everyone`, or a `<` and a code span holding
+  `#1>` in a table cell). Each piece is escaped as if more text could follow it.
+- Code is no exception: the same zero-width spaces go into code spans, code blocks, and table
+  cells, where a backslash would show. A link target gets `%40` for `@everyone` and `@here`.
+
+The text stays readable, and copying it keeps the invisible character. `allowed_mentions` is the
+second line of defense, and belongs to the plugin: it must send it with nothing to parse, so the API
+ignores whatever mention gets through
+([Message Resource](https://docs.discord.com/developers/resources/message#allowed-mentions-object)).
+
+### Links and images
+
+A bare URL in Discord is fetched for an embed. Discord documents `<url>` as the way to suppress
+that ("How do I disable auto-embed?"), and `<url>` stays clickable, so:
+
+- A link is a masked link, `[text](<url>)`. The angle brackets inside the parentheses suppress the
+  embed too; that form is common in the community (`discord.js` documents `<>` for bare URLs only)
+  but not in Discord's own documentation. The plugin can set the documented `SUPPRESS_EMBEDS`
+  message flag as a second layer. The target is percent-encoded where it would end the link early
+  (whitespace, `<`, `>`, `(`, `)`, `\`, `` ` ``).
+- A link with no text, an autolink (`<https://...>`), and a bare `http(s)` URL in prose are `<url>`.
+  Trailing punctuation (`.`, `,`, an unbalanced `)`) stays outside it.
+- Discord links only `http` and `https`. For any other target the text is followed by the target
+  in parentheses, as inline code. An email autolink is its address.
+- An image is a link, `[alt](<url>)` (`[image](<url>)` without alt text), never an embed: like
+  every renderer, it fetches nothing until someone clicks (§9). An image whose target isn't
+  `http(s)` shows `[image: alt]`; an image inside a link shows its alt text, because link text
+  can't hold a link.
+
+A link or URL inside a table cell is `text <url>` in code, where it is inert.
+
+### Tables
+
+A table is a code block of aligned columns, the same layout as the plain-text renderer's: cells
+joined by ` | `, a `-` rule under the header, alignment honored. Code blocks are monospaced, so
+padding works here, unlike on IRC. Cells are plain text: markup and escapes would show as written.
+Widths count characters, so wide (CJK, emoji) characters misalign the columns slightly.
+
+### Code blocks
+
+A fenced block keeps its language, reduced to the first word and the characters Discord accepts
+in a tag (`[A-Za-z0-9+-_.#]`, the same set the HTML renderer keeps). Discord has no longer fences,
+so a run of backticks in code (which would end a span or a fence) is broken with zero-width
+spaces. An empty block holds one zero-width space, so that it isn't two bare fences, which Discord
+may show as text.
+
+### Splitting
+
+Discord rejects content over 2000 characters, and the documentation doesn't say what a character
+is. The question was settled in the API docs repository (`discord-api-docs#1173`): the API counts
+Unicode code points; only the official client's input box, which uses JavaScript string length,
+counts UTF-16 units. So the limit counts `char`s, and an emoji outside the Basic Multilingual Plane
+counts once. A cut can fall between the code points of a joined emoji or a combining sequence.
+
+`max_chars` is a parameter, with Discord's value as the constant. A message ends at:
+
+1. a paragraph break (a blank line outside a code fence), else
+2. a line break, else
+3. a space, else
+4. anywhere.
+
+Each takes the latest place that fits, and the break itself is dropped. The splitter reads the
+renderer's own output, so it knows what is open at the cut: a code fence, `**`, `*`, and `~~`
+styles, and a code span. Whatever is open is closed at the end of the message and reopened at the
+start of the next, and both count toward the limit:
+
+- A fence closes with `` ``` `` on a line of its own and reopens with its language tag. A fence is
+  never closed with nothing in it, and a message never ends just before a fence's closing line.
+  Quote and list prefixes carry over: inside a quote, the closing and reopening lines carry the
+  `>` prefix too.
+- A line cut in the middle (at a space or anywhere) starts the next message with the quote prefix,
+  so a quoted line stays quoted.
+- A space is never a cut inside a code span or a link's text, nor a cut inside an escape (`\*`), a
+  marker (`**`), or a `<url>`, so those stay whole when they fit.
+- A quote's empty line is a paragraph break: the message ends before it and the next one
+  starts after it, so none ends in a dangling `>`.
+- A space is not a cut where the text after it starts a bullet, quote, heading, subtext, or
+  numbered item (a dash, `+`, `>`, `#`, or `-#` and a space, or `1.` and a space), and neither is
+  any other cut that would start a message that way: the next message would show a list, quote,
+  or heading that the text didn't have.
+- Messages are never empty: whitespace-only input gives none.
+
+Limits:
+
+- A single token longer than `max_chars` is cut at the limit. A link or URL longer than the limit
+  is cut with its markup as it is, and so is text when `max_chars` leaves no room beyond the closing
+  and reopening text (a fence needs its prefix and four characters to close, styles up to five).
+- A code span's text is cut at the limit if it's longer than it, and then closed and reopened.
+- A space dropped at a cut inside a code fence changes the code by one space; the text of a code
+  block is otherwise unchanged by a split.

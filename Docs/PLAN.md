@@ -1215,6 +1215,7 @@ Rendering CommonMark:
 | IRC      | Plain text with IRC bold/italic codes; code blocks as plain lines; split at the line limit |
 | Email    | `multipart/alternative`: HTML plus plain text; no remote images                            |
 | WhatsApp | WhatsApp markup (`*bold*`, `_italic_`, `` ``` `` blocks)                                   |
+| Discord  | Discord Markdown (`**bold**`, `` ``` `` blocks); tables as code blocks; 2000-char messages |
 
 `giles-plugin-sdk` provides these renderers (on `pulldown-cmark`) so Rust plugins share them.
 

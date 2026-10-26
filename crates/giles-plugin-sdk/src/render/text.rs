@@ -4,8 +4,12 @@
 use std::borrow::Cow;
 use std::mem;
 
-use pulldown_cmark::{Alignment, Event, HeadingLevel, LinkType, Tag, TagEnd, TextMergeStream};
+use pulldown_cmark::{
+    Alignment, CodeBlockKind, Event, HeadingLevel, LinkType, Tag, TagEnd, TextMergeStream,
+};
 
+use super::discord::escape as discord;
+use super::html::code_language;
 use super::irc::{IRC_BOLD, IRC_ITALIC};
 use super::strip_controls;
 
@@ -44,6 +48,8 @@ pub(super) enum Flavor {
     /// IRC formatting codes; split into messages by `super::irc`.
     Irc,
     WhatsApp,
+    /// Discord's Markdown; split into messages by `super::discord`.
+    Discord,
 }
 
 /// Renders `markdown` in `flavor`, with lines separated by `\n` and no trailing newline.
@@ -91,6 +97,8 @@ struct List {
 /// Inline content consumed for its text alone.
 struct Raw {
     kind: RawKind,
+    /// An image's target.
+    dest: String,
     /// Open tags, including the one that started the capture.
     depth: usize,
     text: String,
@@ -127,6 +135,8 @@ struct Writer {
     /// Rows of the open table, header first.
     table: Option<(Vec<Alignment>, Vec<Vec<String>>)>,
     in_code_block: bool,
+    /// Whether the open code block has had no text yet.
+    block_empty: bool,
 }
 
 impl Writer {
@@ -147,6 +157,7 @@ impl Writer {
             raw: None,
             table: None,
             in_code_block: false,
+            block_empty: false,
         }
     }
 
@@ -176,18 +187,14 @@ impl Writer {
             Event::End(tag) => self.end(tag),
             Event::Text(text) if self.in_code_block => {
                 let code = self.code_text(&text);
+                self.block_empty &= code.is_empty();
                 self.code_lines(&code);
             }
             Event::Text(text) => self.prose(&text),
             // An inline HTML tag can span lines; its line breaks are soft breaks.
-            Event::InlineHtml(html) => {
-                for (i, piece) in html.split('\n').enumerate() {
-                    if i > 0 {
-                        self.line_break();
-                    }
-                    self.prose(piece);
-                }
-            }
+            Event::InlineHtml(html) => self.html_lines(&html),
+            // Discord reads each line of an HTML block as Markdown, so it is escaped as prose.
+            Event::Html(html) if self.flavor == Flavor::Discord => self.html_lines(&html),
             Event::Html(html) => {
                 let html = self.escape(&html).into_owned();
                 self.code_lines(&html);
@@ -218,7 +225,7 @@ impl Writer {
             Tag::Heading { .. } => {
                 self.block();
                 match self.flavor {
-                    Flavor::Plain => self.captures.push(String::new()),
+                    Flavor::Plain | Flavor::Discord => self.captures.push(String::new()),
                     Flavor::Irc | Flavor::WhatsApp => self.style(Style::Strong, true),
                 }
             }
@@ -230,21 +237,33 @@ impl Writer {
                     item: false,
                 });
             }
-            Tag::CodeBlock(_) => {
+            Tag::CodeBlock(kind) => {
                 self.block();
                 self.in_code_block = true;
                 let indent = match self.flavor {
                     Flavor::Plain => "    ",
-                    Flavor::Irc | Flavor::WhatsApp => "",
+                    Flavor::Irc | Flavor::WhatsApp | Flavor::Discord => "",
                 };
                 self.containers.push(Container {
                     first: None,
                     rest: indent.to_owned(),
                     item: false,
                 });
-                if self.flavor == Flavor::WhatsApp {
-                    self.inline("```");
-                    self.end_line();
+                match self.flavor {
+                    Flavor::WhatsApp => {
+                        self.inline("```");
+                        self.end_line();
+                    }
+                    Flavor::Discord => {
+                        let language = match kind {
+                            CodeBlockKind::Fenced(info) => code_language(&info),
+                            CodeBlockKind::Indented => String::new(),
+                        };
+                        self.inline(&format!("```{language}"));
+                        self.end_line();
+                        self.block_empty = true;
+                    }
+                    Flavor::Plain | Flavor::Irc => {}
                 }
             }
             Tag::HtmlBlock => self.block(),
@@ -302,9 +321,14 @@ impl Writer {
             Tag::Link {
                 link_type: LinkType::Autolink | LinkType::Email,
                 ..
-            } => self.start_raw(RawKind::Autolink),
-            Tag::Link { dest_url, .. } => self.links.push(dest_url.into_string()),
-            Tag::Image { .. } => self.start_raw(RawKind::Image),
+            } => self.start_raw(RawKind::Autolink, String::new()),
+            Tag::Link { dest_url, .. } => {
+                self.links.push(dest_url.into_string());
+                if self.flavor == Flavor::Discord {
+                    self.captures.push(String::new());
+                }
+            }
+            Tag::Image { dest_url, .. } => self.start_raw(RawKind::Image, dest_url.into_string()),
             // Not enabled by `super::parser`; their content renders as ordinary text.
             Tag::FootnoteDefinition(_)
             | Tag::DefinitionList
@@ -324,6 +348,10 @@ impl Writer {
                     let text = self.captures.pop().unwrap_or_default();
                     self.heading(level, &text);
                 }
+                Flavor::Discord => {
+                    let text = self.captures.pop().unwrap_or_default();
+                    self.discord_heading(level, &text);
+                }
                 Flavor::Irc | Flavor::WhatsApp => {
                     self.style(Style::Strong, false);
                     self.end_line();
@@ -335,9 +363,21 @@ impl Writer {
             }
             TagEnd::CodeBlock => {
                 self.end_line();
-                if self.flavor == Flavor::WhatsApp {
-                    self.inline("```");
-                    self.end_line();
+                match self.flavor {
+                    Flavor::WhatsApp => {
+                        self.inline("```");
+                        self.end_line();
+                    }
+                    Flavor::Discord => {
+                        if self.block_empty {
+                            // Discord shows a fence with nothing in it as text.
+                            self.inline(&discord::ZWSP.to_string());
+                            self.end_line();
+                        }
+                        self.inline("```");
+                        self.end_line();
+                    }
+                    Flavor::Plain | Flavor::Irc => {}
                 }
                 self.containers.pop();
                 self.in_code_block = false;
@@ -374,7 +414,10 @@ impl Writer {
             TagEnd::Strikethrough => self.style(Style::Strikethrough, false),
             TagEnd::Link => {
                 let dest = self.links.pop().unwrap_or_default();
-                if !dest.is_empty() {
+                if self.flavor == Flavor::Discord {
+                    let text = self.captures.pop().unwrap_or_default();
+                    self.discord_link(&text, &dest);
+                } else if !dest.is_empty() {
                     self.inline(&format!(" <{}>", strip_controls(&dest)));
                 }
             }
@@ -393,14 +436,74 @@ impl Writer {
         self.end_line();
     }
 
+    /// Writes a Discord heading. Discord has three levels, so the deeper ones share the last.
+    fn discord_heading(&mut self, level: HeadingLevel, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let hashes = match level {
+            HeadingLevel::H1 => "#",
+            HeadingLevel::H2 => "##",
+            _ => "###",
+        };
+        self.inline(&format!("{hashes} {text}"));
+        self.end_line();
+    }
+
+    /// Writes a link's captured `text` for Discord: a masked link without an embed for a web
+    /// target, else the text with its target as code (Discord only links `http` and `https`).
+    fn discord_link(&mut self, text: &str, dest: &str) {
+        let dest = strip_controls(dest);
+        if self.table.is_some() {
+            self.inline(text);
+            if !dest.is_empty() {
+                self.inline(&format!(" <{}>", discord::code(&dest)));
+            }
+        } else if discord::is_web_url(&dest) {
+            if text.trim().is_empty() {
+                self.inline(&format!("<{}>", discord::url(&dest, false)));
+            } else {
+                self.inline(&format!("[{text}](<{}>)", discord::url(&dest, true)));
+            }
+        } else {
+            // The text isn't in brackets, so at the start of a line it must not read as a marker.
+            if self.at_line_start() {
+                self.inline(&discord::at_line_start(text));
+            } else {
+                self.inline(text);
+            }
+            if !dest.is_empty() {
+                let space = if text.is_empty() { "" } else { " " };
+                self.inline(&format!("{space}({})", discord::code_span(&dest)));
+            }
+        }
+    }
+
+    /// Writes the lines of raw HTML as prose; its line breaks are soft breaks.
+    fn html_lines(&mut self, html: &str) {
+        for (i, piece) in html.split('\n').enumerate() {
+            if i > 0 {
+                self.line_break();
+            }
+            self.prose(piece);
+        }
+    }
+
     fn write_table(&mut self, alignments: &[Alignment], rows: &[Vec<String>]) {
-        if self.flavor != Flavor::Plain {
+        if !matches!(self.flavor, Flavor::Plain | Flavor::Discord) {
             // Chat clients use proportional fonts, so padding wouldn't align anything.
             for row in rows {
                 self.inline(&row.join(" | "));
                 self.end_line();
             }
             return;
+        }
+        // Discord has no tables, but monospaced code blocks align columns.
+        let fenced = self.flavor == Flavor::Discord;
+        if fenced {
+            self.inline("```");
+            self.end_line();
         }
         let columns = rows.iter().map(Vec::len).max().unwrap_or_default();
         let mut widths = vec![1; columns];
@@ -424,6 +527,10 @@ impl Writer {
                 self.end_line();
             }
         }
+        if fenced {
+            self.inline("```");
+            self.end_line();
+        }
     }
 
     fn style(&mut self, style: Style, open: bool) {
@@ -441,15 +548,25 @@ impl Writer {
             } else if let Some(i) = self.open_styles.iter().rposition(|s| *s == style) {
                 self.open_styles.remove(i);
             }
-            self.inline(self.marker(style));
+            if !self.plain_inline() {
+                self.inline(self.marker(style));
+            }
         }
+    }
+
+    /// Whether inline text is for a Discord table cell, which is shown in a code block, where
+    /// markup would show as it is written.
+    fn plain_inline(&self) -> bool {
+        self.flavor == Flavor::Discord && self.table.is_some()
     }
 
     fn marker(&self, style: Style) -> &'static str {
         match (self.flavor, style) {
             (Flavor::Plain | Flavor::WhatsApp, Style::Strong) => "*",
             (Flavor::Plain | Flavor::WhatsApp, Style::Emphasis) => "_",
-            (Flavor::Plain | Flavor::Irc, Style::Strikethrough) => "~~",
+            (Flavor::Plain | Flavor::Irc | Flavor::Discord, Style::Strikethrough) => "~~",
+            (Flavor::Discord, Style::Strong) => "**",
+            (Flavor::Discord, Style::Emphasis) => "*",
             (Flavor::WhatsApp, Style::Strikethrough) => "~",
             (Flavor::Irc, Style::Strong) => IRC_BOLD,
             (Flavor::Irc, Style::Emphasis) => IRC_ITALIC,
@@ -457,11 +574,12 @@ impl Writer {
     }
 
     fn inline_code(&mut self, code: &str) {
-        if self.flavor == Flavor::WhatsApp && code.contains('`') {
+        match self.flavor {
+            Flavor::Discord if self.table.is_some() => self.inline(&discord::code(code)),
+            Flavor::Discord => self.inline(&discord::code_span(code)),
             // WhatsApp's inline code can't contain a backtick: show the code as text.
-            self.prose(code);
-        } else {
-            self.inline(&format!("`{code}`"));
+            Flavor::WhatsApp if code.contains('`') => self.prose(code),
+            Flavor::Plain | Flavor::Irc | Flavor::WhatsApp => self.inline(&format!("`{code}`")),
         }
     }
 
@@ -470,13 +588,15 @@ impl Writer {
         let text = strip_controls(text);
         match self.flavor {
             Flavor::WhatsApp => text.replace("```", "\u{2cb}\u{2cb}\u{2cb}"),
+            Flavor::Discord => discord::code(&text),
             Flavor::Plain | Flavor::Irc => text.into_owned(),
         }
     }
 
-    fn start_raw(&mut self, kind: RawKind) {
+    fn start_raw(&mut self, kind: RawKind, dest: String) {
         self.raw = Some(Raw {
             kind,
+            dest,
             depth: 1,
             text: String::new(),
         });
@@ -486,8 +606,34 @@ impl Writer {
         let Some(raw) = self.raw.take() else {
             return;
         };
+        let discord_image = self.flavor == Flavor::Discord && self.table.is_none();
         match raw.kind {
+            RawKind::Autolink if self.flavor == Flavor::Discord => {
+                if self.table.is_none() && discord::is_web_url(&raw.text) {
+                    self.inline(&format!("<{}>", discord::url(&raw.text, false)));
+                } else {
+                    let text = self.escape(&raw.text).into_owned();
+                    self.inline(&text);
+                }
+            }
             RawKind::Autolink => self.inline(&raw.text),
+            // An image is a link on Discord, with its embed suppressed: nothing is fetched until
+            // someone clicks. Inside a link, whose text can't hold another link, only the alt
+            // text is shown.
+            RawKind::Image
+                if discord_image && (!self.links.is_empty() || discord::is_web_url(&raw.dest)) =>
+            {
+                let label = if raw.text.trim().is_empty() {
+                    "image".to_owned()
+                } else {
+                    self.escape(&raw.text).into_owned()
+                };
+                if self.links.is_empty() {
+                    self.inline(&format!("[{label}](<{}>)", discord::url(&raw.dest, true)));
+                } else {
+                    self.inline(&label);
+                }
+            }
             RawKind::Image if raw.text.is_empty() => self.inline("[image]"),
             RawKind::Image => {
                 let alt = self.escape(&raw.text).into_owned();
@@ -502,11 +648,32 @@ impl Writer {
         match self.flavor {
             Flavor::Plain | Flavor::Irc => strip_controls(text),
             Flavor::WhatsApp => Cow::Owned(whatsapp_literal(&strip_controls(text))),
+            Flavor::Discord => Cow::Owned(self.discord_text(text, false, false)),
         }
     }
 
+    /// Escapes text for Discord. A table cell is shown in a code block, where escapes would show.
+    fn discord_text(&self, text: &str, wrap_urls: bool, line_start: bool) -> String {
+        if self.table.is_some() {
+            discord::code(&strip_controls(text))
+        } else {
+            discord::prose(text, wrap_urls, line_start)
+        }
+    }
+
+    /// Whether text written now starts a line.
+    fn at_line_start(&self) -> bool {
+        self.captures.is_empty()
+            && !self.in_code_block
+            && (!self.line_open || self.out.len() == self.content_start)
+    }
+
     fn prose(&mut self, text: &str) {
-        let text = self.escape(text).into_owned();
+        let text = if self.flavor == Flavor::Discord {
+            self.discord_text(text, self.links.is_empty(), self.at_line_start())
+        } else {
+            self.escape(text).into_owned()
+        };
         self.inline(&text);
     }
 
@@ -545,8 +712,11 @@ impl Writer {
     fn line_break(&mut self) {
         if let Some(capture) = self.captures.last_mut() {
             capture.push(' ');
-        } else if self.flavor == Flavor::WhatsApp && !self.open_styles.is_empty() {
-            // WhatsApp styles don't span lines: close them before the break, reopen after.
+        } else if matches!(self.flavor, Flavor::WhatsApp | Flavor::Discord)
+            && !self.open_styles.is_empty()
+        {
+            // WhatsApp styles don't span lines: close them before the break, reopen after. So
+            // do Discord's, which keeps a message that splits at a line break well formed.
             let styles = self.open_styles.clone();
             for style in styles.iter().rev() {
                 self.inline(self.marker(*style));
@@ -581,13 +751,17 @@ impl Writer {
     fn blank(&self) -> Sep {
         match self.flavor {
             Flavor::Irc => Sep::Line,
-            Flavor::Plain | Flavor::WhatsApp => Sep::Blank(self.blank_prefix()),
+            Flavor::Plain | Flavor::WhatsApp | Flavor::Discord => Sep::Blank(self.blank_prefix()),
         }
     }
 
     /// What an empty line inside the current containers holds: the quote prefixes.
     fn blank_prefix(&self) -> String {
         let prefix: String = self.containers.iter().map(|c| c.rest.as_str()).collect();
+        if self.flavor == Flavor::Discord && prefix.contains('>') {
+            // Discord reads a quote line only with a space after the `>`.
+            return prefix;
+        }
         prefix.trim_end().to_owned()
     }
 

@@ -122,7 +122,7 @@ fn clean(text: CowStr<'_>) -> CowStr<'_> {
 }
 
 /// Reduces a fenced code block's info string to a language name usable in a `class`.
-fn code_language(info: &str) -> String {
+pub(super) fn code_language(info: &str) -> String {
     info.split_ascii_whitespace()
         .next()
         .unwrap_or_default()
@@ -143,7 +143,7 @@ fn link_href(link_type: LinkType, dest: &str) -> Option<String> {
         .then_some(href)
 }
 
-fn starts_with_ignore_case(s: &str, prefix: &str) -> bool {
+pub(super) fn starts_with_ignore_case(s: &str, prefix: &str) -> bool {
     s.as_bytes()
         .get(..prefix.len())
         .is_some_and(|start| start.eq_ignore_ascii_case(prefix.as_bytes()))
