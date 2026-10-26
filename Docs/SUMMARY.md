@@ -45,6 +45,7 @@
 - [IRC Channel](technical/irc.md)
 - [Email Channel](technical/email.md)
 - [WhatsApp Channel](technical/whatsapp.md)
+- [Discord Channel](technical/discord.md)
 - [gRPC Protocols](technical/protocols.md)
 - [Admin Service](technical/admin.md)
 - [Configuration](technical/config.md)

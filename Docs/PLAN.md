@@ -1205,6 +1205,7 @@ applies to the next inbound message.
 | IRC      | `giles-channel-irc`      | IRC connection            | IRC  | Channel name, or nick for DMs           |
 | Email    | `giles-channel-email`    | IMAP with IDLE            | SMTP | Sender + thread root (`Message-ID`/`References`) |
 | WhatsApp | `giles-channel-whatsapp` | WhatsApp Web multi-device | Same | Chat JID                                |
+| Discord  | `giles-channel-discord`  | Gateway (WebSocket)       | REST | DM channel id                           |
 
 Rendering CommonMark:
 
