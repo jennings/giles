@@ -6,13 +6,14 @@ messages (DMs) over the Discord Gateway and sends over the REST API, as a separa
 plugin SDK ([Plugin SDK](plugin-sdk.md)). `ChannelInfo { identity_namespace: "discord", output:
 Blocks, can_initiate: true }`.
 
-**Status: design only.** This page records the decisions of issue #13: the library, the Gateway
-intents, the catch-up algorithm, the status mapping, the configuration, and the client seam the
-tests use. The plugin itself is built by issues #15 to #19 and verified against a real bot by
-issue #20; those issues extend this page with what they build. Facts about Discord were checked
-against the official documentation on 2026-10-25 and link to it; where the documentation is silent
-or two pages disagree, the text says so, and [What Needs a Real Bot](#what-needs-a-real-bot) lists
-what issue #20 must confirm.
+**Status: designed, and built as far as issue #15** ([Implementation](#implementation): the
+Gateway connection, the status, the configuration). This page records the decisions of issue #13:
+the library, the Gateway intents, the catch-up algorithm, the status mapping, the configuration, and
+the client seam the tests use. The rest of the plugin is built by issues #16 to #19 and verified
+against a real bot by issue #20; those issues extend this page with what they build. Facts about
+Discord were checked against the official documentation on 2026-10-25 and link to it; where the
+documentation is silent or two pages disagree, the text says so, and [What Needs a Real
+Bot](#what-needs-a-real-bot) lists what issue #20 must confirm.
 
 ## Decisions
 
@@ -29,7 +30,7 @@ what issue #20 must confirm.
 | Catch-up | A cursor per DM channel in the plugin's data directory, REST `after=<id>` paging after every new session, 24 h default age limit ([Catch-Up](#catch-up)) |
 | Status | Rejected token (close 4004, REST 401) is `NeedsAuth` with a `Url`; every other failure is `Error` ([Status](#status)) |
 | Config keys | `token`, `max_blob`, `catch_up_max_age` ([Configuration](#configuration)) |
-| Seam | A `Discord` trait with six methods; the twilight types stay in one `real` module ([The Client Seam](#the-client-seam)) |
+| Seam | A `Discord` trait with six methods in the end (two so far, [Implementation](#the-seam-as-built)); the twilight types stay in one `real` module ([The Client Seam](#the-client-seam)) |
 
 ## The Library
 
@@ -602,13 +603,194 @@ No test may contact Discord, and none needs a token.
   out, and the core's `Events` reopen redelivers an unacked one.
 - **Pure units** next to the logic: snowflake arithmetic, state-file round trip and corruption,
   the status mapping, error mapping, config parsing.
-- **`real`, offline.** Its conversions are unit-tested from fixtures. Its loop can also be driven
-  without Discord: `ConfigBuilder::proxy_url` points a shard at `ws://127.0.0.1:<port>` and
-  `ClientBuilder::proxy(.., use_http = true)` points REST at `http://127.0.0.1:<port>`, so a
-  loopback server written in the test should be able to play Hello, Ready, a MESSAGE_CREATE, a close
-  with 4004, and a REST 429, which would check the glue (close-code mapping, the backoff sleep, the
-  401 lock-out) without the network; neither override has been tried. Whether to build that server
-  is for issue #15 to decide; the design does not depend on it.
+- **`real`, offline.** Its conversions are unit-tested from fixtures. Its loop is driven without
+  Discord: `ConfigBuilder::proxy_url` points a shard at `ws://127.0.0.1:<port>`, and a Gateway
+  server written in the test plays Hello, Ready, a close with 4004, and so on, which checks the
+  glue (close-code mapping, resume, the clean close) without the network. Issue #15 built it
+  ([Implementation](#running-the-tests)); a REST counterpart with `ClientBuilder::proxy(..,
+  use_http = true)` is for the issues that use REST, and has not been tried.
+
+## Implementation
+
+What issue #15 built: the crate, the configuration, the Gateway connection, and the status. It
+receives no message and sends none yet: inbound mapping and catch-up are issue #16, sends are
+issue #17, and attachments are issue #18. Each extends this section with what it adds.
+
+`plugins/giles-channel-discord` is a library and a binary (`publish = false`, `MIT OR Apache-2.0`
+like the workspace; the new dependencies are listed under [Dependencies](#dependencies)). The
+library exists so that the integration tests in `tests/` can reach the channel and the fake client,
+as the IRC plugin's do; nothing in it is an API for anyone else.
+
+### Modules
+
+| Module | Contents |
+| --- | --- |
+| `config` | `Config` as written (unknown keys refused) and `Settings` as validated; `Secret`, whose `Debug` is `<redacted>` |
+| `client` | The `Discord` trait and `GatewayEvent`: the seam |
+| `status` | `classify`: a Gateway event to `Up`, `Down`, or `Final(ChannelStatus)`; the status messages |
+| `session` | `Session`, `Timing`, and `run`: the task that owns the connection ([State Machine](#state-machine)) |
+| `channel` | `DiscordChannel` (the SDK's `Channel`), `configure`, `configure_with`, and the `SessionSlot` that lets `main` stop the session |
+| `fake` | `FakeDiscord`, the scripted client for tests |
+| `real` | `RealDiscord`, the client on `twilight-gateway`: the only module with twilight types |
+| `main` | Logging, `ChannelPlugin::new("discord", ..).output(Blocks).can_initiate(true).serve(..)`, then the session is stopped |
+
+```text
+twilight Shard ── real ──GatewayEvent──▶ session ──ChannelEvent::Status──▶ Channel::events ──▶ SDK
+      ▲                                     │
+      └───── polled again only after ───────┘ the reconnect delay
+```
+
+### The Seam as Built
+
+[The Client Seam](#the-client-seam) lists the six methods the finished plugin needs. The trait
+today has the two that the Gateway connection needs, `next_event` and `shutdown`. `create_message`
+and `create_dm` (issue #17), `messages_after` (issue #16), and `download` (issue #18) are added
+by the issue that calls them, together with their `real` implementations, their fake, and their
+tests: a method defined now would have no caller, and its real implementation would be a stub that
+looks like it works. `twilight-http` and `twilight-model` are likewise added by those issues. Two
+deliberate differences from the sketch:
+
+- `GatewayEvent` is `Ready { user_id }`, `Resumed`, and `Closed { code: Option<u16> }`;
+  `Message` arrives with issue #16. `Closed` has no `fatal` or `reconnecting` flag: whether a close
+  code is final is the plugin's policy (`status::classify`, the table under [Status](#status)),
+  tested against the fake, rather than a flag the client sets. The client agrees with it by
+  construction: the codes the policy calls final (4004, 4010 to 4014) are the ones
+  `twilight-gateway` ends its stream on, and a stream that ends without one is an error status of
+  its own.
+- `next_event` can be dropped while pending without losing an event (the session does, to stop),
+  and a client that isn't polled doesn't reconnect: both are properties of `twilight-gateway`'s
+  `Shard` that the trait states as its contract.
+
+### State Machine
+
+`session::run` is one loop over three things: the stop signal, the grace timer, and the pending
+`next_event` call. It reacts to what `status::classify` says about each event:
+
+| Event | Reaction |
+| --- | --- |
+| `Ready` or `Resumed` | Report `Connected` (a repeat of the last status is not sent), clear the drop timer, note when the session came up. `Ready` is a new session and `Resumed` the old one; both are `Connected`, and the log says which. Catch-up (issue #16) will run after `Ready` only |
+| `Closed` with a code the client recovers from (or no code) | Start the grace timer if none is running. Reset the delay to 1 s if this session had been up for a minute. Do not poll the client until the delay is over, then double the delay (cap 5 minutes) |
+| `Closed` with 4004 | Report `NeedsAuth` (the Developer Portal URL) and stop polling for good |
+| `Closed` with 4010 to 4014 | Report an `Error` that says what happened and stop polling for good |
+| The stream ended (`None`) with no final close before it | Report an `Error` ("restart this plugin") and stop polling for good: nothing starts another shard, for the reason in [Rate Limits](#rate-limits) |
+| The grace timer ran out (10 s after the first close with no `Ready` or `Resumed`) | Report `Error` "disconnected from Discord, reconnecting"; the client is still trying |
+| Stop | End the pending poll, call `shutdown` on the client once, bounded by 5 s |
+
+"For good" means until the plugin is restarted: the session keeps its status, polls nothing, and
+waits to be stopped. A bad token therefore costs Discord one Identify, not a stream of them, and an
+operator who fixes `secrets.toml` and restarts the instance gets a new process, a new client, and
+`Connected`. All the delays are in `Timing` (`Default` is what the plugin uses), and the clock is
+`tokio::time`, so the tests run on paused time and check the exact delays.
+
+### The Library's Silent Reconnect
+
+`twilight-gateway` reports a close frame, a transport error, a missed heartbeat ACK, and a failed
+connect, but not a connection that ends with a plain TCP close and no close frame: its `Shard`
+notes the disconnect and starts reconnecting inside the same `poll_next`, and nothing comes out of
+the stream. The plugin would see no event to report or to pace, and Discord would see a new
+connection a second later. `real` therefore compares `Shard::state()` before and after every poll:
+a shard that was connected and is now disconnected, with no message to show for it, is reported as
+`Closed { code: None }`. The loopback test `a_dropped_connection_is_resumed_with_the_same_session`
+fails without it.
+
+One case the state comparison cannot see: a connection that ends *before Hello*. The shard goes
+`Disconnected` to `Identifying` (the WebSocket is up) and back to `Disconnected` inside one
+`poll_next`, so the state is the same before and after and nothing is reported: no `Closed`, so no
+grace timer and no `Error` status, and the plugin does not delay (the library does, below). The
+shard retries about once a second. Nothing is sent to Discord in that loop, since Identify and
+Resume answer Hello, so the daily Identify budget is not at risk; the cost is a status that stays as
+it was, for a server that accepts connections and hangs up at once.
+
+Also worth knowing, because both interact with the plugin's delay: `Shard` sleeps 1 second before
+every connect (`2^attempts` seconds, and `attempts` counts failed connects only), and its Identify
+queue spaces Identifies five seconds apart. After a close frame the shard's sleep starts when the
+plugin polls again, so the first reconnect takes about 2 seconds (the plugin's 1 second, then the
+library's 1). After a plain TCP drop the shard's sleep starts at once, inside the poll that reported
+the drop, so it overlaps the plugin's delay and the first reconnect takes about 1 second; the delay
+keeps doubling from there. An Identify loop is bounded at one per five seconds by the library, and
+by the plugin's delay to one per 5 minutes in the end. Reconnect requests (op 7) and invalid
+sessions (op 9) are handled by the shard, which sends a close frame (code 1000 for a session that
+can't be resumed, so it Identifies again; 4000 otherwise, so it resumes) and surfaces Discord's
+answering close as a `Closed` event; the plugin relies on that answer to count them.
+
+### Shutdown
+
+`ChannelPlugin::serve` owns the channel and gives no hook for its end, and a process that exits
+when `serve` returns would cut the session off before it closes the Gateway, leaving the bot shown
+online until Discord times the connection out. As in the WhatsApp plugin, `configure` leaves a
+`SessionHandle` in a `SessionSlot` that `main` holds; after `serve` returns, `main` stops the
+session and waits up to 6 seconds for it. The session ends the pending poll and calls
+`Discord::shutdown`, bounded by 5 seconds. `RealDiscord::shutdown` sends close code 1000 (which
+ends the session and shows the bot offline) and polls the shard until Discord's answer arrives, if
+there is a session to end, for at most 900 milliseconds. The limit is under the second the library
+sleeps before every connect: if the peer ends the TCP connection without answering, the shard starts
+reconnecting and would Identify, putting the bot back online after it was shut down, and the wait
+is over before that can happen (`shutdown_does_not_reconnect_when_the_close_is_never_answered`).
+With no session (never connected, a rejected token) it does nothing, and the connection is dropped
+with the process.
+
+### Configuration and the Token
+
+`Config` derives `Deserialize` with `deny_unknown_fields`, and `Settings::new` validates it; every
+error is `invalid config: <key>: <reason>`. `token` is a `Secret`: no `Display`, `Debug` prints
+`<redacted>`, and the one use of its value is `RealDiscord::new` handing it to the library (whose
+own `Config` also redacts it). The validation errors never repeat it, a pasted `Bot` prefix gets its
+own message, and `tests/logs.rs` captures `tracing` at `TRACE` around two runs and asserts the token
+is in no line: the plugin served by the SDK with the fake client, and the real client against the
+loopback Gateway through Identify, a dropped connection, Resume, and a rejected token (the library's
+own logs are in the capture). `max_blob` and `catch_up_max_age` are validated and logged at startup;
+nothing reads them until issues #16 and #18.
+
+`RealDiscord::new` installs `rustls`'s `aws-lc-rs` provider as the process default (a provider
+that is already installed is left alone), because `twilight-gateway` panics building its TLS
+connector without one. The design said `main` would do it; doing it where the shard is built means
+no caller can forget it, and `tests/crypto_provider.rs`, a binary of its own so that no other test
+can have installed the provider first, checks it.
+
+### Dependencies
+
+`twilight-gateway` 0.17.1 only, with default features off and `rustls-webpki-roots` (the manifest
+says why); no `twilight-http` and no `twilight-model` yet, since nothing here calls REST or names
+a model type. New to `Cargo.lock`: `twilight-gateway`, `twilight-gateway-queue`, `twilight-model`,
+`ordered-float` 2, `serde-value`, `serde_repr`, and `sha1_smol`.
+`tokio-websockets` was already in the tree through the WhatsApp plugin; it gains `fastrand`,
+`sha1_smol`, and `webpki-roots` there. All are MIT, Apache-2.0, ISC, BSD-3-Clause, or
+CDLA-Permissive-2.0, as [Licence Check](#licence-check) says for the whole tree, so the licensing
+of the repository is unchanged. `cargo tree -d` shows one `rustls` (0.23.46), one `rustls-webpki`,
+and one `aws-lc-rs` for the plugin, no `ring` in its tree, and no duplicate of anything heavy
+(the duplicates it lists, `hashbrown` and `syn`, are in the workspace already). The tests add
+`tokio-websockets` with its `server` feature as a dev-dependency.
+
+### Running the Tests
+
+```sh
+cargo test -p giles-channel-discord
+```
+
+No test contacts Discord, and none needs a token or a network beyond loopback.
+
+- `config`, `status`: unit tests, the validation table and the status mapping.
+- `session`: the state machine against `FakeDiscord` on paused time: statuses and the grace period,
+  the delay sequence (1, 2, 4, ... 300 s), its reset after a healthy minute (and not after 59
+  seconds), an invalid-session loop that must not Identify in a tight loop, a rejected token that is
+  never polled again and a corrected restart, final closes, a stream that ends, and shutdown
+  (closed once, even mid-delay, and bounded when the client hangs).
+- `tests/sdk.rs`: the plugin served over loopback TCP by the real SDK with the fake client:
+  `Describe`, `Configure` errors naming the key, a status that survives until the core acks it, and
+  `NeedsAuth` over the wire. `tests/logs.rs` is the redaction test, a binary of its own because
+  `tracing` caches whether a call site is enabled, which makes a subscriber installed for one test
+  unreliable next to tests without one.
+- `tests/gateway.rs`: `RealDiscord` against a Gateway server written in the test on loopback
+  (`ConfigBuilder::proxy_url`, which the shard also uses for the `ws://` URL of this server; the
+  REST override is for the issues that use REST): Hello, Identify (the token and exactly the
+  `DIRECT_MESSAGES` intent), heartbeats and ACKs, `Ready`, a close with 4004 and the end of the
+  stream, a dropped connection resumed with the same session, an invalid session that Identifies
+  again, a reconnect request that resumes, a server that isn't there, and the clean close at
+  shutdown (and no reconnect when the close is never answered). The Gateway server is
+  `tests/loopback/mod.rs`, shared with `tests/logs.rs`. It plays Discord from its documentation, so
+  it shows that the glue does what the library does, not that Discord behaves so (issue #20). The
+  shard's one-second delay before each connect makes it take a few seconds.
+- `real`: the conversions from the library's events, from a documented READY payload.
 
 ## What Needs a Real Bot
 
@@ -636,6 +818,13 @@ Issue #20 confirms, in addition to its own list:
 10. A signed attachment URL downloaded on arrival, and one refused after its `ex` time.
 11. That a message with only a sticker, poll, or forward behaves as the inbound table says.
 12. That no `MESSAGE_CREATE` ever arrives for a server channel with this intent set.
+13. That Discord answers with a close frame when the shard closes the connection after a Reconnect
+    (op 7) or an Invalid Session (op 9), which is how the plugin counts them for its reconnect
+    delay ([The Library's Silent Reconnect](#the-librarys-silent-reconnect)), and what the first
+    reconnect after a drop really costs in time (the loopback test shows only the library's own
+    one-second sleep). Also how Discord ends a connection it drops: with a close frame, with a plain
+    TCP close (which the client reports itself), or before Hello (which it cannot see: no status,
+    retried about once a second, nothing sent).
 
 What can't be verified at all without a real bot: Discord's real error codes under real
 conditions, the rate limits' actual numbers (documented as variable), and the Resume window.
