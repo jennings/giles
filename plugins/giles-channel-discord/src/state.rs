@@ -120,6 +120,12 @@ impl StateFile {
         });
     }
 
+    /// Forgets `channel`, cursor and user: Discord said it doesn't exist. A new channel with the
+    /// same user is recorded again when one is opened.
+    pub fn forget_dm(&self, channel: u64) {
+        self.update(|channels| channels.remove(&channel).is_some());
+    }
+
     /// Moves the cursor of `channel` to `message`, if that is further than it is, adding the
     /// channel if it is new.
     pub fn advance(&self, channel: u64, message: u64) {

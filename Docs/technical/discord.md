@@ -6,12 +6,12 @@ messages (DMs) over the Discord Gateway and sends over the REST API, as a separa
 plugin SDK ([Plugin SDK](plugin-sdk.md)). `ChannelInfo { identity_namespace: "discord", output:
 Blocks, can_initiate: true }`.
 
-**Status: designed, and built as far as issue #16** ([Implementation](#implementation): the
-Gateway connection, the status, the configuration, inbound direct messages, and catch-up). This
-page records the decisions of issue #13: the library, the Gateway intents, the catch-up algorithm,
-the status mapping, the configuration, and the client seam the tests use. The rest of the plugin is
-built by issues #17 to #19 and verified against a real bot by issue #20; those issues extend this
-page with what they build. Facts about
+**Status: designed, and built as far as issues #16 and #17** ([Implementation](#implementation):
+the Gateway connection, the status, the configuration, inbound direct messages, catch-up, and
+sending text). This page records the decisions of issue #13: the library, the Gateway intents, the
+catch-up algorithm, the status mapping, the configuration, and the client seam the tests use. The
+rest of the plugin is built by issues #18 and #19 and verified against a real bot by issue #20;
+those issues extend this page with what they build. Facts about
 Discord were checked against the official documentation on 2026-10-25 and link to it; where the
 documentation is silent or two pages disagree, the text says so, and [What Needs a Real
 Bot](#what-needs-a-real-bot) lists what issue #20 must confirm.
@@ -446,36 +446,41 @@ again.
 
 `send` for a `Conversation(<DM channel id>)` target posts to that channel. For a
 `Recipient(discord:<user id>)` target (the outbox, jobs, proactive sends) it resolves the channel
-first: the state file's `user` mapping, else `POST /users/@me/channels`, whose result is stored.
+first: the state file's `user` mapping, else `POST /users/@me/channels`, whose result is recorded
+there (so a restart remembers it, and catch-up covers the channel).
 
 - Each chunk of the rendered text is one `POST /channels/{id}/messages`, in order, sequentially,
-  with `allowed_mentions: { "parse": [] }` always (no user, role, or `@everyone` can ping, whatever
-  the model wrote and whatever the renderer escaped) and no `message_reference`: `reply_to` is
-  ignored, because in a DM a reply link only adds clutter. The returned `MessageId` is the last
-  chunk's.
+  with `allowed_mentions: { "parse": [] }` and the `SUPPRESS_EMBEDS` flag always (no user, role,
+  or `@everyone` can ping and no link unfurls, whatever the model wrote and whatever the renderer
+  escaped: the renderer is the first layer, these are the second) and no `message_reference`:
+  `reply_to` is ignored, because in a DM a reply link only adds clutter. The returned `MessageId`
+  is the last chunk's.
 - A caller that sends text with attachments gets the text as the first message's content and the
   files on it ([Attachments](#attachments)); text too long for one message goes in the chunks
   before the files.
-- Every REST call is wrapped in a timeout. `twilight-http` queues behind the rate limiter and
-  sends a request that got a 429 back through it (the code has no retry count), so the plugin
-  supplies the bound: 60 seconds per call.
+- Every REST call is bounded: `twilight-http` queues behind the rate limiter and sends a request
+  that got a 429 back through it (the code has no retry count), so `RealDiscord` gives up after
+  60 seconds per call with `RateLimited`.
 
 | Outcome | Result of `send` |
 | --- | --- |
 | Success | `Ok(message id)` |
 | 401 (`ErrorType::Unauthorized`; the library refuses every later request) | `Unavailable` ("Discord rejected the bot token") and the `NeedsAuth` status |
-| 50007, 10013, 40003 resolving a recipient or sending | `Unavailable`: closed DMs, no shared server, a user that doesn't exist, DMs opened too fast. The outbox retries on its own schedule; the plugin has no retry loop |
-| 10003 on a cached channel | Drop the cache entry, create the DM channel again once, retry the chunk; a second 10003 is `NotFound` |
+| 50007, 50278, 10013, 40003 resolving a recipient or sending | `Unavailable`: DMs closed or blocked, no shared server, a user that doesn't exist, DMs opened too fast. The outbox retries on its own schedule; the plugin has no retry loop |
+| 10003 on a recorded channel | Forget it (state file), create the DM channel again once, retry the chunk; a second 10003 is `NotFound` |
 | 10003 on a `Conversation` target | `NotFound` |
-| 40005, 50045 (file too large), 50006, 50035 | `InvalidRequest`, with Discord's message: a plugin bug or an oversize send |
+| 40005, 50045 (file too large), 50006, 50035 | `InvalidRequest`, with Discord's status and error code (not its text): a plugin bug or an oversize send |
 | Malformed `discord:<id>`, an id that isn't a snowflake | `InvalidRequest` |
-| 429 not cleared within 60 s, 5xx, transport error, timeout | `Unavailable` |
+| 60 s without an answer (`RateLimited`), 5xx, transport error | `Unavailable` |
+| Any other error code (50001, 50013, ...) | `Unavailable` too: the outbox retries until the message expires, which costs a request now and then, and a message is never dropped for a code the plugin doesn't know |
 
-If a send fails after some chunks went out, the error makes the outbox send the whole message
-again and the user sees the first chunks twice. Discord's `nonce` with `enforce_nonce` can
-deduplicate identical messages from one author for a few minutes, but a nonce derived from the
-text would also suppress two genuine identical replies ("ok", twice), and the SDK gives `send`
-no idempotency key, so this is accepted and documented, not worked around.
+If a send fails after some chunks went out, the outbox sends the whole message again, and Discord
+has no idempotency key to make that harmless, so the plugin remembers how many chunks of an
+unfinished send Discord accepted and a retry carries on after them ([Sending](#sending)).
+Discord's `nonce` with `enforce_nonce` was considered instead and rejected: `twilight-http` 0.17.1
+has `nonce` but no `enforce_nonce` to set, Discord deduplicates only for a few minutes while the
+outbox retries for a day, and a nonce derived from the text would also suppress two genuine
+identical replies ("ok", twice).
 
 ## Attachments
 
@@ -504,6 +509,21 @@ Both directions are issue #18; the facts it needs are recorded here.
   never repeated (10 000 invalid requests in 10 minutes means a Cloudflare ban of the IP); the
   library refuses everything after the first 401, and the plugin goes to `NeedsAuth` and stops
   calling REST until it is restarted with a new token.
+- **What `twilight-http` does, read in its source (0.17.1) and shown by `tests/rest.rs`.** Every
+  request first takes a permit from the limiter, which holds it back until the route's bucket has
+  room (from the `X-RateLimit-*` headers of the earlier answers) and the global 50 per second has
+  room. A 429 with the user scope refills the bucket from its headers (`X-RateLimit-Reset-After`)
+  and the same request is sent again through the limiter: the test sees the second request arrive
+  after the reset and not before. A burst of answers that say "bucket empty" spaces the next
+  requests by the reset, so the chunks of a long reply arrive in order, each after the one before
+  (the plugin sends them one at a time anyway). Two limits of the library matter: it **retries a
+  429 for as long as Discord keeps answering one**, so the plugin's 60 second bound per call
+  (`RateLimited`) is the only bound; and it reads bucket information **only from answers that
+  carry `X-RateLimit-Scope`**, so a 429 without it (or with `global`) is retried at once, limited
+  only by the global 50 per second. Discord documents the header with the others, so a real 429
+  should have it; issue #20 checks. The library's 10 second timeout per HTTP request (not counting
+  the wait for a permit) is left at its default, and a timed out request may have created its
+  message, which a retry then repeats.
 - **Gateway.** 120 sends per 60 seconds; the shard sends only heartbeats, Identify, and Resume, and
   queues them itself. The 1000 Identifies per 24 hours matter more: exceeding them **resets the
   token**. Resume costs none, so a drop never Identifies unless Discord says the session is gone.
@@ -633,10 +653,10 @@ No test may contact Discord, and none needs a token.
 
 ## Implementation
 
-What issues #15 and #16 built: the crate, the configuration, the Gateway connection, and the
-status (#15); direct messages in, the state file, and catch-up after downtime (#16). It sends
-nothing yet: sends are issue #17, and attachments are issue #18. Each extends this section with
-what it adds.
+What issues #15 to #17 built: the crate, the configuration, the Gateway connection, and the
+status (#15); direct messages in, the state file, and catch-up after downtime (#16); text out, to
+a conversation or to a user, and the handling of a rejected token (#17). Attachments are
+issue #18. Each extends this section with what it adds.
 
 `plugins/giles-channel-discord` is a library and a binary (`publish = false`, `MIT OR Apache-2.0`
 like the workspace; the new dependencies are listed under [Dependencies](#dependencies)). The
@@ -654,6 +674,7 @@ as the IRC plugin's do; nothing in it is an API for anyone else.
 | `ingest` | `Ingest`: the per-channel marks, buffers, and catch-up passes, merging live and fetched messages; no I/O ([Ingest](#ingest)) |
 | `state` | `StateFile`: `discord-state.json`, the DM channels, their cursors and users ([The State File](#the-state-file)) |
 | `snowflake` | Snowflake arithmetic: the time of an id, the first id of a time |
+| `outbound` | `Outbound`: `send` for `DiscordChannel`: target parsing, rendering, the parts in order, finding or opening the DM channel, the error mapping, and the progress of unfinished sends ([Sending](#sending)) |
 | `session` | `Session`, `Timing`, and `run`: the task that owns the connection and the history request in flight ([State Machine](#state-machine)) |
 | `token` | `TokenState`: whether Discord rejected the token, shared by the session and everything that calls REST ([A Rejected Token](#a-rejected-token)) |
 | `channel` | `DiscordChannel` (the SDK's `Channel`) and the event stream that moves the cursor, `configure`, `configure_with`, and the `SessionSlot` that lets `main` stop the session |
@@ -718,8 +739,11 @@ map from DM channel id to `{ cursor, user }`, shared by everything that needs it
 
 - `advance(channel, message)` moves a cursor forward (never back) and adds the channel if it is new.
 - `record_dm(channel, user)` adds a channel, or sets its user, without touching the cursor. It is
-  what a send calls after Create DM (issue #17), and what the inbound path calls for the first
-  message of a channel it hasn't seen.
+  what a send calls after Create DM, so that a channel first made for a send is known to the next
+  catch-up pass and to later sends (and to a restart), and what the inbound path calls for the
+  first message of a channel it hasn't seen.
+- `forget_dm(channel)` removes a channel: Discord said it doesn't exist (10003) when a send used
+  the recorded one.
 - `channels()`, `get(channel)`, and `channel_for_user(user)` read it.
 
 Every change that changes something is written before the call returns (a call that changes
@@ -872,6 +896,67 @@ isn't sent again.
 
 Callers of REST that send check the state before they send, and send nothing once it is set.
 
+### Sending
+
+`channel::DiscordChannel::send` is `outbound::Outbound::send`, a function of the `Discord` client,
+the `TokenState`, and the `StateFile` only, so every case below is a test against `FakeDiscord`.
+
+- **Targets.** A `Conversation` id must be a nonzero number that fits 64 bits; a `Recipient` the
+  same, with an optional `discord:` prefix (the core strips the namespace before it calls `send`).
+  Anything else, including another namespace (`whatsapp:+1555...`), is `InvalidRequest` before any
+  request is made. `reply_to` is ignored.
+- **Text.** `render::discord(markdown, DISCORD_MAX_CHARS)`; nothing left after rendering (empty or
+  whitespace) is `InvalidRequest("nothing to send")`. A send with attachments is `InvalidRequest`
+  until issue #18, so a file is never dropped silently. No typing indicator ([Output](#output)).
+- **Recipients.** The DM channel with a user is `StateFile::channel_for_user`, which the inbound
+  path fills from live messages and catch-up, else `create_dm`, whose answer is recorded with
+  `record_dm`: a restart remembers it, and the channel is known to catch-up from then on (the next
+  `Ready` fetches what the user wrote before their first live message). A recorded channel is
+  trusted until a message to it fails with 10003 on the first part: it is forgotten
+  (`forget_dm`), Discord is asked again once, and the part goes to the new channel; a second 10003
+  is `NotFound`. A failed `create_dm` records nothing.
+- **Order.** One send runs at a time (a lock held for the whole send, and the token check made
+  inside it), the parts one after the other, each only after Discord accepted the one before. A
+  part that waits behind a rate limit therefore can't be overtaken by a part of another message,
+  and a failure stops the send: later parts are never posted after a missing one. The fake test
+  with two concurrent sends fails without the lock.
+- **Failure after some parts.** The error is `Unavailable` (or `InvalidRequest` or `NotFound` for
+  an error that retrying doesn't fix) and its text says `N of M messages had already been sent`
+  and, for a send to a user, which the outbox retries, `a retry carries on after them`. The outbox
+  repeats the whole message until it is delivered or its row expires after 24 hours. `Outbound`
+  therefore keeps a map of unfinished sends to a user (`outbound/unfinished.rs`), keyed by the
+  destination and a hash of the rendered parts, holding the number of parts Discord accepted. It
+  is updated right after each accepted part (so a send the outbox drops at its 60 second timeout
+  leaves its progress too), removed when the last part is accepted (so a genuine second reply with
+  the same text goes out in full), and forgotten when the send fails in a way a retry can't fix
+  (`InvalidRequest`, `NotFound`: the outbox drops the row). It holds at most 64 sends, evicting
+  the one with the oldest progress, and each entry expires 24 hours after its last progress. A
+  retry skips the accepted parts, so the user sees each part once. A part Discord keeps refusing
+  with an error the plugin treats as retryable (an unlisted code, such as 240000 for a blocked
+  link) is retried alone, one request per outbox retry: about once a minute once the outbox's
+  backoff reaches its 60 second cap, until the row expires after 24 hours; the outbox's expiry is
+  the stop. **A reply into a conversation is not remembered**: the core's reply path only logs a
+  failed send and nothing retries it, so nobody would carry on, and an entry would only hold one
+  of the 64 slots for a day and make an identical later reply skip parts it never posted. Its
+  error says how many parts went out and promises no retry. What remains: a send that Discord
+  accepted but whose answer was lost (a timeout) is posted again by the retry; the map is in
+  memory, so after a restart the retry posts the earlier parts once more; and an identical
+  multi-part send to a user made while an earlier identical one is still unfinished carries on
+  that one.
+- **Bounds.** `RealDiscord` bounds each REST call at 60 seconds (`RateLimited`, `Unavailable`
+  here). The outbox gives a whole send 60 seconds as well, so for a proactive send the outbox gives
+  up first and drops the future, which is as safe as a failure (after some parts it is the case
+  above). The bound is what ends a reply into a conversation, which has no outbox. A send queued
+  behind another one waits for it.
+- **The token.** A 401 from `create_message` or `create_dm` is `Unavailable` ("Discord rejected
+  the bot token") and rejects the `TokenState` ([A Rejected Token](#a-rejected-token)): the
+  session reports `NeedsAuth`, and every later send fails at once with the same error and no
+  request. A 401 on a history request or a 4004 on the Gateway does the same to sends.
+- **Logs.** A failed send logs one `warn` with the error text above and the counts: never the
+  message, the user, the channel, or the token. `tests/logs.rs` sends a distinctive text through
+  the plugin and through the real client against a server that refuses and rejects it, at `TRACE`,
+  and checks that neither the text nor the token is in any line, the library's included.
+
 ### Shutdown
 
 `ChannelPlugin::serve` owns the channel and gives no hook for its end, and a process that exits
@@ -935,8 +1020,8 @@ No test contacts Discord, and none needs a token or a network beyond loopback.
   arithmetic (against the snowflake in Discord's documentation).
 - `state`: the file's shape, a round trip through a new process, a cursor that only moves forward,
   a write that replaces the file whole and leaves nothing behind, a change that changes nothing
-  not being written, nine kinds of unusable file set aside and kept as `.corrupt`, and a write that
-  fails keeping the state in memory.
+  not being written, nine kinds of unusable file set aside and kept as `.corrupt`, a write that
+  fails keeping the state in memory, and a forgotten channel gone from memory and file.
 - `inbound`: the mapping table (a person, a bot, the plugin itself, a webhook, a server, fifteen
   system message types, empty), reply ids, display names, the order of text, files, and stickers,
   and names that try to break out of their note.
@@ -1001,6 +1086,30 @@ No test contacts Discord, and none needs a token or a network beyond loopback.
   a live replay of the last of them and a newer live message, each delivered once in order, the
   cursor on disk at the end; and a 401 on the first page giving `NeedsAuth` with live messages
   still arriving and no second request.
+- `outbound`: against `FakeDiscord` on paused time: rendering and masked links, a 6 000-character
+  reply split into ordered parts of at most 2 000 characters with nothing lost, mentions defused
+  in the text, empty text and attachments refused, a recipient's DM channel opened once and
+  reused (with and without the `discord:` prefix), 50007, 50278, 10013, and 40003 on `create_dm`
+  and on posting (`Unavailable`, not remembered), twelve malformed targets, the whole error table
+  (15 errors, each its kind), a failure after two of several parts of a send to a user (the later
+  ones never posted; the retry posting the part that failed and the ones after it, and a new
+  identical send then posting in full), a part that fails every time (240000) retried alone while
+  the parts before it are never posted again, a send cut off at the outbox's 60 seconds that
+  leaves its progress, a cut-off reply into a conversation that is not remembered (its error
+  promises no retry, and the same text later goes out in full), an
+  invalid part after one went out (forgotten, so the same text later goes out in full), a
+  forgotten DM channel opened again once and then remembered (and gone from the state file), 10003
+  twice as `NotFound` without a loop, 10003 for a reply and for a fresh DM, a DM channel
+  remembered across a restart, one recorded by a send and caught up on the next `Ready`, one
+  recorded by the inbound side used without `create_dm`, a 401 on posting and on `create_dm`
+  (`NeedsAuth`, then no request of any kind), a 401 after another final status, a 4004 and a 401
+  of a history request each stopping sends, a rate-limited call, and two concurrent sends that
+  don't interleave. The map of unfinished sends has unit tests of its own: progress kept and
+  cleared, sends told apart by destination and text, eviction of the oldest at the bound (and no
+  growth past it over 10 000 sends), the 24 hour expiry moving with progress, and expired entries
+  making room first.
+- `tests/sdk.rs` also sends over the wire: a recipient (DM opened, message posted, the id back), a
+  reply, `UNAVAILABLE` for 50007 and `INVALID_ARGUMENT` for another namespace.
 - `real`: the conversions from the library's events (a documented READY payload and a DM with a
   reply, a file, and a sticker), a history page, and the 60 second bound on a REST call.
 
@@ -1049,6 +1158,15 @@ Issue #20 confirms, in addition to its own list:
 15. That the REST history of a DM is available to a bot that was never in the channel's server
     (403 or 50001 would mean catch-up skips the channel with a warning), and how the 60 second
     bound relates to what Discord actually does under a 429.
+16. That a message with `allowed_mentions: {"parse": []}` and `flags: 4` (`SUPPRESS_EMBEDS`) is
+    accepted in a DM; that `@everyone`, `<@id>`, and a link in the text then neither ping nor
+    unfurl; and that a response always has the `id` the plugin reads.
+17. That an answer to a real request carries `X-RateLimit-Scope` and the bucket headers (the
+    library reads buckets only when the scope header is there), what a real 429 looks like for
+    messages sent in a burst (scope, `Retry-After`, `retry_after`), and that the parts of a long
+    reply arrive in order, each after the one before.
+18. What a revoked token does on the Gateway while a session is alive (a 4004 close, or nothing
+    until the next Identify), since the plugin goes to `NeedsAuth` from a REST 401 on its own.
 
 What can't be verified at all without a real bot: Discord's real error codes under real
 conditions, the rate limits' actual numbers (documented as variable), and the Resume window.

@@ -282,3 +282,81 @@ async fn no_message_text_is_in_any_log_line_through_the_real_client() {
     assert!(logs.contains("couldn't be deserialized"), "{logs}");
     assert!(!logs.contains(MARKER), "{logs}");
 }
+
+/// The text of a message and the token must stay out of the logs when a send goes wrong: the
+/// plugin's own and the REST library's, at every level.
+#[tokio::test]
+async fn a_send_never_logs_its_text_or_the_token() {
+    use giles_channel_discord::channel::{DiscordChannel, Inbound};
+    use giles_channel_discord::client::{NewMessage, RestError};
+    use giles_channel_discord::fake::FakeDiscord;
+    use giles_channel_discord::ingest::Clock;
+    use giles_channel_discord::session::Timing;
+    use giles_channel_discord::state::StateFile;
+    use giles_plugin_sdk::giles_types::{
+        Channel as _, ConversationId, OutboundMessage, SendTarget,
+    };
+    use loopback::rest::{Response, RestServer};
+
+    const TEXT: &str = "the-secret-words-of-the-reply";
+    let message = || OutboundMessage {
+        target: SendTarget::Conversation(ConversationId::new("319674150115610528").unwrap()),
+        markdown: TEXT.to_owned(),
+        attachments: Vec::new(),
+        reply_to: None,
+    };
+
+    let (capture, _logging) = capture_logs();
+    // Through the plugin, with the failures it handles: a refusal, no answer, a rejected token.
+    let dir = tempfile::tempdir().unwrap();
+    let client = Arc::new(FakeDiscord::default());
+    let channel = DiscordChannel::start(
+        client.clone(),
+        Timing::default(),
+        Inbound {
+            state: StateFile::open(dir.path()),
+            catch_up_max_age: std::time::Duration::from_secs(3600),
+            clock: Clock::system(),
+        },
+    );
+    client.script_messages([
+        Err(RestError::Api {
+            status: 403,
+            code: Some(50_007),
+        }),
+        Err(RestError::Transport),
+        Ok(1),
+        Err(RestError::Unauthorized),
+    ]);
+    for _ in 0..4 {
+        let _ = channel.send(message()).await;
+    }
+    // Through the real client, against a server that refuses and then rejects.
+    let server = RestServer::start(|_, n| {
+        if n == 0 {
+            Response::json(
+                403,
+                &json!({"code": 50_007, "message": "Cannot send messages to this user"}),
+            )
+        } else {
+            Response::json(401, &json!({"code": 0, "message": "401: Unauthorized"}))
+        }
+    })
+    .await;
+    let real = loopback::rest_client(&server.host);
+    for _ in 0..2 {
+        let _ = real
+            .create_message(
+                1,
+                NewMessage {
+                    content: TEXT.to_owned(),
+                },
+            )
+            .await;
+    }
+
+    let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+    assert!(logs.contains("sending to Discord failed"), "{logs}");
+    assert!(!logs.contains(TEXT), "{logs}");
+    assert!(!logs.contains("not-a-real-token"), "{logs}");
+}

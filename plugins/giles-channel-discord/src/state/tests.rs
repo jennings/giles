@@ -96,6 +96,28 @@ fn the_cursor_only_moves_forward_and_a_user_does_not_move_it() {
 }
 
 #[test]
+fn a_forgotten_channel_is_gone_from_memory_and_from_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = StateFile::open(dir.path());
+    state.record_dm(CHANNEL, USER);
+    state.advance(CHANNEL, 200);
+    state.record_dm(8, 80);
+
+    state.forget_dm(CHANNEL);
+    assert_eq!(state.channel_for_user(USER), None);
+    assert_eq!(state.get(CHANNEL), None);
+    assert_eq!(state.channels(), [8]);
+    // What a new process reads is the same, and forgetting what isn't there changes nothing.
+    assert_eq!(StateFile::open(dir.path()).channels(), [8]);
+    state.forget_dm(CHANNEL);
+    assert_eq!(state.channels(), [8]);
+
+    // A channel opened later for the same user is recorded afresh.
+    state.record_dm(9, USER);
+    assert_eq!(state.channel_for_user(USER), Some(9));
+}
+
+#[test]
 fn a_write_replaces_the_file_whole_and_leaves_nothing_behind() {
     let dir = tempfile::tempdir().unwrap();
     let state = StateFile::open(dir.path());

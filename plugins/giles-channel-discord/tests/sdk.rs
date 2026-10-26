@@ -281,3 +281,56 @@ async fn the_history_before_a_new_channels_first_message_reaches_the_core_first(
     assert_eq!(texts, ["from before", "missed one", "missed two"]);
     wait_until(|| served.spooled() <= 1).await;
 }
+
+#[tokio::test]
+async fn a_send_over_the_wire_posts_a_message_and_failures_have_their_codes() {
+    use giles_channel_discord::client::RestError;
+    use giles_channel_discord::fake::dm_channel_of;
+    use giles_proto::channel::v1::{SendRequest, send_request::Target};
+
+    let served = configured().await;
+    let send = |target: Target| SendRequest {
+        target: Some(target),
+        markdown: "Hello *there*".into(),
+        attachments: Vec::new(),
+        reply_to: None,
+    };
+    let mut rpc = served.rpc();
+
+    // A proactive send to an identity opens the DM channel and posts to it.
+    let sent = rpc
+        .send(send(Target::Recipient(USER.to_string())))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(sent.message_id, "5001");
+    assert_eq!(served.client.dms(), [USER]);
+    assert_eq!(
+        served.client.messages(),
+        [(dm_channel_of(USER), "Hello *there*".to_owned())]
+    );
+
+    // A reply into a conversation posts to that channel and opens nothing.
+    rpc.send(send(Target::ConversationId(CHANNEL.to_string())))
+        .await
+        .unwrap();
+    assert_eq!(served.client.dms(), [USER]);
+    assert_eq!(served.client.messages()[1].0, CHANNEL);
+
+    // A user who can't be messaged is UNAVAILABLE (the outbox retries), a target that isn't a
+    // Discord id INVALID_ARGUMENT (it doesn't).
+    served.client.script_dms([Err(RestError::Api {
+        status: 403,
+        code: Some(50_007),
+    })]);
+    let status = rpc
+        .send(send(Target::Recipient("5551234".into())))
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::Unavailable, "{status:?}");
+    let status = rpc
+        .send(send(Target::Recipient("whatsapp:+15551234567".into())))
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::InvalidArgument, "{status:?}");
+}

@@ -5,8 +5,7 @@ use std::time::Duration;
 
 use futures::stream::{self, BoxStream, StreamExt as _};
 use giles_plugin_sdk::giles_types::{
-    Channel, ChannelEvent, ChannelInfo, Error, EventId, MessageId, OutboundMessage, OutputMode,
-    Result,
+    Channel, ChannelEvent, ChannelInfo, EventId, MessageId, OutboundMessage, OutputMode, Result,
 };
 use giles_plugin_sdk::{Configure, async_trait};
 use tokio::sync::{Mutex, mpsc};
@@ -16,6 +15,7 @@ use tokio_util::sync::{CancellationToken, DropGuard};
 use crate::client::Discord;
 use crate::config::Settings;
 use crate::ingest::{Clock, Cursor, Ingest, Params};
+use crate::outbound::Outbound;
 use crate::real::RealDiscord;
 use crate::session::{self, Outgoing, Session, Timing};
 use crate::state::StateFile;
@@ -151,6 +151,7 @@ pub struct DiscordChannel {
     state: StateFile,
     stop: CancellationToken,
     token: Arc<TokenState>,
+    outbound: Outbound,
     task: std::sync::Mutex<Option<JoinHandle<()>>>,
     _guard: DropGuard,
 }
@@ -169,6 +170,11 @@ impl DiscordChannel {
             retry_max: timing.catch_up_retry_max,
         });
         let token = Arc::new(TokenState::default());
+        let outbound = Outbound::new(
+            Arc::clone(&client),
+            Arc::clone(&token),
+            inbound.state.clone(),
+        );
         let task = tokio::spawn(session::run(Session {
             client,
             timing,
@@ -187,6 +193,7 @@ impl DiscordChannel {
             state: inbound.state,
             stop: stop.clone(),
             token,
+            outbound,
             task: std::sync::Mutex::new(Some(task)),
             _guard: stop.drop_guard(),
         }
@@ -255,9 +262,7 @@ impl Channel for DiscordChannel {
         Ok(())
     }
 
-    async fn send(&self, _msg: OutboundMessage) -> Result<MessageId> {
-        Err(Error::InvalidRequest(
-            "this build of the Discord plugin can't send messages yet".to_owned(),
-        ))
+    async fn send(&self, msg: OutboundMessage) -> Result<MessageId> {
+        self.outbound.send(msg).await
     }
 }
