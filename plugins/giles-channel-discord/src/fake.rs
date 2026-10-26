@@ -9,7 +9,32 @@ use giles_plugin_sdk::async_trait;
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 
-use crate::client::{Discord, DiscordMessage, GatewayEvent, Page, RestError};
+use crate::client::{Author, Discord, DiscordMessage, GatewayEvent, Page, RestError};
+use crate::snowflake;
+
+/// A plain direct message from a person (not a bot) with `content`, as Discord delivers one: the
+/// user `author` writing in the DM channel `channel`. Its time is the one its id encodes. Change
+/// the fields for other kinds of message.
+pub fn direct_message(id: u64, channel: u64, author: u64, content: &str) -> DiscordMessage {
+    DiscordMessage {
+        id,
+        channel_id: channel,
+        author: Author {
+            id: author,
+            bot: false,
+            username: format!("user{author}"),
+            global_name: None,
+        },
+        guild: false,
+        webhook: false,
+        kind: 0,
+        content: content.to_owned(),
+        attachments: Vec::new(),
+        stickers: Vec::new(),
+        timestamp_ms: i64::try_from(snowflake::unix_ms(id)).unwrap_or(i64::MAX),
+        reply_to: None,
+    }
+}
 
 /// One call of [`Discord::messages_after`] the fake received.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

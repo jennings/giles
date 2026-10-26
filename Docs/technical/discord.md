@@ -628,12 +628,13 @@ as the IRC plugin's do; nothing in it is an API for anyone else.
 | `config` | `Config` as written (unknown keys refused) and `Settings` as validated; `Secret`, whose `Debug` is `<redacted>` |
 | `client` | The `Discord` trait and `GatewayEvent`: the seam |
 | `status` | `classify`: a Gateway event to `Up`, `Down`, or `Final(ChannelStatus)`; the status messages |
+| `inbound` | `map`: a `DiscordMessage` to an `InboundMessage`, `Empty`, or `Dropped(reason)`; pure ([The Mapping](#the-mapping)) |
 | `state` | `StateFile`: `discord-state.json`, the DM channels, their cursors and users ([The State File](#the-state-file)) |
 | `snowflake` | Snowflake arithmetic: the time of an id, the first id of a time |
 | `session` | `Session`, `Timing`, and `run`: the task that owns the connection ([State Machine](#state-machine)) |
 | `channel` | `DiscordChannel` (the SDK's `Channel`), `configure`, `configure_with`, and the `SessionSlot` that lets `main` stop the session |
-| `fake` | `FakeDiscord`, the scripted client for tests |
-| `real` | `RealDiscord`, the client on `twilight-gateway`: the only module with twilight types |
+| `fake` | `FakeDiscord`, the scripted client for tests: a Gateway queue and a REST history per channel |
+| `real` | `RealDiscord`, the client on `twilight-gateway` and `twilight-http`: the only module with twilight types |
 | `main` | Logging, `ChannelPlugin::new("discord", ..).output(Blocks).can_initiate(true).serve(..)`, then the session is stopped |
 
 ```text
@@ -695,6 +696,24 @@ case is a cursor that is behind after a crash, which costs a few messages fetche
 deduplicated. A file that doesn't read, doesn't parse, has another `version`, or holds an id that
 isn't a number is renamed to `discord-state.json.corrupt` (replacing an older one) and the plugin
 starts empty, never deleting it. Unknown fields are ignored.
+
+### The Mapping
+
+`inbound::map(message, bot_id)` applies the table under [Inbound](#inbound) in its order: a bot
+author, the plugin's own id (from `Ready`; a message before `Ready` can't be checked against it),
+a webhook, a server, and a type other than 0 and 19 are `Dropped` with that reason, then a message
+with no text (after trimming), no file, and no sticker is `Empty`, and everything else is an
+`InboundMessage`:
+
+- `sender` is `discord:<author id>`, `sender_authenticated` is `true`, and the display name is the
+  global name or else the username. The conversation is the channel id, `Direct`, with no title.
+- The event id and `message_id` are the message id, and `reply_to` is the referenced message of a
+  type 19 message only (a forward or a crosspost refers to a message too).
+- `text` is the content exactly as written, then one line per file, `[attachment: <name>]`, and one
+  per sticker, `[sticker: <name>]`. Names come from the sender: control characters and brackets are
+  removed and the name is cut to 100 characters, so a name can't close its note and start another
+  line of its own. Files are not downloaded yet (issue #18), so the note is all of a file there is;
+  `attachments` is empty.
 
 ### State Machine
 
