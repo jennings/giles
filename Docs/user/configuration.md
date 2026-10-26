@@ -151,6 +151,7 @@ example:
 | IRC      | `irc:libera.chat:account:stephen` |
 | Email    | `email:me@example.com`            |
 | WhatsApp | `whatsapp:+15551234567`           |
+| Discord  | `discord:82198898841029460`       |
 
 A message counts as the owner's if its sender, or any other id the channel reports for the same
 person (WhatsApp reports both the phone number and an internal id), is listed.

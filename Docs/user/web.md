@@ -83,7 +83,8 @@ was logged out) shows what it needs on the status page:
 
 - A QR code: scan it with the app (WhatsApp: **Linked devices**, **Link a device**).
 - A pair code: enter it in the app.
-- An address to open (a link only if it's `http` or `https`).
+- An address to open (a link only if it's `http` or `https`). Discord shows the Developer Portal's
+  address this way when it rejects the bot token ([Discord](discord.md#status)).
 
 While any channel waits to be linked, the page reloads itself every 5 seconds, so it always shows
 the channel's newest code (WhatsApp replaces its QR code every 20 seconds or so). Once the channel

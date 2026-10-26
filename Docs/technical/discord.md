@@ -4,17 +4,17 @@ The design of `giles-channel-discord`, the Discord channel plugin (PLAN sections
 tracked in [issue #12](https://github.com/jennings/giles/issues/12)). A bot account receives direct
 messages (DMs) over the Discord Gateway and sends over the REST API, as a separate process on the
 plugin SDK ([Plugin SDK](plugin-sdk.md)). `ChannelInfo { identity_namespace: "discord", output:
-Blocks, can_initiate: true }`.
+Blocks, can_initiate: true }`. User-facing setup, behavior, and settings:
+[Discord](../user/discord.md).
 
-**Status: designed, and built as far as issues #16 to #18** ([Implementation](#implementation):
-the Gateway connection, the status, the configuration, inbound direct messages, catch-up, sending
-text, and attachments in both directions). This page records the decisions of issue #13: the
-library, the Gateway intents, the catch-up algorithm, the status mapping, the configuration, and
-the client seam the tests use. The rest of the plugin is built by issue #19 and verified against a
-real bot by issue #20; those issues extend this page with what they build. Facts about
-Discord were checked against the official documentation on 2026-10-25 and link to it; where the
-documentation is silent or two pages disagree, the text says so, and [What Needs a Real
-Bot](#what-needs-a-real-bot) lists what issue #20 must confirm.
+**Status: designed (issue #13), built (issues #15 to #18: [Implementation](#implementation)),
+packaged and documented (issue #19, [Packaging](#packaging)), and not yet run against Discord:
+issue #20 does that.** This page records the decisions of issue #13: the library, the Gateway
+intents, the catch-up algorithm, the status mapping, the configuration, and the client seam the
+tests use, and what each issue built on top of them. Facts about Discord were checked against the
+official documentation on 2026-10-25 and link to it; where the documentation is silent or two
+pages disagree, the text says so, and [What Needs a Real Bot](#what-needs-a-real-bot) lists what
+issue #20 must confirm.
 
 ## Decisions
 
@@ -185,7 +185,15 @@ licensing](whatsapp.md#licensing)).
   The shared TLS crates are at their patched versions in the lock, as of the same date.
 
 The licence check is not legal advice, and it is a snapshot: re-run it when the dependency set
-changes (issue #19 states the result in the user guide).
+changes. It was re-run for the finished plugin, with attachments, on 2026-10-26:
+`cargo metadata --locked` over the normal-dependency closure of `giles-channel-discord` for
+`x86_64-unknown-linux-gnu` (199 crates, the SDK's, `reqwest`'s, and the twilight crates' included)
+has no GPL, AGPL, LGPL, or SSPL in any `license` field. The expressions are MIT, Apache-2.0, ISC,
+BSD-3-Clause, CDLA-Permissive-2.0, and a few other permissive ones (Zlib, Unlicense, BSL-1.0,
+Unicode-3.0), alone or in the combinations of the table above. That recheck read manifests only; the
+source search above was not repeated: it covered the twilight crates, and what the attachments added
+(`reqwest` and what it brings) was already in the workspace's lock.
+[Discord](../user/discord.md#licensing) states the result for users.
 
 **This is not a close call, so no owner decision is needed.** The library is maintained (see
 the commit dates above), builds on stable Rust, uses `rustls` with bundled roots, and has no
@@ -639,9 +647,12 @@ every config error.
 | Plugin stopping | None | The shard is closed with 1000 (the bot goes offline); the stream ends |
 
 The 4004 case also covers a token Discord reset after the Identify limit. The `NeedsAuth` URL is
-the Developer Portal's applications list, where the Bot page has "Reset Token"; the user guide
-(issue #19) says so, and says how to put the new token into `secrets.toml`. A repeat of the last
-status is not sent again. No status carries the token, a user id, or message text.
+the Developer Portal's applications list, where the Bot page has "Reset Token"; the [user
+guide](../user/discord.md#status) says so, and says how to put the new token into `secrets.toml`.
+The new token takes a restart of Giles, not of the plugin: the core resolves secrets once, when it
+starts ([Registry and Startup](registry.md#the-running-configuration)), so a plugin restart
+relaunches it with the old token. A repeat of the last status is not sent again. No status
+carries the token, a user id, or message text.
 
 ## Configuration
 
@@ -657,6 +668,28 @@ error (`invalid config: token: ...`), unknown keys refused like the other plugin
 Nothing else is configurable on purpose: the API version, the intents, the page size, the grace
 period, and the backoff are constants. The plugin's sandbox needs outbound TCP 443 only (REST,
 the Gateway, and the CDN are all HTTPS or secure WebSocket on that port), plus its data directory.
+
+## Packaging
+
+The binary is in the container image: `giles-channel-discord` is in the `bins` list of the
+`Dockerfile`, and the image smoke test checks that the file is there ([Container
+Image](container-image.md), [Continuous Integration](ci.md)). No image-level change is needed
+beyond that, because of how plugins start:
+
+- The core launches a plugin only for a configured instance (`[channel.<name>]` with `component =
+  "discord"`, [Plugin Host](plugin-host.md)), so an image with no Discord instance never starts the
+  plugin and never contacts Discord. The CI smoke test configures none.
+- The plugin has no configuration of its own outside `giles.toml`: a missing or malformed `token`
+  fails `Configure` and the instance stays down with the message in the log and in `giles status`.
+- Its one file, `discord-state.json`, lives in the instance's data directory
+  (`data/plugins/<instance>/`, which is on the `/data` volume), next to the SDK's own state
+  (`giles-sdk/`).
+- Licensing is unchanged ([Licence Check](#licence-check)): unlike the WhatsApp plugin, nothing in
+  its tree is copyleft, so the image's license label, the license files, and `THIRD-PARTY` are as
+  they were. It has no git dependency either, so the build stage's network needs are unchanged.
+
+The image itself was not built when this was written (the development machine has no Docker); CI's
+image job builds it and runs the smoke test.
 
 ## The Client Seam
 
@@ -740,7 +773,7 @@ No test may contact Discord, and none needs a token.
 What issues #15 to #18 built: the crate, the configuration, the Gateway connection, and the
 status (#15); direct messages in, the state file, and catch-up after downtime (#16); text out, to
 a conversation or to a user, and the handling of a rejected token (#17); and attachments in both
-directions (#18). Each extends this section with what it adds.
+directions (#18). Issue #19 packaged and documented the plugin ([Packaging](#packaging)).
 
 `plugins/giles-channel-discord` is a library and a binary (`publish = false`, `MIT OR Apache-2.0`
 like the workspace; the new dependencies are listed under [Dependencies](#dependencies)). The
@@ -1305,6 +1338,12 @@ Issue #20 confirms, in addition to its own list:
     reply arrive in order, each after the one before.
 18. What a revoked token does on the Gateway while a session is alive (a 4004 close, or nothing
     until the next Identify), since the plugin goes to `NeedsAuth` from a REST 401 on its own.
+19. The user guide's walk-through: that the Developer Portal's pages are as it names them (the
+    **Bot** page's **Reset Token**, **OAuth2** and its URL Generator with the `bot` scope and no
+    permissions, a **Public Bot** switch), that a bot that has joined a server with no permissions
+    can exchange direct messages with a member, that Copy User ID gives the id the plugin reports as
+    the sender, that the server-level privacy setting for direct messages is what blocks the bot's
+    replies (error 50007), and that a reset token's old value is refused at once.
 
 What can't be verified at all without a real bot: Discord's real error codes under real
 conditions, the rate limits' actual numbers (documented as variable), and the Resume window.

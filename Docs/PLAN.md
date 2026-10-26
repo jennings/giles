@@ -157,6 +157,7 @@ Channels also drop messages that must never start a turn: echoes of the agent's 
 | IRC      | `account:<name>`           | IRCv3 `account-tag` (services account)                          |
 | IRC      | `mask:<nick>!<user>@<host>` | Opt-in per instance, for networks without account tags         |
 | WhatsApp | Phone number; LID as an alias | The WhatsApp protocol                                        |
+| Discord  | User id                    | The bot's authenticated Gateway connection                      |
 | Web      | Login (section 3.4)        | The web login                                                   |
 
 ### 3.4 Web Login
@@ -205,6 +206,7 @@ OpenAI-compatible client. The `Provider` trait stays, so provider plugins can be
 | IRC channel                           | `giles-channel-irc`                    | Long-lived connection, crash isolation |
 | Email channel                         | `giles-channel-email`                  | Long-lived connection, protocol libs   |
 | WhatsApp channel                      | `giles-channel-whatsapp`               | Protocol library, crash isolation      |
+| Discord channel                       | `giles-channel-discord`                | Long-lived connection, crash isolation |
 | Toolsets                              | MCP servers, one per instance          | Any MCP server works unchanged         |
 
 Built-in components run unsandboxed in the core process. Sandboxing applies to plugins only.
@@ -1225,6 +1227,14 @@ only this plugin changes. Its session store lives in the plugin's data directory
 or pair code) and later logouts are reported as `ChannelStatus` (section 8.5), so the operator can
 link from the admin page or `giles status`.
 
+Discord uses a bot account on Discord's official bot API (the Gateway for receiving, REST for
+sending), written in Rust on `twilight`. v1 handles direct messages only: the plugin asks for the
+`DIRECT_MESSAGES` intent and no privileged one, so servers never reach it. The Gateway has no
+acknowledgement, so the plugin keeps a state file in its data directory (a cursor per DM channel)
+and catches up over REST after every new session, within a configurable age limit. A rejected bot
+token is reported as `NeedsAuth` with the Developer Portal's address (section 8.5). See
+`Docs/technical/discord.md`.
+
 ## 11. Storage
 
 ### 11.1 Data Root
@@ -1612,7 +1622,7 @@ with `toml`, `tracing`, `thiserror` in libraries and `anyhow` in the binary, `cr
 `rustls` with bundled roots.
 
 Core also: `rmcp` (MCP client). First-party plugins: `rmcp` (toolset servers), `whatsapp-rust`
-(WhatsApp). IRC and email libraries are chosen when those plugins are built.
+(WhatsApp), `twilight` (Discord). IRC and email libraries are chosen when those plugins are built.
 
 ### 13.3 Core Modules
 

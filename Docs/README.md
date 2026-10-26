@@ -1,9 +1,9 @@
 # Giles
 
 Giles is a small, long-running agent daemon written in Rust. The owner talks to LLM agents over
-several channels (web, IRC, email, WhatsApp); the agents call model providers, use tools, and run
-scheduled jobs. The core does orchestration only: identity, routing, sessions, the agent loop,
-scheduling, policy, storage, and supervising plugins. Providers, channels, and toolsets are
+several channels (web, IRC, email, WhatsApp, Discord); the agents call model providers, use tools,
+and run scheduled jobs. The core does orchestration only: identity, routing, sessions, the agent
+loop, scheduling, policy, storage, and supervising plugins. Providers, channels, and toolsets are
 components behind one Rust trait each, either built into the core or run as sandboxed plugin
 processes over gRPC.
 
