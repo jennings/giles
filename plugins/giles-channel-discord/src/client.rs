@@ -6,9 +6,10 @@
 //! a library upgrade inside `real`.
 //!
 //! The design (`Docs/technical/discord.md`) lists six methods. This one has the Gateway's events,
-//! a clean close, and the channel history that catch-up reads. `create_message`, `create_dm`, and
-//! `download` arrive with the issues that use them (outbound messages, attachments), together
-//! with their real implementations, so that no method here is defined and left unimplemented.
+//! a clean close, the channel history that catch-up reads, and the two REST calls a send needs
+//! (`create_message`, `create_dm`). `download` arrives with the issue that uses it (attachments),
+//! together with its real implementation, so that no method here is defined and left
+//! unimplemented.
 //!
 //! Discord ids are snowflakes, plain `u64`s here: they sort by creation time, and the Discord
 //! API writes them as strings because JSON numbers can't carry them safely.
@@ -162,6 +163,17 @@ impl fmt::Display for RestError {
 
 impl std::error::Error for RestError {}
 
+/// A message for [`Discord::create_message`].
+///
+/// Whatever else a message carries, the client never lets it ping anyone (`allowed_mentions`
+/// with nothing to parse) and never lets Discord unfurl a link (`SUPPRESS_EMBEDS`): both are
+/// part of the contract of `create_message`, not choices of the caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewMessage {
+    /// The text, at most 2000 characters (the renderer's parts are).
+    pub content: String,
+}
+
 /// A Discord Gateway connection and the REST calls the plugin makes.
 #[async_trait]
 pub trait Discord: Send + Sync + 'static {
@@ -177,6 +189,18 @@ pub trait Discord: Send + Sync + 'static {
     /// created after the message with id `after` (any snowflake works, including one built from a
     /// time), at most `limit` (1 to 100), **oldest first**. A full page may have more after it.
     async fn messages_after(&self, channel: u64, after: u64, limit: u8) -> Result<Page, RestError>;
+
+    /// `POST /channels/{channel}/messages`: posts `message` to the channel, with no mention
+    /// allowed to ping and no embed (see [`NewMessage`]), and returns the new message's id.
+    ///
+    /// A call outlasting the client's bound (a rate limit that doesn't clear) is
+    /// [`RestError::RateLimited`].
+    async fn create_message(&self, channel: u64, message: NewMessage) -> Result<u64, RestError>;
+
+    /// `POST /users/@me/channels`: the id of the DM channel with `user`. Discord returns the
+    /// existing channel if there is one, so calling it again is harmless. Bounded like
+    /// [`create_message`](Self::create_message).
+    async fn create_dm(&self, user: u64) -> Result<u64, RestError>;
 
     /// Closes the connection cleanly (close code 1000, so the bot shows as offline and the
     /// session ends) and waits for Discord to answer. Called once, after the last

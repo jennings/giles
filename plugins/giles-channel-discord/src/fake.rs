@@ -4,12 +4,13 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Duration;
 
 use giles_plugin_sdk::async_trait;
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 
-use crate::client::{Author, Discord, DiscordMessage, GatewayEvent, Page, RestError};
+use crate::client::{Author, Discord, DiscordMessage, GatewayEvent, NewMessage, Page, RestError};
 use crate::snowflake;
 
 /// A plain direct message from a person (not a bot) with `content`, as Discord delivers one: the
@@ -66,6 +67,7 @@ pub struct FakeDiscord {
     history_calls: Mutex<Vec<HistoryCall>>,
     history_called: watch::Sender<usize>,
     history_open: watch::Sender<bool>,
+    rest: Mutex<Rest>,
 }
 
 impl Default for FakeDiscord {
@@ -83,6 +85,7 @@ impl Default for FakeDiscord {
             history_calls: Mutex::default(),
             history_called: watch::channel(0).0,
             history_open: watch::channel(true).0,
+            rest: Mutex::default(),
         }
     }
 }
@@ -177,6 +180,65 @@ impl FakeDiscord {
     }
 }
 
+/// What the fake's send calls were asked and what they will answer.
+#[derive(Default)]
+struct Rest {
+    /// Answers for the next `create_message` calls, oldest first. When empty, a call succeeds
+    /// with the next message id.
+    message_script: VecDeque<Result<u64, RestError>>,
+    /// Answers for the next `create_dm` calls. When empty, a call succeeds with a channel id
+    /// derived from the user's.
+    dm_script: VecDeque<Result<u64, RestError>>,
+    /// Every `create_message` call, failed or not: the channel and the message.
+    messages: Vec<(u64, NewMessage)>,
+    /// Every `create_dm` call: the user.
+    dms: Vec<u64>,
+    /// The id the next unscripted message gets.
+    next_message: u64,
+    /// How long each `create_message` takes to answer, like a slow network.
+    delay: Duration,
+}
+
+/// The DM channel the fake gives `user` when [`FakeDiscord::script_dms`] has no answer queued.
+pub const fn dm_channel_of(user: u64) -> u64 {
+    user + 1_000
+}
+
+impl FakeDiscord {
+    /// Queues the answers of the next `create_message` calls, in order. Calls after the queue is
+    /// empty succeed with a fresh message id.
+    pub fn script_messages(&self, answers: impl IntoIterator<Item = Result<u64, RestError>>) {
+        self.rest.lock().unwrap().message_script.extend(answers);
+    }
+
+    /// Queues the answers of the next `create_dm` calls, in order. Calls after the queue is empty
+    /// succeed with [`dm_channel_of`] the user.
+    pub fn script_dms(&self, answers: impl IntoIterator<Item = Result<u64, RestError>>) {
+        self.rest.lock().unwrap().dm_script.extend(answers);
+    }
+
+    /// Makes every later `create_message` take `delay` (of tokio's time) to answer. The call is
+    /// recorded when it starts.
+    pub fn delay_rest(&self, delay: Duration) {
+        self.rest.lock().unwrap().delay = delay;
+    }
+
+    /// Every `create_message` call so far, in order, failed ones included: the channel id and the
+    /// text.
+    pub fn messages(&self) -> Vec<(u64, String)> {
+        let rest = self.rest.lock().unwrap();
+        rest.messages
+            .iter()
+            .map(|(channel, message)| (*channel, message.content.clone()))
+            .collect()
+    }
+
+    /// Every `create_dm` call so far: the user ids.
+    pub fn dms(&self) -> Vec<u64> {
+        self.rest.lock().unwrap().dms.clone()
+    }
+}
+
 #[async_trait]
 impl Discord for FakeDiscord {
     async fn next_event(&self) -> Option<GatewayEvent> {
@@ -221,6 +283,28 @@ impl Discord for FakeDiscord {
                     .collect()
             })
             .into())
+    }
+
+    async fn create_message(&self, channel: u64, message: NewMessage) -> Result<u64, RestError> {
+        let (answer, delay) = {
+            let mut rest = self.rest.lock().unwrap();
+            rest.messages.push((channel, message));
+            let answer = rest.message_script.pop_front().unwrap_or_else(|| {
+                rest.next_message += 1;
+                Ok(5_000 + rest.next_message)
+            });
+            (answer, rest.delay)
+        };
+        tokio::time::sleep(delay).await;
+        answer
+    }
+
+    async fn create_dm(&self, user: u64) -> Result<u64, RestError> {
+        let mut rest = self.rest.lock().unwrap();
+        rest.dms.push(user);
+        rest.dm_script
+            .pop_front()
+            .unwrap_or_else(|| Ok(dm_channel_of(user)))
     }
 
     async fn shutdown(&self) {

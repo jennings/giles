@@ -672,14 +672,22 @@ twilight Shard ── real ──GatewayEvent──▶ session ──Outgoing─
 ### The Seam as Built
 
 [The Client Seam](#the-client-seam) lists the six methods the finished plugin needs. The trait
-today has `next_event` and `shutdown` (the Gateway connection, issue #15) and `messages_after`
-(channel history for catch-up, issue #16). `create_message` and `create_dm` (issue #17) and
-`download` (issue #18) are added by the issue that calls them, together with their `real`
-implementations, their fake, and their tests: a method defined now would have no caller, and its
+today has `next_event` and `shutdown` (the Gateway connection, issue #15), `messages_after`
+(channel history for catch-up, issue #16), and `create_message` and `create_dm` (sends, issue #17).
+`download` (issue #18) is added by the issue that calls it, together with its `real`
+implementation, its fake, and its tests: a method defined now would have no caller, and its
 real implementation would be a stub that looks like it works. Ids are plain `u64`s (the sketch's
 `ChannelId`, `MessageId`, and `UserId` would only rename them). Deliberate differences from the
 sketch:
 
+- `create_message` takes a `NewMessage` that holds the text for now (files arrive with issue #18).
+  `allowed_mentions: { "parse": [] }` and the `SUPPRESS_EMBEDS` flag are part of the
+  contract of `create_message`, not fields of `NewMessage`: the real client puts them on every
+  message, and `tests/rest.rs` checks the JSON that goes out. Only the `id` is read from the
+  response of `create_message` and `create_dm`: the library's models are strict, and a message
+  Discord accepted must not turn into an error, and a duplicate on retry, because another field
+  changed. The library refusing the request itself (a text over its limit) is `Api { 400, 50035 }`
+  and a 413 is `TooLarge`.
 - `GatewayEvent` is `Ready { user_id }`, `Resumed`, `Message(DiscordMessage)`, and `Closed { code:
   Option<u16> }`. `Closed` has no `fatal` or `reconnecting` flag: whether a close
   code is final is the plugin's policy (`status::classify`, the table under [Status](#status)),
@@ -952,6 +960,12 @@ No test contacts Discord, and none needs a token or a network beyond loopback.
   and handed over oldest first, an id of 0 asked for as 1, API errors with status and code, a body
   that isn't JSON, a 401 (and nothing more sent after it), a 429 waited out with its rate limit
   headers, a message the library can't read, a server that isn't there, and a message's time.
+  Sending (issue #17): `create_message` and `create_dm` with the request (method, path,
+  `Authorization: Bot <token>`, a JSON body of exactly `content`, `allowed_mentions:
+  {"parse": []}`, and `flags: 4`; a DM body of `recipient_id` as a string), only the `id` read from
+  the answer, Discord's error codes and statuses mapped to `RestError` (including a 413 and a
+  non-JSON 502), a burst whose answers say the bucket is empty (the requests arrive in order,
+  spaced by the reset), and a 401 after which the client sends nothing, not even a DM request.
 - `tests/catch_up.rs`: the whole inbound path through `RealDiscord` with both servers: 150
   messages of history paged in two requests `after` the cursor and the last id of the first page,
   a live replay of the last of them and a newer live message, each delivered once in order, the

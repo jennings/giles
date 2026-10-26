@@ -23,7 +23,7 @@ use twilight_gateway::{
 };
 use twilight_http::Client as Http;
 
-use crate::client::{Discord, GatewayEvent, Page, RestError};
+use crate::client::{Discord, GatewayEvent, NewMessage, Page, RestError};
 use crate::config::Settings;
 
 mod message;
@@ -231,6 +231,14 @@ impl Discord for RealDiscord {
 
     async fn messages_after(&self, channel: u64, after: u64, limit: u8) -> Result<Page, RestError> {
         rest::messages_after(&self.http, channel, after, limit).await
+    }
+
+    async fn create_message(&self, channel: u64, message: NewMessage) -> Result<u64, RestError> {
+        rest::create_message(&self.http, channel, &message).await
+    }
+
+    async fn create_dm(&self, user: u64) -> Result<u64, RestError> {
+        rest::create_dm(&self.http, user).await
     }
 
     async fn shutdown(&self) {

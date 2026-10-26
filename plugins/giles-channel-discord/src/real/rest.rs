@@ -8,14 +8,17 @@
 use std::future::Future;
 use std::time::Duration;
 
+use serde::Deserialize;
 use twilight_http::Client;
 use twilight_http::api_error::ApiError;
 use twilight_http::error::{Error, ErrorType};
+use twilight_http::response::Response;
 use twilight_model::channel::Message;
+use twilight_model::channel::message::{AllowedMentions, MessageFlags};
 use twilight_model::id::Id;
 
 use super::message;
-use crate::client::{DiscordMessage, Page, RestError};
+use crate::client::{DiscordMessage, NewMessage, Page, RestError};
 
 /// How long one REST call may take, queueing behind a rate limit included.
 pub(super) const CALL_TIMEOUT: Duration = Duration::from_secs(60);
@@ -39,6 +42,8 @@ pub(super) fn rest_error(error: &Error) -> RestError {
         ErrorType::Response { error, status, .. } => {
             if status.get() == 401 {
                 RestError::Unauthorized
+            } else if status.get() == 413 {
+                RestError::TooLarge
             } else {
                 RestError::Api {
                     status: status.get(),
@@ -49,6 +54,12 @@ pub(super) fn rest_error(error: &Error) -> RestError {
                 }
             }
         }
+        // The library refused the request itself (a text over its limit): what Discord answers
+        // to an invalid form body.
+        ErrorType::Validation => RestError::Api {
+            status: 400,
+            code: Some(50_035),
+        },
         _ => RestError::Transport,
     };
     tracing::debug!("a Discord REST call failed: {mapped}");
@@ -118,6 +129,73 @@ fn parse_page(body: &[u8]) -> Result<Page, RestError> {
         received,
         last,
     })
+}
+
+/// The part of a created message or channel the plugin reads. Discord sends ids as strings.
+#[derive(Deserialize)]
+struct Created {
+    id: String,
+}
+
+/// `POST /channels/{channel}/messages`, with no mention allowed to ping and no embed.
+///
+/// Only the id is read from the response: the library's models are strict, and a message Discord
+/// accepted must not become an error (and a duplicate on retry) because another field changed.
+pub(super) async fn create_message(
+    http: &Client,
+    channel: u64,
+    message: &NewMessage,
+) -> Result<u64, RestError> {
+    let Some(channel) = Id::new_checked(channel) else {
+        return Err(RestError::Api {
+            status: 404,
+            code: Some(10003),
+        });
+    };
+    // No mention can ping: nothing to parse, no user or role listed, no reply to notify.
+    let mentions = AllowedMentions::default();
+    bounded(async {
+        let response = http
+            .create_message(channel)
+            .content(&message.content)
+            .allowed_mentions(Some(&mentions))
+            .flags(MessageFlags::SUPPRESS_EMBEDS)
+            .await
+            .map_err(|e| rest_error(&e))?;
+        created(response).await
+    })
+    .await
+}
+
+/// `POST /users/@me/channels`.
+pub(super) async fn create_dm(http: &Client, user: u64) -> Result<u64, RestError> {
+    let Some(user) = Id::new_checked(user) else {
+        return Err(RestError::Api {
+            status: 404,
+            code: Some(10013),
+        });
+    };
+    bounded(async {
+        let response = http
+            .create_private_channel(user)
+            .await
+            .map_err(|e| rest_error(&e))?;
+        created(response).await
+    })
+    .await
+}
+
+/// The id in a successful response.
+async fn created<T>(response: Response<T>) -> Result<u64, RestError> {
+    let body = response.bytes().await.map_err(|_| RestError::Transport)?;
+    serde_json::from_slice::<Created>(&body)
+        .ok()
+        .and_then(|created| created.id.parse().ok())
+        .ok_or_else(|| {
+            // Never the body: it is a message.
+            tracing::warn!("a Discord REST response had no usable id");
+            RestError::Transport
+        })
 }
 
 #[cfg(test)]

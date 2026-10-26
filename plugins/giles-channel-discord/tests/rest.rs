@@ -205,3 +205,218 @@ async fn a_message_has_the_time_its_json_says() {
     assert_eq!(page[0].author.id, 11_111_111_111_111_111);
     assert_eq!(page[0].content, "x");
 }
+
+// Sending: `create_message` and `create_dm`.
+
+const BOT_USER: u64 = 82_198_898_841_029_460;
+
+async fn post(client: &impl Discord, content: &str) -> Result<u64, RestError> {
+    tokio::time::timeout(
+        WAIT,
+        client.create_message(
+            CHANNEL,
+            giles_channel_discord::client::NewMessage {
+                content: content.to_owned(),
+            },
+        ),
+    )
+    .await
+    .expect("an answer in time")
+}
+
+fn body_of(request: &loopback::rest::Request) -> Value {
+    serde_json::from_slice(&request.body).expect("a JSON body")
+}
+
+#[tokio::test]
+async fn a_message_is_posted_with_no_mention_and_no_embed() {
+    // Only an id in the response: nothing else of the message model is needed.
+    let server =
+        RestServer::start(|_, _| Response::json(200, &json!({"id": "1234567890123456789"}))).await;
+    let client = rest_client(&server.host);
+    assert_eq!(
+        post(&client, "hello **world**").await,
+        Ok(1_234_567_890_123_456_789)
+    );
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request.method, "POST");
+    assert_eq!(
+        request.target,
+        format!("/api/v10/channels/{CHANNEL}/messages")
+    );
+    assert_eq!(
+        request.header("authorization"),
+        Some(format!("Bot {TOKEN}").as_str())
+    );
+    assert_eq!(request.header("content-type"), Some("application/json"));
+    // `parse: []` is "no mention pings", which is not the same as leaving the field out (Discord's
+    // default parses users, roles, and everyone). `flags: 4` is SUPPRESS_EMBEDS.
+    assert_eq!(
+        body_of(request),
+        json!({
+            "content": "hello **world**",
+            "allowed_mentions": {"parse": []},
+            "flags": 4,
+        })
+    );
+    // The token is the header's and nobody else's.
+    assert!(!String::from_utf8_lossy(&request.body).contains(TOKEN));
+}
+
+#[tokio::test]
+async fn a_dm_channel_is_created_for_a_user() {
+    let server = RestServer::start(|_, _| {
+        Response::json(
+            200,
+            &json!({"id": CHANNEL.to_string(), "type": 1, "recipients": []}),
+        )
+    })
+    .await;
+    let client = rest_client(&server.host);
+    assert_eq!(client.create_dm(BOT_USER).await, Ok(CHANNEL));
+    let request = &server.requests()[0];
+    assert_eq!(request.method, "POST");
+    assert_eq!(request.target, "/api/v10/users/@me/channels");
+    assert_eq!(
+        request.header("authorization"),
+        Some(format!("Bot {TOKEN}").as_str())
+    );
+    // Snowflakes are strings on the wire.
+    assert_eq!(
+        body_of(request),
+        json!({"recipient_id": BOT_USER.to_string()})
+    );
+}
+
+#[tokio::test]
+async fn an_id_that_cant_exist_is_not_sent() {
+    let server = RestServer::start(|_, _| Response::json(200, &json!({"id": "1"}))).await;
+    let client = rest_client(&server.host);
+    assert_eq!(
+        client
+            .create_message(
+                0,
+                giles_channel_discord::client::NewMessage {
+                    content: "x".into()
+                }
+            )
+            .await,
+        Err(RestError::Api {
+            status: 404,
+            code: Some(10_003)
+        })
+    );
+    assert_eq!(
+        client.create_dm(0).await,
+        Err(RestError::Api {
+            status: 404,
+            code: Some(10_013)
+        })
+    );
+    assert!(server.requests().is_empty());
+}
+
+#[tokio::test]
+async fn sending_errors_keep_their_status_and_code() {
+    let error = |status, code: u32, message: &str| {
+        Response::json(status, &json!({"code": code, "message": message}))
+    };
+    let server = RestServer::start(move |_, n| match n {
+        0 => error(403, 50_007, "Cannot send messages to this user"),
+        1 => error(404, 10_013, "Unknown User"),
+        2 => error(404, 10_003, "Unknown Channel"),
+        3 => Response::json(
+            400,
+            &json!({"code": 50_035, "message": "Invalid Form Body", "errors": {
+                "content": {"_errors": [{"code": "BASE_TYPE_MAX_LENGTH", "message": "x"}]}
+            }}),
+        ),
+        4 => error(413, 40_005, "Request entity too large"),
+        5 => error(500, 0, "Internal Server Error"),
+        // Cloudflare or a proxy: not Discord's JSON.
+        _ => Response {
+            status: 502,
+            headers: vec![],
+            body: "<html>Bad gateway</html>".into(),
+        },
+    })
+    .await;
+    let client = rest_client(&server.host);
+    let mut got = Vec::new();
+    for text in ["a", "b", "c", "d", "e", "f", "g"] {
+        got.push(post(&client, text).await.unwrap_err());
+    }
+    let api = |status, code| RestError::Api {
+        status,
+        code: Some(code),
+    };
+    assert_eq!(
+        got,
+        [
+            api(403, 50_007),
+            api(404, 10_013),
+            api(404, 10_003),
+            api(400, 50_035),
+            RestError::TooLarge,
+            api(500, 0),
+            RestError::Transport,
+        ]
+    );
+    // None of them locked the client: they are not 401s.
+    assert_eq!(server.requests().len(), 7);
+}
+
+#[tokio::test]
+async fn a_burst_waits_for_the_bucket_and_arrives_in_order() {
+    // Every answer says the bucket is empty for 0.3 s: the client holds the next request back.
+    let times = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = std::sync::Arc::clone(&times);
+    let server = RestServer::start(move |_, n| {
+        seen.lock().unwrap().push(tokio::time::Instant::now());
+        Response::json(200, &json!({"id": (n + 1).to_string()}))
+            .header("x-ratelimit-scope", "user")
+            .header("x-ratelimit-bucket", "abcd1234")
+            .header("x-ratelimit-limit", "5")
+            .header("x-ratelimit-remaining", "0")
+            .header("x-ratelimit-reset-after", "0.3")
+    })
+    .await;
+    let client = rest_client(&server.host);
+    for (i, text) in ["one", "two", "three"].into_iter().enumerate() {
+        assert_eq!(post(&client, text).await, Ok(i as u64 + 1));
+    }
+    let texts: Vec<_> = server
+        .requests()
+        .iter()
+        .map(|request| body_of(request)["content"].clone())
+        .collect();
+    assert_eq!(texts, [json!("one"), json!("two"), json!("three")]);
+    let times = times.lock().unwrap().clone();
+    for pair in times.windows(2) {
+        assert!(
+            pair[1] - pair[0] >= Duration::from_millis(250),
+            "{:?} between two sends of an empty bucket",
+            pair[1] - pair[0]
+        );
+    }
+}
+
+#[tokio::test]
+async fn after_a_401_a_send_asks_nothing_more_of_discord() {
+    let server = RestServer::start(|_, _| {
+        Response::json(401, &json!({"message": "401: Unauthorized", "code": 0}))
+    })
+    .await;
+    let client = rest_client(&server.host);
+    assert_eq!(post(&client, "a").await, Err(RestError::Unauthorized));
+    // The library remembers: Discord asks that an invalid token isn't tried again.
+    assert_eq!(post(&client, "b").await, Err(RestError::Unauthorized));
+    assert_eq!(
+        client.create_dm(BOT_USER).await,
+        Err(RestError::Unauthorized)
+    );
+    assert_eq!(server.requests().len(), 1);
+}
