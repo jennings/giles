@@ -22,9 +22,9 @@ only when the pin changes. Protobuf code generation uses the vendored `protoc` (
 [Cargo Workspace](workspace.md)); no system `protoc` is installed.
 
 It then copies the context and runs one `cargo build --release --locked` for the binaries the image
-ships: `giles`, `giles-channel-irc`, `giles-channel-email`, and `giles-channel-whatsapp`.
-`giles-channel-echo` is a test-only plugin and stays out. The list is the `bins` variable in that
-`RUN` step; a new first-party plugin is added there.
+ships: `giles`, `giles-channel-irc`, `giles-channel-email`, `giles-channel-whatsapp`, and
+`giles-channel-discord`. `giles-channel-echo` is a test-only plugin and stays out. The list is the
+`bins` variable in that `RUN` step; a new first-party plugin is added there.
 
 Three BuildKit cache mounts keep rebuilds incremental: the Cargo registry and git checkouts
 (`/usr/local/cargo/registry` and `/usr/local/cargo/git`) and `target/`. Each has a fixed `id` and
@@ -72,6 +72,14 @@ configured: the core launches a plugin only for a configured instance, so the sm
 configures none) never starts it, never opens a connection to WhatsApp, and only checks that the
 binary is there. A configured instance keeps its session in `/data/data/plugins/<instance>/`, on
 the volume, and needs outbound HTTPS only.
+
+The Discord plugin is the same: in the image, inert until an instance of component `discord` is
+configured, so the smoke test only checks that the binary is there and never connects to Discord. A
+configured instance keeps its catch-up state (`discord-state.json`) in
+`/data/data/plugins/<instance>/` and needs outbound TCP 443 only (REST, the Gateway, and the CDN).
+Its dependency tree has no new licence and no git dependency: everything in it is MIT, Apache-2.0,
+ISC, BSD-3-Clause, or CDLA-Permissive-2.0 ([Licence Check](discord.md#licence-check)), so the
+image's license label, `/usr/share/doc/giles/`, and the build's network needs are unchanged by it.
 
 `EXPOSE 8080` documents the web port; `giles.toml` must still set `http_listen = "0.0.0.0:8080"`,
 since the default listens on loopback only. The entrypoint is `tini -- giles` with `serve` as the

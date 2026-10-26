@@ -22,7 +22,7 @@ RUN --mount=type=cache,id=giles-cargo-registry,target=/usr/local/cargo/registry,
     --mount=type=cache,id=giles-cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=giles-target,target=/src/target,sharing=locked \
     set -eu; \
-    bins="giles giles-channel-irc giles-channel-email giles-channel-whatsapp"; \
+    bins="giles giles-channel-irc giles-channel-email giles-channel-whatsapp giles-channel-discord"; \
     cargo build --release --locked $(for bin in $bins; do printf -- '-p %s ' "$bin"; done); \
     mkdir /out; \
     for bin in $bins; do cp "target/release/$bin" /out/; done

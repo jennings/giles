@@ -130,7 +130,7 @@ jobs:
           docker run --rm "$TEST_TAG" --version
           docker run --rm --entrypoint sh "$TEST_TAG" -c \
             'ls -l /usr/local/bin/giles-channel-irc /usr/local/bin/giles-channel-email \
-             /usr/local/bin/giles-channel-whatsapp'
+             /usr/local/bin/giles-channel-whatsapp /usr/local/bin/giles-channel-discord'
           docker run --rm --entrypoint sh "$TEST_TAG" -c \
             'ls -l /usr/share/doc/giles/LICENSE-MIT /usr/share/doc/giles/LICENSE-APACHE \
              /usr/share/doc/giles/LICENSE-AGPL-3.0 /usr/share/doc/giles/THIRD-PARTY'
