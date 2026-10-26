@@ -105,6 +105,22 @@ pub fn stopped() -> ChannelStatus {
     }
 }
 
+/// The status after several direct messages in a row with no text, file, or sticker. With the
+/// intents the plugin asks for, Discord sends the content of direct messages, so this is a sign
+/// of a changed Discord (or of messages whose content the plugin doesn't deliver, which look the
+/// same). The message says so rather than telling the operator to enable `Message Content` in the
+/// Developer Portal: the plugin doesn't request that privileged intent (asking for one that isn't
+/// enabled closes the connection with 4014), so the toggle alone would change nothing.
+pub fn missing_content() -> ChannelStatus {
+    ChannelStatus::Error {
+        message: "Discord is sending direct messages with no text, files, or stickers, so the \
+                  plugin can't read them; Discord may have changed what a bot receives without \
+                  the Message Content intent, please report it (polls and forwards look the \
+                  same)"
+            .to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

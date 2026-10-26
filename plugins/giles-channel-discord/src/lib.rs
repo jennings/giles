@@ -10,6 +10,7 @@ pub mod client;
 pub mod config;
 pub mod fake;
 pub mod inbound;
+pub mod ingest;
 pub mod real;
 pub mod session;
 pub mod snowflake;
