@@ -9,5 +9,6 @@ pub mod channel;
 pub mod client;
 pub mod config;
 pub mod fake;
+pub mod real;
 pub mod session;
 pub mod status;

@@ -15,6 +15,7 @@ use tokio_util::sync::{CancellationToken, DropGuard};
 
 use crate::client::Discord;
 use crate::config::Settings;
+use crate::real::RealDiscord;
 use crate::session::{self, Session, Timing};
 
 /// Events buffered for the SDK, which persists each before taking the next. When it's full, the
@@ -25,6 +26,18 @@ const EVENT_BUFFER: usize = 64;
 /// across Discord, so every instance reports the same identity for the same person (PLAN
 /// section 3.2).
 pub const NAMESPACE: &str = "discord";
+
+/// The plugin's `configure`: [`configure_with`] and the Gateway client on `twilight`.
+///
+/// # Errors
+///
+/// An invalid config, naming the key.
+pub async fn configure(ctx: Configure, slot: &SessionSlot) -> Result<DiscordChannel> {
+    configure_with(ctx, slot, Timing::default(), |settings| {
+        Arc::new(RealDiscord::new(settings))
+    })
+    .await
+}
 
 /// The plugin's `configure` with the client supplied by `connect`: validates the config, builds the
 /// client from the settings, and starts the session task in the background. Discord being

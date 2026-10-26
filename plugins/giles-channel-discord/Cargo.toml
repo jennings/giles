@@ -13,17 +13,23 @@ publish = false
 futures.workspace = true
 giles-plugin-sdk.workspace = true
 serde.workspace = true
-tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-util.workspace = true
 tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+# The Gateway client. Default features off: no `twilight-http` (the Gateway needs no REST call),
+# no `zstd` (a C build for compression DM traffic doesn't need), and the Mozilla roots compiled in
+# (`webpki-roots`) instead of the platform verifier, like every other TLS client in Giles.
+twilight-gateway = { version = "0.17.1", default-features = false, features = ["rustls-webpki-roots"] }
 
 [dev-dependencies]
 giles-proto.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "net", "test-util"] }
+tokio = { workspace = true, features = ["net", "test-util"] }
 tonic.workspace = true
-tracing-subscriber = { workspace = true, features = ["fmt"] }
+# A Gateway server for `tests/gateway.rs`.
+tokio-websockets = { version = "0.13.3", features = ["server"] }
 
 [lints]
 workspace = true
