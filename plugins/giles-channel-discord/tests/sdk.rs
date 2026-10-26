@@ -343,6 +343,37 @@ fn blob_files(served: &Served) -> usize {
     std::fs::read_dir(served.data_dir().join("giles-sdk/blobs")).map_or(0, Iterator::count)
 }
 
+/// A blob the core puts for a send, as the `BlobRef` the send names.
+async fn put_blob(
+    served: &Served,
+    media_type: &str,
+    name: Option<&str>,
+    chunks: Vec<Vec<u8>>,
+) -> giles_proto::types::v1::BlobRef {
+    use giles_proto::plugin::v1::{BlobChunk, PutBlobRequest, blob_chunk};
+
+    let chunk = |part| PutBlobRequest {
+        chunk: Some(BlobChunk { part: Some(part) }),
+    };
+    let header = chunk(blob_chunk::Part::Header(giles_proto::types::v1::BlobRef {
+        id: String::new(),
+        media_type: media_type.into(),
+        size: chunks.iter().map(|c| c.len() as u64).sum(),
+        name: name.map(str::to_owned),
+    }));
+    let requests = std::iter::once(header)
+        .chain(chunks.into_iter().map(|c| chunk(blob_chunk::Part::Data(c))))
+        .collect::<Vec<_>>();
+    served
+        .plugin()
+        .put_blob(futures::stream::iter(requests))
+        .await
+        .unwrap()
+        .into_inner()
+        .blob
+        .unwrap()
+}
+
 #[tokio::test]
 async fn a_downloaded_attachment_is_a_blob_the_core_fetches_and_it_goes_with_the_ack() {
     use giles_channel_discord::client::Attachment;
@@ -422,4 +453,84 @@ async fn an_attachment_that_cannot_be_downloaded_still_delivers_the_message_with
         "[attachment not received: gone.pdf is no longer available from Discord]"
     );
     assert_eq!(blob_files(&served), 0, "nothing half-written is left");
+}
+
+#[tokio::test]
+async fn a_send_reads_the_blobs_the_core_put_and_uploads_them() {
+    use giles_channel_discord::fake::dm_channel_of;
+    use giles_proto::channel::v1::{SendRequest, send_request::Target};
+
+    let served = configured().await;
+    let first = put_blob(
+        &served,
+        "application/pdf",
+        Some("notes.pdf"),
+        vec![b"%PDF".to_vec(), b"-1.7".to_vec()],
+    )
+    .await;
+    let second = put_blob(&served, "image/png", None, vec![b"png".to_vec()]).await;
+    let sent = served
+        .rpc()
+        .send(SendRequest {
+            target: Some(Target::Recipient(USER.to_string())),
+            markdown: "Here are the **files**".into(),
+            attachments: vec![first, second],
+            reply_to: None,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(sent.message_id, "5001");
+
+    let posted = served.client.posted();
+    assert_eq!(posted.len(), 1, "one message carries both files");
+    assert_eq!(posted[0].0, dm_channel_of(USER));
+    assert_eq!(posted[0].1.content, "Here are the **files**");
+    let files: Vec<_> = posted[0]
+        .1
+        .files
+        .iter()
+        .map(|f| (f.name.as_str(), f.media_type.as_str(), f.bytes.to_vec()))
+        .collect();
+    assert_eq!(
+        files,
+        [
+            ("notes.pdf", "application/pdf", b"%PDF-1.7".to_vec()),
+            ("attachment.png", "image/png", b"png".to_vec()),
+        ]
+    );
+    // The core's uploads are the Send's: gone once it has ended.
+    wait_until(|| {
+        std::fs::read_dir(served.data_dir().join("giles-sdk/outbound")).map_or(0, Iterator::count)
+            == 0
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_file_over_discords_limit_is_invalid_argument_and_posts_nothing() {
+    use giles_proto::channel::v1::{SendRequest, send_request::Target};
+
+    let served = configured().await;
+    // 21 MiB in 1 MiB chunks: over Discord's 20 MiB per file, under the default `max_blob`.
+    let big = put_blob(
+        &served,
+        "video/mp4",
+        Some("clip.mp4"),
+        vec![vec![0_u8; 1024 * 1024]; 21],
+    )
+    .await;
+    let status = served
+        .rpc()
+        .send(SendRequest {
+            target: Some(Target::ConversationId(CHANNEL.to_string())),
+            markdown: "a clip".into(),
+            attachments: vec![big],
+            reply_to: None,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::InvalidArgument, "{status:?}");
+    assert!(status.message().contains("clip.mp4"), "{status:?}");
+    assert!(served.client.posted().is_empty());
 }

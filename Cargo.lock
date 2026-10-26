@@ -1490,9 +1490,11 @@ name = "giles-channel-discord"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "fastrand",
  "futures",
  "giles-plugin-sdk",
  "giles-proto",
+ "http",
  "reqwest",
  "serde",
  "serde_json",

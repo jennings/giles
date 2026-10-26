@@ -1,5 +1,5 @@
 //! Outbound messages: resolving the target, rendering CommonMark as Discord markup, splitting it at
-//! Discord's limit, and posting the parts in order.
+//! Discord's limit, attaching files, and posting the messages in order.
 //!
 //! - A `Conversation` target is a DM channel id and is posted to as it is. A `Recipient` target is
 //!   an identity's user id (the core hands over the part after `discord:`): the plugin finds the DM
@@ -7,7 +7,12 @@
 //!   with `POST /users/@me/channels` and records it there, so a restart remembers it and the
 //!   catch-up of [`ingest`](crate::ingest) covers channels first made for a send.
 //! - The text is the SDK's Discord renderer's, in parts of at most [`DISCORD_MAX_CHARS`]. Each part
-//!   is one message, sent after the one before it has been accepted.
+//!   is one message, sent after the one before it has been accepted. Files are uploaded with the
+//!   message API's multipart form, from the blob store, at most [`FILES_PER_MESSAGE`] and
+//!   [`REQUEST_LIMIT`] bytes to a message: text that fits one message is the body of the first
+//!   message of files, longer text goes first, and files beyond a message's share go in follow-up
+//!   messages (`plan`). A file over [`FILE_LIMIT`] or `max_blob` makes the whole send
+//!   `InvalidRequest` before anything is posted.
 //! - No part can ping anyone or unfurl a link: the renderer defuses mentions, and the client sets
 //!   `allowed_mentions: {"parse": []}` and `SUPPRESS_EMBEDS` on every message
 //!   ([`Discord::create_message`]). `reply_to` is ignored: in a DM a reply link adds clutter.
@@ -32,21 +37,29 @@
 //!
 //! Every REST call is bounded by the client: `twilight-http` queues behind the rate limiter for as
 //! long as Discord says and puts a request that got a 429 back through it with no limit on how
-//! often, so `RealDiscord` gives up after 60 seconds with [`RestError::RateLimited`], which is
-//! `Unavailable` here. The outbox gives a whole send 60 seconds too, so for a proactive send it is
-//! the outbox that gives up first; a send dropped there is as safe as one that failed.
+//! often, so `RealDiscord` gives up after 60 seconds (5 minutes for a message with files, which
+//! takes its time to send) with [`RestError::TimedOut`], which is `Unavailable` here. The
+//! outbox gives a whole send 60 seconds, so for a proactive send it is the outbox that gives up
+//! first; a send dropped there is as safe as one that failed. (A proactive upload that can't
+//! be sent within the outbox's 60 seconds on the owner's line is cut off, and retried, every
+//! time until its row expires.)
 
 use std::sync::{Arc, Mutex, PoisonError};
 
+use bytes::Bytes;
 use giles_plugin_sdk::giles_types::{Error, MessageId, OutboundMessage, Result, SendTarget};
 use giles_plugin_sdk::render::{self, DISCORD_MAX_CHARS};
 
-use crate::client::{Discord, NewMessage, RestError};
+use crate::client::{Discord, NewFile, NewMessage, RestError};
+use crate::media::{self, MediaStore};
 use crate::state::StateFile;
 use crate::token::TokenState;
 
+mod plan;
 mod unfinished;
 
+use plan::Post;
+pub use plan::{FILE_LIMIT, FILES_PER_MESSAGE, REQUEST_LIMIT};
 use unfinished::{Key, Unfinished};
 
 /// The identity namespace, which the core strips before it hands over a recipient. A recipient
@@ -78,10 +91,14 @@ pub struct Outbound {
     token: Arc<TokenState>,
     /// Where the DM channels are recorded (user to channel), shared with the inbound side.
     state: StateFile,
+    /// Where the core put the files of a send.
+    media: Arc<dyn MediaStore>,
+    /// `max_blob`: no file over it is sent, whatever Discord would take.
+    max_blob: u64,
     /// What the sends that haven't finished got through, so a retry carries on after it.
     unfinished: Mutex<Unfinished>,
-    /// Held for the whole of a send, so the parts of two messages never interleave. A part that
-    /// waits behind a rate limit would otherwise let another message's parts overtake it.
+    /// Held for the whole of a send, so the messages of two sends never interleave. A message that
+    /// waits behind a rate limit would otherwise let another send's messages overtake it.
     sending: tokio::sync::Mutex<()>,
 }
 
@@ -147,13 +164,21 @@ impl Verdict {
 }
 
 impl Outbound {
-    /// A sender that calls `client`, finds DM channels in `state`, and stops when `token` is
-    /// rejected.
-    pub fn new(client: Arc<dyn Discord>, token: Arc<TokenState>, state: StateFile) -> Self {
+    /// A sender that calls `client`, finds DM channels in `state`, reads the files of a send from
+    /// `media`, takes none over `max_blob` bytes, and stops when `token` is rejected.
+    pub fn new(
+        client: Arc<dyn Discord>,
+        token: Arc<TokenState>,
+        state: StateFile,
+        media: Arc<dyn MediaStore>,
+        max_blob: u64,
+    ) -> Self {
         Self {
             client,
             token,
             state,
+            media,
+            max_blob,
             unfinished: Mutex::default(),
             sending: tokio::sync::Mutex::new(()),
         }
@@ -163,13 +188,14 @@ impl Outbound {
     ///
     /// # Errors
     ///
-    /// - [`Error::InvalidRequest`]: a target that isn't a Discord id, nothing to send,
-    ///   attachments (not supported yet), or Discord refused the text (too large, empty, invalid).
+    /// - [`Error::InvalidRequest`]: a target that isn't a Discord id, nothing to send, an
+    ///   attachment over [`FILE_LIMIT`] or `max_blob`, or Discord refused the message (too
+    ///   large, empty, invalid).
     /// - [`Error::NotFound`]: Discord has no such channel.
     /// - [`Error::Unavailable`]: the user can't be messaged (DMs closed, no shared server, unknown,
     ///   too many DMs opened), the token is rejected, Discord is rate limiting or failing, or it
-    ///   didn't answer in time. The message says how many parts had gone out; a retry carries on
-    ///   after them.
+    ///   didn't answer in time. The message says how many messages had gone out; a retry carries
+    ///   on after them.
     pub async fn send(&self, msg: OutboundMessage) -> Result<MessageId> {
         let OutboundMessage {
             target,
@@ -177,16 +203,15 @@ impl Outbound {
             attachments,
             reply_to: _,
         } = msg;
-        if !attachments.is_empty() {
-            return Err(Error::InvalidRequest(
-                "this build of the Discord plugin can't send attachments yet".to_owned(),
-            ));
-        }
         let destination = parse_target(&target)?;
         let parts = render::discord(&markdown, DISCORD_MAX_CHARS);
-        if parts.is_empty() {
+        if parts.is_empty() && attachments.is_empty() {
             return Err(Error::InvalidRequest("nothing to send".to_owned()));
         }
+        // Before anything is sent: a file that can't go makes the whole send invalid, so no
+        // part of it is posted alone.
+        plan::check(&attachments, self.max_blob)?;
+        let posts = plan::plan(parts, attachments);
 
         let _sending = self.sending.lock().await;
         // Checked inside the lock: an earlier send may have found the token rejected while this
@@ -196,8 +221,8 @@ impl Outbound {
         }
         // Only a send to a user is retried (by the outbox), so only it has progress to keep.
         let key =
-            matches!(destination, Destination::User(_)).then(|| Key::new(destination, &parts));
-        let total = parts.len();
+            matches!(destination, Destination::User(_)).then(|| Key::new(destination, &posts));
+        let total = posts.len();
         let done = key.as_ref().map_or(0, |key| self.unfinished().resume(key));
         if done > 0 {
             tracing::info!(done, total, "carrying on a send that was cut off");
@@ -207,8 +232,8 @@ impl Outbound {
             Err(verdict) => return Err(self.fail(key.as_ref(), verdict, done, total)),
         };
         let mut last = 0;
-        for (index, part) in parts.into_iter().enumerate().skip(done) {
-            match self.post(&mut at, part).await {
+        for (index, post) in posts.iter().enumerate().skip(done) {
+            match self.post(&mut at, post).await {
                 Ok(id) => {
                     last = id;
                     // Right away, with no await in between: a send dropped at its timeout keeps
@@ -269,10 +294,11 @@ impl Outbound {
         })
     }
 
-    /// Posts one part to `at` and returns the new message's id. A cached channel that Discord
-    /// doesn't know any more is forgotten and opened again, once.
-    async fn post(&self, at: &mut Resolved, content: String) -> std::result::Result<u64, Verdict> {
-        let mut message = NewMessage { content };
+    /// Posts `post` to `at`, reading its files from the blob store first, and returns the new
+    /// message's id. A cached channel that Discord doesn't know any more is forgotten and opened
+    /// again, once.
+    async fn post(&self, at: &mut Resolved, post: &Post) -> std::result::Result<u64, Verdict> {
+        let mut message = self.load(post).await?;
         loop {
             // Kept only while the channel could still turn out to be a stale record.
             let spare = at.cached_for.map(|_| message.clone());
@@ -293,6 +319,41 @@ impl Outbound {
                 Err(failure) => return Err(self.verdict(failure)),
             }
         }
+    }
+
+    /// `post` as a message for the client, its files read from the blob store (and checked
+    /// against the limit again by the bytes that came out, not only by the size the core
+    /// declared).
+    async fn load(&self, post: &Post) -> std::result::Result<NewMessage, Verdict> {
+        let limit = plan::file_limit(self.max_blob);
+        let mut files = Vec::with_capacity(post.files.len());
+        for media in &post.files {
+            let bytes = self.media.read(media).await.map_err(|error| {
+                Verdict::new(
+                    match error {
+                        // The core uploaded it for this very send: it isn't coming back.
+                        Error::NotFound(_) => Kind::Invalid,
+                        _ => Kind::Unavailable,
+                    },
+                    "an attachment of the message couldn't be read from the blob store",
+                )
+            })?;
+            if bytes.len() as u64 > limit {
+                return Err(Verdict::new(
+                    Kind::Invalid,
+                    format!("an attachment is over the limit of {limit} bytes"),
+                ));
+            }
+            files.push(NewFile {
+                name: media::upload_name(media.name.as_deref(), &media.media_type),
+                media_type: media::safe_media_type(&media.media_type),
+                bytes: Bytes::from(bytes),
+            });
+        }
+        Ok(NewMessage {
+            content: post.content.clone(),
+            files,
+        })
     }
 
     /// What `failure` means for the caller. A 401 also rejects the token for good: REST stops, and
@@ -332,9 +393,9 @@ impl Outbound {
             | (_, Some(REQUEST_TOO_LARGE | FILE_TOO_LARGE | EMPTY_MESSAGE | INVALID_FORM_BODY)) => {
                 Verdict::new(Kind::Invalid, error.to_string())
             }
-            (RestError::RateLimited, _) => Verdict::new(
+            (RestError::TimedOut, _) => Verdict::new(
                 Kind::Unavailable,
-                "Discord is rate limiting the bot, or didn't answer within 60 seconds",
+                "Discord didn't answer in time (a slow connection, or a rate limit that doesn't clear)",
             ),
             // A server error, no answer, and any error code the plugin doesn't know: the outbox
             // retries until the message expires, which costs a request now and then.

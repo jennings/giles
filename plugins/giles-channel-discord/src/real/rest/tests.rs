@@ -69,15 +69,32 @@ fn a_body_that_is_not_a_list_is_a_transport_error() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_call_held_back_for_a_minute_is_rate_limited() {
+async fn a_call_held_back_for_a_minute_times_out() {
     let started = tokio::time::Instant::now();
     let held = super::bounded(std::future::pending::<Result<(), RestError>>()).await;
-    assert_eq!(held, Err(RestError::RateLimited));
+    assert_eq!(held, Err(RestError::TimedOut));
     assert_eq!(started.elapsed(), super::CALL_TIMEOUT);
     // A call that finishes in time is left alone, error or not.
     assert_eq!(super::bounded(async { Ok(1) }).await, Ok(1));
     assert_eq!(
         super::bounded(async { Err::<(), _>(RestError::Unauthorized) }).await,
         Err(RestError::Unauthorized)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_upload_may_take_longer_and_times_out_all_the_same() {
+    let started = tokio::time::Instant::now();
+    let held = super::bounded_for(
+        super::UPLOAD_TIMEOUT,
+        std::future::pending::<Result<(), RestError>>(),
+    )
+    .await;
+    assert_eq!(held, Err(RestError::TimedOut));
+    assert_eq!(started.elapsed(), super::UPLOAD_TIMEOUT);
+    assert!(super::UPLOAD_TIMEOUT > super::CALL_TIMEOUT);
+    assert_eq!(
+        RestError::TimedOut.to_string(),
+        "the request to Discord timed out"
     );
 }

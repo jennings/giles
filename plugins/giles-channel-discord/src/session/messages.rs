@@ -501,7 +501,7 @@ async fn a_failed_page_is_tried_again_with_growing_delays_and_live_channels_flow
     let dir = tempfile::tempdir().unwrap();
     let client = Arc::new(FakeDiscord::default());
     client.add_history(dm(4000, "missed"));
-    client.fail_history(RestError::RateLimited);
+    client.fail_history(RestError::TimedOut);
     client.fail_history(RestError::Transport);
     client.fail_history(RestError::Api {
         status: 502,

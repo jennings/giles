@@ -169,8 +169,10 @@ pub enum RestError {
         /// Discord's error code.
         code: Option<u32>,
     },
-    /// A 429 that the client's bounded wait didn't outlast.
-    RateLimited,
+    /// A call that outlasted the client's bound (60 seconds, 5 minutes for an upload). That is a
+    /// slow answer or a rate limit that doesn't clear: the client can't tell which, and says only
+    /// that it timed out.
+    TimedOut,
     /// A file over a limit.
     TooLarge,
     /// A URL the client won't download from: not `https`, not a Discord CDN host, or with
@@ -190,7 +192,7 @@ impl fmt::Display for RestError {
                 code: Some(code),
             } => write!(f, "Discord answered {status} (error code {code})"),
             Self::Api { status, code: None } => write!(f, "Discord answered {status}"),
-            Self::RateLimited => f.write_str("rate limited by Discord"),
+            Self::TimedOut => f.write_str("the request to Discord timed out"),
             Self::TooLarge => f.write_str("the file is too large"),
             Self::BadUrl => f.write_str("not a URL the plugin downloads from"),
             Self::Transport => f.write_str("the request to Discord failed"),
@@ -200,6 +202,18 @@ impl fmt::Display for RestError {
 
 impl std::error::Error for RestError {}
 
+/// A file for a [`NewMessage`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewFile {
+    /// The file name Discord shows: safe to put in a header (no quotes, slashes, or control
+    /// characters), never empty.
+    pub name: String,
+    /// The media type, `type/subtype`, sent as the part's `Content-Type`.
+    pub media_type: String,
+    /// The content. Cheap to clone, so that a send can be tried again without copying it.
+    pub bytes: Bytes,
+}
+
 /// A message for [`Discord::create_message`].
 ///
 /// Whatever else a message carries, the client never lets it ping anyone (`allowed_mentions`
@@ -207,8 +221,13 @@ impl std::error::Error for RestError {}
 /// part of the contract of `create_message`, not choices of the caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewMessage {
-    /// The text, at most 2000 characters (the renderer's parts are).
+    /// The text, at most 2000 characters (the renderer's parts are). May be empty when there are
+    /// files.
     pub content: String,
+    /// The files attached to it, at most [`crate::outbound::FILES_PER_MESSAGE`], each at most
+    /// [`crate::outbound::FILE_LIMIT`] bytes and together at most
+    /// [`crate::outbound::REQUEST_LIMIT`].
+    pub files: Vec<NewFile>,
 }
 
 /// A Discord Gateway connection and the REST calls the plugin makes.
@@ -230,8 +249,7 @@ pub trait Discord: Send + Sync + 'static {
     /// `POST /channels/{channel}/messages`: posts `message` to the channel, with no mention
     /// allowed to ping and no embed (see [`NewMessage`]), and returns the new message's id.
     ///
-    /// A call outlasting the client's bound (a rate limit that doesn't clear) is
-    /// [`RestError::RateLimited`].
+    /// A call outlasting the client's bound is [`RestError::TimedOut`].
     async fn create_message(&self, channel: u64, message: NewMessage) -> Result<u64, RestError>;
 
     /// `POST /users/@me/channels`: the id of the DM channel with `user`. Discord returns the

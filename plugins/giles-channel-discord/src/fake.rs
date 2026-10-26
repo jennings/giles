@@ -309,6 +309,12 @@ impl FakeDiscord {
         self.rest.lock().unwrap().dms.clone()
     }
 
+    /// Every `create_message` call so far, in order, failed ones included: the channel and the
+    /// whole message, files included.
+    pub fn posted(&self) -> Vec<(u64, NewMessage)> {
+        self.rest.lock().unwrap().messages.clone()
+    }
+
     /// Makes `url` answer `served` when it is downloaded. Any other URL is a 404.
     pub fn serve(&self, url: &str, served: Served) {
         self.rest
@@ -336,6 +342,15 @@ pub struct FakeMedia {
 }
 
 impl FakeMedia {
+    /// Stores `bytes` as if the core had put them for a send, and returns their reference.
+    pub fn stage(&self, bytes: &[u8], media_type: &str, name: Option<&str>) -> MediaRef {
+        self.store(
+            bytes.to_vec(),
+            media_type.to_owned(),
+            name.map(str::to_owned),
+        )
+    }
+
     /// The bytes of the blob `id`.
     pub fn get(&self, id: &MediaId) -> Option<Vec<u8>> {
         self.blobs
@@ -404,6 +419,11 @@ impl MediaStore for FakeMedia {
             bytes.extend_from_slice(&buf[..len]);
         }
         Ok(self.store(bytes, media_type, name))
+    }
+
+    async fn read(&self, media: &MediaRef) -> Result<Vec<u8>> {
+        self.get(&media.id)
+            .ok_or_else(|| Error::NotFound(format!("blob {}", media.id)))
     }
 }
 

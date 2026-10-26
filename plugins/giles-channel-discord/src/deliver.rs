@@ -310,7 +310,7 @@ mod tests {
             api(429),
             RestError::Transport,
             RestError::BadUrl,
-            RestError::RateLimited,
+            RestError::TimedOut,
         ] {
             assert_eq!(Failure::from(other), Failure::Download);
         }

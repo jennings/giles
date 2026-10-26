@@ -8,30 +8,47 @@
 use std::future::Future;
 use std::time::Duration;
 
+use http::HeaderValue;
+use http::header::CONTENT_TYPE;
 use serde::Deserialize;
 use twilight_http::Client;
 use twilight_http::api_error::ApiError;
 use twilight_http::error::{Error, ErrorType};
+use twilight_http::request::Request;
 use twilight_http::response::Response;
+use twilight_http::routing::Route;
 use twilight_model::channel::Message;
 use twilight_model::channel::message::{AllowedMentions, MessageFlags};
 use twilight_model::id::Id;
 
-use super::message;
+use super::{message, multipart};
 use crate::client::{DiscordMessage, NewMessage, Page, RestError};
 
 /// How long one REST call may take, queueing behind a rate limit included.
 pub(super) const CALL_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Runs `call` for at most [`CALL_TIMEOUT`]. A call that outlasts it was held back by a rate limit
-/// (the library has its own, shorter timeout for a request in flight), so it is
-/// [`RestError::RateLimited`].
+/// How long a call with a file upload may take: the time to send up to 25 MiB on a slow line, on
+/// top of whatever a rate limit holds it back.
+pub(super) const UPLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Runs `call` for at most [`CALL_TIMEOUT`]. A call that outlasts it is [`RestError::TimedOut`]:
+/// the library queues behind a rate limit and resends after a 429 with no limit of its own, so a
+/// call can be held back that long, and so can a slow answer; which of the two it was is not
+/// known, and the error doesn't claim to know.
 pub(super) async fn bounded<T>(
     call: impl Future<Output = Result<T, RestError>>,
 ) -> Result<T, RestError> {
-    tokio::time::timeout(CALL_TIMEOUT, call)
+    bounded_for(CALL_TIMEOUT, call).await
+}
+
+/// Like [`bounded`], for `limit`.
+pub(super) async fn bounded_for<T>(
+    limit: Duration,
+    call: impl Future<Output = Result<T, RestError>>,
+) -> Result<T, RestError> {
+    tokio::time::timeout(limit, call)
         .await
-        .unwrap_or(Err(RestError::RateLimited))
+        .unwrap_or(Err(RestError::TimedOut))
 }
 
 /// The plugin's view of a library error. The error's own text is not logged: some variants carry
@@ -139,10 +156,14 @@ struct Created {
 
 /// `POST /channels/{channel}/messages`, with no mention allowed to ping and no embed.
 ///
+/// A message with files is `multipart/form-data` ([`multipart`]), one without is a JSON body. The
+/// protections are the same on both: they are part of the request, not of what the caller sends.
+///
 /// Only the id is read from the response: the library's models are strict, and a message Discord
 /// accepted must not become an error (and a duplicate on retry) because another field changed.
 pub(super) async fn create_message(
     http: &Client,
+    uploads: &Client,
     channel: u64,
     message: &NewMessage,
 ) -> Result<u64, RestError> {
@@ -152,6 +173,9 @@ pub(super) async fn create_message(
             code: Some(10003),
         });
     };
+    if !message.files.is_empty() {
+        return upload(uploads, channel.get(), message).await;
+    }
     // No mention can ping: nothing to parse, no user or role listed, no reply to notify.
     let mentions = AllowedMentions::default();
     bounded(async {
@@ -160,6 +184,29 @@ pub(super) async fn create_message(
             .content(&message.content)
             .allowed_mentions(Some(&mentions))
             .flags(MessageFlags::SUPPRESS_EMBEDS)
+            .await
+            .map_err(|e| rest_error(&e))?;
+        created(response).await
+    })
+    .await
+}
+
+/// `POST /channels/{channel}/messages` with files, as a raw request on the library's client:
+/// its authorization, rate limiting, and errors, with a body of [`multipart::build`].
+async fn upload(http: &Client, channel: u64, message: &NewMessage) -> Result<u64, RestError> {
+    let multipart = multipart::build(message);
+    let content_type =
+        HeaderValue::from_str(&multipart.content_type).map_err(|_| RestError::Transport)?;
+    let request = Request::builder(&Route::CreateMessage {
+        channel_id: channel,
+    })
+    .body(multipart.body)
+    .headers(std::iter::once((CONTENT_TYPE, content_type)))
+    .build()
+    .map_err(|e| rest_error(&e))?;
+    bounded_for(UPLOAD_TIMEOUT, async {
+        let response = http
+            .request::<Message>(request)
             .await
             .map_err(|e| rest_error(&e))?;
         created(response).await

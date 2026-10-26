@@ -24,9 +24,14 @@ const USER: u64 = 82_198_898_841_029_460;
 const DM: u64 = dm_channel_of(USER);
 /// A channel id for replies into a conversation.
 const CHANNEL: u64 = 319_674_150_115_610_528;
+/// The default `max_blob`.
+const MAX_BLOB: u64 = 50 * 1024 * 1024;
+
+mod attachments;
 
 struct Harness {
     client: Arc<FakeDiscord>,
+    media: Arc<FakeMedia>,
     channel: DiscordChannel,
     events: BoxStream<'static, Result<ChannelEvent>>,
     state: StateFile,
@@ -43,7 +48,20 @@ impl Harness {
 
     /// A channel over the data directory `dir`, which may hold the state of an earlier one.
     async fn start_in(dir: &Path) -> Self {
+        Self::start_in_limited(dir, MAX_BLOB).await
+    }
+
+    /// A channel whose `max_blob` is `max_blob`.
+    async fn start_limited(max_blob: u64) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let mut harness = Self::start_in_limited(dir.path(), max_blob).await;
+        harness._dir = Some(dir);
+        harness
+    }
+
+    async fn start_in_limited(dir: &Path, max_blob: u64) -> Self {
         let client = Arc::new(FakeDiscord::default());
+        let media = Arc::new(FakeMedia::default());
         let state = StateFile::open(dir);
         let channel = DiscordChannel::start(
             client.clone(),
@@ -52,13 +70,14 @@ impl Harness {
                 state: state.clone(),
                 catch_up_max_age: HOUR * 24,
                 clock: Clock::system(),
-                media: Arc::new(FakeMedia::default()),
-                max_blob: 50 * 1024 * 1024,
+                media: media.clone(),
+                max_blob,
             },
         );
         let events = channel.events().await.unwrap();
         Self {
             client,
+            media,
             channel,
             events,
             state,
@@ -196,29 +215,12 @@ async fn a_mention_in_the_text_is_defused() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn nothing_to_send_and_attachments_are_refused_before_anything_is_sent() {
+async fn nothing_to_send_is_refused_before_anything_is_sent() {
     let h = Harness::start().await;
     for empty in ["", "  \n\t\n "] {
         let error = h.reply(empty).await.unwrap_err();
         assert!(matches!(error, Error::InvalidRequest(_)), "{error:?}");
     }
-    let media = giles_plugin_sdk::giles_types::MediaRef {
-        id: giles_plugin_sdk::giles_types::MediaId::from_digest([7; 32]),
-        media_type: "image/png".into(),
-        name: None,
-        size: 1,
-    };
-    let error = h
-        .channel
-        .send(OutboundMessage {
-            target: conversation(CHANNEL),
-            markdown: "see".into(),
-            attachments: vec![media],
-            reply_to: None,
-        })
-        .await
-        .unwrap_err();
-    assert!(matches!(error, Error::InvalidRequest(_)), "{error:?}");
     assert!(h.client.messages().is_empty() && h.client.dms().is_empty());
 }
 
@@ -324,7 +326,7 @@ async fn each_discord_error_has_its_meaning() {
         (api(400, 50_006), Invalid),
         (api(400, 50_035), Invalid),
         (RestError::TooLarge, Invalid),
-        (RestError::RateLimited, Unavailable),
+        (RestError::TimedOut, Unavailable),
         (RestError::Transport, Unavailable),
         (
             RestError::Api {
@@ -634,13 +636,20 @@ async fn a_token_a_history_request_found_rejected_stops_sends_too() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_call_held_back_by_rate_limits_is_unavailable_and_says_why() {
+async fn a_call_that_timed_out_is_unavailable_and_says_only_that() {
     let h = Harness::start().await;
     // What `RealDiscord` answers when its 60 seconds run out.
-    h.client.script_messages([Err(RestError::RateLimited)]);
+    h.client.script_messages([Err(RestError::TimedOut)]);
     let error = h.reply("hi").await.unwrap_err();
     assert!(error.is_retryable(), "{error:?}");
-    assert!(unavailable(&error).contains("60 seconds"), "{error:?}");
+    assert!(
+        unavailable(&error).contains("didn't answer in time"),
+        "{error:?}"
+    );
+    assert!(
+        !unavailable(&error).contains("rate limiting the bot"),
+        "{error:?}"
+    );
 }
 
 #[tokio::test(start_paused = true)]

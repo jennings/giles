@@ -357,6 +357,7 @@ async fn a_send_never_logs_its_text_or_the_token() {
                 1,
                 NewMessage {
                     content: TEXT.to_owned(),
+                    files: Vec::new(),
                 },
             )
             .await;

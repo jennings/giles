@@ -217,6 +217,7 @@ async fn post(client: &impl Discord, content: &str) -> Result<u64, RestError> {
             CHANNEL,
             giles_channel_discord::client::NewMessage {
                 content: content.to_owned(),
+                files: Vec::new(),
             },
         ),
     )
@@ -300,7 +301,8 @@ async fn an_id_that_cant_exist_is_not_sent() {
             .create_message(
                 0,
                 giles_channel_discord::client::NewMessage {
-                    content: "x".into()
+                    content: "x".into(),
+                    files: Vec::new(),
                 }
             )
             .await,

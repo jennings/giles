@@ -1,5 +1,5 @@
 //! What the sends that haven't finished got through, so a retry carries on instead of posting the
-//! parts that are already in the DM again.
+//! messages that are already in the DM again.
 //!
 //! Discord has no idempotency key for a message, and the outbox retries a whole send until it
 //! succeeds or its row expires (24 hours). Without this, a part that fails every time (Discord's
@@ -7,17 +7,18 @@
 //! 2 again, over and over, and a reply that takes longer than the outbox's 60 seconds would be cut
 //! at the same part every time and repeat its start.
 //!
-//! A send is identified by where it goes and a hash of the rendered parts; the entry counts the
-//! parts Discord accepted, is updated after each one (so a send the outbox drops at its timeout
-//! leaves its progress too), and is removed when the last part is accepted, so a genuine second
-//! reply with the same text is sent in full. Only unfinished sends are remembered, at most
-//! [`MAX_UNFINISHED`] of them, each for [`UNFINISHED_TTL`] after its last progress. In memory: a
-//! restart forgets them, and the retry then posts the parts again once. `Outbound` keeps only
-//! sends to a user: nothing retries a reply into a conversation, so an entry for one would only
-//! hold a slot for a day.
+//! A send is identified by where it goes and a hash of the messages it posts (each one's text and
+//! the files it carries, by their content ids, media types, and names); the entry counts the
+//! messages Discord accepted (a message with files counts like any other: one request, one
+//! part), is updated after each one (so a send the outbox drops at its timeout leaves its progress
+//! too), and is removed when the last one is accepted, so a genuine second reply with the same
+//! text is sent in full. Only unfinished sends are remembered, at most [`MAX_UNFINISHED`] of them,
+//! each for [`UNFINISHED_TTL`] after its last progress. In memory: a restart forgets them, and
+//! the retry then posts the messages again once. `Outbound` keeps only sends to a user: nothing
+//! retries a reply into a conversation, so an entry for one would only hold a slot for a day.
 
 use std::collections::HashMap;
-use std::hash::{DefaultHasher, Hash as _, Hasher as _};
+use std::hash::{DefaultHasher, Hash, Hasher as _};
 use std::time::Duration;
 
 use tokio::time::Instant;
@@ -35,13 +36,13 @@ pub const UNFINISHED_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Key {
     destination: Destination,
-    /// A hash of the rendered parts. 64 bits of `SipHash`: a collision would need two different
+    /// A hash of the posts. 64 bits of `SipHash`: a collision would need two different
     /// unfinished sends to one destination to hash alike.
     digest: u64,
 }
 
 impl Key {
-    pub fn new(destination: Destination, parts: &[String]) -> Self {
+    pub fn new(destination: Destination, parts: &[impl Hash]) -> Self {
         let mut hasher = DefaultHasher::new();
         parts.hash(&mut hasher);
         Self {

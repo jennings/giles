@@ -13,6 +13,8 @@ use tokio::io::AsyncRead;
 pub const UNKNOWN_TYPE: &str = "application/octet-stream";
 /// The longest name given to a blob or to an upload, in characters.
 const NAME_LIMIT: usize = 100;
+/// The name of an upload that has none (the extension of its media type is added when known).
+const DEFAULT_NAME: &str = "attachment";
 
 /// What an extension says about a media type. The first entry of a type is the extension an
 /// upload of that type gets when it has no name.
@@ -68,6 +70,9 @@ pub trait MediaStore: Send + Sync + 'static {
         media_type: String,
         name: Option<String>,
     ) -> Result<MediaRef>;
+
+    /// Reads an outbound attachment, which the core put for the `Send` that is running.
+    async fn read(&self, media: &MediaRef) -> Result<Vec<u8>>;
 }
 
 #[async_trait]
@@ -79,6 +84,10 @@ impl MediaStore for Blobs {
         name: Option<String>,
     ) -> Result<MediaRef> {
         Blobs::put_reader(self, reader, media_type, name).await
+    }
+
+    async fn read(&self, media: &MediaRef) -> Result<Vec<u8>> {
+        Blobs::read(self, media).await
     }
 }
 
@@ -111,6 +120,11 @@ pub fn media_type(content_type: Option<&str>, filename: &str) -> String {
                 .map(|(_, media_type)| (*media_type).to_owned())
         })
         .unwrap_or_else(|| UNKNOWN_TYPE.to_owned())
+}
+
+/// `media_type` as it is sent in a part's `Content-Type`: `type/subtype` or [`UNKNOWN_TYPE`].
+pub fn safe_media_type(media_type: &str) -> String {
+    base_type(media_type).unwrap_or_else(|| UNKNOWN_TYPE.to_owned())
 }
 
 /// `name` without control characters and with path separators and quotes replaced, cut to
@@ -149,6 +163,24 @@ pub fn blob_name(filename: &str) -> Option<String> {
     clean(filename)
 }
 
+/// The name an upload goes under: `name` cleaned, or `attachment` with the extension of
+/// `media_type` when it has no usable name.
+pub fn upload_name(name: Option<&str>, media_type: &str) -> String {
+    if let Some(name) = name.and_then(clean) {
+        return name;
+    }
+    let extension = base_type(media_type).and_then(|base| {
+        TYPES
+            .iter()
+            .find(|(_, known)| *known == base)
+            .map(|(extension, _)| *extension)
+    });
+    match extension {
+        Some(extension) => format!("{DEFAULT_NAME}.{extension}"),
+        None => DEFAULT_NAME.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,12 +217,13 @@ mod tests {
             "a/b/c",
             "",
         ] {
+            assert_eq!(safe_media_type(bad), UNKNOWN_TYPE, "{bad:?}");
             assert_eq!(media_type(Some(bad), "noext"), UNKNOWN_TYPE, "{bad:?}");
         }
-        assert_eq!(media_type(Some("image/svg+xml"), "x"), "image/svg+xml");
+        assert_eq!(safe_media_type("image/svg+xml"), "image/svg+xml");
         // Surrounding whitespace is trimmed, not passed on.
-        assert_eq!(media_type(Some(" image/png\n"), "x"), "image/png");
-        assert_eq!(media_type(Some("Audio/Ogg; codecs=opus"), "x"), "audio/ogg");
+        assert_eq!(safe_media_type(" image/png\n"), "image/png");
+        assert_eq!(safe_media_type("Audio/Ogg; codecs=opus"), "audio/ogg");
     }
 
     #[test]
@@ -226,5 +259,18 @@ mod tests {
         // Not an extension: too long to be one.
         let name = format!("{}.{}", "x".repeat(300), "y".repeat(50));
         assert_eq!(blob_name(&name).unwrap().chars().count(), NAME_LIMIT);
+    }
+
+    #[test]
+    fn an_upload_without_a_name_gets_one_from_its_media_type() {
+        assert_eq!(upload_name(None, "image/png"), "attachment.png");
+        assert_eq!(
+            upload_name(Some("   "), "application/pdf"),
+            "attachment.pdf"
+        );
+        assert_eq!(upload_name(None, "image/jpeg; q=1"), "attachment.jpg");
+        assert_eq!(upload_name(None, "x-unknown/thing"), "attachment");
+        assert_eq!(upload_name(None, "garbage\r\n"), "attachment");
+        assert_eq!(upload_name(Some("report.pdf"), "image/png"), "report.pdf");
     }
 }

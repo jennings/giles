@@ -573,7 +573,7 @@ fn a_failed_request_is_tried_again_after_a_delay_that_doubles_to_a_cap() {
     let mut delays = Vec::new();
     for error in [
         RestError::Transport,
-        RestError::RateLimited,
+        RestError::TimedOut,
         RestError::Api {
             status: 503,
             code: None,
@@ -615,7 +615,7 @@ fn a_failing_channel_does_not_hold_up_the_others() {
     let first = rig.fetch();
     assert_eq!(first.channel, CHANNEL);
     rig.ingest
-        .on_page(first, Err(RestError::RateLimited), rig.start);
+        .on_page(first, Err(RestError::TimedOut), rig.start);
     // The other channel is asked for while the first waits.
     let second = rig.fetch();
     assert_eq!(second.channel, OTHER_CHANNEL);

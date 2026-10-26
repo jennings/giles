@@ -28,6 +28,7 @@ use crate::config::Settings;
 
 mod cdn;
 mod message;
+mod multipart;
 mod rest;
 
 pub use cdn::{CdnPolicy, MAX_REDIRECTS};
@@ -54,6 +55,8 @@ const CLOSE_WAIT: Duration = Duration::from_millis(900);
 pub struct RealDiscord {
     state: Mutex<State>,
     http: Http,
+    /// The client of calls with files: a longer timeout, the same rate limiter.
+    uploads: Http,
     cdn: cdn::Cdn,
 }
 
@@ -103,9 +106,23 @@ impl RealDiscord {
         if let Some(url) = gateway_url {
             gateway = gateway.proxy_url(url.to_owned());
         }
-        let mut http = Http::builder().token(settings.token.expose().to_owned());
+        let token = settings.token.expose().to_owned();
+        let mut main = Http::builder().token(token.clone());
         if let Some(host) = rest_host {
-            http = http.proxy(host.to_owned(), true);
+            main = main.proxy(host.to_owned(), true);
+        }
+        let main = main.build();
+        // A second client for file uploads only, so the 5 minutes an upload may take
+        // (`rest::UPLOAD_TIMEOUT`) don't become the timeout of every call (the library's default,
+        // 10 seconds, stays the main client's). It shares the main client's rate limiter, so
+        // Discord's buckets and the global limit see one bot. It keeps its own memory of a 401
+        // (the library's lock-out is per client); the plugin's `TokenState` is what stops sends.
+        let mut uploads = Http::builder()
+            .token(token)
+            .timeout(rest::UPLOAD_TIMEOUT)
+            .ratelimiter(main.ratelimiter().cloned());
+        if let Some(host) = rest_host {
+            uploads = uploads.proxy(host.to_owned(), true);
         }
         Self {
             state: Mutex::new(State {
@@ -113,7 +130,8 @@ impl RealDiscord {
                 up: false,
                 ended: false,
             }),
-            http: http.build(),
+            http: main,
+            uploads: uploads.build(),
             cdn: cdn::Cdn::new(CdnPolicy::discord()),
         }
     }
@@ -247,7 +265,7 @@ impl Discord for RealDiscord {
     }
 
     async fn create_message(&self, channel: u64, message: NewMessage) -> Result<u64, RestError> {
-        rest::create_message(&self.http, channel, &message).await
+        rest::create_message(&self.http, &self.uploads, channel, &message).await
     }
 
     async fn create_dm(&self, user: u64) -> Result<u64, RestError> {

@@ -11,8 +11,12 @@ publish = false
 
 [dependencies]
 bytes.workspace = true
+# The boundary of a multipart upload (`twilight-http` uses it for its own).
+fastrand = "2"
 futures.workspace = true
 giles-plugin-sdk.workspace = true
+# The header types `twilight-http`'s request builder takes (the multipart `Content-Type`).
+http = "1"
 # Downloads from the Discord CDN: `twilight-http` is not a general HTTP client.
 reqwest.workspace = true
 serde.workspace = true

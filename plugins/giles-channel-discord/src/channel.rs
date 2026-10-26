@@ -147,9 +147,9 @@ pub struct Inbound {
     pub catch_up_max_age: Duration,
     /// The time, for the age limit.
     pub clock: Clock,
-    /// The SDK's blob store: inbound attachments are put in it.
+    /// The SDK's blob store: inbound attachments are put in it, outbound ones read from it.
     pub media: Arc<dyn MediaStore>,
-    /// The most bytes of one attachment downloaded (`max_blob`).
+    /// The most bytes of one attachment, in either direction (`max_blob`).
     pub max_blob: u64,
 }
 
@@ -184,6 +184,8 @@ impl DiscordChannel {
             Arc::clone(&client),
             Arc::clone(&token),
             inbound.state.clone(),
+            Arc::clone(&inbound.media),
+            inbound.max_blob,
         );
         tokio::spawn(deliver::run(
             Fetcher {
