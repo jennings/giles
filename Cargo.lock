@@ -1489,9 +1489,17 @@ dependencies = [
 name = "giles-channel-discord"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "giles-plugin-sdk",
+ "giles-proto",
  "serde",
  "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

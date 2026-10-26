@@ -5,6 +5,9 @@
 //! The crate is a library and a binary so that its integration tests can reach the channel and the
 //! fake Discord client; nothing here is an API for anyone else.
 
+pub mod channel;
 pub mod client;
 pub mod config;
+pub mod fake;
+pub mod session;
 pub mod status;

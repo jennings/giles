@@ -10,11 +10,20 @@ license.workspace = true
 publish = false
 
 [dependencies]
+futures.workspace = true
 giles-plugin-sdk.workspace = true
 serde.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tokio-util.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
+giles-proto.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "test-util"] }
+tonic.workspace = true
+tracing-subscriber = { workspace = true, features = ["fmt"] }
 
 [lints]
 workspace = true

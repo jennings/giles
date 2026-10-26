@@ -1,0 +1,186 @@
+//! The Discord channel: [`DiscordChannel`] implements the SDK's `Channel` on a session task.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures::stream::{self, BoxStream, StreamExt as _};
+use giles_plugin_sdk::giles_types::{
+    Channel, ChannelEvent, ChannelInfo, Error, EventId, MessageId, OutboundMessage, OutputMode,
+    Result,
+};
+use giles_plugin_sdk::{Configure, async_trait};
+use tokio::sync::{Mutex, mpsc};
+use tokio::task::JoinHandle;
+use tokio_util::sync::{CancellationToken, DropGuard};
+
+use crate::client::Discord;
+use crate::config::Settings;
+use crate::session::{self, Session, Timing};
+
+/// Events buffered for the SDK, which persists each before taking the next. When it's full, the
+/// session waits.
+const EVENT_BUFFER: usize = 64;
+
+/// The identity namespace of every Discord instance: identities are user ids, which are global
+/// across Discord, so every instance reports the same identity for the same person (PLAN
+/// section 3.2).
+pub const NAMESPACE: &str = "discord";
+
+/// The plugin's `configure` with the client supplied by `connect`: validates the config, builds the
+/// client from the settings, and starts the session task in the background. Discord being
+/// unreachable doesn't fail `Configure`; it shows as an error status until the connection is up.
+///
+/// The real plugin passes the twilight client, the tests a fake. `slot` is where `main` finds the
+/// session again to stop it after the SDK returns.
+///
+/// # Errors
+///
+/// An invalid config, naming the key.
+pub async fn configure_with(
+    ctx: Configure,
+    slot: &SessionSlot,
+    timing: Timing,
+    connect: impl FnOnce(&Settings) -> Arc<dyn Discord>,
+) -> Result<DiscordChannel> {
+    let settings = Settings::new(ctx.parse_config()?)?;
+    tracing::info!(
+        instance = ctx.instance(),
+        max_blob = settings.max_blob,
+        catch_up_max_age = ?settings.catch_up_max_age,
+        "Discord channel configured"
+    );
+    let channel = DiscordChannel::start(connect(&settings), timing);
+    slot.set(channel.take_session());
+    Ok(channel)
+}
+
+/// How long `main` waits for the session to close the connection after the SDK has returned: the
+/// session's own bound for that, and a second for it to get there.
+pub fn shutdown_wait() -> Duration {
+    Timing::default().shutdown_wait + Duration::from_secs(1)
+}
+
+/// The session task of a channel, to stop and wait for after the SDK has returned.
+///
+/// The SDK owns the channel and gives no hook for its end, and a process that exits when `serve`
+/// returns would cut the session off before it closes the Gateway (so the bot would stay shown as
+/// online until Discord times it out). `main` keeps a [`SessionSlot`], which `configure` fills,
+/// and awaits it.
+pub struct SessionHandle {
+    stop: CancellationToken,
+    task: Option<JoinHandle<()>>,
+}
+
+impl SessionHandle {
+    /// Stops the session and waits up to `wait` for it to close the connection.
+    pub async fn shutdown(mut self, wait: Duration) {
+        self.stop.cancel();
+        let Some(task) = self.task.take() else {
+            return;
+        };
+        if tokio::time::timeout(wait, task).await.is_err() {
+            tracing::warn!("the Discord session didn't stop within {wait:?}");
+        }
+    }
+}
+
+/// Where `configure` leaves the [`SessionHandle`] for `main`. Cheap to clone.
+#[derive(Clone, Default)]
+pub struct SessionSlot(Arc<std::sync::Mutex<Option<SessionHandle>>>);
+
+impl SessionSlot {
+    fn set(&self, handle: SessionHandle) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
+    }
+
+    /// Stops the session `configure` started, if any, and waits for it up to `wait`.
+    pub async fn shutdown(&self, wait: Duration) {
+        let handle = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(handle) = handle {
+            handle.shutdown(wait).await;
+        }
+    }
+}
+
+/// A Discord bot as a [`Channel`]. Dropping it stops the session task.
+pub struct DiscordChannel {
+    info: ChannelInfo,
+    events: Arc<Mutex<mpsc::Receiver<ChannelEvent>>>,
+    stop: CancellationToken,
+    task: std::sync::Mutex<Option<JoinHandle<()>>>,
+    _guard: DropGuard,
+}
+
+impl DiscordChannel {
+    /// Starts the session task: it polls `client` and reports its status. Must be called inside a
+    /// Tokio runtime.
+    pub fn start(client: Arc<dyn Discord>, timing: Timing) -> Self {
+        let (out, events) = mpsc::channel(EVENT_BUFFER);
+        let stop = CancellationToken::new();
+        let task = tokio::spawn(session::run(Session {
+            client,
+            timing,
+            out,
+            stop: stop.clone(),
+        }));
+        Self {
+            info: ChannelInfo {
+                identity_namespace: NAMESPACE.to_owned(),
+                output: OutputMode::Blocks,
+                can_initiate: true,
+            },
+            events: Arc::new(Mutex::new(events)),
+            stop: stop.clone(),
+            task: std::sync::Mutex::new(Some(task)),
+            _guard: stop.drop_guard(),
+        }
+    }
+
+    /// The session task, to be stopped and awaited by whoever outlives the channel. Only the first
+    /// call gets the task.
+    pub fn take_session(&self) -> SessionHandle {
+        let task = self
+            .task
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        SessionHandle {
+            stop: self.stop.clone(),
+            task,
+        }
+    }
+}
+
+#[async_trait]
+impl Channel for DiscordChannel {
+    fn info(&self) -> &ChannelInfo {
+        &self.info
+    }
+
+    async fn events(&self) -> Result<BoxStream<'static, Result<ChannelEvent>>> {
+        let events = Arc::clone(&self.events);
+        Ok(stream::unfold(events, |events| async move {
+            let event = events.lock().await.recv().await?;
+            Some((Ok(event), events))
+        })
+        .boxed())
+    }
+
+    async fn ack(&self, _event: &EventId) -> Result<()> {
+        // The SDK keeps unacked events and sends them again; nothing here depends on an ack.
+        Ok(())
+    }
+
+    async fn send(&self, _msg: OutboundMessage) -> Result<MessageId> {
+        Err(Error::InvalidRequest(
+            "this build of the Discord plugin can't send messages yet".to_owned(),
+        ))
+    }
+}
