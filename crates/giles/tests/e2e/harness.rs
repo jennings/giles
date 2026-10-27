@@ -268,6 +268,27 @@ impl Home {
             .unwrap()
     }
 
+    /// What the agent's memory database holds, as (content, core, shared), oldest first. Empty
+    /// when the database doesn't exist yet (it is created the first time something asks for it)
+    /// or the daemon hasn't finished creating its tables.
+    pub fn memories(&self) -> Vec<(String, bool, bool)> {
+        let path = self.agent_dir().join("memory.db");
+        if !path.is_file() {
+            return Vec::new();
+        }
+        let db = rusqlite::Connection::open(path).unwrap();
+        let Ok(mut statement) =
+            db.prepare("SELECT content, core, shared FROM memories ORDER BY id")
+        else {
+            return Vec::new();
+        };
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
     /// The state of every inbox row, oldest first.
     pub fn inbox_states(&self) -> Vec<String> {
         let db = self.db();

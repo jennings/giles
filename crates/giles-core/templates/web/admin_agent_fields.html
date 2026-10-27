@@ -8,7 +8,7 @@
 <p class="detail"><code>&lt;provider&gt;/&lt;model&gt;</code>; several, in order, separated by commas.{% if known_models.is_empty() %} The providers listed no models, so type one.{% endif %}</p>
 <label for="tools">Tools</label>
 <input id="tools" name="tools" value="{{ form.tools }}">
-<p class="detail">Tool names or globs the agent may use, such as <code>memory, memory_search, load_skill, github__*</code>.</p>
+<p class="detail">Tool names or globs the agent may use, such as <code>memory_*, load_skill, github__*</code>.</p>
 <label for="ask">Ask first</label>
 <input id="ask" name="ask" value="{{ form.ask }}">
 <p class="detail">Tools that need your approval before each call.</p>

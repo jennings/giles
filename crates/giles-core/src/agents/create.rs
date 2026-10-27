@@ -377,8 +377,8 @@ mod tests {
     #[test]
     fn lists_split_at_commas_and_whitespace() {
         assert_eq!(
-            split_list(" memory, memory_search\nload_skill ,,github__* "),
-            ["memory", "memory_search", "load_skill", "github__*"]
+            split_list(" memory_add, memory_search\nload_skill ,,github__* "),
+            ["memory_add", "memory_search", "load_skill", "github__*"]
         );
         assert!(split_list(" ,\n").is_empty());
     }
@@ -400,14 +400,14 @@ mod tests {
             assert!(!parsed.contains_key(key), "{key} in {source}");
         }
         let full = agent_toml(&NewAgent {
-            tools: vec!["memory".into()],
+            tools: vec!["memory_add".into()],
             ask: vec!["github__*".into()],
             timezone: " Europe/London ".into(),
             name: "  ".into(),
             ..agent
         });
         let parsed: toml::Table = toml::from_str(&full).unwrap();
-        assert_eq!(parsed["tools"][0].as_str(), Some("memory"));
+        assert_eq!(parsed["tools"][0].as_str(), Some("memory_add"));
         assert_eq!(parsed["ask"][0].as_str(), Some("github__*"));
         assert_eq!(parsed["timezone"].as_str(), Some("Europe/London"));
         assert!(!parsed.contains_key("name"), "{full}");

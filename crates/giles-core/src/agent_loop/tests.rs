@@ -8,7 +8,10 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use futures::stream::{self, BoxStream, StreamExt};
-use giles_store::{Entry, InboxId, Session, SessionKey, SessionKind, Store};
+use giles_store::{
+    Entry, InboxId, JournalMode, Memory, MemoryEdit, MemoryId, MemoryOwner, MemoryStore,
+    MemoryViewer, NewMemory, Session, SessionKey, SessionKind, Store,
+};
 use giles_types::{
     AgentId, Block, BlockKind, CacheRetention, CallContext, Channel, ChannelEvent, ChannelInfo,
     CompletionEvent, CompletionRequest, ConversationId, ConversationKind, ConversationRef, Error,
@@ -293,13 +296,14 @@ struct Harness {
     toolset: Arc<FakeToolset>,
     sent: mpsc::UnboundedReceiver<String>,
     session: Session,
+    memory_dbs: MemoryDbs,
     next_event: u32,
 }
 
 impl Harness {
     async fn new() -> Self {
         Self::with_agent(
-            "models = [\"anthropic/test-model\"]\ntools = [\"github__*\", \"memory\"]\n",
+            "models = [\"anthropic/test-model\"]\ntools = [\"github__*\", \"memory_recall\"]\n",
         )
         .await
     }
@@ -330,7 +334,6 @@ impl Harness {
         .unwrap();
         write(&format!("agents/{AGENT}/agent.toml"), agent_toml);
         write(&format!("agents/{AGENT}/SOUL.md"), "You are Jeeves.");
-        write(&format!("agents/{AGENT}/MEMORY.md"), "Tea at four.");
         let config = Config::load_with(
             &root,
             &LoadOptions {
@@ -340,6 +343,7 @@ impl Harness {
             },
         )
         .unwrap_or_else(|e| panic!("{e}"));
+        let memory_dbs = MemoryDbs::new(root.clone(), JournalMode::Wal);
         let registry = Arc::new(Registry::new(root, Arc::new(config)));
         let provider = Arc::new(FakeProvider::default());
         registry
@@ -350,7 +354,10 @@ impl Harness {
             .register_toolset(&name("github"), toolset.clone())
             .await
             .unwrap();
-        registry.tools().set_core_tool(tool_spec("memory")).unwrap();
+        registry
+            .tools()
+            .set_core_tool(tool_spec("memory_recall"))
+            .unwrap();
         let (sent_tx, sent) = mpsc::unbounded_channel();
         registry
             .register_channel(
@@ -383,12 +390,21 @@ impl Harness {
             dir,
             registry,
             store,
+            memory_dbs,
             provider,
             toolset,
             sent,
             session,
             next_event: 0,
         }
+        .seeded()
+        .await
+    }
+
+    /// Seeds the core memory every test's prompt starts with: `#1`, shared.
+    async fn seeded(self) -> Self {
+        self.add_core_memory("Tea at four.", true).await;
+        self
     }
 
     /// An agent loop over this harness (a new one simulates a restart).
@@ -400,6 +416,7 @@ impl Harness {
         AgentLoop::new(
             self.registry.clone(),
             self.store.clone(),
+            self.memory_dbs.clone(),
             Arc::new(FixedClock),
             dispatcher,
             Arc::new(ApprovalBoard::default()),
@@ -411,10 +428,47 @@ impl Harness {
         AgentLoop::new(
             self.registry.clone(),
             self.store.clone(),
+            self.memory_dbs.clone(),
             Arc::new(TickingClock::default()),
             Arc::new(PolicyDispatcher::new(self.registry.clone())),
             Arc::new(ApprovalBoard::default()),
         )
+    }
+
+    /// The agent's memory database.
+    async fn memories(&self) -> MemoryStore {
+        self.memory_dbs
+            .get(&AgentId::new(AGENT).unwrap())
+            .await
+            .unwrap()
+    }
+
+    /// Adds a core memory the owner's sessions see: shared (`shared`) or private to the owner.
+    async fn add_core_memory(&self, content: &str, shared: bool) -> Memory {
+        let new = NewMemory {
+            content: content.to_owned(),
+            core: true,
+            shared,
+            source_session: None,
+        };
+        let viewer = MemoryViewer::new(MemoryOwner::User(owner()), true);
+        let added = self.memories().await.add(&viewer, new, 2_200, now()).await;
+        added.unwrap()
+    }
+
+    /// Replaces the content of memory `id`, as the owner's turn would.
+    async fn edit_memory(&self, id: i64, content: &str) {
+        let edit = MemoryEdit {
+            content: Some(content.to_owned()),
+            ..MemoryEdit::default()
+        };
+        let viewer = MemoryViewer::new(MemoryOwner::User(owner()), true);
+        let edited = self
+            .memories()
+            .await
+            .edit(&viewer, MemoryId::new(id), edit, 2_200, now())
+            .await;
+        edited.unwrap();
     }
 
     fn turn(&mut self, texts: &[&str]) -> (Turn, CancellationToken) {
@@ -548,7 +602,7 @@ async fn a_text_turn_stores_both_messages_replies_and_records_usage() {
         other => panic!("unexpected system {other:?}"),
     };
     assert!(system.starts_with("You are Jeeves."));
-    assert!(system.contains("Tea at four."));
+    assert!(system.contains("#1 (core, shared): Tea at four."));
     assert!(!system.contains("2026"), "the time never goes in system");
     let tools: Vec<_> = request.tools.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(
@@ -558,7 +612,7 @@ async fn a_text_turn_stores_both_messages_replies_and_records_usage() {
             "github__gone",
             "github__list_issues",
             "github__slow",
-            "memory"
+            "memory_recall"
         ]
     );
     assert_eq!(request.messages.len(), 2);
@@ -658,7 +712,7 @@ async fn several_calls_run_in_order_and_each_gets_a_result() {
         vec![
             tool_use("t1", "github__list_issues", json!({"n": 1})),
             tool_use("t2", "not_offered", json!({})),
-            tool_use("t3", "memory", json!({})),
+            tool_use("t3", "memory_recall", json!({})),
             tool_use("t4", "github__fail", json!({})),
             tool_use("t5", "github__list_issues", json!({"n": 2})),
         ],
@@ -887,11 +941,8 @@ async fn the_prefix_is_stable_across_turns_and_restarts() {
     agent_loop.run_turn(turn).await;
 
     // Memory changes mid-session don't reach this session's prompt.
-    std::fs::write(
-        h.dir.path().join(format!("agents/{AGENT}/MEMORY.md")),
-        "Tea at five.",
-    )
-    .unwrap();
+    h.edit_memory(1, "Tea at five.").await;
+    h.add_core_memory("Coffee at nine.", false).await;
     h.provider.push(text("Two."));
     let (turn, _) = h.turn(&["Second"]);
     agent_loop.run_turn(turn).await;
@@ -917,7 +968,9 @@ async fn the_prefix_is_stable_across_turns_and_restarts() {
         _ => panic!("not text"),
     };
     assert!(system(&requests[2]).contains("Tea at five."));
+    assert!(system(&requests[2]).contains("#2 (core): Coffee at nine."));
     assert!(system(&requests[1]).contains("Tea at four."));
+    assert!(!system(&requests[1]).contains("Coffee"));
 }
 
 #[tokio::test]
@@ -932,11 +985,7 @@ async fn rebuilding_refreshes_system_and_keeps_the_tools() {
         &agent_loop.session_prompt(&h.session, agent).await.unwrap()
     ));
 
-    std::fs::write(
-        h.dir.path().join(format!("agents/{AGENT}/MEMORY.md")),
-        "Tea at five.",
-    )
-    .unwrap();
+    h.edit_memory(1, "Tea at five.").await;
     h.registry.tools().remove_toolset(&name("github"));
     let rebuilt = agent_loop
         .rebuild_prompt(&h.session, agent, &first)
@@ -1156,12 +1205,8 @@ async fn a_job_turn_uses_short_retention_sends_nothing_and_is_not_cached() {
         assistant(vec![Block::text("Report: all quiet.")])
     );
 
-    // Without a session key nothing is cached: each turn reads the files again.
-    std::fs::write(
-        h.dir.path().join(format!("agents/{AGENT}/MEMORY.md")),
-        "Tea at five.",
-    )
-    .unwrap();
+    // Without a session key nothing is cached: each turn reads the memories again.
+    h.edit_memory(1, "Tea at five.").await;
     h.provider.push(text("Still quiet."));
     let (turn, _) = h.turn(&["Again"]);
     agent_loop.run_turn(turn).await;
@@ -1311,6 +1356,7 @@ async fn a_job_run_asks_only_its_approval_target_through_the_outbox() {
     let agent_loop = Arc::new(AgentLoop::new(
         h.registry.clone(),
         h.store.clone(),
+        h.memory_dbs.clone(),
         Arc::new(FixedClock),
         Arc::new(PolicyDispatcher::new(h.registry.clone())),
         board.clone(),
@@ -1788,7 +1834,7 @@ async fn tools_take_session_media_by_id_and_their_media_results_get_references()
 /// An agent whose summaries are written by `anthropic/summarizer`.
 const COMPACTING_AGENT: &str = "models = [\"anthropic/test-model\"]\n\
      compaction_model = \"anthropic/summarizer\"\n\
-     tools = [\"github__*\", \"memory\"]\n";
+     tools = [\"github__*\", \"memory_recall\"]\n";
 
 /// A harness whose agent's model has a 2,000-token context window: requests estimated above
 /// 1,600 tokens are compacted, keeping at most 500 tokens of recent messages.
@@ -1856,11 +1902,8 @@ async fn a_session_near_the_context_window_continues_from_a_summary() {
 
     // The next request would be over 1,600 tokens: the first message is summarized (the rest
     // fits in the 500 kept), and `system` gets the memory as it is now.
-    std::fs::write(
-        h.dir.path().join(format!("agents/{AGENT}/MEMORY.md")),
-        "Tea at five.",
-    )
-    .unwrap();
+    h.edit_memory(1, "Tea at five.").await;
+    h.add_core_memory("Coffee at nine.", false).await;
     h.provider.push(text("The user sent a long first message."));
     h.provider
         .push(sized(vec![Block::text("Two.")], StopReason::EndTurn, 1_700));
@@ -1895,7 +1938,9 @@ async fn a_session_near_the_context_window_continues_from_a_summary() {
         ]
     );
     assert!(system_text(&requests[0]).contains("Tea at four."));
+    assert!(!system_text(&requests[0]).contains("Coffee"));
     assert!(system_text(next).contains("Tea at five."));
+    assert!(system_text(next).contains("#2 (core): Coffee at nine."));
     assert_eq!(next.tools, requests[0].tools);
     // Later requests keep the rebuilt prompt.
     let config = h.registry.config();

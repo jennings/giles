@@ -485,7 +485,7 @@ async fn registered_toolsets_feed_the_tool_index() {
          [toolset.down]\nurl = \"https://example.com/down\"\n",
     );
     let registry = home.build().unwrap();
-    registry.tools().set_core_tool(spec("memory")).unwrap();
+    registry.tools().set_core_tool(spec("memory_add")).unwrap();
     let long = "x".repeat(60);
     registry
         .register_toolset(
@@ -521,7 +521,7 @@ async fn registered_toolsets_feed_the_tool_index() {
             "fs__read",
             "github__create_issue",
             "github__search",
-            "memory"
+            "memory_add"
         ]
     );
     assert_eq!(
@@ -548,7 +548,7 @@ async fn registered_toolsets_feed_the_tool_index() {
             "fs__write",
             "github__create_issue",
             "github__search",
-            "memory"
+            "memory_add"
         ]
     );
     // The session's snapshot is unchanged.
@@ -569,7 +569,7 @@ async fn registered_toolsets_feed_the_tool_index() {
             "fs__stat",
             "github__create_issue",
             "github__search",
-            "memory"
+            "memory_add"
         ]
     );
 }

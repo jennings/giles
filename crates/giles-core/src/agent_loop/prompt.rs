@@ -12,21 +12,40 @@
 //! 1. `SOUL.md`, as written (omitted when missing or empty).
 //! 2. `# Skills`: each skill's name and description, sorted by name (omitted without skills, and
 //!    when the session doesn't offer `load_skill`, the only way to read one).
-//! 3. `# Memory`: agent-wide `MEMORY.md`, then, in a direct (or job) session with a user, that
-//!    user's `USER.md` and the agent's per-user `MEMORY.md`. The files the model writes carry
-//!    the usage header `[67% — 1,474/2,200]`.
+//! 3. `# Memory`: the core memories visible in the session, each with its id (`#12 (core): ...`,
+//!    as [`memory::line`] renders it), read from the agent's memory database. Non-core memories
+//!    are never loaded: the model finds them with `memory_recall`, which the intro mentions only
+//!    when the session offers that tool. The sections, in order:
+//!    - the shared memories (visible in every session), with the usage header
+//!      `[67% — 1,474/2,200]` only when the session's user may write them, and left out when
+//!      there are none and they can't be written;
+//!    - the session's own memories, always with the usage header: the user's in a direct or job
+//!      session, the group's in a group session;
+//!    - in a direct or job session with a user, that user's `USER.md` profile (written by
+//!      people; front-matter dropped).
+//!
+//!    What the snapshot shows comes from [`memory::prompt_viewer`], one viewer per session. The
+//!    prompt is built per session, not per turn, so it can't tell a config job's turn (no
+//!    requester, whose tools see shared memories only) from the user's: a config job's session
+//!    still shows its session user's own memories. A session with no user and no group shows
+//!    shared memories only.
+//!
+//!    The snapshot is taken when the session's first turn starts and again after compaction.
+//!    Memories written meanwhile show in tool results, not in the prompt.
 
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use giles_store::{Session, SessionKind};
+use giles_store::{CoreScope, MemoryOwner, Session, SessionKind};
 use giles_types::{Block, SkillSummary, ToolSpec, UserId};
 
 use super::glob;
 use crate::config::AgentConfig;
-use crate::memory::{self, MemoryError};
-use crate::paths::{DataRoot, PathsError};
+use crate::front_matter;
+use crate::memory;
+use crate::memory_dbs::MemoryDbs;
+use crate::paths::PathsError;
 use crate::registry::{IndexedTool, Registry, RegistryError, ToolSnapshot};
 use crate::skills::SkillSet;
 
@@ -36,14 +55,23 @@ pub const LOAD_SKILL: &str = "load_skill";
 /// The agent's identity file in `agents/<agent>/` (PLAN section 11.3).
 pub const SOUL_FILE: &str = "SOUL.md";
 
-/// What a memory section shows when its file is missing or empty.
+/// What a memory section shows when it holds nothing.
 pub const EMPTY_MEMORY: &str = "(empty)";
 
-/// The heading of the agent-wide memory section (the `memory` tool's `agent` scope).
-pub const AGENT_MEMORY_TITLE: &str = "Agent memory";
+/// The core tool that searches every memory visible in the session (PLAN section 6.7).
+pub const MEMORY_RECALL: &str = "memory_recall";
 
-/// The heading of the per-user memory section (the `memory` tool's `user` scope).
+/// The heading of the shared memories' section.
+pub const SHARED_MEMORY_TITLE: &str = "Shared memory";
+
+/// The heading of the section with a user's own memories.
 pub const USER_MEMORY_TITLE: &str = "User memory";
+
+/// The heading of the section with a group's own memories.
+pub const GROUP_MEMORY_TITLE: &str = "Group memory";
+
+/// The heading of the user's profile (`USER.md`).
+pub const USER_PROFILE_TITLE: &str = "User profile";
 
 /// The prompt prefix of one session: its tools and its `system`, and the skills `system` lists.
 #[derive(Debug, Clone, PartialEq)]
@@ -131,10 +159,18 @@ pub enum PromptError {
         /// Why.
         error: io::Error,
     },
-    /// A memory file exists but can't be read.
-    #[error(transparent)]
-    Memory(#[from] MemoryError),
-    /// A memory file's path couldn't be built from the agent or user name.
+    /// `USER.md` exists but can't be read.
+    #[error("cannot read {}: {error}", .path.display())]
+    Profile {
+        /// The file.
+        path: PathBuf,
+        /// Why.
+        error: io::Error,
+    },
+    /// The agent's memory database failed.
+    #[error("memory database: {0}")]
+    Memory(#[from] giles_store::Error),
+    /// The user's profile path couldn't be built from the user name.
     #[error(transparent)]
     Paths(#[from] PathsError),
     /// Skill discovery failed.
@@ -142,16 +178,16 @@ pub enum PromptError {
     Skills(#[from] RegistryError),
 }
 
-/// One memory file as the prompt shows it.
+/// One memory section as the prompt shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemorySection {
-    /// The heading, e.g. `Agent memory`.
+    /// The heading, e.g. `Shared memory`.
     pub title: &'static str,
-    /// One line saying what the file is.
+    /// One line saying what the section is.
     pub intro: &'static str,
-    /// The usage header, for files the model writes.
+    /// The usage header, for scopes the model can write.
     pub usage: Option<String>,
-    /// The entries joined by `§` lines, without front-matter.
+    /// The memories, one per line ([`memory::line`]), or the profile's text.
     pub body: String,
 }
 
@@ -164,9 +200,11 @@ pub struct SystemParts {
     pub skills: Vec<SkillSummary>,
     /// The memory snapshot, in prompt order.
     pub memory: Vec<MemorySection>,
+    /// Whether the session offers [`MEMORY_RECALL`]: the memory intro then points to it.
+    pub recall: bool,
 }
 
-/// Renders `system` from its parts. Pure, so the same files always give the same bytes.
+/// Renders `system` from its parts. Pure, so the same parts always give the same bytes.
 pub fn render_system(parts: &SystemParts) -> String {
     let mut sections: Vec<String> = Vec::new();
     if let Some(soul) = &parts.soul {
@@ -185,12 +223,16 @@ pub fn render_system(parts: &SystemParts) -> String {
         sections.push(skills);
     }
     if !parts.memory.is_empty() {
-        sections.push(
-            "# Memory\n\nMemory files hold what you keep across conversations, as entries \
-             separated by lines holding only `§`. This is a snapshot taken when the conversation \
-             started: changes made since then show up in later conversations."
-                .to_owned(),
-        );
+        let recall = if parts.recall {
+            " Memories that aren't core aren't loaded here: find them with the `memory_recall` tool."
+        } else {
+            ""
+        };
+        sections.push(format!(
+            "# Memory\n\nThis is what you keep across conversations: your core memories, each \
+             with its id.{recall} It is a snapshot taken when the conversation started: changes \
+             made since then show up in later conversations."
+        ));
         for section in &parts.memory {
             let heading = match &section.usage {
                 Some(usage) => format!("## {} {usage}", section.title),
@@ -236,59 +278,91 @@ pub async fn session_skills(
 }
 
 /// Reads `SOUL.md` and the memory snapshot for `session`, with `skills` (the session's,
-/// [`session_skills`]).
+/// [`session_skills`]) and `tools` (the session's, which decide whether the memory intro mentions
+/// [`MEMORY_RECALL`]).
 ///
 /// # Errors
 ///
-/// A file that exists but can't be read. Missing files are empty.
+/// A file that exists but can't be read, or the agent's memory database failing. Missing files
+/// are empty.
 pub async fn load_parts(
     registry: &Registry,
+    memory_dbs: &MemoryDbs,
     agent: &AgentConfig,
     session: &Session,
     skills: &SkillSet,
+    tools: &SessionTools,
 ) -> Result<SystemParts, PromptError> {
-    let root = registry.root();
     let soul = read_soul(&agent.dir.join(SOUL_FILE)).await?;
-    let memory = load_memory(root, agent, memory_user(session)).await?;
+    let memory = load_memory(registry, memory_dbs, agent, session).await?;
     Ok(SystemParts {
         soul,
         skills: skills.summaries(),
         memory,
+        recall: tools.get(MEMORY_RECALL).is_some(),
     })
 }
 
-/// The memory snapshot: agent-wide memory, then `user`'s profile and per-user memory.
+/// The memory snapshot: the shared core memories, then the session's own, then the user's
+/// profile. See the module docs for what each section shows and when.
 async fn load_memory(
-    root: &DataRoot,
+    registry: &Registry,
+    memory_dbs: &MemoryDbs,
     agent: &AgentConfig,
-    user: Option<&UserId>,
+    session: &Session,
 ) -> Result<Vec<MemorySection>, PromptError> {
     let cap = agent.memory_cap as usize;
-    let doc = memory::read(&memory::agent_memory_file(root, agent.id.as_str())?).await?;
-    let mut sections = vec![MemorySection {
-        title: AGENT_MEMORY_TITLE,
-        intro: "What you remember in general, shared by all your conversations.",
-        usage: Some(doc.usage_header(cap)),
-        body: doc.body(),
-    }];
-    if let Some(user) = user {
-        let profile = memory::read(&memory::user_profile_file(root, user.as_str())?).await?;
+    let viewer = memory::prompt_viewer(session);
+    let core = memory_dbs
+        .get(&agent.id)
+        .await?
+        .core_memories(&viewer)
+        .await?;
+
+    let mut sections = Vec::new();
+    if viewer.can_write_shared || !core.shared.memories.is_empty() {
+        sections.push(scope_section(
+            SHARED_MEMORY_TITLE,
+            "What you remember in general, shared by all your conversations.",
+            &core.shared,
+            viewer.can_write_shared.then_some(cap),
+        ));
+    }
+    let own = match &viewer.owner {
+        MemoryOwner::User(_) => Some((USER_MEMORY_TITLE, "What you remember about this user.")),
+        MemoryOwner::Group { .. } => Some((GROUP_MEMORY_TITLE, "What you remember in this group.")),
+        MemoryOwner::None => None,
+    };
+    if let Some((title, intro)) = own {
+        sections.push(scope_section(title, intro, &core.own, Some(cap)));
+    }
+    if let Some(user) = memory_user(session) {
+        let path = memory::user_profile_file(registry.root(), user.as_str())?;
         sections.push(MemorySection {
-            title: "User profile",
+            title: USER_PROFILE_TITLE,
             intro: "The user's own description of themselves. Only the user edits it.",
             usage: None,
-            body: profile.body(),
-        });
-        let path = memory::user_memory_file(root, agent.id.as_str(), user.as_str())?;
-        let doc = memory::read(&path).await?;
-        sections.push(MemorySection {
-            title: USER_MEMORY_TITLE,
-            intro: "What you remember about this user.",
-            usage: Some(doc.usage_header(cap)),
-            body: doc.body(),
+            body: read_profile(&path).await?.unwrap_or_default(),
         });
     }
     Ok(sections)
+}
+
+/// A section listing one scope's core memories, oldest id first, under the usage header against
+/// `cap` if the model can write the scope.
+fn scope_section(
+    title: &'static str,
+    intro: &'static str,
+    scope: &CoreScope,
+    cap: Option<usize>,
+) -> MemorySection {
+    let lines: Vec<String> = scope.memories.iter().map(memory::line).collect();
+    MemorySection {
+        title,
+        intro,
+        usage: cap.map(|cap| memory::usage_header(scope.chars, cap)),
+        body: lines.join("\n"),
+    }
 }
 
 /// `SOUL.md` without a byte-order mark and trailing whitespace; `None` if missing or blank.
@@ -307,18 +381,39 @@ async fn read_soul(path: &Path) -> Result<Option<String>, PromptError> {
     }
 }
 
-/// `system` for `session`, freshly read, listing `skills` (the session's, [`session_skills`]).
+/// `USER.md` without front-matter, a byte-order mark, and surrounding whitespace; `None` if
+/// missing or blank.
+async fn read_profile(path: &Path) -> Result<Option<String>, PromptError> {
+    match tokio::fs::read_to_string(path).await {
+        Ok(text) => {
+            let body = front_matter::split(&text).map_or(text.as_str(), |split| split.body);
+            let body = body.strip_prefix('\u{feff}').unwrap_or(body).trim();
+            Ok((!body.is_empty()).then(|| body.replace("\r\n", "\n")))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(PromptError::Profile {
+            path: path.to_owned(),
+            error,
+        }),
+    }
+}
+
+/// `system` for `session`, freshly read, listing `skills` (the session's, [`session_skills`]) and
+/// offering `tools`.
 ///
 /// # Errors
 ///
 /// As [`load_parts`].
 pub async fn build_system(
     registry: &Registry,
+    memory_dbs: &MemoryDbs,
     agent: &AgentConfig,
     session: &Session,
     skills: &SkillSet,
+    tools: &SessionTools,
 ) -> Result<Vec<Block>, PromptError> {
-    let text = render_system(&load_parts(registry, agent, session, skills).await?);
+    let parts = load_parts(registry, memory_dbs, agent, session, skills, tools).await?;
+    let text = render_system(&parts);
     Ok(if text.is_empty() {
         Vec::new()
     } else {
@@ -334,13 +429,14 @@ pub async fn build_system(
 /// As [`session_skills`] and [`load_parts`].
 pub async fn build(
     registry: &Registry,
+    memory_dbs: &MemoryDbs,
     agent: &AgentConfig,
     session: &Session,
     tools: Arc<SessionTools>,
 ) -> Result<SessionPrompt, PromptError> {
     let skills = session_skills(registry, agent, &tools).await?;
     Ok(SessionPrompt {
-        system: build_system(registry, agent, session, &skills).await?,
+        system: build_system(registry, memory_dbs, agent, session, &skills, &tools).await?,
         tools,
         skills: Arc::new(skills),
     })
@@ -354,11 +450,12 @@ pub async fn build(
 /// As [`build`].
 pub async fn assemble(
     registry: &Registry,
+    memory_dbs: &MemoryDbs,
     agent: &AgentConfig,
     session: &Session,
 ) -> Result<SessionPrompt, PromptError> {
     let tools = SessionTools::from_snapshot(&registry.tools().snapshot(), &agent.tools);
-    build(registry, agent, session, Arc::new(tools)).await
+    build(registry, memory_dbs, agent, session, Arc::new(tools)).await
 }
 
 #[cfg(test)]
@@ -378,11 +475,12 @@ mod tests {
             soul: Some("You are Jeeves.".to_owned()),
             skills: vec![skill("a", "First."), skill("b", "Two\n  lines.")],
             memory: vec![MemorySection {
-                title: "Agent memory",
+                title: SHARED_MEMORY_TITLE,
                 intro: "General.",
                 usage: Some("[0% — 0/2,200]".to_owned()),
                 body: String::new(),
             }],
+            recall: false,
         };
         let text = render_system(&parts);
         let soul = text.find("You are Jeeves.").unwrap();
@@ -390,7 +488,25 @@ mod tests {
         let memory = text.find("# Memory").unwrap();
         assert!(soul < skills && skills < memory);
         assert!(text.contains("\n- `a`: First.\n- `b`: Two lines.\n\n# Memory"));
-        assert!(text.ends_with("## Agent memory [0% — 0/2,200]\n\nGeneral.\n\n(empty)"));
+        assert!(text.ends_with("## Shared memory [0% — 0/2,200]\n\nGeneral.\n\n(empty)"));
+    }
+
+    #[test]
+    fn the_memory_intro_mentions_recall_only_when_the_session_offers_it() {
+        let mut parts = SystemParts {
+            memory: vec![MemorySection {
+                title: USER_MEMORY_TITLE,
+                intro: "Mine.",
+                usage: None,
+                body: "#1 (core): Tea.".to_owned(),
+            }],
+            ..SystemParts::default()
+        };
+        assert!(!render_system(&parts).contains("memory_recall"));
+        parts.recall = true;
+        let text = render_system(&parts);
+        assert!(text.contains("find them with the `memory_recall` tool"));
+        assert!(text.ends_with("## User memory\n\nMine.\n\n#1 (core): Tea."));
     }
 
     #[test]
@@ -409,6 +525,7 @@ mod tests {
             soul: Some("x".to_owned()),
             skills: vec![skill("a", "b")],
             memory: Vec::new(),
+            recall: true,
         };
         assert_eq!(render_system(&parts), render_system(&parts.clone()));
     }
@@ -433,6 +550,29 @@ mod tests {
         assert!(matches!(
             read_soul(&path).await,
             Err(PromptError::Soul { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn profile_drops_front_matter_and_surrounding_whitespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("USER.md");
+        assert_eq!(read_profile(&path).await.unwrap(), None);
+        std::fs::write(
+            &path,
+            "---\nreviewed: 2026-10-01\n---\r\n\r\nStephen.\r\nLives in Seattle.\r\n\r\n",
+        )
+        .unwrap();
+        assert_eq!(
+            read_profile(&path).await.unwrap().as_deref(),
+            Some("Stephen.\nLives in Seattle.")
+        );
+        std::fs::write(&path, "---\nonly: front-matter\n---\n").unwrap();
+        assert_eq!(read_profile(&path).await.unwrap(), None);
+        std::fs::write(&path, [0xff, 0xfe]).unwrap();
+        assert!(matches!(
+            read_profile(&path).await,
+            Err(PromptError::Profile { .. })
         ));
     }
 }

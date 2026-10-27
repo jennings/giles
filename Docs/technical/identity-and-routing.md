@@ -60,9 +60,30 @@ produce on every line.
 
 v1 has one implicit user, the owner (§1.1). `identity::OWNER` is its user id, `"owner"`, and
 `identity::owner()` returns it as a `UserId`. Everything keyed by user uses it: `Routed::user`
-(the turn's requester), session rows, inbox and usage rows, and per-user files
-(`agents/<agent>/users/owner/MEMORY.md`, `users/owner/USER.md`). With no roles in v1, routes have
-no `user` key: every routed message is from the owner.
+(the turn's requester), session rows, inbox and usage rows, per-user files (`users/owner/USER.md`),
+and the owner of a user's memories (below). With no roles in v1, routes have no `user` key: every
+routed message is from the owner.
+
+### Identity in Memory
+
+Memory ([Skills and Memory](skills-and-memory.md#memory)) uses identity in three ways, all in
+`giles_core::memory`:
+
+- **A user's memories belong to the internal user id**, not to a channel identity. They follow the
+  user's direct and job sessions with the agent on every channel (v1: `owner`), as
+  `memory_search`'s scope does.
+- **Shared memories are written by the agent owner only.** `memory::viewer` gives a tool call
+  `can_write_shared` when the turn's requester is `identity::owner()`, and a config job (no
+  requester) too; a runtime job runs as its creator and has that creator's right. Shared memories
+  reach every prompt, including the owner's tool-enabled DMs, so a guest or a group must not be
+  able to plant one. The check is made again in the memory store's write transaction, so a tool
+  can't skip it. In v1 every requester is the owner, so the rule matters once there are guests.
+- **A group's private scope is keyed by channel instance and conversation** (`MemoryOwner::Group
+  { instance, conversation }`), taken from the session, not from whoever speaks: every participant
+  shares it, and none of their own memories is in it. The conversation id alone isn't enough,
+  since the same id can exist on two instances; `giles instance rename` rewrites the instance part
+  of these keys ([Instance Rename](instance-rename.md)). v1 drops group messages at `classify`
+  (above), so no group session exists yet.
 
 ## Identity Namespaces
 

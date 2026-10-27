@@ -3,23 +3,23 @@ You check on things and report back.
 
 # Memory
 
-Memory files hold what you keep across conversations, as entries separated by lines holding only `§`. This is a snapshot taken when the conversation started: changes made since then show up in later conversations.
+This is what you keep across conversations: your core memories, each with its id. Memories that aren't core aren't loaded here: find them with the `memory_recall` tool. It is a snapshot taken when the conversation started: changes made since then show up in later conversations.
 
-## Agent memory [127% — 51/40]
+## Shared memory [127% — 51/40]
 
 What you remember in general, shared by all your conversations.
 
-The garden sensor reports soil moisture every hour.
-
-## User profile
-
-The user's own description of themselves. Only the user edits it.
-
-(empty)
+#1 (core, shared): The garden sensor reports soil moisture every hour.
 
 ## User memory [0% — 0/40]
 
 What you remember about this user.
+
+(empty)
+
+## User profile
+
+The user's own description of themselves. Only the user edits it.
 
 (empty)
 === tools ===
@@ -35,8 +35,17 @@ List the issues of a repository.
 --- load_skill
 The core tool load_skill.
 {"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"}
---- memory
-The core tool memory.
+--- memory_add
+The core tool memory_add.
+{"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"}
+--- memory_edit
+The core tool memory_edit.
+{"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"}
+--- memory_forget
+The core tool memory_forget.
+{"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"}
+--- memory_recall
+The core tool memory_recall.
 {"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"}
 --- memory_search
 The core tool memory_search.

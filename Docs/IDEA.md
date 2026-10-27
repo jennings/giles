@@ -99,8 +99,11 @@ Each agent has:
 - A name
 - The models it can use (v1 uses the first one)
 - The tools it may call, and the tools that need the owner's approval before each call
-- Its own files: `SOUL.md` (who it is) and `MEMORY.md` (what it remembers), plus per-user memory
-  and the user's `USER.md` (who its user is)
+- Its own files: `SOUL.md` (who it is) and the user's `USER.md` (who its user is)
+- Its memories, in a database of its own: short facts it adds, edits, forgets, and recalls through
+  tools. Each is private to one user or group, or shared by all its conversations, and the agent
+  marks the important ones as core. Only core memories are loaded into every prompt, under a size
+  cap, so the rest costs nothing until the agent searches for it.
 - Scheduled jobs
 
 Routing rules decide which agent handles which channel and conversation. Like agents, they're
@@ -110,8 +113,9 @@ managed by Giles and meant to be edited in the web UI.
 
 - Every conversation is its own session with its own history: each WhatsApp chat, email thread,
   IRC query, and web chat.
-- Knowledge crosses channels through memory, not history. Memory is loaded into every session, and
-  the agent can search past transcripts on all channels.
+- Knowledge crosses channels through memory, not history. Core memories are loaded into every
+  session that may see them, the agent can recall its other memories by search, and it can search
+  past transcripts on all channels.
 - At most one turn runs per session. New messages during a turn are either shown to the model
   between tool calls or queued for the next turn.
 - `/new` starts a fresh session, and `/stop` cancels the running turn.
@@ -131,8 +135,8 @@ There is one scheduler and one kind of job.
 
 Tools come from toolsets. A toolset is an MCP server; one server exposes many tools.
 
-- Core tools are built in because they operate on core state: memory, memory search, loading
-  skills, scheduling, and sending attachments.
+- Core tools are built in because they operate on core state: memory (add, edit, forget, recall),
+  transcript search, loading skills, scheduling, and sending attachments.
 - Every other tool comes from an MCP server: a local stdio command, launched and sandboxed by the
   core, or a remote HTTP server. Any MCP server works as a toolset unchanged.
 - Tool names are prefixed with the toolset instance name, e.g. `github__create_issue`.

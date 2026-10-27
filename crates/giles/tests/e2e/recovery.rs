@@ -13,14 +13,17 @@ fn a_crash_with_an_approval_pending_is_reported_and_the_call_never_runs() {
     let provider = FakeProvider::start();
     provider.script([Reply::call(
         "call_1",
-        "memory",
-        json!({"scope": "agent", "operations": [{"op": "add", "content": "Takes tea at four."}]}),
+        "memory_add",
+        json!({"content": "Takes tea at four.", "core": true}),
     )]);
-    let home = Home::new(&provider, "tools = [\"memory\"]\nask = [\"memory\"]\n");
+    let home = Home::new(
+        &provider,
+        "tools = [\"memory_add\"]\nask = [\"memory_add\"]\n",
+    );
     let daemon = Daemon::start(&home);
 
     home.say("Remember that I take tea at four.");
-    home.wait_approval_code(0, "memory");
+    home.wait_approval_code(0, "memory_add");
     assert_eq!(home.inbox_states(), ["started"]);
     daemon.kill();
     // The crash left the turn's message started and the call waiting for an answer.
@@ -41,7 +44,7 @@ fn a_crash_with_an_approval_pending_is_reported_and_the_call_never_runs() {
     assert_eq!(requests.len(), 2);
     assert_eq!(tool_result(&requests[1], "call_1"), "Error: interrupted");
     assert!(
-        !home.agent_dir().join("MEMORY.md").exists(),
+        home.memories().is_empty(),
         "the call that was waiting for approval must not run after a restart"
     );
     // The reply is sent before the turn is finished; the message is done once it is.

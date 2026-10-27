@@ -14,7 +14,7 @@ name = "Jeeves"   # shown in chats
 models = [
     "fake/test-model",   # first choice
 ]
-tools = ["memory"]
+tools = ["memory_add"]
 max_iterations = 50
 busy_mode = "queue"
 memory_cap = 4000
@@ -162,7 +162,7 @@ async fn the_form_shows_the_agent_as_its_files_have_it_and_says_the_id_is_fixed(
         "<h1>Edit Jeeves (jeeves)</h1>",
         r#"name="name" value="Jeeves""#,
         r#"name="models" value="fake/test-model""#,
-        r#"name="tools" value="memory""#,
+        r#"name="tools" value="memory_add""#,
         r#"name="ask" value="""#,
         "You are Jeeves.\nBe brief.\n</textarea>",
         r#"action="/admin/agents/jeeves/edit""#,
@@ -214,7 +214,7 @@ async fn an_edit_changes_only_what_the_form_manages_and_applies_to_new_chats_at_
         "Jeeves%20II",
         "fake%2Ftest-model%2C+fake%2Fother",
         &format!(
-            "&tools=memory%2C+memory_search&ask=memory_search&timezone=Europe%2FLondon&soul={}",
+            "&tools=memory_add%2C+memory_search&ask=memory_search&timezone=Europe%2FLondon&soul={}",
             soul.replace(' ', "+").replace("\r\n", "%0D%0A")
         ),
     );
@@ -243,7 +243,7 @@ async fn an_edit_changes_only_what_the_form_manages_and_applies_to_new_chats_at_
         "{toml}"
     );
     assert!(
-        toml.contains("tools = [\"memory\", \"memory_search\"]"),
+        toml.contains("tools = [\"memory_add\", \"memory_search\"]"),
         "{toml}"
     );
     assert!(toml.contains("ask = [\"memory_search\"]"), "{toml}");
@@ -285,7 +285,7 @@ async fn an_edit_changes_only_what_the_form_manages_and_applies_to_new_chats_at_
     let running = &live.agents[&AgentId::new("jeeves").unwrap()];
     assert_eq!(running.name.as_deref(), Some("Jeeves II"));
     assert_eq!(running.models.len(), 2);
-    assert_eq!(running.tools, ["memory", "memory_search"]);
+    assert_eq!(running.tools, ["memory_add", "memory_search"]);
     assert_eq!(running.jobs.len(), 1, "the job is still there");
     let (_, list, _) = env
         .agents_call(&manager, Method::GET, "/admin/agents", None)
@@ -483,7 +483,7 @@ async fn an_edit_that_changes_nothing_writes_nothing_and_a_hand_edited_file_is_a
                 &version,
                 "Jeeves",
                 "fake%2Ftest-model",
-                "&tools=memory&soul=You+are+Jeeves.%0D%0ABe+brief.%0D%0A",
+                "&tools=memory_add&soul=You+are+Jeeves.%0D%0ABe+brief.%0D%0A",
             ),
         )
         .await;

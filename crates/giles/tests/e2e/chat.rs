@@ -5,13 +5,13 @@ use serde_json::json;
 use crate::harness::{CONVERSATION, Daemon, Home, wait_until};
 use crate::provider::{FakeProvider, Reply, texts_with_role, tool_result};
 
-/// Input for the `memory` core tool: remembers `content` for the agent.
+/// Input for the `memory_add` core tool: remembers `content` as a core memory.
 fn remember(content: &str) -> serde_json::Value {
-    json!({"scope": "agent", "operations": [{"op": "add", "content": content}]})
+    json!({"content": content, "core": true})
 }
 
-/// Config for an agent that may use `memory` but must ask first.
-const ASKS_FIRST: &str = "tools = [\"memory\"]\nask = [\"memory\"]\n";
+/// Config for an agent that may use `memory_add` but must ask first.
+const ASKS_FIRST: &str = "tools = [\"memory_add\"]\nask = [\"memory_add\"]\n";
 
 #[test]
 fn a_message_reaches_the_model_and_the_reply_reaches_the_channel() {
@@ -64,15 +64,15 @@ fn a_message_reaches_the_model_and_the_reply_reaches_the_channel() {
 fn an_approved_tool_call_waits_for_the_owner_and_then_runs() {
     let provider = FakeProvider::start();
     provider.script([
-        Reply::call("call_1", "memory", remember("Takes tea at four.")),
+        Reply::call("call_1", "memory_add", remember("Takes tea at four.")),
         Reply::text("Noted, sir."),
     ]);
     let home = Home::new(&provider, ASKS_FIRST);
     let daemon = Daemon::start(&home);
 
     home.say("Remember that I take tea at four.");
-    let code = home.wait_approval_code(0, "memory");
-    let prompt = home.wait_sent("Allow `memory`");
+    let code = home.wait_approval_code(0, "memory_add");
+    let prompt = home.wait_sent("Allow `memory_add`");
     // The prompt shows the call's input, and goes to the conversation that asked.
     let text = prompt["message"]["markdown"].as_str().unwrap();
     assert!(text.contains("Takes tea at four."), "{text}");
@@ -81,13 +81,15 @@ fn an_approved_tool_call_waits_for_the_owner_and_then_runs() {
         json!({"conversation": CONVERSATION})
     );
     // Nothing ran, and the model hasn't been asked again, while the owner hasn't answered.
-    assert!(!home.agent_dir().join("MEMORY.md").exists());
+    assert!(home.memories().is_empty());
     assert_eq!(provider.requests().len(), 1);
 
     home.say(&format!("yes {code}"));
     home.wait_sent("Noted, sir.");
-    let memory = std::fs::read_to_string(home.agent_dir().join("MEMORY.md")).unwrap();
-    assert!(memory.contains("Takes tea at four."), "{memory}");
+    let memories = home.memories();
+    assert_eq!(memories.len(), 1, "{memories:?}");
+    assert_eq!(memories[0].0, "Takes tea at four.");
+    assert!(memories[0].1, "the memory was added as core: {memories:?}");
     // The model got the tool's result, not a denial.
     let requests = provider.requests();
     assert_eq!(requests.len(), 2);
@@ -104,9 +106,9 @@ fn an_approved_tool_call_waits_for_the_owner_and_then_runs() {
 fn a_denied_tool_call_never_runs_and_the_model_is_told() {
     let provider = FakeProvider::start();
     provider.script([
-        Reply::call("call_1", "memory", remember("Dislikes coffee.")),
+        Reply::call("call_1", "memory_add", remember("Dislikes coffee.")),
         Reply::text("Understood, sir."),
-        Reply::call("call_2", "memory", remember("Dislikes tea.")),
+        Reply::call("call_2", "memory_add", remember("Dislikes tea.")),
         Reply::text("As you wish, sir."),
     ]);
     let home = Home::new(&provider, ASKS_FIRST);
@@ -114,7 +116,7 @@ fn a_denied_tool_call_never_runs_and_the_model_is_told() {
 
     // `no <code>` denies.
     home.say("Remember I dislike coffee.");
-    let code = home.wait_approval_code(0, "memory");
+    let code = home.wait_approval_code(0, "memory_add");
     home.say(&format!("no {code}"));
     home.wait_sent("Understood, sir.");
     assert_eq!(
@@ -125,7 +127,7 @@ fn a_denied_tool_call_never_runs_and_the_model_is_told() {
     // So does any other message while the prompt waits: the model sees it.
     let seen = home.sent().len();
     home.say("Remember I dislike tea.");
-    home.wait_approval_code(seen, "memory");
+    home.wait_approval_code(seen, "memory_add");
     home.say("Actually, never mind.");
     home.wait_sent("As you wish, sir.");
     let requests = provider.requests();
@@ -135,10 +137,7 @@ fn a_denied_tool_call_never_runs_and_the_model_is_told() {
         "Error: Not approved. The user said: Actually, never mind."
     );
 
-    assert!(
-        !home.agent_dir().join("MEMORY.md").exists(),
-        "a denied call must not run"
-    );
+    assert!(home.memories().is_empty(), "a denied call must not run");
     daemon.stop();
     provider.assert_no_surprises();
 }
@@ -179,14 +178,14 @@ fn stop_cancels_a_pending_approval_and_the_call_never_runs() {
     let provider = FakeProvider::start();
     provider.script([Reply::call(
         "call_1",
-        "memory",
+        "memory_add",
         remember("Takes tea at four."),
     )]);
     let home = Home::new(&provider, ASKS_FIRST);
     let daemon = Daemon::start(&home);
 
     home.say("Remember that I take tea at four.");
-    let code = home.wait_approval_code(0, "memory");
+    let code = home.wait_approval_code(0, "memory_add");
     home.say("/stop");
     daemon.wait_for_log("turn stopped by /stop");
 
@@ -197,13 +196,13 @@ fn stop_cancels_a_pending_approval_and_the_call_never_runs() {
     let requests = provider.requests();
     assert_eq!(requests.len(), 2);
     assert_eq!(tool_result(&requests[1], "call_1"), "Error: cancelled");
-    assert!(!home.agent_dir().join("MEMORY.md").exists());
+    assert!(home.memories().is_empty());
 
     // A late `yes` doesn't resurrect the call: it's told the request ended.
     let seen = home.sent().len();
     home.say(&format!("yes {code}"));
     home.wait_sent_after(seen, "cancelled");
-    assert!(!home.agent_dir().join("MEMORY.md").exists());
+    assert!(home.memories().is_empty());
     assert_eq!(provider.requests().len(), 2);
 
     daemon.stop();

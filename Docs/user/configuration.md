@@ -501,19 +501,26 @@ Files in `agents/` and directories whose names start with `.` are ignored.
 | `name`                |                 | Display name                                                      |
 | `models`              | required        | Models in order; v1 uses the first                                |
 | `compaction_model`    | `models`        | The model that summarizes old history when a session gets long    |
-| `tools`               | `[]`            | Tools the agent may use: globs over tool names, e.g. `"github__*"`, `"memory*"` |
+| `tools`               | `[]`            | Tools the agent may use: globs over tool names, e.g. `"github__*"`, `"memory_*"` |
 | `ask`                 | `[]`            | Globs of tools that need your approval before each call           |
 | `max_iterations`      | no limit        | Model requests with tools per interactive turn: tools run after at most N−1 of them, then one final request without tools |
 | `max_iterations_jobs` | `25`            | The same for job turns                                            |
 | `busy_mode`           | `"steer"`       | New messages during a turn: `"steer"` shows them to the model at the next tool step; `"queue"` keeps them for the next turn |
-| `memory_cap`          | `2200`          | Characters per memory file the agent writes                       |
+| `memory_cap`          | `2200`          | Most characters of core memories in each scope (shared, each user, each group) |
 | `approval_timeout`    | `"10m"`         | How long an approval request waits before it is denied            |
 | `timezone`            | system          | The agent's time zone, used when `[owner]` sets none              |
 | `idle_reset`          | off             | Start a new session after this long without messages              |
 
-Tool names are `<instance>__<tool>` for toolsets and bare for the core tools (`memory`,
-`memory_search`, `load_skill`, `schedule`, `send_attachment`). A call to a tool the agent isn't
+Tool names are `<instance>__<tool>` for toolsets and bare for the core tools (`memory_add`,
+`memory_edit`, `memory_forget`, `memory_recall`, `memory_search`, `load_skill`, `schedule`,
+`send_attachment`). `"memory_*"` allows all five memory tools. A call to a tool the agent isn't
 allowed, or one its toolset no longer offers, fails with `tool unavailable` and nothing runs.
+
+`memory_cap` limits the *core* memories, the ones loaded into the agent's prompt, by their total
+characters in each scope: the shared memories, each user's, and each group's. Other memories aren't
+limited, and one memory is at most 1,000 characters whatever the cap. A memory the agent adds or
+edits that would go over the cap is refused, and the agent is shown what is there so it can make
+room. Lowering the cap deletes nothing. See [Skills and Memory](skills-and-memory.md#memory).
 
 When a turn reaches its iteration limit, the tools the model asked for in that last request don't
 run; Giles makes one more request without tools, so the model tells you where it stopped. `/stop`
@@ -524,8 +531,8 @@ window), Giles first has `compaction_model` summarize the older messages, keepin
 and open tasks, and the model then sees the summary plus the most recent messages. The full
 transcript stays in the database. A cheaper model works well for this, as long as its own context
 window is large enough to read a good part of the conversation at once. Compaction also refreshes
-the memory shown to the model, so what it saved to memory during the conversation now shows in its
-prompt. Giles takes a model's context window from the provider; for OpenAI-compatible servers the
+the memory shown to the model, so the core memories it saved during the conversation now show in
+its prompt. Giles takes a model's context window from the provider; for OpenAI-compatible servers the
 `context_window` you set in the provider's config ([Providers](providers.md)) applies too, also
 when the server doesn't list the model under that exact id. Without either, Giles assumes 128,000
 tokens. If writing the summary fails, Giles logs it and goes on without it, and tries again on
@@ -641,7 +648,7 @@ libera = "correct horse battery staple"
 name = "Jeeves"
 models = ["anthropic/claude-sonnet-4-5"]
 compaction_model = "ollama/qwen3:8b"
-tools = ["memory", "memory_search", "load_skill", "schedule", "github__*", "files__*"]
+tools = ["memory_*", "load_skill", "schedule", "github__*", "files__*"]
 ask = ["github__create_*"]
 max_iterations_jobs = 25
 memory_cap = 2200

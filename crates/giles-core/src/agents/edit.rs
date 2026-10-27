@@ -613,7 +613,7 @@ models = [
     "ollama/qwen3:8b",
 ]
 compaction_model = "ollama/qwen3:8b"
-tools = ["memory", "github__*"]
+tools = ["memory_add", "github__*"]
 max_iterations = 50
 busy_mode = "queue"
 memory_cap = 4000
@@ -666,7 +666,7 @@ prompt = "Summarize the week."
     fn only_the_changed_managed_keys_are_rewritten() {
         let mut edit = edit_of(HAND_WRITTEN);
         edit.name = " Jeeves II ".into();
-        edit.tools = vec!["memory".into(), "memory_search".into()];
+        edit.tools = vec!["memory_add".into(), "memory_search".into()];
         edit.ask = vec!["github__create_*".into()];
         let edited = edited_toml(HAND_WRITTEN, &edit).unwrap();
 
@@ -678,7 +678,7 @@ prompt = "Summarize the week."
             "{edited}"
         );
         assert!(
-            after.contains(&"tools = [\"memory\", \"memory_search\"]"),
+            after.contains(&"tools = [\"memory_add\", \"memory_search\"]"),
             "{edited}"
         );
         // Everything else is exactly as written: every other line, in order.
@@ -720,7 +720,7 @@ prompt = "Summarize the week."
             "models = [\"a/b\"]\n\n[[jobs]]\nid = \"x\"\ncron = \"0 8 * * *\"\nprompt = \"p\"\n";
         let mut edit = edit_of(source);
         edit.name = "Jeeves".into();
-        edit.tools = vec!["memory".into()];
+        edit.tools = vec!["memory_add".into()];
         edit.timezone = "Europe/London".into();
         let edited = edited_toml(source, &edit).unwrap();
         let parsed: toml::Table = toml::from_str(&edited).unwrap();
@@ -730,7 +730,7 @@ prompt = "Summarize the week."
             Some("Europe/London"),
             "{edited}"
         );
-        assert_eq!(parsed["tools"][0].as_str(), Some("memory"), "{edited}");
+        assert_eq!(parsed["tools"][0].as_str(), Some("memory_add"), "{edited}");
         let jobs = parsed["jobs"].as_array().unwrap();
         assert_eq!(jobs.len(), 1);
         assert_eq!(
@@ -803,12 +803,12 @@ prompt = "Summarize the week."
         assert_eq!(edit.name, "");
         edit.name = "Jeeves".into();
         edit.models = vec!["a/b".into()];
-        edit.tools = vec!["memory".into()];
+        edit.tools = vec!["memory_add".into()];
         let edited = edited_toml(source, &edit).unwrap();
         let parsed: toml::Table = toml::from_str(&edited).unwrap();
         assert_eq!(parsed["name"].as_str(), Some("Jeeves"));
         assert_eq!(parsed["models"][0].as_str(), Some("a/b"));
-        assert_eq!(parsed["tools"][0].as_str(), Some("memory"));
+        assert_eq!(parsed["tools"][0].as_str(), Some("memory_add"));
 
         let error = edited_toml("models = [", &edit).unwrap_err();
         assert!(

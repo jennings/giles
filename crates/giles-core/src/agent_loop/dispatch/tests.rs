@@ -190,7 +190,7 @@ impl Setup {
                 .await
                 .unwrap();
         }
-        for name in ["memory", "memory_search"] {
+        for name in ["memory_add", "memory_recall", "memory_search"] {
             registry.tools().set_core_tool(spec(name)).unwrap();
         }
         registry.register_core_tool(Arc::new(EchoCore)).unwrap();
@@ -397,7 +397,7 @@ async fn calls_are_checked_against_the_session_and_registry_as_they_start() {
         // Dropped by its toolset while `first` runs.
         ("gone", "par__gone", json!({})),
         // Registered, but outside the allowlist.
-        ("mem", "memory", json!({})),
+        ("mem", "memory_add", json!({})),
         ("nope", "nope__run", json!({})),
         ("last", "par__run", json!({"ms": 10})),
     ];
@@ -578,7 +578,8 @@ async fn a_calls_policy_comes_from_its_toolset_or_the_core_tool_list() {
     assert_eq!(policy("par__run"), of(true, five_minutes));
     assert_eq!(policy("serial__run"), of(false, Duration::from_secs(1)));
     assert_eq!(policy("memory_search"), of(true, five_minutes));
-    assert_eq!(policy("memory"), of(false, five_minutes));
+    assert_eq!(policy("memory_recall"), of(true, five_minutes));
+    assert_eq!(policy("memory_add"), of(false, five_minutes));
     // Not offered: answered at once, so it holds nothing up.
     assert_eq!(policy("other__run"), of(true, five_minutes));
 }

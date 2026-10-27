@@ -434,8 +434,9 @@ In-message addressing (`@name`) is not in v1.
 Every conversation is its own session, DMs included. The session key is (agent, channel instance,
 conversation id): each WhatsApp chat, email thread, IRC query, and web chat has its own history.
 
-- Knowledge crosses channels through memory, not history: the user's per-agent memory is loaded in
-  every one of their DM sessions, and `memory_search` covers their transcripts on all channels.
+- Knowledge crosses channels through memory, not history: the user's core memories are loaded in
+  every one of their DM sessions, `memory_recall` finds their other memories, and `memory_search`
+  covers their transcripts on all channels.
 - A turn replies into its own session's conversation.
 - Jobs with `session = "dm"` run in the DM conversation on the delivery user's default identity
   (section 6.11).
@@ -469,8 +470,8 @@ conversation id): each WhatsApp chat, email thread, IRC query, and web chat has 
   tools offered, so the model tells the user where it stopped. A turn never stops silently.
 - Tool calls run in the order the model gave them. Consecutive parallel-safe calls run together, up
   to 8 at once; any other call is a barrier that waits for everything before it and runs alone.
-  Parallel-safe means the read-only core tools (`memory_search`, `load_skill`) and every tool of a
-  toolset instance marked `parallel = true` (section 7.10).
+  Parallel-safe means the read-only core tools (`memory_recall`, `memory_search`, `load_skill`) and
+  every tool of a toolset instance marked `parallel = true` (section 7.10).
 - Every tool call has a deadline, configurable per toolset instance. When the core drops a call, the
   gRPC cancellation reaches the plugin.
 
@@ -538,8 +539,9 @@ way.
   plugin with their own names (`irc-libera`, `irc-oftc`).
 - Instance names match `[a-zA-Z0-9-]+`, so they never contain `__`. A prefixed name longer than 64
   characters is rejected when the tool list is loaded.
-- Core tools (`memory`, `memory_search`, `load_skill`, `schedule`, `send_attachment`) use bare,
-  reserved names. They can't collide with plugin tools.
+- Core tools (`memory_add`, `memory_edit`, `memory_forget`, `memory_recall`, `memory_search`,
+  `load_skill`, `schedule`, `send_attachment`) use bare, reserved names. They can't collide with
+  plugin tools.
 - Tools and skills are always listed in sorted order, so the prompt prefix is stable for caching.
 
 ### 6.6 Skills
@@ -568,10 +570,10 @@ everything after it
 - `system`, assembled at session start and again after compaction (section 6.8), never per turn:
   1. `SOUL.md`
   2. Skill names and descriptions
-  3. The memory snapshot: agent-wide `MEMORY.md`, then per-conversation memory. In a DM, the
-     user's `USER.md` and `agents/<agent>/users/<user>/MEMORY.md`. In a group, the group's own
-     `MEMORY.md`; participants' `USER.md` and private memory are never loaded in a group, so the
-     agent can't repeat them to others there.
+  3. The memory snapshot: the core memories visible in the session, each with its id (below).
+     Shared memories come first, then the session's own: a user's in a DM, the group's in a group.
+     In a DM, the user's `USER.md` follows. Participants' `USER.md` and private memories are never
+     loaded in a group, so the agent can't repeat them to others there.
 - Messages: each stored user message carries a prefix with the time it was sent, in the user's
   timezone (DM) or the agent's (group), next to the `[sender]` prefix in groups. The current time
   never goes in `system`.
@@ -580,36 +582,73 @@ everything after it
 - A snapshot test of the rendered `system` and tool list catches changes to the prefix (section
   14.1), and `giles usage` shows the cache hit rate (section 11.7).
 
-Memory is Markdown, one file per scope. The scopes are `agent`, `user` (DMs only), and `group`
-(groups only); in v1 only `agent` and the owner's `user` scope are used.
+Memories are rows in a per-agent SQLite database, `agents/<agent>/memory.db` (section 11.3). Only
+core memories are loaded into the prompt; the agent finds the rest with `memory_recall`. So the cap
+(`memory_cap`) bounds what is always in the prompt, not everything the agent can remember about a
+scope.
 
+- Data model: a memory has an integer `id`, which the model names it by, and `content` of at most
+  1,000 characters. It records its owner (a user by internal id, a group by channel instance and
+  conversation, or nobody for a memory written by a config job), `shared`, `core`, its creation and
+  update times, and the session it was written in. One memory holds one fact. The database has its
+  own schema migrations and an FTS5 table over `content` kept current by triggers, as `search` is
+  for messages (section 11.4).
+- Visibility: a private memory (`shared = false`) is visible only in its owner's sessions: that
+  user's direct and job sessions, or that group conversation. A user's memories never appear in a
+  group, and a group's never in a participant's DM. A shared memory is visible in every session of
+  the agent. A memory a session can't see is reported as unknown, with the same message as an id
+  that doesn't exist, so ids of other scopes' memories leak nothing.
+- Core: the model sets `core` when it adds a memory and can change it later. The prompt's `# Memory`
+  section lists the core memories visible in the session, each as `#12 (core): ...` with its id,
+  under a heading per scope: shared, then the user's (DM or job session) or the group's (group
+  session), then in a DM `USER.md`. A scope's usage header, such as `[67% — 1,474/2,200]`, is shown
+  only for scopes the model may write; a shared section with nothing in it is left out when the
+  model can't write it.
 - Snapshot: memory is copied into `system` at session start and refreshed after compaction. Writes
   during a session show in the tool result, not in the prompt, so other running sessions see a new
-  fact only after they compact or start anew.
-- Tool: `memory(scope, operations[])`. Operations are `add`, `patch{old_text, content}` (replace a
-  unique span inside one entry), and `remove{old_text}`. Entries are separated by a `§` line.
-  There is no read action, since memory is in the prompt, and no whole-entry replace, which models
-  use as find-and-swap and wipe the other facts in an entry (Hermes removed it for that reason:
-  [Hermes memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory)).
-- Caps: each memory file the agent writes has a character cap (`memory_cap`, default 2,200 per
-  scope, per agent). The prompt shows a usage header such as `[67% — 1,474/2,200]`. The cap is
-  checked on the result of the whole batch; a batch that would exceed it fails and returns the
-  current entries and the overflow, so the model can consolidate in the next batch. Text a person
-  wrote is never truncated; an over-cap file makes model writes fail until someone consolidates.
-- Writes: a per-file lock in the core plus write-to-temp-then-rename, so concurrent sessions don't
-  lose each other's writes.
+  fact only after they compact or start anew. This also keeps the prompt cache stable.
+- Caps: `memory_cap` (default 2,200 characters) caps the total characters of core memories in each
+  scope: shared, each user, and each group, per agent. Memories that aren't core are not capped. The
+  cap is checked inside the write transaction, so concurrent sessions can't break it. An add or
+  edit that would exceed it fails, and the error gives the overflow and lists that scope's core
+  memories with their sizes, so the model can shorten, forget, or demote some in its next call. A
+  change that doesn't grow a scope is always allowed, so a scope left over a lowered cap can still
+  shrink. Marking a core memory shared or private moves it between scopes and is checked in the
+  target scope.
+- Tools: four core tools, with closed JSON schemas. `memory_add(content, core?, shared?)` returns
+  the new id; `core` and `shared` default to false. `memory_edit(id, content?, core?, shared?)`
+  changes at least one of them and replaces the whole content: whole-entry replace was risky when
+  one entry held many facts, and a memory holds one. `memory_forget(id)` deletes the row; no history
+  is kept. `memory_recall(query, limit?)` searches the memories visible in the session, core ones
+  included. Every result shows the affected memory with its id and flags, and for a core change the
+  usage of each scope it touched. Content is trimmed, can't be empty, and is at most 1,000
+  characters; the error messages say what to do.
+- Recall: the query is plain words, each quoted and OR-ed, with no query syntax. Hits are ranked
+  by bm25, the most recently updated first on ties; `limit` defaults to 10 and is at most 50. Each
+  hit shows its id, flags, content, and creation and update times. The tool is read-only and
+  parallel-safe.
 - Search: `memory_search` is FTS5 over transcripts only, kept current by triggers on `messages`.
   It's scoped to the current context: in a DM, that user's DM sessions with this agent; in a group,
-  that group's transcript. Memory files aren't indexed; they're already in the prompt. Embedding
-  search is not in v1.
+  that group's transcript. Embedding search is not in v1.
 
-Writes to agent-wide `MEMORY.md` are accepted only in turns whose requester is the agent's `owner`
-or an admin, and in config job turns, since an admin set those jobs up. Agent-wide memory is
-loaded into every prompt, including the owner's tool-enabled DMs, so a guest or a group must not be
-able to plant instructions there.
+Shared memories reach every prompt, including the owner's tool-enabled DMs, so a guest or a group
+must not be able to plant instructions in one. Creating a shared memory, marking one shared, and
+editing or forgetting one are therefore accepted only in turns whose requester is the owner, and in
+config job turns, since an admin set those jobs up; anyone else gets an error and their private
+memories are unaffected. Un-sharing a memory makes it private to the person who un-shared it. In a
+group, any participant can use the group's private memories. Who speaks varies per turn, so the
+group's prompt treats shared memories as not writable and shows no usage for them. In a DM or job
+session, a requester other than the session's user can't use its private memories.
+
+A config job has no requester, so there is nobody whose private memories it could use: its tools
+see and write shared memories only, and what it writes has no owner. Its prompt is built per
+session, not per turn, and can't tell it from the user's own job session, so the prompt still lists
+that user's core memories, which the job's tools can neither read nor change.
 
 `USER.md` is written only by people, by hand or in the web UI, never by an agent, and is loaded only
-in that user's DMs. What an agent learns about a user goes into that agent's per-user memory.
+in that user's DMs. What an agent learns about a user goes into that agent's private memories for
+that user. The old `MEMORY.md` files and the `memory` tool they were written through are gone;
+existing files stay on disk, ignored, and nothing is migrated.
 
 ### 6.8 Context Overflow
 
@@ -670,7 +709,7 @@ ask_to = "deliver_to"         # optional; without it, `ask` tools are denied (se
   agent create, list, and cancel jobs for the requesting user ("remind me at 5"). Runtime jobs live
   in SQLite, record their creator, run with the creator's role (section 6.4), and deliver to that
   user. `schedule list` also shows config jobs, read-only.
-- `session = "isolated"` starts each run with a fresh context: the delivery user's memory snapshot
+- `session = "isolated"` starts each run with a fresh context: the delivery user's core memories
   and, optionally (`dm_excerpt = N`), the last N messages of the DM on their default identity.
   `session = "dm"` runs in that DM's session as its own queued turn, never merged into user
   messages.
@@ -710,8 +749,8 @@ One process per configured instance. Two IRC networks are two `giles-channel-irc
 with its own config and sandbox grants. RPCs carry no instance id. Instance config is described in
 section 11.2.
 
-Instance names are permanent ids: sessions, the inbox, memory paths, and the plugin's data directory
-are keyed by them. Renaming one in its config alone would orphan all of that, so
+Instance names are permanent ids: sessions, the inbox, group memories, and the plugin's data
+directory are keyed by them. Renaming one in its config alone would orphan all of that, so
 `giles instance rename <old> <new>` does it, with the core stopped: it migrates the database rows,
 renames the directories, and renames the instance's config (in the current layout, the
 `[<kind>.<old>]` table in `giles.toml`, section 11.2). At startup, the core refuses to start a new
@@ -1173,7 +1212,8 @@ configuration before its files move and checked again, and put back if work appe
 fails. Its sessions, messages, and usage stay in the database, inert; creating an agent
 with the same id again reattaches them. Web chats can be started with a chosen agent, which routes
 them to it ahead of the stored routes. Who sees which agent file is one per-viewer check: the owner
-sees all of them; with multi-user support a user sees only their own per-user memory.
+sees all of them, and `memory.db` is listed by size, not contents. Viewing and editing memories in
+the web UI is planned (issue #8), under the visibility rules of section 6.7.
 
 The route pages (list, add, edit, remove, and reorder the routes of section 6.1) are owner-only
 admin pages too, also without RPCs: they call the core's route management in-process, and a change
@@ -1284,7 +1324,7 @@ Most other settings are managed by Giles and meant to be changed in the web UI, 
 Giles creates and edits them:
 
 - Users: an admin adds users in the web UI.
-- Agents and their files: `agent.toml`, `SOUL.md`, and per-user memories (section 11.3).
+- Agents and their files: `agent.toml`, `SOUL.md`, and memories (section 11.3).
 - Routes from channel identities to users and agents: identity links (section 3.2) and routing
   rules (section 6.1). Routing rules are the first of these built: they're stored in SQLite and
   edited in the web UI.
@@ -1369,10 +1409,10 @@ widen the sandbox), `auth` without a method, `[[routes]]` not yet imported, the 
 name = "Jeeves"
 owner = "stephen"
 models = ["anthropic/claude-sonnet-4-5"]
-tools = ["memory", "memory_search", "load_skill", "schedule", "github__*"]
+tools = ["memory_add", "memory_edit", "memory_forget", "memory_recall", "memory_search", "load_skill", "schedule", "github__*"]
 ask = ["github__create_*"]
 max_iterations_jobs = 25     # interactive turns: no cap unless `max_iterations` is set
-memory_cap = 2200            # characters per memory file the agent writes
+memory_cap = 2200            # characters of core memories per scope (shared, each user, each group)
 approval_timeout = "10m"
 timezone = "America/Los_Angeles"
 idle_reset = "12h"          # optional
@@ -1402,7 +1442,7 @@ settle (500 ms), it parses and validates the whole config.
   instance is restarted with its new config; a removed one is stopped; a new one is started.
 - `[core]` settings such as `http_listen` need a restart; the core logs that.
 
-Markdown files (`SOUL.md`, `MEMORY.md`, `USER.md`, job prompt files, skills) are read when a turn
+Markdown files (`SOUL.md`, `USER.md`, job prompt files, skills) are read when a turn
 assembles its prompt, so they need no reload.
 
 ### 11.3 Agent and User Files
@@ -1412,23 +1452,25 @@ agents/<agent>/
   agent.toml
   SOUL.md                                    # who the agent is
   morning.md                                 # a job's prompt_file (any name)
-  MEMORY.md                                  # agent-wide memory
-  users/<user>/MEMORY.md                     # what this agent remembers about this user
-  groups/<instance>/<conversation>/MEMORY.md # what this agent learned in this group
+  memory.db                                  # the agent's memories (SQLite, section 6.7)
   skills/<skill>/SKILL.md                    # agent-local skills
 users/<user>/
   user.toml
   USER.md                                    # profile, written by people, loaded in DMs only
 ```
 
-- YAML front-matter is optional; no fields are required. Unknown fields are preserved when the core
-  rewrites a memory file.
-- Memory files hold entries separated by a line containing only `§` (section 6.7).
+- YAML front-matter is optional; no fields are required.
+- `memory.db` holds every memory of the agent: shared, each user's, and each group's (section
+  6.7). It is its own SQLite database, not a table of `giles.db`. Memory files from earlier
+  versions (`MEMORY.md`, `users/<user>/MEMORY.md`, `groups/<instance>/<conversation>/MEMORY.md`)
+  are not read, written, or migrated.
 - Conversation ids are percent-encoded in paths (`#giles` becomes `%23giles`).
 
 ### 11.4 SQLite
 
-One database, `data/giles.db`, with migrations embedded in the binary. It runs in WAL mode by
+One database, `data/giles.db`, with migrations embedded in the binary, holds everything except the
+memories: each agent keeps those in its own `agents/<agent>/memory.db` (section 6.7), opened the
+same way with its own migrations. Both run in WAL mode by
 default; `[core] journal_mode` chooses `wal`, `delete`, `truncate` or `persist` (`memory` and `off`
 are refused: they risk corruption). WAL needs shared memory, which network file systems lack, so
 the option is the way out there; changing it converts the database at the next start. Writes go
@@ -1454,10 +1496,10 @@ writer wait for each other and `synchronous` is `FULL`. Main tables:
 Per-user operations:
 
 - `giles user export <user>`: an archive of the user's DM sessions, their messages in group
-  sessions, the blobs those reference, per-agent memory files, `USER.md`, identity links, and
-  runtime jobs.
+  sessions, the blobs those reference, their private memories in each agent's `memory.db`,
+  `USER.md`, identity links, and runtime jobs.
 - `giles user forget <user>`, every table and file that holds the user's data:
-  - Deleted: DM sessions and their summaries, per-agent memory files, `USER.md`, identity links,
+  - Deleted: DM sessions and their summaries, their private memories, `USER.md`, identity links,
     pairings, web sessions, runtime jobs, pending approvals, and their `inbox` and `outbox` rows.
   - In group sessions: the content of their messages is replaced with a tombstone, and summaries
     covering those messages are deleted and regenerated.
@@ -1466,7 +1508,8 @@ Per-user operations:
   - `user.toml` is listed for the operator to delete; the core doesn't delete TOML files.
 
 Backups: copying a live SQLite file can capture a broken state (in WAL mode the main file is behind
-the WAL), so `giles backup <dir>` is the supported way: `VACUUM INTO` for the database plus a tar
+the WAL), so `giles backup <dir>` is the supported way: `VACUUM INTO` for the database and for each
+agent's `memory.db`, plus a tar
 of the TOML, Markdown, and blobs. Before applying schema migrations, the core writes the same
 snapshot to `backups/`, so a bad upgrade can be undone by restoring it with the old binary. In a
 rollback-journal mode the snapshot runs on the writer connection, so writes wait for it.

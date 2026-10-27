@@ -1,4 +1,4 @@
-//! `MemoryStore`: the per-agent memory database (`data/agents/<agent>/memory.db`).
+//! `MemoryStore`: the per-agent memory database (`agents/<agent>/memory.db`).
 //!
 //! A memory is one short piece of text the agent keeps, with an integer id the model names it by.
 //! The database is a separate file from `giles.db`, opened through the same [`Store`] machinery

@@ -48,7 +48,7 @@ pub const SKIPPED_FOR_MESSAGE_RESULT: &str = "Skipped to read a new message";
 pub const MAX_PARALLEL_CALLS: usize = 8;
 
 /// The core tools that only read, so they're parallel-safe (PLAN section 6.3).
-pub const PARALLEL_SAFE_CORE_TOOLS: [&str; 2] = ["load_skill", "memory_search"];
+pub const PARALLEL_SAFE_CORE_TOOLS: [&str; 3] = ["load_skill", "memory_recall", "memory_search"];
 
 /// One `ToolUse` block to run.
 #[derive(Debug, Clone, PartialEq)]

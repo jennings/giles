@@ -12,6 +12,10 @@
 
 mod load_skill;
 mod memory;
+mod memory_add;
+mod memory_edit;
+mod memory_forget;
+mod memory_recall;
 mod memory_search;
 mod schedule;
 mod send_attachment;
@@ -32,11 +36,14 @@ use crate::agent_loop::ToolOutput;
 use crate::media::SessionMedia;
 use crate::registry::RegistryError;
 use crate::runtime::Runtime;
-use crate::sessions::{Reply, SystemClock};
+use crate::sessions::{Clock, Reply, SystemClock};
 use crate::skills::SkillSet;
 
 pub use load_skill::{LOAD_SKILL, LoadSkillTool, MAX_INLINE_TEXT_BYTES};
-pub use memory::{MEMORY, MemoryTool};
+pub use memory_add::{MEMORY_ADD, MemoryAddTool};
+pub use memory_edit::{MEMORY_EDIT, MemoryEditTool};
+pub use memory_forget::{MEMORY_FORGET, MemoryForgetTool};
+pub use memory_recall::{MEMORY_RECALL, MemoryRecallTool, NO_MEMORIES};
 pub use memory_search::{DEFAULT_LIMIT, MAX_LIMIT, MEMORY_SEARCH, MemorySearchTool, NO_MATCHES};
 pub use schedule::{
     MAX_LISTED_PROMPT_CHARS, MAX_RUNTIME_JOBS_PER_USER, Request, SCHEDULE, ScheduleTool,
@@ -52,9 +59,27 @@ pub use send_attachment::{SEND_ATTACHMENT, SendAttachmentTool};
 pub fn register(runtime: &Runtime) -> Result<(), RegistryError> {
     let registry = &runtime.registry;
     let config = registry.live_config();
-    registry.register_core_tool(Arc::new(MemoryTool::new(
-        runtime.root.clone(),
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    let dbs = &runtime.memory_dbs;
+    registry.register_core_tool(Arc::new(MemoryAddTool::new(
+        dbs.clone(),
         config.clone(),
+        clock.clone(),
+    )))?;
+    registry.register_core_tool(Arc::new(MemoryEditTool::new(
+        dbs.clone(),
+        config.clone(),
+        clock.clone(),
+    )))?;
+    registry.register_core_tool(Arc::new(MemoryForgetTool::new(
+        dbs.clone(),
+        config.clone(),
+        clock.clone(),
+    )))?;
+    registry.register_core_tool(Arc::new(MemoryRecallTool::new(
+        dbs.clone(),
+        config.clone(),
+        clock,
     )))?;
     registry.register_core_tool(Arc::new(MemorySearchTool::new(
         runtime.store.clone(),

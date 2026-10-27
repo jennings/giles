@@ -17,7 +17,7 @@
 - [Email](user/email.md)
 - [WhatsApp](user/whatsapp.md)
 - [Discord](user/discord.md)
-- [Skills and Memory Files](user/skills-and-memory.md)
+- [Skills and Memory](user/skills-and-memory.md)
 - [Writing a Plugin](user/writing-a-plugin.md)
 
 # Technical
@@ -57,7 +57,7 @@
 - [Approvals](technical/approvals.md)
 - [Outbox](technical/outbox.md)
 - [Scheduler](technical/scheduler.md)
-- [Skills and Memory Files](technical/skills-and-memory.md)
+- [Skills and Memory](technical/skills-and-memory.md)
 - [WhatsApp Spike](technical/whatsapp-spike.md)
 
 # Design Background

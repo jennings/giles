@@ -97,12 +97,10 @@ its page, **Chat** to start a chat with it, **Edit**, and **Remove**. Only the o
 pages.
 
 An agent's page shows its models, tools, and time zone, then every file in `agents/<agent>/`:
-`agent.toml`, `SOUL.md`, `MEMORY.md`, what it remembers about each user
-(`users/<user>/MEMORY.md`) and learned in each group (`groups/<instance>/<conversation>/MEMORY.md`,
-labeled with the conversation as the channel names it, `#giles` rather than `%23giles`), its jobs'
-prompt files, its skills, and anything else there. Contents are shown as plain text. For now you see
-every file; once Giles has several users, each user will see only their own memory file of an
-agent. Limits keep the page small:
+`agent.toml`, `SOUL.md`, its jobs' prompt files, its skills, its memory database `memory.db`
+(shown with its size, not its contents: see [Skills and Memory](skills-and-memory.md#memory)), and
+anything else there. Contents are shown as plain text. For now you see every file. Limits keep the
+page small:
 
 - At most 200 files are listed, at most 8 directories deep; names starting with `.` are skipped.
 - Each file shows at most its first 64 KiB, and the page at most 1 MiB of contents in all.
@@ -175,9 +173,9 @@ as they were. Otherwise it saves, and the agent changed without a restart:
 **Remove**, on the list and on an agent's page, opens a page that says what removing the agent
 does, with a **Remove agent** button. Nothing happens until you press it.
 
-- **The files are moved, not deleted.** `agents/<id>/` (`agent.toml`, `SOUL.md`, `MEMORY.md`, the
-  memory of each user and group, the memory database `memory.db`, job prompt files, skills) is
-  renamed to `trash/agents/<id>-<date and time in UTC>/` in the data directory, for example
+- **The files are moved, not deleted.** `agents/<id>/` (`agent.toml`, `SOUL.md`, the memory
+  database `memory.db` with the memories of the agent, its users and groups, job prompt files,
+  skills) is renamed to `trash/agents/<id>-<date and time in UTC>/` in the data directory, for example
   `trash/agents/jeeves-20261024T120000Z/`. To bring the agent back, move that directory to
   `agents/<id>/` and restart Giles; its memories come back with it. Giles never reads, empties,
   or backs up `trash/` ([Backups](backups.md)); delete what you don't want, whenever you like.

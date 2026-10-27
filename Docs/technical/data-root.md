@@ -25,8 +25,9 @@ environment.
 <root>/
   giles.toml          DataRoot::config_file()       human-written
   secrets.toml        DataRoot::secrets_file()      human-written, mode 0600
-  agents/<agent>/     DataRoot::agent_dir(name)
-  users/<user>/       DataRoot::user_dir(name)
+  agents/<agent>/     DataRoot::agent_dir(name)     agent.toml, SOUL.md, skills/, ...
+    memory.db         DataRoot::agent_memory_db()   the agent's memories, created on first use
+  users/<user>/       DataRoot::user_dir(name)      USER.md, the person-written profile
   skills/             DataRoot::skills_dir()
   plugins/            DataRoot::plugins_dir()       plugin binaries
   data/               DataRoot::data_dir()

@@ -15,29 +15,27 @@ A skill holds instructions for one kind of task. When a skill fits the task, loa
 
 # Memory
 
-Memory files hold what you keep across conversations, as entries separated by lines holding only `§`. This is a snapshot taken when the conversation started: changes made since then show up in later conversations.
+This is what you keep across conversations: your core memories, each with its id. Memories that aren't core aren't loaded here: find them with the `memory_recall` tool. It is a snapshot taken when the conversation started: changes made since then show up in later conversations.
 
-## Agent memory [5% — 52/1,000]
+## Shared memory [4% — 49/1,000]
 
 What you remember in general, shared by all your conversations.
 
-The home server is `pantry`.
-§
-Backups run at 02:00.
+#1 (core, shared): The home server is `pantry`.
+#2 (core, shared): Backups run at 02:00.
+
+## User memory [2% — 22/1,000]
+
+What you remember about this user.
+
+#4 (core): Likes tea, not coffee.
 
 ## User profile
 
 The user's own description of themselves. Only the user edits it.
 
 Stephen. Prefers metric units.
-§
 Lives in Seattle.
-
-## User memory [2% — 22/1,000]
-
-What you remember about this user.
-
-Likes tea, not coffee.
 === tools ===
 --- github__create_issue
 Create an issue.
@@ -48,8 +46,17 @@ List the issues of a repository.
 --- load_skill
 The core tool load_skill.
 {"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"}
---- memory
-The core tool memory.
+--- memory_add
+The core tool memory_add.
+{"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"}
+--- memory_edit
+The core tool memory_edit.
+{"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"}
+--- memory_forget
+The core tool memory_forget.
+{"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"}
+--- memory_recall
+The core tool memory_recall.
 {"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"}
 --- memory_search
 The core tool memory_search.

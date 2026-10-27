@@ -7,7 +7,7 @@
 //! [`BlobStore`] is the content-addressed file store under `data/blobs/` (PLAN 11.5), with its
 //! metadata in the database.
 //!
-//! [`MemoryStore`] is an agent's memory database (`data/agents/<agent>/memory.db`), a separate
+//! [`MemoryStore`] is an agent's memory database (`agents/<agent>/memory.db`), a separate
 //! SQLite file with its own migrations ([`MEMORY_SCHEMA_VERSION`]) and its own typed methods.
 //!
 //! Conventions shared by every method:

@@ -1,299 +1,224 @@
-//! The `memory` core tool (PLAN section 6.7): batches of `add`, `patch`, and `remove` on one
-//! memory file, through [`crate::memory::apply`].
+//! What the four memory tools ([`MemoryAddTool`](super::MemoryAddTool),
+//! [`MemoryEditTool`](super::MemoryEditTool), [`MemoryForgetTool`](super::MemoryForgetTool), and
+//! [`MemoryRecallTool`](super::MemoryRecallTool); PLAN section 6.7) have in common: opening the
+//! agent's memory database for a call, who the call acts as, and how results and errors read.
 //!
-//! Scopes: `agent` (`agents/<agent>/MEMORY.md`) and `user` (`agents/<agent>/users/<user>/
-//! MEMORY.md` of the session's user, in direct and job sessions). `group` is designed but not in
-//! v1. Agent-wide memory is loaded into every prompt, so it's written only in turns of the owner
-//! (runtime jobs run as their creator, so the owner's jobs count) and in config jobs, which have
-//! no requester. The prompt keeps the snapshot it was built with; the tool result shows the
-//! file after the batch.
+//! Every call gets an [`Access`]: the agent's [`MemoryStore`] (fetched from
+//! [`MemoryDbs`](crate::memory_dbs::MemoryDbs) for this call only, never kept), the
+//! [`MemoryViewer`] the turn acts as ([`crate::memory::viewer`]), the agent's `memory_cap`, and
+//! the time. The prompt keeps the snapshot it was built with, so a result is where the model sees
+//! a change: the affected memory with its id, and, when a core memory was involved, the usage of
+//! the scope it counts against.
 
-use async_trait::async_trait;
-use giles_store::Session;
-use giles_types::{Block, ToolSpec, UserId};
-use serde::Deserialize;
-use serde_json::{Value, json};
+use std::fmt::Write as _;
+use std::sync::Arc;
 
-use super::{CoreCall, CoreTool};
+use giles_store::{
+    CoreOverflow, Error, Memory, MemoryOwner, MemoryScope, MemoryStore, MemoryViewer, Session,
+    SessionId,
+};
+use giles_types::{AgentId, Block, Timestamp, UserId};
+use jiff::tz::TimeZone;
+use tracing::warn;
+
 use crate::agent_loop::ToolOutput;
-use crate::agent_loop::prompt::{AGENT_MEMORY_TITLE, EMPTY_MEMORY, USER_MEMORY_TITLE, memory_user};
+use crate::agent_loop::history::message_timezone;
 use crate::config::LiveConfig;
-use crate::identity::owner;
-use crate::memory::{self, BatchError, MemoryError, MemoryOp, usage_header};
-use crate::paths::DataRoot;
+use crate::memory::{self, usage_header};
+use crate::memory_dbs::MemoryDbs;
+use crate::sessions::Clock;
 
-/// The tool's name.
-pub const MEMORY: &str = "memory";
-
-/// The `memory` tool.
-#[derive(Debug, Clone)]
-pub struct MemoryTool {
-    root: DataRoot,
+/// What the memory tools need for their whole life: where the databases are, each agent's
+/// `memory_cap`, and the clock.
+#[derive(Clone)]
+pub(super) struct MemoryEnv {
+    dbs: MemoryDbs,
     config: LiveConfig,
+    clock: Arc<dyn Clock>,
 }
 
-impl MemoryTool {
-    /// Writes memory files under `root`, with each agent's `memory_cap` from `config`.
-    pub fn new(root: DataRoot, config: LiveConfig) -> Self {
-        Self { root, config }
+impl std::fmt::Debug for MemoryEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoryEnv")
+            .field("dbs", &self.dbs)
+            .finish_non_exhaustive()
     }
 }
 
-/// A memory scope (PLAN section 6.7).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Scope {
-    /// Agent-wide memory.
-    Agent,
-    /// The session user's memory with this agent.
-    User,
-}
-
-/// Whose memory file a batch writes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Target {
-    /// The agent's `MEMORY.md`.
-    Agent,
-    /// This user's `MEMORY.md` with the agent.
-    User(UserId),
-}
-
-impl Target {
-    /// The heading the prompt shows the file under.
-    fn title(&self) -> &'static str {
-        match self {
-            Self::Agent => AGENT_MEMORY_TITLE,
-            Self::User(_) => USER_MEMORY_TITLE,
-        }
+impl MemoryEnv {
+    pub(super) fn new(dbs: MemoryDbs, config: LiveConfig, clock: Arc<dyn Clock>) -> Self {
+        Self { dbs, config, clock }
     }
-}
 
-/// The tool's input.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Input {
-    scope: String,
-    operations: Vec<Value>,
-}
-
-/// Parses the tool's input: the scope and the operations, each error naming what's wrong.
-///
-/// # Errors
-///
-/// The message for the model.
-pub fn parse_input(input: Value) -> Result<(Scope, Vec<MemoryOp>), String> {
-    let input: Input =
-        serde_json::from_value(input).map_err(|error| format!("invalid input: {error}"))?;
-    let scope = match input.scope.as_str() {
-        "agent" => Scope::Agent,
-        "user" => Scope::User,
-        "group" => return Err("the `group` memory scope isn't available".to_owned()),
-        other => {
-            return Err(format!(
-                "unknown memory scope {other:?}: use \"agent\" or \"user\""
-            ));
-        }
-    };
-    if input.operations.is_empty() {
-        return Err("operations is empty: give at least one operation".to_owned());
-    }
-    let operations = input
-        .operations
-        .into_iter()
-        .enumerate()
-        .map(|(index, op)| {
-            serde_json::from_value(op).map_err(|error| format!("operations[{index}]: {error}"))
+    /// Opens what a call of `agent` in `session`, in a turn of `requester` (`None`: a config job),
+    /// works with.
+    ///
+    /// # Errors
+    ///
+    /// The error result to return: the requester isn't allowed in this session's memory, the agent
+    /// isn't configured, or the database can't be opened.
+    pub(super) async fn access(
+        &self,
+        agent: &AgentId,
+        requester: Option<&UserId>,
+        session: &Session,
+    ) -> Result<Access, ToolOutput> {
+        let viewer = memory::viewer(session, requester).map_err(ToolOutput::error)?;
+        let config = self.config.get();
+        let Some(agent_config) = config.agents.get(agent) else {
+            return Err(ToolOutput::error(format!(
+                "agent `{agent}` is not configured"
+            )));
+        };
+        let store = self.dbs.get(agent).await.map_err(|error| {
+            warn!(%agent, %error, "opening the memory database failed");
+            ToolOutput::error("the memory database is unavailable")
+        })?;
+        Ok(Access {
+            agent: agent.clone(),
+            store,
+            viewer,
+            cap: agent_config.memory_cap as usize,
+            tz: message_timezone(&config, agent_config),
+            session: session.id,
+            now: self.clock.now(),
         })
-        .collect::<Result<_, _>>()?;
-    Ok((scope, operations))
+    }
 }
 
-/// Which file a batch on `scope` writes in a turn of `requester` (`None`: a config job) in
-/// `session`, or why it may not.
-///
-/// - `agent`: only the owner's turns and config jobs (PLAN section 6.7). In v1 the owner is the
-///   only user, and there are no admins.
-/// - `user`: the memory of the session's user, in a direct or job session, and only in that
-///   user's turns or a config job's.
-///
-/// # Errors
-///
-/// The message for the model.
-pub fn target(
-    scope: Scope,
-    requester: Option<&UserId>,
-    session: &Session,
-) -> Result<Target, String> {
+/// One call's view of the agent's memory.
+pub(super) struct Access {
+    agent: AgentId,
+    /// The agent's database, for this call only.
+    pub(super) store: MemoryStore,
+    /// Who the call acts as.
+    pub(super) viewer: MemoryViewer,
+    /// The agent's `memory_cap`: the most characters of core memories in one scope.
+    pub(super) cap: usize,
+    /// The zone times are shown in.
+    pub(super) tz: TimeZone,
+    /// The session the call runs in, recorded as the source of what it writes.
+    pub(super) session: SessionId,
+    /// When the call runs.
+    pub(super) now: Timestamp,
+}
+
+impl Access {
+    /// The result of a change: `verb` and the memory as the model reads it, then the usage of each
+    /// of `scopes` (the core scopes the change touched).
+    pub(super) async fn changed(
+        &self,
+        verb: &str,
+        memory: &Memory,
+        scopes: &[MemoryScope],
+    ) -> ToolOutput {
+        let mut text = format!("{verb} {}", memory::line(memory));
+        if !scopes.is_empty() {
+            match self.store.core_memories(&self.viewer).await {
+                Ok(core) => {
+                    for scope in scopes {
+                        let used = match scope {
+                            MemoryScope::Shared => core.shared.chars,
+                            MemoryScope::Private(_) => core.own.chars,
+                        };
+                        let _ = write!(
+                            text,
+                            "\n{} {}",
+                            usage_title(scope),
+                            usage_header(used, self.cap)
+                        );
+                    }
+                }
+                Err(error) => {
+                    warn!(agent = %self.agent, %error, "reading the core memories failed")
+                }
+            }
+        }
+        ToolOutput {
+            content: vec![Block::text(text)],
+            is_error: false,
+        }
+    }
+
+    /// The error result for a store error, in words the model can act on. Unknown and invisible
+    /// memories read the same, so an id of someone else's memory leaks nothing.
+    pub(super) fn failure(&self, error: Error) -> ToolOutput {
+        ToolOutput::error(match error {
+            Error::UnknownMemory(id) => format!("no memory #{id}"),
+            Error::SharedWriteForbidden => "shared memories can be created, shared, changed, or \
+                forgotten only in the owner's turns and in config jobs; private memories aren't \
+                affected"
+                .to_owned(),
+            Error::MemoryTooLong { chars, max } => format!(
+                "the memory is {chars} characters; the limit is {max}. Shorten it, or split it \
+                 into several memories"
+            ),
+            Error::CoreCapExceeded(overflow) => overflow_text(&overflow),
+            Error::InvalidRequest(message) => format!("invalid input: {message}"),
+            error => {
+                warn!(agent = %self.agent, %error, "a memory tool call failed");
+                "the memory database failed".to_owned()
+            }
+        })
+    }
+}
+
+/// The core scopes a change touches: the scope the memory counted against before (if it was
+/// core) and the one it counts against after (if it is core), once each.
+pub(super) fn touched_scopes(before: Option<&Memory>, after: Option<&Memory>) -> Vec<MemoryScope> {
+    let mut scopes = Vec::new();
+    for memory in [before, after].into_iter().flatten() {
+        let scope = memory.scope();
+        if memory.core && !scopes.contains(&scope) {
+            scopes.push(scope);
+        }
+    }
+    scopes
+}
+
+/// How a scope's core memories are named in the middle of a sentence.
+fn core_label(scope: &MemoryScope) -> &'static str {
     match scope {
-        Scope::Agent => match requester {
-            Some(user) if *user != owner() => Err(format!(
-                "not permitted for {user}: agent-wide memory is written only in the owner's \
-                 turns and in config jobs"
-            )),
-            _ => Ok(Target::Agent),
-        },
-        Scope::User => {
-            let Some(user) = memory_user(session) else {
-                return Err(
-                    "the `user` memory scope is only available in direct conversations".to_owned(),
-                );
-            };
-            match requester {
-                Some(requester) if requester != user => Err(format!(
-                    "not permitted for {requester}: this conversation's user memory belongs to \
-                     {user}"
-                )),
-                _ => Ok(Target::User(user.clone())),
-            }
-        }
+        MemoryScope::Shared => "the shared core memories",
+        MemoryScope::Private(MemoryOwner::Group { .. }) => "this group's core memories",
+        MemoryScope::Private(_) => "your core memories",
     }
 }
 
-/// The memory as the model sees it: `<heading> [usage]:` and the entries (or `(empty)`).
-fn render(heading: &str, entries: &[String], used: usize, cap: usize) -> String {
-    let body = if entries.is_empty() {
-        EMPTY_MEMORY.to_owned()
-    } else {
-        entries.join(&format!("\n{}\n", memory::ENTRY_SEPARATOR))
-    };
-    format!("{heading} {}:\n\n{body}", usage_header(used, cap))
-}
-
-#[async_trait]
-impl CoreTool for MemoryTool {
-    fn spec(&self) -> ToolSpec {
-        spec()
-    }
-
-    async fn call(&self, call: CoreCall) -> ToolOutput {
-        let (scope, operations) = match parse_input(call.input) {
-            Ok(parsed) => parsed,
-            Err(error) => return ToolOutput::error(error),
-        };
-        let target = match target(scope, call.context.requester.as_ref(), &call.turn.session) {
-            Ok(target) => target,
-            Err(error) => return ToolOutput::error(error),
-        };
-        let agent = &call.context.agent;
-        let snapshot = self.config.get();
-        let Some(config) = snapshot.agents.get(agent) else {
-            return ToolOutput::error(format!("agent `{agent}` is not configured"));
-        };
-        let cap = config.memory_cap as usize;
-        let path = match &target {
-            Target::Agent => memory::agent_memory_file(&self.root, agent.as_str()),
-            Target::User(user) => {
-                memory::user_memory_file(&self.root, agent.as_str(), user.as_str())
-            }
-        };
-        let path = match path {
-            Ok(path) => path,
-            Err(error) => return ToolOutput::error(error.to_string()),
-        };
-        let title = target.title();
-        match memory::apply(&path, operations, cap).await {
-            Ok(doc) => ToolOutput {
-                content: vec![Block::text(render(
-                    &format!("Saved. {title} is now"),
-                    doc.entries(),
-                    doc.chars(),
-                    cap,
-                ))],
-                is_error: false,
-            },
-            Err(MemoryError::Batch(
-                ref error @ BatchError::OverCap {
-                    ref entries,
-                    used,
-                    cap,
-                    ..
-                },
-            )) => ToolOutput::error(format!(
-                "{error}\n\n{}",
-                render(&format!("{title} is unchanged"), entries, used, cap)
-            )),
-            Err(error) => ToolOutput::error(error.to_string()),
-        }
+/// How a scope's core memories head a usage line.
+fn usage_title(scope: &MemoryScope) -> &'static str {
+    match scope {
+        MemoryScope::Shared => "Shared core memories",
+        MemoryScope::Private(MemoryOwner::Group { .. }) => "This group's core memories",
+        MemoryScope::Private(_) => "Your core memories",
     }
 }
 
-/// The tool's spec.
-pub(super) fn spec() -> ToolSpec {
-    let old_text = json!({
-        "type": "string",
-        "minLength": 1,
-        "description": "Text copied exactly from the memory.",
-    });
-    ToolSpec {
-        name: MEMORY.to_owned(),
-        description: "Change your memory: the memory files shown in your system prompt. The \
-                      prompt keeps the snapshot taken when this conversation started; the result \
-                      of this tool shows the memory after your change. Entries are separated by \
-                      lines holding only `§`. Operations apply in order, all or nothing: `add` \
-                      appends a new entry; `patch` replaces `old_text`, which must occur exactly \
-                      once, with `content` (empty content deletes it); `remove` deletes the one \
-                      entry containing `old_text`. Each scope has a character cap, shown with \
-                      its usage in the prompt; a batch that would end over the cap changes \
-                      nothing and shows the current entries, so you can merge, shorten, or \
-                      remove entries in your next batch. Keep entries short, factual, and \
-                      durable."
-            .to_owned(),
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "scope": {
-                    "type": "string",
-                    "enum": ["agent", "user"],
-                    "description": "`agent`: what you remember in general, shared by all your \
-                                    conversations. `user`: what you remember about the user \
-                                    you're talking to.",
-                },
-                "operations": {
-                    "type": "array",
-                    "minItems": 1,
-                    "description": "Applied in order, each seeing the previous ones' result.",
-                    "items": {
-                        "oneOf": [
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "op": {"type": "string", "enum": ["add"]},
-                                    "content": {
-                                        "type": "string",
-                                        "minLength": 1,
-                                        "description": "The new entry.",
-                                    },
-                                },
-                                "required": ["op", "content"],
-                                "additionalProperties": false,
-                            },
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "op": {"type": "string", "enum": ["patch"]},
-                                    "old_text": old_text,
-                                    "content": {
-                                        "type": "string",
-                                        "description": "The replacement; may be empty.",
-                                    },
-                                },
-                                "required": ["op", "old_text", "content"],
-                                "additionalProperties": false,
-                            },
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "op": {"type": "string", "enum": ["remove"]},
-                                    "old_text": old_text,
-                                },
-                                "required": ["op", "old_text"],
-                                "additionalProperties": false,
-                            },
-                        ],
-                    },
-                },
-            },
-            "required": ["scope", "operations"],
-            "additionalProperties": false,
-        }),
+/// The error for a write that would take a scope over its core cap: the overflow, what to do, and
+/// the scope's core memories as they still are.
+fn overflow_text(overflow: &CoreOverflow) -> String {
+    let mut text = format!(
+        "not saved: {} would use {}/{} characters, {} over the cap; nothing was changed. Make \
+         room by shortening or forgetting some of them, or demote some with memory_edit \
+         core=false (a memory that isn't core is still found with memory_recall). A memory that \
+         is too long for the cap can only be saved without core.\n\n{} {}:",
+        core_label(&overflow.scope),
+        overflow.cap + overflow.overflow,
+        overflow.cap,
+        overflow.overflow,
+        usage_title(&overflow.scope),
+        usage_header(overflow.used, overflow.cap),
+    );
+    if overflow.memories.is_empty() {
+        text.push_str("\n(none)");
     }
+    for memory in &overflow.memories {
+        let _ = write!(
+            text,
+            "\n{} — {} chars",
+            memory::line(memory),
+            memory.chars()
+        );
+    }
+    text
 }

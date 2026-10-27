@@ -1,8 +1,8 @@
 //! Tool-name globs: an agent's `tools` allowlist and its `ask` list (PLAN section 6.4).
 //!
 //! `*` matches any run of characters (including none) and `?` exactly one; every other character
-//! matches itself, case-sensitively. A glob matches the whole name: `memory*` matches `memory` and
-//! `memory_search`, `github__*` every tool of the `github` toolset.
+//! matches itself, case-sensitively. A glob matches the whole name: `memory*` matches `memory_add`
+//! and `memory_search`, `github__*` every tool of the `github` toolset.
 
 /// Whether `glob` matches the whole of `name`.
 pub fn matches(glob: &str, name: &str) -> bool {
@@ -46,17 +46,18 @@ mod tests {
 
     #[test]
     fn literals_match_only_the_whole_name() {
-        assert!(matches("memory", "memory"));
-        assert!(!matches("memory", "memory_search"));
-        assert!(!matches("memory_search", "memory"));
-        assert!(!matches("Memory", "memory"));
-        assert!(!matches("", "memory"));
+        assert!(matches("memory_add", "memory_add"));
+        assert!(!matches("memory_add", "memory_add_x"));
+        assert!(!matches("memory_search", "memory_add"));
+        assert!(!matches("Memory_add", "memory_add"));
+        assert!(!matches("", "memory_add"));
         assert!(matches("", ""));
     }
 
     #[test]
     fn star_matches_any_run_including_none() {
-        assert!(matches("memory*", "memory"));
+        assert!(matches("memory_add*", "memory_add"));
+        assert!(matches("memory*", "memory_add"));
         assert!(matches("memory*", "memory_search"));
         assert!(matches("github__*", "github__create_issue"));
         assert!(!matches("github__*", "gitlab__create_issue"));
@@ -86,6 +87,6 @@ mod tests {
         assert!(matches_any(&globs, "memory_search"));
         assert!(matches_any(&globs, "github__list"));
         assert!(!matches_any(&globs, "load_skill"));
-        assert!(!matches_any::<&str>(&[], "memory"));
+        assert!(!matches_any::<&str>(&[], "memory_add"));
     }
 }

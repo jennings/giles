@@ -6,7 +6,7 @@ blob store under `data/blobs/` (PLAN 11.5). The core opens the database once wit
 `Store` handle (`Store::open(path)` is the same with default options, WAL); no other crate writes
 SQL.
 
-Each agent's memories are in a separate database, `data/agents/<agent>/memory.db`, opened with
+Each agent's memories are in a separate database, `agents/<agent>/memory.db`, opened with
 `MemoryStore` ([Memory database](#memory-database)).
 
 ## Connections and Concurrency
@@ -248,8 +248,8 @@ stemming, case and accent folding.
 
 ## Memory Database
 
-Each agent has its own database, `data/agents/<agent>/memory.db` (parent issue: memory redesign,
-#30), owned by `giles-store`. `MemoryStore::open(path, options)` opens it through the same
+Each agent has its own database, `agents/<agent>/memory.db`, owned by `giles-store`.
+`MemoryStore::open(path, options)` opens it through the same
 connection machinery as `giles.db` (one writer, a pool of readers, the journal mode from
 `OpenOptions`, the `before_migrate` hook), but it is a separate file with its own migration list,
 `crates/giles-store/src/memory_migrations/`, and its own `user_version` (`MEMORY_SCHEMA_VERSION`,

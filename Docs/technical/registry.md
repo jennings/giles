@@ -13,14 +13,17 @@ check has run ([The `giles` Binary](daemon.md#giles-serve-lifecycle)):
    configured `[core] journal_mode`, with the pre-migration backup hook
    ([Storage](storage.md#journal-modes)).
 2. Open the blob store, `data/blobs` (`BlobStore::open`).
-3. `Registry::from_config(root, config, media)` with `media` a `giles_core::blobs::BlobMedia` over
+3. `MemoryDbs::new(root, journal_mode)`, the registry of the per-agent memory databases
+   (`agents/<agent>/memory.db`). Nothing is opened here: each database opens on first use, in the
+   same journal mode ([Skills and Memory](skills-and-memory.md#memorydbs)).
+4. `Registry::from_config(root, config, media)` with `media` a `giles_core::blobs::BlobMedia` over
    the blob store.
 
 `serve` then registers the toolsets (the [toolset host](toolsets.md#lifecycle)) and calls
 `Registry::log_summary()`: one `instance not started` line per pending instance, then
 `registry ready` with the counts of providers, channels, toolsets, tools, and pending instances.
 
-`Runtime` is `Clone` and holds `root`, `store`, `blobs`, `registry: Arc<Registry>`, and `outbox`
+`Runtime` is `Clone` and holds `root`, `store`, `memory_dbs`, `blobs`, `registry: Arc<Registry>`, and `outbox`
 (built here, its sender started by `start_outbox`; [Outbox](outbox.md)). Errors are a
 `StartError` (`Store`, `Blobs`, `Registry`, and later `Sessions`, `Outbox`); `giles serve` prints
 it and exits.
@@ -110,8 +113,9 @@ registers them all before the summary.
   name is over 64 characters (`MAX_TOOL_NAME_CHARS`, both v1 provider APIs' limit), or if the
   toolset lists the name twice (the first is kept). Instance names can't contain `_`, so a prefixed
   name never collides with another instance's or with a core tool.
-- Core tools use the bare, reserved `CORE_TOOLS`: `load_skill`, `memory`, `memory_search`,
-  `schedule`, `send_attachment`. `Registry::register_core_tool(Arc<dyn CoreTool>)` keeps the
+- Core tools use the bare, reserved `CORE_TOOLS` (eight, sorted): `load_skill`, `memory_add`,
+  `memory_edit`, `memory_forget`, `memory_recall`, `memory_search`, `schedule`,
+  `send_attachment`. `Registry::register_core_tool(Arc<dyn CoreTool>)` keeps the
   implementation (`Registry::core_tool(name)`) and adds its `ToolSpec` with
   `ToolIndex::set_core_tool`, which rejects any other name. A spec added with `set_core_tool`
   alone (tests) is offered, but calls to it get `tool unavailable`.

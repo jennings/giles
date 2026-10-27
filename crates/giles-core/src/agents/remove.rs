@@ -48,8 +48,8 @@
 //! reattaches them (its old chats continue with the new agent, under the new agent's prompt), and
 //! the id is free to create at once. Outbox rows expire on their own. Blobs the history still
 //! references stay; the sweep handles the rest. The agent's memory database,
-//! `agents/<agent>/memory.db`, moves with the directory, and so does its per-user memory under
-//! `agents/<agent>/users/`; `users/<user>/` isn't the agent's.
+//! `agents/<agent>/memory.db`, moves with the directory, and so does everything else in it;
+//! `users/<user>/` isn't the agent's.
 //! `trash/` isn't read by Giles and isn't in backups.
 
 use std::fs::{self, DirBuilder, File};

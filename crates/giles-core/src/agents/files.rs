@@ -1,6 +1,7 @@
 //! The files of an agent's directory, as its page shows them (PLAN section 11.3): `agent.toml`,
-//! `SOUL.md`, `MEMORY.md`, per-user and per-group memory, job prompt files, skills, and anything
-//! else in it.
+//! `SOUL.md`, job prompt files, skills, and anything else in it. The agent's memories are in its
+//! `memory.db` database, which the page lists like any other file (a database isn't UTF-8 text, so
+//! its size, not its contents, is shown).
 //!
 //! [`list_files`] walks the directory without following links: a link is listed, never followed,
 //! and every file is opened with `O_NOFOLLOW` and checked to be inside the agent's directory once
@@ -31,7 +32,7 @@ pub const MAX_FILE_BYTES: u64 = 64 * 1024;
 /// The most bytes of all files shown together; later files are listed without their contents.
 pub const MAX_TOTAL_BYTES: u64 = 1024 * 1024;
 
-/// How deep below the agent's directory the walk goes (`groups/<instance>/<conversation>/` is 3).
+/// How deep below the agent's directory the walk goes (`skills/<skill>/<dir>/<file>` is 4).
 pub const MAX_DEPTH: usize = 8;
 
 /// What a file is to the agent (PLAN section 11.3).
@@ -42,20 +43,6 @@ pub enum FileKind {
     Config,
     /// `SOUL.md`.
     Soul,
-    /// `MEMORY.md`: the agent-wide memory.
-    AgentMemory,
-    /// `users/<user>/MEMORY.md`: what the agent remembers about `user`.
-    UserMemory {
-        /// The user.
-        user: String,
-    },
-    /// `groups/<instance>/<conversation>/MEMORY.md`: what the agent learned in a group.
-    GroupMemory {
-        /// The channel instance.
-        instance: String,
-        /// The conversation id, decoded from its percent-encoded directory name.
-        conversation: String,
-    },
     /// The `prompt_file` of config job `job`.
     JobPrompt {
         /// The job's id.
@@ -83,14 +70,6 @@ impl FileKind {
         match path {
             ["agent.toml"] => Self::Config,
             ["SOUL.md"] => Self::Soul,
-            ["MEMORY.md"] => Self::AgentMemory,
-            ["users", user, "MEMORY.md"] => Self::UserMemory {
-                user: (*user).to_owned(),
-            },
-            ["groups", instance, conversation, "MEMORY.md"] => Self::GroupMemory {
-                instance: (*instance).to_owned(),
-                conversation: percent_decode(conversation),
-            },
             ["skills", skill, _, ..] => Self::Skill {
                 skill: (*skill).to_owned(),
             },
@@ -100,8 +79,7 @@ impl FileKind {
 
     /// Whether `viewer` may see a file of this kind. The one place that decides it: v1 has one
     /// user, the owner, who is the only one who can open an agent's page and sees every file.
-    /// With several users (PLAN section 3.1), a user sees only their own
-    /// [`UserMemory`](Self::UserMemory) of the agent; that check goes here.
+    /// With several users (PLAN section 3.1), a check for files that are one user's own goes here.
     pub fn visible_to(&self, viewer: &UserId) -> bool {
         let _ = viewer;
         true
@@ -112,30 +90,20 @@ impl FileKind {
         Some(match self {
             Self::Config => "Configuration".to_owned(),
             Self::Soul => "Who the agent is".to_owned(),
-            Self::AgentMemory => "Agent-wide memory".to_owned(),
-            Self::UserMemory { user } => format!("Memory about user {user}"),
-            Self::GroupMemory {
-                instance,
-                conversation,
-            } => format!("Memory from group {conversation} on {instance}"),
             Self::JobPrompt { job } => format!("Prompt of job {job}"),
             Self::Skill { skill } => format!("Skill {skill}"),
             Self::Other => return None,
         })
     }
 
-    /// Where the page lists it: the agent's own files first, then memory, prompts, skills, and
-    /// the rest.
+    /// Where the page lists it: the agent's own files first, then prompts, skills, and the rest.
     fn rank(&self) -> u8 {
         match self {
             Self::Config => 0,
             Self::Soul => 1,
-            Self::AgentMemory => 2,
-            Self::UserMemory { .. } => 3,
-            Self::GroupMemory { .. } => 4,
-            Self::JobPrompt { .. } => 5,
-            Self::Skill { .. } => 6,
-            Self::Other => 7,
+            Self::JobPrompt { .. } => 2,
+            Self::Skill { .. } => 3,
+            Self::Other => 4,
         }
     }
 }
@@ -403,31 +371,6 @@ fn text(mut bytes: Vec<u8>, truncated: bool) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-/// Decodes `%XX` escapes (PLAN section 11.3: conversation ids are percent-encoded in paths, `#giles`
-/// as `%23giles`). A `%` not followed by two hex digits stays as it is; bytes that aren't UTF-8
-/// become U+FFFD.
-pub fn percent_decode(encoded: &str) -> String {
-    let bytes = encoded.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hex = |b: u8| (b as char).to_digit(16);
-        if bytes[i] == b'%'
-            && let (Some(hi), Some(lo)) = (
-                bytes.get(i + 1).and_then(|&b| hex(b)),
-                bytes.get(i + 2).and_then(|&b| hex(b)),
-            )
-        {
-            out.push(u8::try_from(hi * 16 + lo).expect("two hex digits fit a byte"));
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,20 +384,6 @@ mod tests {
         };
         assert_eq!(kind("agent.toml"), FileKind::Config);
         assert_eq!(kind("SOUL.md"), FileKind::Soul);
-        assert_eq!(kind("MEMORY.md"), FileKind::AgentMemory);
-        assert_eq!(
-            kind("users/owner/MEMORY.md"),
-            FileKind::UserMemory {
-                user: "owner".into()
-            }
-        );
-        assert_eq!(
-            kind("groups/libera/%23giles/MEMORY.md"),
-            FileKind::GroupMemory {
-                instance: "libera".into(),
-                conversation: "#giles".into()
-            }
-        );
         assert_eq!(
             kind("prompts/morning.md"),
             FileKind::JobPrompt {
@@ -469,35 +398,19 @@ mod tests {
         );
         for other in [
             "notes.md",
-            "users/owner/notes.md",
-            "users/MEMORY.md",
+            "MEMORY.md",
+            "memory.db",
+            "users/owner/MEMORY.md",
+            "groups/libera/%23giles/MEMORY.md",
             "skills/README.md",
             "sub/agent.toml",
         ] {
             assert_eq!(kind(other), FileKind::Other, "{other}");
         }
-        assert_eq!(
-            kind("groups/libera/%23giles/MEMORY.md").label().unwrap(),
-            "Memory from group #giles on libera"
-        );
         assert_eq!(FileKind::Other.label(), None);
+        assert_eq!(FileKind::Soul.label().as_deref(), Some("Who the agent is"));
         // v1: the owner sees everything.
-        assert!(
-            FileKind::UserMemory {
-                user: "someone".into()
-            }
-            .visible_to(&crate::identity::owner())
-        );
-    }
-
-    #[test]
-    fn percent_decoding() {
-        assert_eq!(percent_decode("%23giles"), "#giles");
-        assert_eq!(percent_decode("a%2Fb%2fc"), "a/b/c");
-        assert_eq!(percent_decode("100%"), "100%");
-        assert_eq!(percent_decode("%zz%4"), "%zz%4");
-        assert_eq!(percent_decode("%C3%A9t%C3%A9"), "été");
-        assert_eq!(percent_decode("%FF"), "\u{fffd}");
+        assert!(FileKind::Other.visible_to(&crate::identity::owner()));
     }
 
     #[test]

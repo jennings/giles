@@ -1,8 +1,8 @@
-# Skills and Memory Files
+# Skills and Memory
 
-An agent's knowledge lives in Markdown files under `GILES_HOME` that you can read and edit:
-`SOUL.md` says who the agent is, skills teach it how to do things, and memory files hold facts it
-should keep in mind.
+An agent's knowledge has three parts. `SOUL.md` says who the agent is, skills teach it how to do
+things, and memories hold facts it should keep in mind. You write the first two as Markdown files
+under `GILES_HOME`; the agent keeps its memories itself, in a database.
 
 ## What the Agent Sees
 
@@ -12,16 +12,16 @@ When a conversation starts, Giles gives the model, in this order:
    It's optional; write it in plain Markdown.
 2. The name and description of each skill the agent can use (below), if its `tools` allow
    `load_skill`, the tool it reads a skill with.
-3. Its memory: `agents/<agent>/MEMORY.md`, then, in your direct conversations, your profile
-   `users/owner/USER.md` and what the agent remembers about you,
-   `agents/<agent>/users/owner/MEMORY.md`. Each file the agent writes is shown with how full it
-   is.
+3. Its core memories ([Memory](#memory)): the shared ones, then the ones for this conversation,
+   and, in your direct conversations, your profile `users/owner/USER.md`. Each scope the agent can
+   write is shown with how full it is.
 
 This stays the same for the whole conversation, which lets the model provider cache it and makes
-replies faster and cheaper. So edits to these files show up in conversations that start afterward:
-after `/new`, an idle reset, or a restart of Giles. The current time isn't part of it; instead,
-each of your messages reaches the agent with the time you sent it, in your `[owner] timezone`, for
-example `[Thu 2026-10-22 14:03 PDT] How was the weather?`.
+replies faster and cheaper. So edits to `SOUL.md` or `USER.md` and new memories show up in
+conversations that start afterward: after `/new`, an idle reset, or a restart of Giles (compaction
+refreshes the memories too). The current time isn't part of it; instead, each of your messages
+reaches the agent with the time you sent it, in your `[owner] timezone`, for example
+`[Thu 2026-10-22 14:03 PDT] How was the weather?`.
 
 ## Skills
 
@@ -68,68 +68,152 @@ out) and can read any of them. A file it reads is shown to it and stored like an
 it can hand the file to a tool or send it to you (`send_attachment`). Only files inside the
 skill's directory can be read: `..` and links that lead elsewhere are refused.
 
-## Memory Files
+## Memory
 
-Memory is plain Markdown, one file per scope:
+An agent remembers by keeping memories: short pieces of text, each one a fact, preference, or
+instruction, such as "Stephen prefers metric units." They aren't files you edit. The agent keeps
+them in its own database, `agents/<agent>/memory.db`, and manages them with four tools:
 
-| File                                    | What it holds                                 | Who writes it        |
-| --------------------------------------- | --------------------------------------------- | -------------------- |
-| `agents/<agent>/MEMORY.md`              | What the agent remembers in general           | The agent and you    |
-| `agents/<agent>/users/<user>/MEMORY.md` | What the agent remembers about one person     | The agent and you    |
-| `users/<user>/USER.md`                  | A person's profile, shown in their DMs only   | People only          |
+| Tool            | What the agent does with it                                                    |
+| --------------- | ------------------------------------------------------------------------------ |
+| `memory_add`    | Remembers something new: `content`, and optionally `core` and `shared`         |
+| `memory_edit`   | Changes a memory, named by its id: new `content`, and/or `core`, and/or `shared` |
+| `memory_forget` | Deletes a memory by its id                                                     |
+| `memory_recall` | Searches the memories it can see, `query` words and an optional `limit`        |
 
-A memory file holds entries separated by a line containing only `§`:
+Every memory has an id, a number the agent uses to name it when it edits or forgets it. A memory
+holds at most 1,000 characters, so one memory is one fact; the agent splits up longer notes.
+`memory_edit` replaces a memory's whole text. `memory_forget` deletes it for good: no earlier
+version is kept.
 
-```markdown
----
-# Optional front-matter. No fields are required; Giles keeps it as written.
-reviewed: 2026-10-01
----
-Stephen prefers short answers and metric units.
-§
-The home server is a Raspberry Pi 5 named `pantry`.
-It runs the backups at 02:00.
-§
-Weekly review happens on Fridays.
+### Core and Other Memories
+
+A memory is either *core* or not, which the agent decides when it adds it and can change later
+with `memory_edit`:
+
+- Core memories are loaded into the agent's prompt, so it knows them from the first message of
+  every conversation that can see them. Make a memory core only if the agent should always know it.
+- Other memories stay out of the prompt. The agent finds them with `memory_recall`, which searches
+  every memory the conversation can see, core ones included. It matches any of the words you give,
+  ranks the memories with more (and rarer) matching words first and the most recently changed first
+  among equals, and ignores word endings (`running` finds `run`), case, and accents. It returns 10
+  memories unless the agent asks for another `limit`, at most 50, each with its id, whether it's
+  core and shared, when it was created and last changed (in your `[owner] timezone`), and its text.
+
+So an agent can remember far more than fits in its prompt. Only the core memories take up space
+there, and `memory_cap` limits them: see [Limits](#limits).
+
+### Private and Shared Memories
+
+Each memory is also private or shared:
+
+- A **private** memory (the default) belongs to the conversation it was written in, and only that
+  conversation's sessions see it. What the agent learns in your direct conversations, and in the
+  jobs that report to you, is private to you; what it learns in a group chat is private to that
+  group. A group's memories never show up in your direct conversations, and what you told the agent
+  privately never shows up in a group.
+- A **shared** memory is visible in every conversation the agent has: yours, other people's, and
+  groups'.
+
+Because a shared memory reaches every conversation, only you can create one: the agent may create
+a shared memory, mark one as shared, or change or forget one only in your conversations (a direct
+conversation, or you writing in a group) and in jobs. These are both the jobs in `agent.toml` and
+the ones the agent schedules for you. Someone else's message in a group can't, though the agent
+can still keep private memories about that group. If the agent tries anyway, the tool says that
+shared memories can be written only in the owner's turns and in jobs.
+
+A memory the conversation can't see is reported as "no memory #N", the same as an id that doesn't
+exist, so one conversation can't learn about another's memories.
+
+A job from `agent.toml` has no user, so it sees only the shared memories, and what it remembers is
+shared too. (Its prompt may still list your private core memories, because Giles builds the
+prompt per session and can't tell such a job from one you scheduled through the agent; the job's
+memory tools can't read or change them, and `memory_recall` finds shared memories only.)
+
+### What the Agent Sees in Its Prompt
+
+In the prompt, memory comes after `SOUL.md` and the skills, under `# Memory`, in this order:
+
+1. `Shared memory`: the core memories that are shared, if there are any or if this conversation
+   may write them (yours do).
+2. `User memory` in your direct conversations and jobs, or `Group memory` in a group: the core
+   memories private to that user or group.
+3. `User profile`, in your direct conversations only: your `users/<user>/USER.md`, which you write
+   and the agent never changes. It isn't a memory and isn't part of `memory_cap`.
+
+Each core memory is a line with its id and flags, for example:
+
+```
+## Shared memory [4% — 49/1,000]
+
+What you remember in general, shared by all your conversations.
+
+#1 (core, shared): The home server is `pantry`.
+#2 (core, shared): Backups run at 02:00.
 ```
 
-- An entry can span several lines and paragraphs. A `§` inside a line is ordinary text.
-- Front-matter (between two `---` lines at the top) is optional and kept exactly as you wrote it
-  when the agent updates the file. It isn't counted toward the size limit.
-- A missing file is the same as an empty one; Giles creates it, and its directories, on the first
-  write.
+The bracketed usage header after a section's title says how full that scope's core memories are,
+in characters against `memory_cap`: here 49 of 1,000, rounded down to 4%. A section the agent
+can't write has no header. A section with no memories says `(empty)`. If the agent's `tools` allow
+`memory_recall`, the prompt also tells it that memories that aren't core are found with that
+tool.
 
-The agent edits memory with its `memory` tool, one batch at a time: it adds entries, patches a
-piece of text inside one entry, or removes the entry containing some text. A batch either applies
-completely or not at all. When the agent rewrites a file, it tidies the layout: one `§` line
-between entries, no blank lines around them, `\n` line endings. The text of each entry is kept.
+As with `SOUL.md`, the prompt is a snapshot: Giles takes it when a conversation starts and again
+when the conversation is compacted ([Configuration](configuration.md#agentsagentagenttoml)), so
+it stays the same in between and the model provider can cache it. A memory the agent adds during
+a conversation doesn't show in the prompt until then; the agent sees what it changed in the
+tool's result, which shows the memory with its id and, for core memories, the scope's usage. A
+memory added today is in the prompt of conversations that start afterward: after `/new`, an idle
+reset, or a restart of Giles.
 
-Who may write which file:
+### Limits
 
-- `agents/<agent>/MEMORY.md` is loaded into every conversation the agent has, so it's written only
-  in your conversations and in jobs (both the jobs in `agent.toml` and the ones the agent schedules
-  for you).
-- `agents/<agent>/users/owner/MEMORY.md` is written only in your direct conversations and in jobs
-  that report to you.
-- `USER.md` is never written by the agent.
+- **One memory** holds at most 1,000 characters. A longer text is refused and the agent is told
+  the limit.
+- **`memory_cap`** (default 2,200, set per agent in `agent.toml`) caps the total characters of the
+  *core* memories in each scope: the shared ones, each user's, and each group's. Memories that
+  aren't core don't count against it, and there is no limit on how many of them an agent keeps.
+  `memory_add` or `memory_edit` that would take a scope's core memories over the cap is refused and
+  changes nothing; the error lists that scope's core memories and how far over the cap the change
+  was, so the agent can shorten or forget some, or make some not core, and try again. A memory too
+  long for the cap can be saved only as a non-core memory. Lowering `memory_cap` never deletes
+  anything: a scope that is already over it stays as it is, and only changes that don't make it
+  longer are allowed until it's under again.
 
-Each memory file the agent writes is limited to `memory_cap` characters (default 2,200, set per
-agent in `agent.toml`). The agent sees how full it is in a header such as `[67% — 1,474/2,200]`. A
-change that would go over the limit is refused, and the agent is shown the current entries so it
-can merge or drop some. Giles never cuts text you wrote: if you make a file longer than the limit,
-it stays that way, and the agent's changes to it fail until it (or you) brings the file back under
-the limit.
+### Turning the Tools On
 
-You can edit memory files at any time. Each conversation reads memory when it starts, so your
-changes and the agent's show up in conversations that start afterward. Within a conversation, the
-agent sees its own changes in the `memory` tool's result.
+The agent gets the tools its `tools` list allows, like any other tool
+([Configuration](configuration.md#agentsagentagenttoml)). `tools = ["memory_*"]` turns on all four
+memory tools, and `memory_search`, described below; list the names you want to give less, such as
+`["memory_recall"]` for an agent that may look things up but not change what it knows. A tool in
+`ask` needs your approval before each call (`ask = ["memory_forget"]`, for example). With no
+memory tools allowed the agent still sees its core memories in the prompt; it just can't change
+them.
+
+### Where Memories Are Stored
+
+Memories are in `agents/<agent>/memory.db`, one SQLite database for each agent, created the first
+time the agent needs it. It's included in `giles backup` ([Backups](backups.md)) and moves with
+the agent's directory when you remove the agent in the web UI ([Web UI](web.md#removing-an-agent)).
+Don't open or copy it while Giles runs, for the reasons that apply to `giles.db`. The web UI's
+agent page lists it with its size, not its contents. Viewing and editing memories in the web UI
+is planned but not built yet.
+
+### Older MEMORY.md Files
+
+Earlier versions kept memory in Markdown files: `agents/<agent>/MEMORY.md`,
+`agents/<agent>/users/<user>/MEMORY.md`, and a `MEMORY.md` for each group. Giles no longer reads or
+writes them, and nothing is migrated: files that exist stay on disk, ignored, and the agent starts
+with no memories. To keep something from them, tell the agent to remember it, or delete the files.
+`SOUL.md`, `USER.md`, and skills work as before.
 
 ## Searching Past Conversations
 
-The `memory_search` tool lets the agent look up something said before that isn't in its memory.
-It searches the text of your direct conversations with that agent, on every channel (not job runs,
-not other agents' conversations, not memory files), and returns short excerpts, best matches first,
-with when each message was sent. Matching ignores word endings (`running` finds `run`), case, and
-accents.
+The `memory_search` tool lets the agent look up something said before that it didn't keep as a
+memory. It searches the text of your direct conversations with that agent, on every channel (not
+job runs, not other agents' conversations, not memories; `memory_recall` searches those), and
+returns short excerpts, best matches first, with when each message was sent. Matching ignores word
+endings (`running` finds `run`), case, and accents.
 
-Both tools are offered only if the agent's `tools` allow them, for example `tools = ["memory*"]`.
+Like the memory tools, it's offered only if the agent's `tools` allow it, for example
+`tools = ["memory_*"]`.

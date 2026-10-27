@@ -1,12 +1,13 @@
-# Skills and Memory Files
+# Skills and Memory
 
-Skills and memory are Markdown files that people write and the agent reads ([Plan](../PLAN.md) §6.6,
-§6.7, §11.3). This page covers how the core parses and discovers them. The user-facing format is in
-[Skills and Memory Files](../user/skills-and-memory.md).
+Skills are Markdown files that people write and the agent reads; memory is a per-agent database the
+agent writes through tools ([Plan](../PLAN.md) §6.6, §6.7, §11.3). This page covers how the core
+parses and discovers skills and how memory is built on the memory database. The user-facing format
+is in [Skills and Memory](../user/skills-and-memory.md).
 
 ## Front-Matter
 
-`SKILL.md` and memory files may start with YAML front-matter. The private module
+`SKILL.md` and the user profile `USER.md` may start with YAML front-matter. The private module
 `giles_core::front_matter` only finds the block's boundaries:
 
 - The first line (after an optional UTF-8 byte-order mark) is `---`, and the block ends at the next
@@ -136,128 +137,169 @@ registered). The sent attachment isn't stored as a message (that would separate 
 from its result): the transcript has the call and its result, and the web chat's history shows a
 call that succeeded as an assistant message with the caption and the media.
 
-## Memory Files
+## Memory
 
-`giles_core::memory` reads and updates memory files: agent-wide `agents/<agent>/MEMORY.md`, per-user
-`agents/<agent>/users/<user>/MEMORY.md`, and the person-written profile `users/<user>/USER.md`.
+Memory is a SQLite database per agent that the model reads and writes through tools; no Markdown
+file holds a memory. The design is in [Plan](../PLAN.md) §6.7 and §11.3. The database layer (schema,
+visibility, limits, all enforced inside the write transaction) is
+[Storage](storage.md#memory-database); this section covers what the core builds on it.
 
-| Item                                  | Purpose                                                          |
-| ------------------------------------- | ---------------------------------------------------------------- |
-| `agent_memory_file(root, agent)`      | `agents/<agent>/MEMORY.md`                                       |
-| `user_memory_file(root, agent, user)` | `agents/<agent>/users/<user>/MEMORY.md`                          |
-| `user_profile_file(root, user)`       | `users/<user>/USER.md` (read with `read`, never `apply`)         |
-| `MemoryDoc`                           | A parsed file: `parse`, `entries`, `body`, `chars`, `apply`      |
-| `MemoryOp`                            | `Add { content }`, `Patch { old_text, content }`, `Remove { .. }` |
-| `BatchError`                          | Why a batch was rejected, with the operation's index             |
-| `read(path).await`                    | The file as a `MemoryDoc`; a missing file is empty               |
-| `apply(path, ops, cap).await`         | Applies a batch under the file lock and returns the result       |
-| `usage_header(used, cap)`             | `[67% — 1,474/2,200]`                                            |
+| Piece                                                                         | Where                                                              |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `MemoryStore`, `MemoryViewer`, `MemoryOwner`                                  | `giles-store` (`memory.rs`, `memory_migrations/`)                  |
+| `MemoryDbs`                                                                   | `giles_core::memory_dbs`: the open databases, by agent             |
+| `viewer`, `prompt_viewer`, `line`, `flags`, `usage_header`, `user_profile_file` | `giles_core::memory`                                             |
+| `memory_add`, `memory_edit`, `memory_forget`, `memory_recall`                 | `giles_core::core_tools::memory_*`                                 |
+| the `# Memory` section                                                        | `giles_core::agent_loop::prompt` ([Agent Loop](agent-loop.md#system)) |
 
-The `cap` argument is the agent's `memory_cap` (`config::AgentConfig::memory_cap`, a `u32` that
-config validates as positive; its default, 2,200, is `config::DEFAULT_MEMORY_CAP`). Callers convert
-it with `as usize`.
+### Data Layout
 
-### Format
+- `agents/<agent>/memory.db` (`DataRoot::agent_memory_db`, in the agent's directory, not under
+  `data/`) holds the agent's memories. It is created on first use with mode 0600, and moves with
+  the agent when it is removed or restored, is part of every backup, and is rewritten by an
+  instance rename ([Storage](storage.md#memory-database), [Backups](backups.md),
+  [Instance Rename](instance-rename.md)).
+- `users/<user>/USER.md` is the person-written profile, the only memory-related file left. People
+  edit it, and the prompt loads it in a user's direct and job sessions; no tool reads or writes it.
+- Nothing reads or writes `MEMORY.md` any more, at any level. Existing files stay on disk and are
+  ignored; nothing is migrated. The old `memory` tool, the `§` entry format, the per-file locks,
+  and the rename-based file writes were removed with them.
 
-- Front-matter, if present, is kept verbatim (byte for byte, including comments, unknown fields, and
-  `\r\n`) and written back unchanged. The only exception: if the closing `---` was the file's last
-  line without a line ending and entries follow, a `\n` is added.
-- The rest is split at lines holding only `§` (surrounding spaces and tabs allowed). A `§` inside a
-  line is ordinary text. Line endings are normalized to `\n`; each entry loses leading blank lines
-  and trailing whitespace; empty entries are dropped. A file without front-matter loses a leading
-  byte-order mark.
-- `MemoryDoc::render` writes the front-matter, the entries joined by `\n§\n`, and a final newline.
-  So the first model write normalizes the layout of a person-written body (blank lines around
-  separators, `\r\n`); the text of each entry is kept.
-- Rendering always round-trips: `parse(render(doc))` has the same entries. Without front-matter, a
-  body whose first entry starts with a `---` line and has a later `---` line (a thematic break or a
-  setext heading underline) would read back as front-matter, swallowing entries out of the prompt
-  and the cap; a body starting with a byte-order mark would lose it. In those cases the file starts
-  with a `§` line, which parses as an empty entry and is dropped. A test renders and re-parses every
-  combination of up to three tricky entries, with and without front-matter.
-- `body()` is the entries joined by `\n§\n`, without front-matter: what the prompt shows. `chars()`
-  is its length in Unicode scalar values, computed without building it. Front-matter doesn't count
-  toward the cap.
+### `MemoryDbs`
 
-### Batches
+`MemoryDbs::new(root, journal_mode)` is built once in `Runtime::start` and shared (the core tools,
+the agent loop, the agent manager). `get(agent)` opens `agents/<agent>/memory.db` on first use, in
+the journal mode of `[core] journal_mode` as for `giles.db`, and keeps it open; concurrent first
+calls open the file once (one `OnceCell` per agent), and a failed open isn't remembered. A database
+nothing asks for is never opened, so an agent that never remembered anything has no `memory.db`
+until its first `get`. `close(agent)` drops the registry's handle so the writer checkpoints and the
+`-wal` and `-shm` files go away (removing an agent calls it before moving the directory). Callers
+therefore never keep a `MemoryStore` between calls or turns: each use gets a handle with `get` and
+drops it.
 
-`MemoryDoc::apply(ops, cap)` is pure. Operations run in order on a working copy, each seeing the
-previous ones' result, and the first failure rejects the whole batch:
+### Who Sees What
 
-- `add` appends `content` as a new entry (trimmed like a parsed entry). Empty content is rejected.
-- `patch` replaces the only occurrence of `old_text` with `content`. Occurrences are counted across
-  all entries, overlapping ones included (`aa` occurs twice in `aaa`), so the span is unique and
-  always inside one entry; it can't cross a separator. An entry left empty is removed, which makes
-  `patch` with empty `content` a way to delete part of an entry.
-- `remove` removes the only entry containing `old_text`. Several occurrences inside that one entry
-  are fine; two matching entries are ambiguous.
-- Matching is exact and case-sensitive. `old_text` and `content` have `\r\n` normalized to `\n` to
-  match the parsed file. Empty `old_text` is rejected.
-- No entry may end up containing a line that holds only `§`: it would silently split the entry.
-- Errors name the operation as `operations[<index>] (<op>)`, counting from 0 like the tool's JSON
-  array, and say how to fix the call (for example, include more text to make a match unique).
+`giles_core::memory` decides which `MemoryViewer` (the session's owner scope and `can_write_shared`)
+a call or the prompt uses; the store applies it. The scopes:
 
-The cap is checked once, on the final result: a batch may pass through an over-cap state. When the
-result is over, `BatchError::OverCap` carries the current (unchanged) entries, their size, the cap,
-and the overflow, so the tool result can show the model what to consolidate. Text is never
-truncated. A file that people pushed over the cap therefore accepts only batches that end at or
-under it. A batch that shrinks the file but leaves it over the cap still fails: the plan says an
-over-cap file makes model writes fail until someone consolidates, and the overflow in the error
-tells the model exactly how much one batch must free.
+- A direct or job session belongs to a user: its private scope is `MemoryOwner::User`. A runtime
+  job runs as its creator, in the creator's session, so it is the creator's turn.
+- A group session's private scope is the conversation, `MemoryOwner::Group { instance,
+  conversation }`: the channel instance and its conversation id, so the same conversation id on
+  another instance is another group. A participant's private memories are never in a group, and a
+  group's never in a participant's DM. v1 ignores groups at the router
+  ([Identity and Routing](identity-and-routing.md)), so no group session exists yet, but the scope,
+  the store, the tools, and the prompt handle it.
+- A config job has no requester. Its viewer is `MemoryOwner::None`: shared memories only, and what
+  it writes has no owner and is shared.
+- Shared memories (`shared = true`) are visible in every session of the agent, whoever wrote them.
 
-`usage_header` rounds the percentage down, so 100% means exactly at the cap; an over-cap file shows
-more than 100%. Numbers use commas between thousands.
+`memory::viewer(session, requester)` is for a tool call. With no requester (a config job) it gives
+`MemoryOwner::None` with `can_write_shared` true. Otherwise the owner scope is the session's, and
+`can_write_shared` is true when the requester is the agent owner (`identity::owner()`). In a direct
+or job session, a requester who isn't the session's user gets the error `not permitted for
+<requester>: this conversation's private memories belong to <user>`; any participant may use a
+group's scope.
 
-`MemoryOp` deserializes from `{"op": "add" | "patch" | "remove", ...}` and rejects fields the
-operation doesn't take (`deny_unknown_fields`), so a whole-entry replace sent as `remove` with a
-`content` fails instead of deleting the entry and dropping the replacement. The `memory` tool
-([below](#the-memory-and-memory_search-tools)) owns the JSON schema the model sees and the scope
-rules (who may write which file). `apply` never refuses a path by itself, so the tool must not pass
-`USER.md`.
+`memory::prompt_viewer(session)` is for the prompt snapshot. No requester is known when the prompt
+is built (once per session), so it assumes the session's own user: the same owner scope, and
+`can_write_shared` true only in a direct or job session of the agent owner. In a group it is false:
+who may write shared memories there depends on who speaks, so the prompt treats them as read-only.
 
-### Writing
+**Known difference for config jobs.** The prompt can't tell a config job's session from a runtime
+job's, since both are the user's DM or a job session owned by them. A config job's prompt therefore
+lists the owner's private core memories, which its tools (viewer `None`) can neither read nor
+write; its `memory_recall` finds shared memories only, and what it adds must be shared. The tools
+are authoritative; the prompt only shows more.
 
-- `read` takes no lock: writes replace the file by rename, so a reader sees the old or the new file.
-  A missing file is empty memory; a file that exists but isn't UTF-8 is an error.
-- `apply` resolves the path to a canonical lock key (the longest existing ancestor is
-  canonicalized and the rest appended, so `a/../a/MEMORY.md` and a symlinked directory share a
-  key), then takes that file's `tokio::sync::Mutex` from a process-wide map. Map entries nobody
-  holds are dropped on the next lookup. The lock is per process; v1 has one daemon.
-- Under the lock it reads, applies, and writes only if the result differs. The write creates parent
-  directories (mode 0700), writes a `tempfile` named `.MEMORY.md.<random>.tmp` in the same directory
-  with the old file's permissions (0600 for a new file), fsyncs it, renames it over the target, and
-  fsyncs the directory. A failed write leaves the old file and removes the temporary file.
-- If the path is a symbolic link, its target is written, so the link survives. This holds for a
-  dangling link too: the link itself is followed (`read_link`, a relative target taken from the
-  link's canonical directory with `.` and `..` resolved lexically) before the ancestors are
-  canonicalized, so the first write creates the target.
-- The file I/O runs in `spawn_blocking`, and the lock guard moves into that closure: if the caller's
-  future is dropped mid-write, the write still finishes before the next batch can start.
+The rules are enforced in three places:
 
-A test runs 48 concurrent batches against one file through three different path spellings on a
-multi-threaded runtime and checks that every entry lands; without the lock it loses most of them.
+| Rule                                                                                              | Enforced by                                                           |
+| ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Private memories are visible only to their owner scope, shared ones to all; an invisible id reads as unknown | Store (`MemoryViewer::sees`, checked before any permission) |
+| Creating, sharing, editing, un-sharing, or forgetting a shared memory needs `can_write_shared`    | Store, inside the write transaction (`Error::SharedWriteForbidden`)   |
+| A memory with no owner must be shared; un-sharing makes a memory private to the viewer who did it | Store                                                                 |
+| At most 1,000 characters per memory; the `memory_cap` limit on each scope's core memories         | Store, inside the write transaction                                   |
+| Which viewer a turn is: the requester against the session's user, shared writes for the agent owner only | `memory::viewer`, used by the tools                            |
+| What the prompt lists, and whether it shows a usage header for a scope                            | `memory::prompt_viewer` and `prompt::load_memory`                     |
 
-## The `memory` and `memory_search` Tools
+So a guest or a group can't plant a shared memory (shared memories reach every prompt, including
+the owner's tool-enabled DMs), and a bug in a tool can't skip the check: the store refuses it.
 
-Core tools (§6.7) in `giles_core::core_tools::{memory, memory_search}`, registered by
-`core_tools::register` at the end of `Runtime::start` (see [Agent Loop](agent-loop.md#core-tools)).
+### The Limits
 
-`memory(scope, operations[])` (`MemoryTool`, holding the data root and the configuration):
+All checked by `MemoryStore` in the transaction of each write, so concurrent writers can't break
+them (the single writer connection also runs writes one at a time):
 
-- Input: `scope` is `agent` or `user`; `operations` a non-empty array of `MemoryOp`s. The schema
-  is closed (`additionalProperties: false`, one `oneOf` branch per op), and parsing enforces it at
-  both levels. Parsing errors name the field or `operations[<i>]`; `group` is refused as not
-  available in v1.
-- Scope rules (`memory::target`, pure): `agent` is refused with `not permitted for <user>` unless
-  the requester is the owner or there is none (a config job; §6.3: only config jobs have no
-  requester, and runtime jobs run as their creator). `user` is the memory of the session's user
-  (`prompt::memory_user`: direct and job sessions only, so never in a group), and only in that
-  user's turns or a config job's.
-- The cap is the agent's `memory_cap`, per file. Success returns `Saved. <Agent|User> memory is now
-  [usage]:` and the entries (`(empty)` if none); `OverCap` returns its message, then `... is
-  unchanged [usage]:` and the current entries, as an error result. Other batch errors are their
-  message. Nothing touches the session's cached prompt: the snapshot stays until the session ends
-  or is compacted (§6.7).
+- Content is trimmed, can't be empty, and has at most `MAX_MEMORY_CHARS` (1,000) characters.
+- `memory_cap` (`config::AgentConfig::memory_cap`, a `u32` that config validates as positive,
+  default `config::DEFAULT_MEMORY_CAP`, 2,200) caps the total characters of the **core** memories
+  of each scope: the shared scope, each user's, each group's. The tools pass it to the store as
+  `core_cap`. Memories that aren't core don't count toward it, and have no total limit. A write
+  that would take a scope over the cap and grow it fails; a write that doesn't grow it always
+  succeeds, so a scope that is over a lowered cap can still shrink. Sharing and un-sharing move a
+  core memory between scopes, so the target scope is checked.
+- No edit history is kept; `memory_forget` deletes the row.
+
+### Rendering
+
+Tool results and the prompt show a memory the same way (`memory::line`):
+`#12 (core, shared): content`. The flags (`memory::flags`) are `core, shared`, `core`, `shared`, or
+`private`. `memory::usage_header(used, cap)` is `[67% — 1,474/2,200]`: the percentage rounds down,
+so 100% means exactly at the cap and an over-cap scope shows more; numbers use commas between
+thousands. With a cap of 0, empty is 0% and anything else 100%.
+
+### The Memory Tools
+
+Four core tools in `giles_core::core_tools::{memory_add, memory_edit, memory_forget,
+memory_recall}`, registered by `core_tools::register` at the end of `Runtime::start` (see
+[Agent Loop](agent-loop.md#core-tools)) and reserved in `CORE_TOOLS` ([Registry](registry.md)).
+Each holds the `MemoryDbs`, the live configuration, and a clock. Their input schemas are closed
+(`additionalProperties: false`, and parsing uses `deny_unknown_fields`), and the descriptions tell
+the model the rules: what core means and the cap, that a memory is private by default, who may
+share, and that the prompt is a snapshot.
+
+| Tool            | Input                                                                           | Result                                                                                 |
+| --------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `memory_add`    | `content` (required, 1 to 1,000 characters), `core` (default false), `shared` (default false) | `Added #<id> (<flags>): <content>`, then a usage line for the scope if the memory is core |
+| `memory_edit`   | `id` (required, at least 1), `content`, `core`, `shared`; at least one of the three | `Updated #<id> (<flags>): <content>`, then a usage line for each core scope the memory left or entered |
+| `memory_forget` | `id` (required, at least 1)                                                     | `Forgot #<id> (<flags>): <content>`, then the usage line of its scope if it was core   |
+| `memory_recall` | `query` (required), `limit` (1 to 50, default 10)                               | `<n> memories, best first:` (`1 memory` for one) and, per hit after a blank line, the memory's line and `created <time>, updated <time>`; `No matching memories.` for none |
+
+- `memory_edit`'s `content` replaces the whole old content: a memory holds one fact, so there is no
+  patching. An empty `content` is refused with a pointer to `memory_forget`.
+- The usage line is `<title> <usage_header>`, with the title `Shared core memories`, `Your core
+  memories`, or `This group's core memories`.
+- Every call builds an `Access` (`core_tools::memory`): the viewer from `memory::viewer`, the
+  agent's `memory_cap` and message time zone (times read as in the transcript, `Thu 2026-10-22
+  14:03 BST`), the session (recorded as the memory's `source_session`, never checked), and the
+  clock, with a database handle from `MemoryDbs::get`. `memory_edit` reads the memory first
+  (`MemoryStore::get`) to know which core scopes the edit touches.
+- `memory_recall` is `MemoryStore::recall`: FTS5 over the visible memories, core ones included.
+  The query is plain words, each quoted and OR-ed (as for `memory_search`, so FTS5 syntax is matched
+  as text), with English stemming and diacritics ignored. Hits are ordered by bm25, then newest
+  update first. It only reads, so it's in `PARALLEL_SAFE_CORE_TOOLS` with `load_skill` and
+  `memory_search`; `memory_add`, `memory_edit`, and `memory_forget` write and run alone.
+- Nothing touches the session's cached prompt: a write shows in its tool result, and reaches the
+  prompt at the next session or after compaction ([Agent Loop](agent-loop.md#system)).
+
+**Errors** are error results in words the model can act on:
+
+| Cause                                          | Message                                                                                  |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Unknown or invisible id                        | `no memory #<id>` (the same text for both)                                               |
+| Shared write without permission                | `shared memories can be created, shared, changed, or forgotten only in the owner's turns and in config jobs; private memories aren't affected` |
+| Over 1,000 characters                          | `the memory is <n> characters; the limit is 1000. Shorten it, or split it into several memories` |
+| Over the core cap                              | `not saved: <scope> would use <n>/<cap> characters, <overflow> over the cap; nothing was changed. ...`, then the scope's usage line and each of its core memories with its line and length (`(none)` if there are none). It says to shorten, forget, or demote with `core=false`, and that a memory too long for the cap can only be saved without `core` |
+| Bad input                                      | `invalid input: ...`: an unknown or missing field, empty content or query, an edit giving none of `content`, `core`, `shared`, an edit that changes nothing, a private memory with no owner |
+| Requester isn't the session's user             | `not permitted for <requester>: ...`                                                     |
+| The agent isn't configured, or the database fails | ``agent `<agent>` is not configured``, `the memory database is unavailable`, `the memory database failed` (the cause is logged) |
+
+## The `memory_search` Tool
+
+A core tool (§6.7) in `giles_core::core_tools::memory_search`, registered by `core_tools::register`
+with the others. It searches transcripts in `giles.db`, not memories, and the memory database
+doesn't change it.
 
 `memory_search(query, limit?)` (`MemorySearchTool`, holding the store; parallel-safe):
 
@@ -265,6 +307,7 @@ Core tools (§6.7) in `giles_core::core_tools::{memory, memory_search}`, registe
   `SearchScope::direct(agent, user)` (every direct session of the user with this agent, every
   channel); in a group, `SearchScope::conversation`; otherwise an error.
 - `limit` defaults to 10 (`DEFAULT_LIMIT`), at most 50 (`MAX_LIMIT`); a blank query is an error.
+  `memory_recall` takes the same limits.
 - Each hit is `<time> <user|you> on <channel>: <snippet>`, snippets with `**` around matches and
   newlines flattened. A user message's time is its stored time prefix (when it was sent), split
   out of the snippet with its match markers removed (`split_sent_prefix`: the prefix is indexed,

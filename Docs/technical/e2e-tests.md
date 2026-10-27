@@ -87,9 +87,9 @@ can't pass by accident through a turn it didn't plan, and scripts say exactly wh
   request carries the whole conversation.
 - **Approval** (`chat.rs`): a call matching `ask` stops at a prompt that shows the input and goes to
   the asking conversation, nothing runs and the model isn't asked again until `yes <code>`; then
-  the tool runs (its memory file appears) and the model gets the result. `no <code>` and any other
-  message deny the call, the model is told (`Error: denied`, `Error: Not approved. The user
-  said: ...`), and the tool never runs.
+  the tool runs (`memory_add`: the memory is in the agent's `memory.db`) and the model gets the
+  result. `no <code>` and any other message deny the call, the model is told (`Error: denied`,
+  `Error: Not approved. The user said: ...`), and the tool never runs.
 - **`/stop`** (`chat.rs`): during a model request, the daemon drops the request, the conversation
   works at once, and the cancelled turn left nothing in the history; during a pending approval,
   the call's slot is filled with `cancelled` and a late `yes` doesn't run it.

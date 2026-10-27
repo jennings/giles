@@ -3,12 +3,12 @@
 `giles_core::agent_loop` runs turns ([Plan](../PLAN.md) §6.3, §6.7): it assembles each session's
 prompt prefix and, per turn, calls the provider, runs the requested tools, and repeats until the
 model stops asking for tools. The session code that hands it turns is in
-[Sessions and Turns](sessions.md); the files it reads are in
-[Skills and Memory Files](skills-and-memory.md).
+[Sessions and Turns](sessions.md); the skills and the memory it loads are in
+[Skills and Memory](skills-and-memory.md).
 
 | Item                          | What it is                                                         |
 | ----------------------------- | ------------------------------------------------------------------ |
-| `AgentLoop`                   | The `TurnRunner`: `new(registry, store, clock, dispatcher, approvals)`, `from_runtime(runtime, approvals)` |
+| `AgentLoop`                   | The `TurnRunner`: `new(registry, store, memory_dbs, clock, dispatcher, approvals)`, `from_runtime(runtime, approvals)` |
 | `AgentLoop::session_prompt`   | The session's cached prefix, assembled at its first turn           |
 | `AgentLoop::rebuild_prompt`   | A fresh `system` and skill list for the session, same tools (compaction) |
 | `ToolDispatcher`              | Runs one message's calls: `dispatch(ToolBatch) -> stream of (index, ToolOutput)` |
@@ -44,8 +44,8 @@ the tool dispatcher's job. The snapshot is sorted by name, and filtering keeps t
 toolset later drops stays in the list; calling it gets `tool unavailable`.
 
 Globs: `*` matches any run of characters (none included), `?` exactly one, anything else itself,
-case-sensitively, over the whole name. `memory*` matches `memory` and `memory_search`. An empty
-allowlist offers no tools.
+case-sensitively, over the whole name. `memory*` matches `memory_add`, `memory_edit`,
+`memory_forget`, `memory_recall`, and `memory_search`. An empty allowlist offers no tools.
 
 ### `system`
 
@@ -61,25 +61,52 @@ One text block (none at all when every part is empty), with these parts separate
    are logged and the broken skill is left out. The listed `SkillSet` is kept with the prefix
    (`SessionPrompt::skills`), and `load_skill` answers from it, so the model can load exactly the
    skills it was shown.
-3. `# Memory`: an introduction (entries are separated by `§` lines; this is a snapshot from the
-   start of the conversation), then one `## <title>` section per file, each with a one-line
-   description and the file's entries joined by `§` lines (front-matter left out), or `(empty)`:
-   - `Agent memory [<usage>]`: `agents/<agent>/MEMORY.md`.
+3. `# Memory`: the core memories visible in the session, each with its id, read from the agent's
+   memory database (`MemoryDbs::get(agent)`, then `MemoryStore::core_memories(viewer)`). Memories
+   that aren't core are never loaded: the model finds them with `memory_recall`. The section is an
+   introduction (these are your core memories, each with its id; they are a snapshot from the start
+   of the conversation, and later changes show up in later conversations), plus ``Memories that
+   aren't core aren't loaded here: find them with the `memory_recall` tool.`` only when the
+   session's tool list offers `memory_recall`. Then one `## <title>` section per scope, each with
+   a one-line description and its memories one per line as `#12 (core): content` (shared ones
+   `#2 (core, shared): ...`, `memory::line`), oldest id first, or `(empty)`:
+   - `Shared memory`: the shared core memories, which every session sees. With the usage header
+     (`## Shared memory [4% — 49/1,000]`) when the session's user may write shared memories (the
+     agent owner's direct and job sessions); otherwise without it, and left out entirely when
+     there are none.
+   - The session's own scope, always with the usage header: `User memory` in a direct or job
+     session with a user, `Group memory` in a group session. A session with neither (no user, no
+     group) has no such section.
    - In a direct session, and in a job session that belongs to a user, `User profile`
-     (`users/<user>/USER.md`, no usage header: people write it) and `User memory [<usage>]`
-     (`agents/<agent>/users/<user>/MEMORY.md`). Group sessions would load the group's memory
-     instead and never a participant's (§6.7); v1 has no groups.
+     (`users/<user>/USER.md`, front-matter dropped, no usage header: people write it). Group
+     sessions never load it, nor any participant's memories (§6.7); v1 has no groups.
 
-The usage header is `memory::usage_header` with the agent's `memory_cap`, e.g.
-`[67% — 1,474/2,200]`. Files the model can't write (USER.md) have none. The current time never
-appears in `system`.
+   If no section applies (no user, no group, and no shared memories to show), the `# Memory`
+   heading is omitted too.
+
+What each session sees comes from `memory::prompt_viewer(session)`, one viewer per session, since
+no requester exists when the prompt is built; see
+[Who Sees What](skills-and-memory.md#who-sees-what) for the scopes and for the one known
+difference: a config job's prompt lists its session user's private core memories, which its tools
+can't read. The usage header is `memory::usage_header(scope's core characters, memory_cap)`, e.g.
+`[67% — 1,474/2,200]`: `memory_cap` caps each scope's core memories, so each header counts its own
+scope. The model can't write `USER.md`, so it has none. The current time never appears in
+`system`.
+
+The snapshot is taken when the session's first turn starts and again after compaction
+(`rebuild_prompt`, below). Memories written during the session reach the model through the memory
+tools' results, not the prompt, which keeps the cached prefix stable. A database failure while
+building the prompt fails the turn (`PromptError::Memory`), as an unreadable `SOUL.md` does.
 
 The snapshot tests in `crates/giles-core/tests/prompt_snapshot.rs` render `system` and the tool
-list (names, descriptions, schemas) for three agents, from real files in a temporary data root, and
-compare them with `crates/giles-core/tests/snapshots/prompt-*.txt`: a full agent in a direct
-session, an agent with no files or tools, and a job session with every tool allowed and an over-cap
-memory file. A change to the cached prefix therefore changes a file in review. Rerun with
-`GILES_UPDATE_SNAPSHOTS=1` to accept one.
+list (names, descriptions, schemas) for three agents, with memories added to a real `memory.db` in
+a temporary data root, and compare them with `crates/giles-core/tests/snapshots/prompt-*.txt`: a
+full agent in a direct session (shared and user core memories, and non-core ones that must stay
+out), an agent with no files or tools, and a job session with every tool allowed and a shared core
+memory over a lowered cap. Other tests in that file cover the order of the sections, the group
+session, a guest's read-only shared memories, a session without a user, a per-scope cap, and the
+`memory_recall` mention. A change to the cached prefix therefore changes a file in review. Rerun
+with `GILES_UPDATE_SNAPSHOTS=1` to accept one.
 
 ### Caching the Prefix
 
@@ -91,20 +118,22 @@ request it makes.
 
 The entry also records the agent's incarnation (`LiveConfig::incarnation`). Editing an agent in the
 web UI keeps it, so a session goes on with the tools and `system` it started with (compaction
-rebuilds `system` from the files as they are then, and keeps the tools); only a new session sees
-an edit. An agent removed and created again under the same id has a new incarnation, so the old
-sessions of that id, which stay in the database, assemble their prefix again at their next turn.
+rebuilds `system` from the files and memories as they are then, and keeps the tools); only a new
+session sees an edit. An agent removed and created again under the same id has a new incarnation,
+so the old sessions of that id, which stay in the database, assemble their prefix again at their
+next turn.
 
 The prefix isn't stored. After a restart the cache is empty, and a session's first turn assembles
-it again from the files and tools of that moment. If nothing changed, the bytes are the same and
-the provider's cache (one hour for interactive sessions) still hits. If memory files, skills, or
-`SOUL.md` changed while the session was running, or the toolsets aren't all registered yet, that
-first request after the restart misses and writes a new cache entry; the session then keeps the new
-prefix. Storing the prefix would avoid that one miss but freeze tools the registry may no longer
-serve, so v1 recomputes.
+it again from the memory database, files, and tools of that moment. If nothing changed, the bytes
+are the same and the provider's cache (one hour for interactive sessions) still hits. If core
+memories, skills, or `SOUL.md` changed while the session was running, or the toolsets aren't all
+registered yet, that first request after the restart misses and writes a new cache entry; the
+session then keeps the new prefix. Storing the prefix would avoid that one miss but freeze tools
+the registry may no longer serve, so v1 recomputes.
 
-`rebuild_prompt(session, agent, current)` re-reads the files into a new `system` and skill list,
-keeps `current`'s tools (tools are fixed for the session's life, also for an isolated job run,
+`rebuild_prompt(session, agent, current)` re-reads the files and core memories into a new `system`
+and skill list, keeps `current`'s tools (tools are fixed for the session's life, also for an
+isolated job run,
 which has no cache entry), and replaces the cache entry. Compaction (below) calls it after writing
 summaries, and the turn goes on with the returned prompt.
 
@@ -312,8 +341,8 @@ message, so each summary rolls up everything before it. History loads then send 
 `User` message (above, Messages) followed by the kept messages; the originals stay in the
 transcript, where the web chat and `memory_search` still find them. Up to `MAX_PASSES` (3)
 summaries are written in one check while the estimate stays over the threshold. Then the session's
-`system` is rebuilt with `AgentLoop::rebuild_prompt` (a fresh memory snapshot, §6.7: memory
-written during the session reaches the prompt now) and the tools stay as they were; the rest of
+`system` is rebuilt with `AgentLoop::rebuild_prompt` (a fresh snapshot of the core memories, §6.7:
+memory written during the session reaches the prompt now) and the tools stay as they were; the rest of
 the turn and later turns use the rebuilt prompt. The rebuilt `system` and the new history miss the
 provider's prompt cache once.
 
@@ -349,7 +378,7 @@ Calls start in model order. Each has a `CallPolicy`:
 
 - A toolset tool takes its instance's `parallel` (default `false`) and `deadline` (default 5 m).
 - A core tool is parallel-safe if it only reads (`PARALLEL_SAFE_CORE_TOOLS`: `load_skill`,
-  `memory_search`), with the default deadline. MCP's `readOnlyHint` is ignored: it's untrusted
+  `memory_recall`, `memory_search`), with the default deadline. MCP's `readOnlyHint` is ignored: it's untrusted
   (§7.10).
 - A tool the session doesn't offer runs nothing, so it counts as parallel-safe and never holds up
   another call.
@@ -393,13 +422,21 @@ the wait for an `ask` approval before it). A call still running at its deadline 
 
 The core tools (§6.5) live in `giles_core::core_tools`, one module per tool, each implementing
 `CoreTool { fn spec() -> ToolSpec; async fn call(CoreCall) -> ToolOutput }`. A tool keeps its
-long-lived dependencies (store, data root, configuration) in its own fields; per call it gets the
+long-lived dependencies (store, memory databases, configuration) in its own fields; per call it gets the
 `ToolUse` id, the input, the `CallContext`, the shared `TurnContext` (`session`, `reply` where
 `send_attachment` sends, `skills` that `load_skill` answers from), and the batch's session media
 (`media`, for tools that take a media id). Failures are error
 results, never panics. `Registry::register_core_tool(Arc<dyn CoreTool>)` stores the
 implementation and adds its spec to the tool index (`ToolIndex::set_core_tool`), and the dispatcher
 finds it with `Registry::core_tool(name)` when the call starts.
+
+The core tools are `load_skill`, `memory_add`, `memory_edit`, `memory_forget`, `memory_recall`,
+`memory_search`, `schedule`, and `send_attachment`. Of those, `memory_recall` (with `load_skill`
+and `memory_search`) only reads and is parallel-safe; `memory_add`, `memory_edit`, and
+`memory_forget` write the agent's memory database and run alone. The four `memory_*` tools that
+use the memory database take the viewer from the turn's session and requester, so what a call can
+see and write is decided per call, not per session; their schemas, results, and errors are in
+[Skills and Memory](skills-and-memory.md#the-memory-tools).
 
 ## Output
 

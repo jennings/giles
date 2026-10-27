@@ -1085,7 +1085,7 @@ fn agent_settings() {
             name = "Jeeves"
             models = ["anthropic/claude-sonnet-4-5", "ollama/anthropic/claude"]
             compaction_model = "ollama/qwen3:8b"
-            tools = ["memory", "github__*"]
+            tools = ["memory_add", "github__*"]
             ask = ["github__create_*"]
             max_iterations = 50
             max_iterations_jobs = 10
@@ -1123,7 +1123,7 @@ fn agent_settings() {
     assert_eq!(agent.models[1].provider.as_str(), "ollama");
     assert_eq!(agent.models[1].model, "anthropic/claude");
     assert_eq!(agent.compaction_model.as_ref().unwrap().model, "qwen3:8b");
-    assert_eq!(agent.tools, ["memory", "github__*"]);
+    assert_eq!(agent.tools, ["memory_add", "github__*"]);
     assert_eq!(agent.ask, ["github__create_*"]);
     assert_eq!(agent.max_iterations, Some(50));
     assert_eq!(agent.max_iterations_jobs, 10);

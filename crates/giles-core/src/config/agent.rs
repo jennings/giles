@@ -20,7 +20,7 @@ use super::names::{invalid_name_reason, is_valid_name};
 /// The iteration cap of job turns when the agent sets no `max_iterations_jobs` (PLAN section 6.3).
 pub const DEFAULT_MAX_ITERATIONS_JOBS: u32 = 25;
 
-/// The memory file character cap when the agent sets no `memory_cap` (PLAN section 6.7).
+/// The core memory character cap when the agent sets no `memory_cap` (PLAN section 6.7).
 pub const DEFAULT_MEMORY_CAP: u32 = 2200;
 
 /// How long an approval waits when the agent sets no `approval_timeout` (PLAN section 6.4).
@@ -50,7 +50,8 @@ pub struct AgentConfig {
     pub max_iterations_jobs: u32,
     /// What happens to the requester's new messages while a turn runs.
     pub busy_mode: BusyMode,
-    /// The character cap of each memory file the agent writes. [`DEFAULT_MEMORY_CAP`] unless set.
+    /// The cap on the total characters of core memories in each scope (the shared ones, each
+    /// user's, each group's). [`DEFAULT_MEMORY_CAP`] unless set.
     pub memory_cap: u32,
     /// How long a pending approval waits before it is denied. [`DEFAULT_APPROVAL_TIMEOUT`] unless
     /// set.

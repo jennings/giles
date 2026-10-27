@@ -7,7 +7,7 @@ use thiserror::Error;
 use crate::config::{Identity, OwnerConfig};
 
 /// The user id of the owner, the one user of v1 (PLAN section 1.1). Sessions, inbox rows, usage
-/// rows, and per-user memory (`agents/<agent>/users/owner/`, `users/owner/USER.md`) use it.
+/// rows, per-user memories (`MemoryOwner::User`), and `users/owner/USER.md` use it.
 pub const OWNER: &str = "owner";
 
 /// [`OWNER`] as a [`UserId`].

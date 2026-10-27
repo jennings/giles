@@ -202,9 +202,15 @@ async fn an_agents_page_shows_its_files_escaped_and_refuses_links() {
         std::fs::write(path, contents).unwrap();
     };
     write("SOUL.md", format!("You are Jeeves. {XSS}").as_bytes());
-    write("MEMORY.md", b"The owner likes tea.");
+    // Memories are in `memory.db` now: a leftover `MEMORY.md` is a file like any other, with
+    // no label, wherever it is, and its text is escaped like any file's.
+    write(
+        "MEMORY.md",
+        format!("The owner likes tea. {XSS}").as_bytes(),
+    );
     write("users/owner/MEMORY.md", b"Prefers Earl Grey.");
     write("groups/libera/%23giles/MEMORY.md", b"The channel is quiet.");
+    write("memory.db", b"SQLite format 3\0\x01\x02");
     write("skills/greet/SKILL.md", b"---\nname: greet\n---\nSay hi.");
     write("photo.png", &[0x89, b'P', b'N', b'G', 0, 1, 2]);
     write("big.md", &vec![b'x'; MAX_FILE_BYTES as usize + 10]);
@@ -225,10 +231,14 @@ async fn an_agents_page_shows_its_files_escaped_and_refuses_links() {
         "<code>agent.toml</code> <span class=\"detail\">Configuration</span>",
         "name = &#34;Jeeves&#34;",
         "You are Jeeves. &#60;script&#62;alert(1)&#60;/script&#62;",
-        "Agent-wide memory",
-        "Memory about user owner",
+        "<code>MEMORY.md</code>",
+        "The owner likes tea. &#60;script&#62;alert(1)&#60;/script&#62;",
+        "<code>users/owner/MEMORY.md</code>",
         "Prefers Earl Grey.",
-        "<code>groups/libera/%23giles/MEMORY.md</code> <span class=\"detail\">Memory from group #giles on libera</span>",
+        "<code>groups/libera/%23giles/MEMORY.md</code>",
+        "The channel is quiet.",
+        "<code>memory.db</code>",
+        "18 bytes, not text: not shown",
         "Prompt of job morning",
         "Plan my day.",
         "Skill greet",
@@ -242,6 +252,15 @@ async fn an_agents_page_shows_its_files_escaped_and_refuses_links() {
         assert!(html.contains(expected), "{expected}\n{html}");
     }
     assert!(!html.contains(XSS), "{html}");
+    for label in [
+        "Agent-wide memory",
+        "Memory about user",
+        "Memory from group",
+    ] {
+        assert!(!html.contains(label), "{label}\n{html}");
+    }
+    // Ordinary files carry no label.
+    assert!(!html.contains("<code>MEMORY.md</code> <span"), "{html}");
     assert!(!html.contains("TOP SECRET"), "{html}");
     assert!(!html.contains(".hidden"), "{html}");
     assert!(!html.contains("giles.toml"), "{html}");
@@ -309,7 +328,7 @@ async fn creating_an_agent_writes_files_that_load_and_makes_it_usable_at_once() 
 
     let soul = "You are Butler.\nBe brief.";
     let fields = format!(
-        "&name=The%20Butler&tools=memory%2C+load_skill&ask=memory&timezone=Europe%2FLondon&soul={}",
+        "&name=The%20Butler&tools=memory_add%2C+load_skill&ask=memory_add&timezone=Europe%2FLondon&soul={}",
         soul.replace(' ', "+").replace('\n', "%0A")
     );
     let (status, _, location) = env
@@ -343,8 +362,8 @@ async fn creating_an_agent_writes_files_that_load_and_makes_it_usable_at_once() 
     let butler = &reloaded.agents[&AgentId::new("butler").unwrap()];
     assert_eq!(butler.name.as_deref(), Some("The Butler"));
     assert_eq!(butler.models[0].to_string(), "fake/listed-a");
-    assert_eq!(butler.tools, ["memory", "load_skill"]);
-    assert_eq!(butler.ask, ["memory"]);
+    assert_eq!(butler.tools, ["memory_add", "load_skill"]);
+    assert_eq!(butler.ask, ["memory_add"]);
     assert_eq!(
         butler.timezone.as_ref().unwrap().iana_name(),
         Some("Europe/London")

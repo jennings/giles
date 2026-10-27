@@ -1,7 +1,7 @@
 //! The `memory_search` core tool (PLAN section 6.7): full-text search over the transcripts of
 //! the current context, through [`Store::search`]. In a direct or job session that's every
 //! direct session of the session's user with this agent, on every channel; in a group, that
-//! group's transcript. Memory files aren't searched: they're already in the prompt. Read-only,
+//! group's transcript. Memories aren't searched: those are `memory_recall`'s. Read-only,
 //! so it's parallel-safe ([`PARALLEL_SAFE_CORE_TOOLS`](crate::agent_loop::PARALLEL_SAFE_CORE_TOOLS)).
 
 use std::fmt::Write as _;

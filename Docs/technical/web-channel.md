@@ -422,12 +422,13 @@ agent RPCs yet (PLAN section 8.7).
   entries, `MAX_DEPTH` (8), the first
   `MAX_FILE_BYTES` (64 KiB) of each file, `MAX_TOTAL_BYTES` (1 MiB) of contents per page. Text is
   UTF-8 without NUL (a character split by the cut is dropped); anything else is listed with its
-  size. Contents are shown escaped in `<pre>`. Each entry has a `FileKind` (`Config`, `Soul`,
-  `AgentMemory`, `UserMemory`, `GroupMemory` with the conversation percent-decoded, `JobPrompt`
-  from the agent's `prompt_file`s, `Skill`, `Other`) that orders and labels it.
+  size (so `memory.db` is listed by its size and its contents are never shown; the memory web page,
+  #8, is a separate feature). Contents are shown escaped in `<pre>`. Each entry has a `FileKind`
+  (`Config`, `Soul`, `JobPrompt` from the agent's `prompt_file`s, `Skill`, `Other`) that orders and
+  labels it.
 - Who sees which file is one hook, `FileKind::visible_to(viewer)`, applied before a file is read
   or counted. It allows everything now: v1's only user is the owner, the only one who can open the
-  pages. With several users it is where a user is limited to their own `UserMemory`.
+  pages. With several users it is where a user is limited to the files that are their own.
 - The form offers `AgentManager::known_models()` as a `<datalist>`: every registered provider's
   `list_models()`, 5 s each, failures logged at `debug` with secrets scrubbed; any
   `<provider>/<model>` can still be typed. Lists are split at commas and whitespace

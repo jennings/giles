@@ -1,22 +1,26 @@
-//! The `memory`, `memory_search`, and `schedule` tools through [`CoreTool::call`], against a
-//! temporary data root and database. The agent `jeeves` has a 60-character memory cap and one
-//! config job.
+//! The `memory_add`, `memory_edit`, `memory_forget`, `memory_recall`, `memory_search`, and
+//! `schedule` tools through [`CoreTool::call`], against a temporary data root and databases. The
+//! agent `jeeves` has a 60-character memory cap and one config job.
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
-use giles_store::{Session, SessionId, SessionKey, SessionKind, Store};
+use giles_store::{
+    JournalMode, MemoryEdit, MemoryId, MemoryOwner, MemoryStore, MemoryViewer, Session, SessionId,
+    SessionKey, SessionKind, Store,
+};
 use giles_types::{
     AgentId, Block, CallContext, ConversationId, Message, MessageMeta, Role, Timestamp, UserId,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-use super::memory::{self, Scope, Target, parse_input, target};
 use super::*;
-use super::{memory_search, schedule};
+use super::{memory_add, memory_edit, memory_forget, memory_recall, memory_search, schedule};
 use crate::config::{Config, LiveConfig, LoadOptions};
 use crate::identity::owner;
+use crate::memory_dbs::MemoryDbs;
 use crate::paths::DataRoot;
 use crate::scheduler::JobChanges;
 
@@ -24,10 +28,22 @@ const AGENT: &str = "jeeves";
 const CAP: usize = 60;
 
 struct Setup {
-    dir: TempDir,
-    root: DataRoot,
+    _dir: TempDir,
     config: LiveConfig,
     store: Store,
+    memory_dbs: MemoryDbs,
+    clock: Arc<TickClock>,
+}
+
+/// Each reading is a minute after the last, starting at [`schedule_now`], so memories are made
+/// and changed at distinct, known times.
+#[derive(Default)]
+struct TickClock(AtomicI64);
+
+impl crate::sessions::Clock for TickClock {
+    fn now(&self) -> Timestamp {
+        schedule_now() + jiff::SignedDuration::from_secs(60 * self.0.fetch_add(1, Ordering::SeqCst))
+    }
 }
 
 impl Setup {
@@ -68,29 +84,76 @@ impl Setup {
         .unwrap_or_else(|e| panic!("{e}"));
         let store = Store::open(root.database_file()).await.unwrap();
         Self {
-            dir,
-            root,
+            _dir: dir,
             config: LiveConfig::new(Arc::new(config)),
             store,
+            memory_dbs: MemoryDbs::new(root, JournalMode::Wal),
+            clock: Arc::default(),
         }
-    }
-
-    fn memory(&self) -> MemoryTool {
-        MemoryTool::new(self.root.clone(), self.config.clone())
     }
 
     fn search(&self) -> MemorySearchTool {
         MemorySearchTool::new(self.store.clone(), self.config.clone())
     }
 
-    fn read(&self, relative: &str) -> Option<String> {
-        std::fs::read_to_string(self.dir.path().join(relative)).ok()
+    /// `jeeves`'s memory database.
+    async fn db(&self) -> MemoryStore {
+        self.memory_dbs
+            .get(&AgentId::new(AGENT).unwrap())
+            .await
+            .unwrap()
     }
 
-    fn write(&self, relative: &str, contents: &str) {
-        let path = self.dir.path().join(relative);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, contents).unwrap();
+    async fn add(&self, input: Value, who: &Actor) -> ToolOutput {
+        let tool = MemoryAddTool::new(
+            self.memory_dbs.clone(),
+            self.config.clone(),
+            self.clock.clone(),
+        );
+        call(&tool, input, who.requester.clone(), who.session.clone()).await
+    }
+
+    async fn edit(&self, input: Value, who: &Actor) -> ToolOutput {
+        let tool = MemoryEditTool::new(
+            self.memory_dbs.clone(),
+            self.config.clone(),
+            self.clock.clone(),
+        );
+        call(&tool, input, who.requester.clone(), who.session.clone()).await
+    }
+
+    async fn forget(&self, input: Value, who: &Actor) -> ToolOutput {
+        let tool = MemoryForgetTool::new(
+            self.memory_dbs.clone(),
+            self.config.clone(),
+            self.clock.clone(),
+        );
+        call(&tool, input, who.requester.clone(), who.session.clone()).await
+    }
+
+    async fn recall(&self, input: Value, who: &Actor) -> ToolOutput {
+        let tool = MemoryRecallTool::new(
+            self.memory_dbs.clone(),
+            self.config.clone(),
+            self.clock.clone(),
+        );
+        call(&tool, input, who.requester.clone(), who.session.clone()).await
+    }
+
+    /// Adds a memory as `who` and returns its id; the call must succeed.
+    async fn remember(&self, who: &Actor, content: &str, core: bool, shared: bool) -> i64 {
+        let output = self
+            .add(
+                json!({"content": content, "core": core, "shared": shared}),
+                who,
+            )
+            .await;
+        id_of(&output)
+    }
+
+    /// The text of a successful recall of `query` as `who`.
+    async fn recalled(&self, query: &str, who: &Actor) -> String {
+        ok(&self.recall(json!({"query": query}), who).await).to_owned()
     }
 }
 
@@ -175,383 +238,955 @@ fn err(output: &ToolOutput) -> &str {
     text(output)
 }
 
-fn ops(scope: &str, operations: Value) -> Value {
-    json!({"scope": scope, "operations": operations})
+/// Who makes a call: the turn's requester and the session it runs in.
+#[derive(Clone)]
+struct Actor {
+    requester: Option<UserId>,
+    session: Session,
 }
 
-const AGENT_FILE: &str = "agents/jeeves/MEMORY.md";
-const OWNER_FILE: &str = "agents/jeeves/users/owner/MEMORY.md";
+impl Actor {
+    /// The owner in their DM.
+    fn owner() -> Self {
+        Self {
+            requester: Some(owner()),
+            session: dm(),
+        }
+    }
 
-#[tokio::test]
-async fn each_operation_changes_agent_memory_and_the_result_shows_it() {
-    let s = Setup::new().await;
-    let tool = s.memory();
-    let owner = Some(owner());
+    /// The guest `ann` in her DM.
+    fn ann() -> Self {
+        Self {
+            requester: Some(user("ann")),
+            session: session(SessionKind::Direct, Some(user("ann"))),
+        }
+    }
 
-    let added = call(
-        &tool,
-        ops(
-            "agent",
-            json!([{"op": "add", "content": "Tea at four."}, {"op": "add", "content": "Jazz."}]),
-        ),
-        owner.clone(),
-        dm(),
-    )
-    .await;
-    assert_eq!(
-        ok(&added),
-        "Saved. Agent memory is now [33% — 20/60]:\n\nTea at four.\n§\nJazz."
-    );
-    assert_eq!(s.read(AGENT_FILE).unwrap(), "Tea at four.\n§\nJazz.\n");
+    /// `requester` speaking in the group conversation `conversation` of channel `fake`.
+    fn group(requester: &UserId, conversation: &str) -> Self {
+        let mut session = session(SessionKind::Group, None);
+        session.conversation = Some(ConversationId::new(conversation).unwrap());
+        Self {
+            requester: Some(requester.clone()),
+            session,
+        }
+    }
 
-    let patched = call(
-        &tool,
-        ops(
-            "agent",
-            json!([{"op": "patch", "old_text": "four", "content": "five"}]),
-        ),
-        owner.clone(),
-        dm(),
-    )
-    .await;
-    assert_eq!(
-        ok(&patched),
-        "Saved. Agent memory is now [33% — 20/60]:\n\nTea at five.\n§\nJazz."
-    );
+    /// A config job: no requester, in the session of the owner's job.
+    fn config_job() -> Self {
+        Self {
+            requester: None,
+            session: session(SessionKind::Job, Some(owner())),
+        }
+    }
 
-    let removed = call(
-        &tool,
-        ops("agent", json!([{"op": "remove", "old_text": "Tea"}])),
-        owner.clone(),
-        dm(),
-    )
-    .await;
-    assert_eq!(
-        ok(&removed),
-        "Saved. Agent memory is now [8% — 5/60]:\n\nJazz."
-    );
+    /// A runtime job the owner created: it runs as the owner.
+    fn owner_job() -> Self {
+        Self {
+            requester: Some(owner()),
+            session: session(SessionKind::Job, Some(owner())),
+        }
+    }
+}
 
-    let emptied = call(
-        &tool,
-        ops("agent", json!([{"op": "remove", "old_text": "Jazz"}])),
-        owner,
-        dm(),
-    )
-    .await;
-    assert_eq!(
-        ok(&emptied),
-        "Saved. Agent memory is now [0% — 0/60]:\n\n(empty)"
-    );
-    assert_eq!(s.read(AGENT_FILE).unwrap(), "");
+/// The owner's view of their own memories, for checking the database directly.
+fn owner_viewer() -> MemoryViewer {
+    MemoryViewer::new(MemoryOwner::User(owner()), true)
+}
+
+/// The id in a result that starts with a memory's line (`Added #12 ...`).
+fn id_of(output: &ToolOutput) -> i64 {
+    let rest = ok(output).split_once('#').unwrap().1;
+    rest.chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .unwrap()
 }
 
 #[tokio::test]
-async fn a_failing_operation_rejects_the_whole_batch_and_names_itself() {
+async fn memories_are_added_edited_and_forgotten_by_id_and_results_show_them() {
     let s = Setup::new().await;
-    s.write(AGENT_FILE, "Tea at four.\n§\nTea in the garden.\n");
-    let output = call(
-        &s.memory(),
-        ops(
-            "agent",
-            json!([
-                {"op": "add", "content": "Jazz."},
-                {"op": "remove", "old_text": "Tea"},
-            ]),
-        ),
-        Some(owner()),
-        dm(),
-    )
-    .await;
+    let me = Actor::owner();
+
+    let added = s.add(json!({"content": "Tea at four."}), &me).await;
+    let tea = id_of(&added);
+    let shown = ok(&added);
+    assert!(shown.starts_with(&format!("Added #{tea} ")), "{shown}");
+    assert!(shown.contains("Tea at four."), "{shown}");
+    // Not core: no usage line.
+    assert!(!shown.contains("core memories"), "{shown}");
+    let stored = s
+        .db()
+        .await
+        .get(&owner_viewer(), MemoryId::new(tea))
+        .await
+        .unwrap();
+    assert_eq!(stored.content, "Tea at four.");
+    assert!(!stored.core && !stored.shared);
+    assert_eq!(stored.source_session, Some(SessionId::new(1)));
+    assert_eq!(stored.owner, MemoryOwner::User(owner()));
+
+    let second = s.add(json!({"content": "Jazz on Fridays."}), &me).await;
+    assert_ne!(id_of(&second), tea);
+
+    let edited = s
+        .edit(json!({"id": tea, "content": "Tea at five."}), &me)
+        .await;
+    let shown = ok(&edited);
+    assert!(shown.starts_with(&format!("Updated #{tea} ")), "{shown}");
+    assert!(shown.contains("Tea at five."), "{shown}");
+    assert!(!shown.contains("Tea at four."), "{shown}");
+    let stored = s
+        .db()
+        .await
+        .get(&owner_viewer(), MemoryId::new(tea))
+        .await
+        .unwrap();
+    assert_eq!(stored.content, "Tea at five.");
+    assert!(stored.updated_at > stored.created_at);
+
+    let forgotten = s.forget(json!({"id": tea}), &me).await;
+    let shown = ok(&forgotten);
+    assert!(shown.starts_with(&format!("Forgot #{tea} ")), "{shown}");
+    assert!(shown.contains("Tea at five."), "{shown}");
     assert_eq!(
-        err(&output),
-        "operations[1] (remove): old_text matches 2 entries; include more of the text so it \
-         matches exactly one"
+        s.db()
+            .await
+            .get(&owner_viewer(), MemoryId::new(tea))
+            .await
+            .unwrap_err()
+            .to_string(),
+        format!("unknown memory {tea}")
+    );
+    // Forgetting it again is "no such memory", and the other memory is untouched.
+    assert_eq!(
+        err(&s.forget(json!({"id": tea}), &me).await),
+        format!("no memory #{tea}")
     );
     assert_eq!(
-        s.read(AGENT_FILE).unwrap(),
-        "Tea at four.\n§\nTea in the garden.\n"
+        err(&s.edit(json!({"id": tea, "core": true}), &me).await),
+        format!("no memory #{tea}")
     );
+    assert!(s.recalled("jazz", &me).await.contains("Jazz on Fridays."));
 }
 
 #[tokio::test]
-async fn an_over_cap_batch_changes_nothing_and_shows_the_current_entries() {
+async fn core_changes_show_the_usage_of_each_scope_they_touch() {
     let s = Setup::new().await;
-    s.write(AGENT_FILE, "Tea at four.\n§\nLikes jazz and long walks.\n");
-    let output = call(
-        &s.memory(),
-        ops(
-            "agent",
-            json!([{"op": "add", "content": "Keeps bees on the roof of the shed."}]),
-        ),
-        Some(owner()),
-        dm(),
-    )
-    .await;
-    // 12 + 3 + 26 = 41 now; adding 3 + 35 makes 79, 19 over.
-    assert_eq!(
-        err(&output),
-        "the batch would bring memory to 79/60 characters, 19 over the cap; nothing was changed. \
-         Make room by merging, shortening, or removing entries, in one batch\n\n\
-         Agent memory is unchanged [68% — 41/60]:\n\nTea at four.\n§\nLikes jazz and long walks."
-    );
-    assert_eq!(
-        s.read(AGENT_FILE).unwrap(),
-        "Tea at four.\n§\nLikes jazz and long walks.\n"
-    );
+    let me = Actor::owner();
 
-    // Consolidating in one batch fits.
-    let output = call(
-        &s.memory(),
-        ops(
-            "agent",
-            json!([
-                {"op": "remove", "old_text": "jazz"},
-                {"op": "add", "content": "Keeps bees on the roof of the shed."},
-            ]),
-        ),
-        Some(owner()),
-        dm(),
-    )
-    .await;
-    assert!(ok(&output).starts_with("Saved. Agent memory is now [83% — 50/60]"));
-}
-
-#[tokio::test]
-async fn agent_memory_is_written_only_in_owner_turns_and_config_jobs() {
-    let s = Setup::new().await;
-    let add = || ops("agent", json!([{"op": "add", "content": "Fact."}]));
-
-    let guest = call(&s.memory(), add(), Some(user("ann")), dm()).await;
-    assert_eq!(
-        err(&guest),
-        "not permitted for ann: agent-wide memory is written only in the owner's turns and in \
-         config jobs"
-    );
-    assert_eq!(s.read(AGENT_FILE), None);
-
-    // A config job has no requester, in its own session or the owner's DM.
-    let job = call(
-        &s.memory(),
-        add(),
-        None,
-        session(SessionKind::Job, Some(owner())),
-    )
-    .await;
-    ok(&job);
-    let dm_job = call(&s.memory(), add(), None, dm()).await;
-    ok(&dm_job);
-    // A runtime job the owner created runs as the owner, as does a group turn of the owner.
-    let runtime_job = call(
-        &s.memory(),
-        add(),
-        Some(owner()),
-        session(SessionKind::Job, Some(owner())),
-    )
-    .await;
-    ok(&runtime_job);
-    let group = call(
-        &s.memory(),
-        add(),
-        Some(owner()),
-        session(SessionKind::Group, None),
-    )
-    .await;
-    ok(&group);
-    assert_eq!(
-        s.read(AGENT_FILE).unwrap(),
-        "Fact.\n§\nFact.\n§\nFact.\n§\nFact.\n"
-    );
-}
-
-#[tokio::test]
-async fn user_memory_is_the_session_users_and_never_written_in_a_group() {
-    let s = Setup::new().await;
-    let add = |content: &str| ops("user", json!([{"op": "add", "content": content}]));
-
-    let output = call(&s.memory(), add("Owns a cat."), Some(owner()), dm()).await;
-    assert_eq!(
-        ok(&output),
-        "Saved. User memory is now [18% — 11/60]:\n\nOwns a cat."
-    );
-    assert_eq!(s.read(OWNER_FILE).unwrap(), "Owns a cat.\n");
-    assert_eq!(s.read(AGENT_FILE), None);
-
-    // A job delivering to the owner writes the owner's file.
-    let job = call(
-        &s.memory(),
-        add("Up at six."),
-        None,
-        session(SessionKind::Job, Some(owner())),
-    )
-    .await;
-    ok(&job);
-    assert_eq!(s.read(OWNER_FILE).unwrap(), "Owns a cat.\n§\nUp at six.\n");
-
-    let group = call(
-        &s.memory(),
-        add("x"),
-        Some(owner()),
-        session(SessionKind::Group, None),
-    )
-    .await;
-    assert_eq!(
-        err(&group),
-        "the `user` memory scope is only available in direct conversations"
-    );
-    let job_without_user = call(&s.memory(), add("x"), None, session(SessionKind::Job, None)).await;
-    err(&job_without_user);
-
-    // Someone else's turn can't write the session user's memory.
-    let other = call(&s.memory(), add("x"), Some(user("ann")), dm()).await;
-    assert_eq!(
-        err(&other),
-        "not permitted for ann: this conversation's user memory belongs to owner"
-    );
-    assert_eq!(s.read(OWNER_FILE).unwrap(), "Owns a cat.\n§\nUp at six.\n");
-}
-
-#[tokio::test]
-async fn each_scope_has_its_own_cap_from_the_agent() {
-    let s = Setup::new().await;
-    let long = "x".repeat(CAP);
-    let fill = |scope: &str| ops(scope, json!([{"op": "add", "content": long}]));
-    ok(&call(&s.memory(), fill("agent"), Some(owner()), dm()).await);
-    ok(&call(&s.memory(), fill("user"), Some(owner()), dm()).await);
-    let over = call(
-        &s.memory(),
-        ops("user", json!([{"op": "add", "content": "y"}])),
-        Some(owner()),
-        dm(),
-    )
-    .await;
-    assert!(err(&over).contains("4 over the cap"), "{}", text(&over));
-}
-
-#[test]
-fn input_is_checked_before_anything_is_written() {
-    let parse = |input: Value| parse_input(input).map(|(scope, ops)| (scope, ops.len()));
-    assert_eq!(
-        parse(ops("user", json!([{"op": "add", "content": "a"}]))),
-        Ok((Scope::User, 1))
-    );
-    assert_eq!(
-        parse(ops("group", json!([{"op": "add", "content": "a"}]))),
-        Err("the `group` memory scope isn't available".to_owned())
-    );
-    assert_eq!(
-        parse(ops("team", json!([{"op": "add", "content": "a"}]))),
-        Err("unknown memory scope \"team\": use \"agent\" or \"user\"".to_owned())
-    );
-    assert_eq!(
-        parse(ops("agent", json!([]))),
-        Err("operations is empty: give at least one operation".to_owned())
-    );
-    let bad_op = parse(ops(
-        "agent",
-        json!([{"op": "add", "content": "a"}, {"op": "replace", "content": "b"}]),
-    ))
-    .unwrap_err();
+    let jazz = s
+        .add(json!({"content": "Likes jazz.", "core": true}), &me)
+        .await;
+    let id = id_of(&jazz);
+    let shown = ok(&jazz);
+    assert!(shown.starts_with("Added #"), "{shown}");
     assert!(
-        bad_op.starts_with("operations[1]: unknown variant `replace`"),
-        "{bad_op}"
+        shown.ends_with("\nYour core memories [18% — 11/60]"),
+        "{shown}"
     );
-    // A whole-entry replace dressed as `remove` is refused, not half applied.
-    let replace = parse(ops(
-        "agent",
-        json!([{"op": "remove", "old_text": "a", "content": "b"}]),
-    ))
-    .unwrap_err();
-    assert!(
-        replace.starts_with("operations[0]: unknown field `content`"),
-        "{replace}"
-    );
-    let add_extra = parse(ops(
-        "agent",
-        json!([{"op": "add", "content": "x", "old_text": "y"}]),
-    ))
-    .unwrap_err();
-    assert!(
-        add_extra.starts_with("operations[0]: unknown field `old_text`"),
-        "{add_extra}"
-    );
-    let missing = parse(ops("agent", json!([{"op": "patch", "old_text": "a"}]))).unwrap_err();
-    assert!(
-        missing.starts_with("operations[0]: missing field `content`"),
-        "{missing}"
-    );
-    let extra = parse(json!({"scope": "agent", "operations": [], "read": true})).unwrap_err();
-    assert!(
-        extra.starts_with("invalid input: unknown field `read`"),
-        "{extra}"
-    );
-    let no_scope = parse(json!({"operations": []})).unwrap_err();
-    assert!(
-        no_scope.starts_with("invalid input: missing field `scope`"),
-        "{no_scope}"
-    );
-}
 
-#[tokio::test]
-async fn invalid_input_is_an_error_result() {
-    let s = Setup::new().await;
-    let output = call(&s.memory(), json!({"scope": "agent"}), Some(owner()), dm()).await;
-    assert!(err(&output).starts_with("invalid input: missing field `operations`"));
-}
-
-#[test]
-fn scope_rules() {
-    let owner_dm = dm();
-    assert_eq!(
-        target(Scope::Agent, Some(&owner()), &owner_dm),
-        Ok(Target::Agent)
-    );
-    assert_eq!(target(Scope::Agent, None, &owner_dm), Ok(Target::Agent));
-    assert!(target(Scope::Agent, Some(&user("ann")), &owner_dm).is_err());
-    assert_eq!(
-        target(Scope::User, Some(&owner()), &owner_dm),
-        Ok(Target::User(owner()))
-    );
-    let ann_dm = session(SessionKind::Direct, Some(user("ann")));
-    assert_eq!(
-        target(Scope::User, Some(&user("ann")), &ann_dm),
-        Ok(Target::User(user("ann")))
-    );
-    assert!(target(Scope::User, Some(&owner()), &ann_dm).is_err());
+    // Sharing a core memory moves it from the owner's scope into the shared one: both show.
+    let shared = s.edit(json!({"id": id, "shared": true}), &me).await;
     assert!(
-        target(
-            Scope::User,
-            Some(&owner()),
-            &session(SessionKind::Group, None)
+        ok(&shared)
+            .ends_with("\nYour core memories [0% — 0/60]\nShared core memories [18% — 11/60]"),
+        "{}",
+        text(&shared)
+    );
+
+    // Demoting shows the scope it left.
+    let demoted = s.edit(json!({"id": id, "core": false}), &me).await;
+    assert!(
+        ok(&demoted).ends_with("\nShared core memories [0% — 0/60]"),
+        "{}",
+        text(&demoted)
+    );
+
+    // A change to a memory that is not core and stays so shows no usage.
+    let plain = s
+        .edit(json!({"id": id, "content": "Likes jazz a lot."}), &me)
+        .await;
+    assert!(!ok(&plain).contains("core memories"), "{}", text(&plain));
+
+    let promoted = s.edit(json!({"id": id, "core": true}), &me).await;
+    assert!(
+        ok(&promoted).ends_with("\nShared core memories [28% — 17/60]"),
+        "{}",
+        text(&promoted)
+    );
+    let forgotten = s.forget(json!({"id": id}), &me).await;
+    assert!(
+        ok(&forgotten).ends_with("\nShared core memories [0% — 0/60]"),
+        "{}",
+        text(&forgotten)
+    );
+
+    // A group's scope is its own, and a config job's memories are shared.
+    let group = Actor::group(&user("ann"), "chat");
+    let noted = s
+        .add(
+            json!({"content": "Meets on Mondays.", "core": true}),
+            &group,
         )
-        .is_err()
+        .await;
+    assert!(
+        ok(&noted).ends_with("\nThis group's core memories [28% — 17/60]"),
+        "{}",
+        text(&noted)
+    );
+    let job = s
+        .add(
+            json!({"content": "Mind the cat.", "core": true, "shared": true}),
+            &Actor::config_job(),
+        )
+        .await;
+    assert!(
+        ok(&job).ends_with("\nShared core memories [21% — 13/60]"),
+        "{}",
+        text(&job)
+    );
+    // A memory that isn't core never shows usage.
+    let plain = s.add(json!({"content": "Rains a lot."}), &group).await;
+    assert!(!ok(&plain).contains("core memories"), "{}", text(&plain));
+}
+
+#[tokio::test]
+async fn an_over_cap_core_write_lists_the_scope_and_changes_nothing() {
+    let s = Setup::new().await;
+    let me = Actor::owner();
+    let bees = s
+        .remember(&me, "Keeps bees on the roof of the shed.", true, false)
+        .await;
+    let tea = s.remember(&me, "Tea at four.", true, false).await;
+    // Another scope's core memories don't count against the owner's: this one is shared.
+    s.remember(&me, &"s".repeat(60), true, true).await;
+
+    // 47 characters now; 26 more is 73, 13 over.
+    let long = json!({"content": "Likes jazz and long walks.", "core": true});
+    let output = s.add(long.clone(), &me).await;
+    let shown = err(&output);
+    assert!(
+        shown.starts_with(
+            "not saved: your core memories would use 73/60 characters, 13 over the cap; \
+             nothing was changed."
+        ),
+        "{shown}"
+    );
+    assert!(shown.contains("memory_edit core=false"), "{shown}");
+    assert!(shown.contains("forgetting"), "{shown}");
+    assert!(
+        shown.contains("Your core memories [78% — 47/60]:"),
+        "{shown}"
+    );
+    assert!(shown.contains(&format!("#{bees} ")), "{shown}");
+    assert!(
+        shown.contains("Keeps bees on the roof of the shed. — 35 chars"),
+        "{shown}"
+    );
+    assert!(shown.contains(&format!("#{tea} ")), "{shown}");
+    assert!(shown.contains("Tea at four. — 12 chars"), "{shown}");
+    let core = s.db().await.core_memories(&owner_viewer()).await.unwrap();
+    assert_eq!(core.own.chars, 47);
+    assert_eq!(core.own.memories.len(), 2);
+    assert!(
+        !s.recalled("walks", &me)
+            .await
+            .contains("Likes jazz and long walks."),
+    );
+
+    // The shared scope is full too, and its error names it.
+    let shared = s
+        .add(json!({"content": "y", "core": true, "shared": true}), &me)
+        .await;
+    assert!(
+        err(&shared).starts_with(
+            "not saved: the shared core memories would use 61/60 characters, 1 over the cap;"
+        ),
+        "{}",
+        text(&shared)
+    );
+
+    // The same memory that isn't core fits, and so does a core one after demoting another.
+    ok(&s
+        .add(json!({"content": "Likes jazz and long walks."}), &me)
+        .await);
+    ok(&s.edit(json!({"id": bees, "core": false}), &me).await);
+    let fits = s.add(long, &me).await;
+    assert!(
+        ok(&fits).ends_with("\nYour core memories [63% — 38/60]"),
+        "{}",
+        text(&fits)
+    );
+
+    // An edit that grows a core memory past the cap changes nothing.
+    let grown = s
+        .edit(json!({"id": tea, "content": "t".repeat(40)}), &me)
+        .await;
+    assert!(err(&grown).contains("over the cap"), "{}", text(&grown));
+    let stored = s
+        .db()
+        .await
+        .get(&owner_viewer(), MemoryId::new(tea))
+        .await
+        .unwrap();
+    assert_eq!(stored.content, "Tea at four.");
+    // So does making a memory core that doesn't fit (the bees are 35 characters).
+    let promote = s.edit(json!({"id": bees, "core": true}), &me).await;
+    assert!(
+        err(&promote).starts_with(
+            "not saved: your core memories would use 73/60 characters, 13 over the cap;"
+        ),
+        "{}",
+        text(&promote)
+    );
+    assert!(
+        !s.db()
+            .await
+            .get(&owner_viewer(), MemoryId::new(bees))
+            .await
+            .unwrap()
+            .core
+    );
+}
+
+#[tokio::test]
+async fn each_scope_has_its_own_core_cap_from_the_agent() {
+    let s = Setup::new().await;
+    let fill = |shared: bool| json!({"content": "x".repeat(CAP), "core": true, "shared": shared});
+    let one = json!({"content": "y", "core": true});
+    let me = Actor::owner();
+    let group = Actor::group(&owner(), "chat");
+    let other_group = Actor::group(&owner(), "other-room");
+    ok(&s.add(fill(true), &me).await);
+    ok(&s.add(fill(false), &me).await);
+    ok(&s.add(fill(false), &group).await);
+    ok(&s.add(fill(false), &other_group).await);
+    ok(&s.add(fill(false), &Actor::ann()).await);
+    for who in [&me, &group, &other_group, &Actor::ann()] {
+        assert!(
+            err(&s.add(one.clone(), who).await).contains("1 over the cap"),
+            "full scope accepts more"
+        );
+    }
+}
+
+#[tokio::test]
+async fn content_is_limited_in_characters() {
+    let s = Setup::new().await;
+    let me = Actor::owner();
+    let too_long = s.add(json!({"content": "z".repeat(1001)}), &me).await;
+    assert_eq!(
+        err(&too_long),
+        "the memory is 1001 characters; the limit is 1000. Shorten it, or split it into \
+         several memories"
+    );
+    // A thousand multi-byte characters fit.
+    ok(&s.add(json!({"content": "é".repeat(1000)}), &me).await);
+    // An edit is held to the same limit.
+    let id = s.remember(&me, "short", false, false).await;
+    let edit = s
+        .edit(json!({"id": id, "content": "z".repeat(1001)}), &me)
+        .await;
+    assert!(err(&edit).contains("1001 characters"), "{}", text(&edit));
+}
+
+#[tokio::test]
+async fn private_memories_are_visible_only_in_their_owners_sessions() {
+    let s = Setup::new().await;
+    let me = Actor::owner();
+    let ann = Actor::ann();
+    let group = Actor::group(&user("ann"), "chat");
+    let other_group = Actor::group(&user("ann"), "other-room");
+    let job = Actor::config_job();
+
+    let mine = s.remember(&me, "alpha owner diary", false, false).await;
+    s.remember(&me, "bravo shared rule", false, true).await;
+    s.remember(&ann, "charlie ann diary", false, false).await;
+    let note = s.remember(&group, "delta group note", false, false).await;
+    // A job the owner created runs as the owner, in the owner's scope.
+    s.remember(&Actor::owner_job(), "echo owner job diary", false, false)
+        .await;
+
+    let found = s.recalled("diary", &me).await;
+    assert!(found.contains("alpha owner diary"), "{found}");
+    assert!(found.contains("echo owner job diary"), "{found}");
+    assert!(!found.contains("charlie"), "{found}");
+    let found = s.recalled("diary", &ann).await;
+    assert!(found.contains("charlie ann diary"), "{found}");
+    assert!(
+        !found.contains("alpha") && !found.contains("echo"),
+        "{found}"
+    );
+
+    // A group never sees a participant's DM memories, and DMs never see the group's.
+    assert_eq!(
+        s.recalled("diary", &group).await,
+        memory_recall::NO_MEMORIES
+    );
+    assert!(
+        s.recalled("note", &group)
+            .await
+            .contains("delta group note")
+    );
+    assert_eq!(
+        s.recalled("note", &other_group).await,
+        memory_recall::NO_MEMORIES
+    );
+    assert_eq!(s.recalled("note", &me).await, memory_recall::NO_MEMORIES);
+    assert_eq!(s.recalled("note", &ann).await, memory_recall::NO_MEMORIES);
+    assert_eq!(
+        err(&s.edit(json!({"id": note, "content": "x"}), &me).await),
+        format!("no memory #{note}")
+    );
+    assert_eq!(
+        err(&s.forget(json!({"id": note}), &ann).await),
+        format!("no memory #{note}")
+    );
+    // A group's participants share its memories.
+    let owner_in_group = Actor::group(&owner(), "chat");
+    assert!(
+        s.recalled("note", &owner_in_group)
+            .await
+            .contains("delta group note")
+    );
+    ok(&s
+        .edit(
+            json!({"id": note, "content": "delta group note, revised"}),
+            &owner_in_group,
+        )
+        .await);
+
+    // A config job has no requester and so no private scope: it sees shared memories only.
+    assert_eq!(s.recalled("diary", &job).await, memory_recall::NO_MEMORIES);
+    assert_eq!(s.recalled("note", &job).await, memory_recall::NO_MEMORIES);
+    assert!(s.recalled("rule", &job).await.contains("bravo shared rule"));
+    // Every session sees a shared memory, and the others' recall doesn't leak what it can't see.
+    for who in [&me, &ann, &group, &other_group, &job] {
+        let found = s.recalled("bravo", who).await;
+        assert!(found.contains("bravo shared rule"), "{found}");
+    }
+    let everything = s.recalled("alpha bravo charlie delta echo", &ann).await;
+    assert!(
+        everything.contains("bravo") && everything.contains("charlie"),
+        "{everything}"
+    );
+    assert!(
+        !everything.contains("alpha")
+            && !everything.contains("delta")
+            && !everything.contains("echo"),
+        "{everything}"
+    );
+    assert!(
+        everything.starts_with("2 memories, best first:"),
+        "{everything}"
+    );
+
+    // The owner's memory is still there.
+    assert_eq!(
+        s.db()
+            .await
+            .get(&owner_viewer(), MemoryId::new(mine))
+            .await
+            .unwrap()
+            .content,
+        "alpha owner diary"
+    );
+}
+
+#[tokio::test]
+async fn shared_memories_are_written_only_in_owner_turns_and_config_jobs() {
+    let s = Setup::new().await;
+    let me = Actor::owner();
+    let ann = Actor::ann();
+    let forbidden = |output: &ToolOutput| {
+        assert!(
+            err(output).contains("only in the owner's turns and in config jobs"),
+            "{}",
+            text(output)
+        );
+    };
+
+    // A guest can't create a shared memory, nor mark one of hers shared.
+    forbidden(
+        &s.add(json!({"content": "Plant", "shared": true}), &ann)
+            .await,
+    );
+    let plum = s.remember(&ann, "Ann likes plums", false, false).await;
+    forbidden(&s.edit(json!({"id": plum, "shared": true}), &ann).await);
+    let stored = s
+        .db()
+        .await
+        .get(
+            &MemoryViewer::new(MemoryOwner::User(user("ann")), false),
+            MemoryId::new(plum),
+        )
+        .await
+        .unwrap();
+    assert!(!stored.shared);
+
+    // She sees the owner's shared memory but can't change or forget it, nor make it core.
+    let rule = s.remember(&me, "House rule: shoes off", false, true).await;
+    assert!(
+        s.recalled("shoes", &ann)
+            .await
+            .contains("House rule: shoes off")
+    );
+    forbidden(
+        &s.edit(json!({"id": rule, "content": "Shoes on"}), &ann)
+            .await,
+    );
+    forbidden(&s.edit(json!({"id": rule, "core": true}), &ann).await);
+    forbidden(&s.edit(json!({"id": rule, "shared": false}), &ann).await);
+    forbidden(&s.forget(json!({"id": rule}), &ann).await);
+    assert!(s.recalled("shoes", &me).await.contains("shoes off"));
+
+    // Nor can a group, whoever speaks, unless it's the owner.
+    let ann_in_group = Actor::group(&user("ann"), "chat");
+    forbidden(
+        &s.add(json!({"content": "Plant", "shared": true}), &ann_in_group)
+            .await,
+    );
+    let owner_in_group = Actor::group(&owner(), "chat");
+    let from_group = s
+        .remember(&owner_in_group, "Owner said so", false, true)
+        .await;
+    forbidden(&s.forget(json!({"id": from_group}), &ann_in_group).await);
+    // A shared memory keeps its author as owner but is visible to all.
+    assert!(s.recalled("said", &me).await.contains("Owner said so"));
+
+    // A config job writes, changes, and forgets shared memories, with no owner.
+    let job = Actor::config_job();
+    let reminder = s.remember(&job, "Water the ferns", false, true).await;
+    let stored = s
+        .db()
+        .await
+        .get(&owner_viewer(), MemoryId::new(reminder))
+        .await
+        .unwrap();
+    assert!(stored.shared);
+    assert_eq!(stored.owner, MemoryOwner::None);
+    ok(&s
+        .edit(
+            json!({"id": reminder, "content": "Water the ferns daily"}),
+            &job,
+        )
+        .await);
+    ok(&s
+        .edit(json!({"id": rule, "content": "Shoes off, please"}), &job)
+        .await);
+    ok(&s.forget(json!({"id": rule}), &job).await);
+    // The owner can change what a job wrote.
+    ok(&s
+        .edit(
+            json!({"id": reminder, "content": "Water the ferns weekly"}),
+            &me,
+        )
+        .await);
+    // But a config job's private memory could never be read back, so it must be shared.
+    let private = s.add(json!({"content": "Secret"}), &job).await;
+    assert!(
+        err(&private).starts_with("invalid input: a memory with no owner must be shared"),
+        "{}",
+        text(&private)
+    );
+    // And it can't reach anyone's private memories.
+    assert_eq!(
+        err(&s.edit(json!({"id": plum, "content": "x"}), &job).await),
+        format!("no memory #{plum}")
+    );
+    assert_eq!(
+        err(&s.forget(json!({"id": plum}), &job).await),
+        format!("no memory #{plum}")
+    );
+}
+
+#[tokio::test]
+async fn an_invisible_memory_reads_like_one_that_does_not_exist() {
+    let s = Setup::new().await;
+    let me = Actor::owner();
+    let ann = Actor::ann();
+    let secret = s.remember(&me, "alpha secret", true, false).await;
+    let missing = secret + 1000;
+
+    for (input, tool) in [
+        (json!({"id": secret, "content": "x"}), "edit"),
+        (json!({"id": missing, "content": "x"}), "edit"),
+        (json!({"id": secret}), "forget"),
+        (json!({"id": missing}), "forget"),
+    ] {
+        let output = match tool {
+            "edit" => s.edit(input.clone(), &ann).await,
+            _ => s.forget(input.clone(), &ann).await,
+        };
+        let id = input["id"].as_i64().unwrap();
+        assert_eq!(err(&output), format!("no memory #{id}"));
+    }
+    // Nothing changed, and no usage or content leaked.
+    let stored = s
+        .db()
+        .await
+        .get(&owner_viewer(), MemoryId::new(secret))
+        .await
+        .unwrap();
+    assert_eq!(stored.content, "alpha secret");
+    assert_eq!(s.recalled("secret", &ann).await, memory_recall::NO_MEMORIES);
+
+    // A guest can't use the owner's DM scope even by speaking in the owner's session.
+    let intruder = Actor {
+        requester: Some(user("ann")),
+        session: dm(),
+    };
+    for output in [
+        s.add(json!({"content": "x"}), &intruder).await,
+        s.edit(json!({"id": secret, "content": "x"}), &intruder)
+            .await,
+        s.forget(json!({"id": secret}), &intruder).await,
+        s.recall(json!({"query": "secret"}), &intruder).await,
+    ] {
+        assert!(!err(&output).contains("alpha"), "{}", text(&output));
+    }
+    assert_eq!(
+        s.db()
+            .await
+            .core_memories(&owner_viewer())
+            .await
+            .unwrap()
+            .own
+            .chars,
+        "alpha secret".len()
+    );
+}
+
+#[tokio::test]
+async fn recall_ranks_by_relevance_then_recency_and_shows_flags_and_dates() {
+    let s = Setup::new().await;
+    let me = Actor::owner();
+    let both = s.remember(&me, "alpha beta", false, false).await;
+    let one = s.remember(&me, "alpha", false, false).await;
+    s.remember(&me, "gamma", false, false).await;
+
+    let found = s.recalled("alpha beta", &me).await;
+    assert!(found.starts_with("2 memories, best first:"), "{found}");
+    let first = found.find(&format!("#{both} ")).unwrap();
+    let second = found.find(&format!("#{one} ")).unwrap();
+    assert!(first < second, "{found}");
+    assert!(!found.contains("gamma"), "{found}");
+
+    // Equal matches: the most recently updated first.
+    let one_old = s.remember(&me, "delta one", false, false).await;
+    let two_old = s.remember(&me, "delta two", false, false).await;
+    let found = s.recalled("delta", &me).await;
+    assert!(
+        found.find(&format!("#{two_old} ")).unwrap() < found.find(&format!("#{one_old} ")).unwrap(),
+        "{found}"
+    );
+    // Editing the older one makes it the newest.
+    ok(&s
+        .edit(json!({"id": one_old, "content": "delta uno"}), &me)
+        .await);
+    let found = s.recalled("delta", &me).await;
+    assert!(
+        found.find(&format!("#{one_old} ")).unwrap() < found.find(&format!("#{two_old} ")).unwrap(),
+        "{found}"
+    );
+
+    // Word endings are ignored, as in transcript search.
+    assert!(s.recalled("betas", &me).await.contains("alpha beta"));
+
+    assert_eq!(s.recalled("zebra", &me).await, memory_recall::NO_MEMORIES);
+}
+
+#[tokio::test]
+async fn recall_shows_each_memory_as_the_prompt_lists_it_with_its_dates() {
+    let s = Setup::new().await;
+    let me = Actor::owner();
+    // The clock reads 17:00 BST for the add, 17:01 for the edit, then 17:02 for the recall.
+    let id = s.remember(&me, "Likes giraffes", true, true).await;
+    ok(&s
+        .edit(json!({"id": id, "content": "Likes giraffes a lot"}), &me)
+        .await);
+    let found = s.recalled("giraffe", &me).await;
+    let stored = s
+        .db()
+        .await
+        .get(&owner_viewer(), MemoryId::new(id))
+        .await
+        .unwrap();
+    assert!(
+        found.starts_with(&format!(
+            "1 memory, best first:\n\n{}\n",
+            crate::memory::line(&stored)
+        )),
+        "{found}"
+    );
+    assert!(
+        found.ends_with("created Thu 2026-10-22 17:00 BST, updated Thu 2026-10-22 17:01 BST"),
+        "{found}"
+    );
+}
+
+#[tokio::test]
+async fn recall_limits_its_hits_and_matches_query_syntax_as_text() {
+    let s = Setup::new().await;
+    let me = Actor::owner();
+    for content in ["delta one", "delta two", "delta three"] {
+        s.remember(&me, content, false, false).await;
+    }
+    let count = |text: &str| text.split_once(", best first").unwrap().0.to_owned();
+    assert_eq!(count(&s.recalled("delta", &me).await), "3 memories");
+    let limited = s.recall(json!({"query": "delta", "limit": 2}), &me).await;
+    assert_eq!(count(ok(&limited)), "2 memories");
+    // Out-of-range limits are clamped into 1..=50 rather than refused.
+    let zero = s.recall(json!({"query": "delta", "limit": 0}), &me).await;
+    assert_eq!(count(ok(&zero)), "1 memory");
+    let huge = s
+        .recall(json!({"query": "delta", "limit": 1000}), &me)
+        .await;
+    assert_eq!(count(ok(&huge)), "3 memories");
+
+    // FTS syntax in the query is text, not syntax: it neither fails nor changes what matches.
+    for query in [
+        "\"delta",
+        "delta*",
+        "delta OR (",
+        "NEAR(delta two)",
+        "delta:one",
+        "-delta",
+        "delta AND NOT two",
+    ] {
+        let found = s.recall(json!({"query": query}), &me).await;
+        assert!(
+            ok(&found).starts_with(|c: char| c.is_ascii_digit()),
+            "{query}: {}",
+            text(&found)
+        );
+    }
+    // A query without words finds nothing, and one that is blank is invalid.
+    let punctuation = s.recall(json!({"query": "\"*():-"}), &me).await;
+    assert_eq!(ok(&punctuation), memory_recall::NO_MEMORIES);
+    let blank = s.recall(json!({"query": "  "}), &me).await;
+    assert_eq!(err(&blank), "invalid input: query is empty");
+}
+
+#[test]
+fn input_is_parsed_strictly() {
+    use memory_add::Add;
+
+    assert_eq!(
+        memory_add::parse_input(json!({"content": "a"})),
+        Ok(Add {
+            content: "a".to_owned(),
+            core: false,
+            shared: false
+        })
+    );
+    assert_eq!(
+        memory_add::parse_input(json!({"content": "a", "core": true, "shared": true})),
+        Ok(Add {
+            content: "a".to_owned(),
+            core: true,
+            shared: true
+        })
+    );
+    for (input, expected) in [
+        (json!({}), "invalid input: missing field `content`"),
+        (json!({"content": "  "}), "invalid input: content is empty"),
+        (
+            json!({"content": "a", "core": "yes"}),
+            "invalid input: invalid type: string \"yes\"",
+        ),
+        (
+            json!({"content": "a", "scope": "agent"}),
+            "invalid input: unknown field `scope`",
+        ),
+    ] {
+        let error = memory_add::parse_input(input).unwrap_err();
+        assert!(error.starts_with(expected), "{error}");
+    }
+
+    assert_eq!(
+        memory_edit::parse_input(json!({"id": 3, "content": "x"})),
+        Ok((
+            MemoryId::new(3),
+            MemoryEdit {
+                content: Some("x".to_owned()),
+                core: None,
+                shared: None
+            }
+        ))
+    );
+    assert_eq!(
+        memory_edit::parse_input(json!({"id": 3, "core": false, "shared": true})),
+        Ok((
+            MemoryId::new(3),
+            MemoryEdit {
+                content: None,
+                core: Some(false),
+                shared: Some(true)
+            }
+        ))
+    );
+    for (input, expected) in [
+        (json!({"content": "x"}), "invalid input: missing field `id`"),
+        (
+            json!({"id": 3}),
+            "invalid input: give at least one of content, core, or shared",
+        ),
+        (
+            json!({"id": 3, "content": ""}),
+            "invalid input: content is empty; use memory_forget",
+        ),
+        (
+            json!({"id": "3", "content": "x"}),
+            "invalid input: invalid type: string \"3\"",
+        ),
+        (
+            json!({"id": 3, "content": "x", "old_text": "y"}),
+            "invalid input: unknown field `old_text`",
+        ),
+    ] {
+        let error = memory_edit::parse_input(input).unwrap_err();
+        assert!(error.starts_with(expected), "{error}");
+    }
+
+    assert_eq!(
+        memory_forget::parse_input(json!({"id": 7})),
+        Ok(MemoryId::new(7))
+    );
+    for input in [
+        json!({}),
+        json!({"id": 1.5}),
+        json!({"id": 1, "core": true}),
+    ] {
+        let error = memory_forget::parse_input(input).unwrap_err();
+        assert!(error.starts_with("invalid input: "), "{error}");
+    }
+
+    let recall = memory_recall::parse_input;
+    assert_eq!(
+        recall(json!({"query": "tea"})),
+        Ok(("tea".to_owned(), DEFAULT_LIMIT))
+    );
+    assert_eq!(
+        recall(json!({"query": "tea", "limit": 7})),
+        Ok(("tea".to_owned(), 7))
+    );
+    assert_eq!(
+        recall(json!({"query": "tea", "limit": 0})),
+        Ok(("tea".to_owned(), 1))
+    );
+    assert_eq!(
+        recall(json!({"query": "tea", "limit": 500})),
+        Ok(("tea".to_owned(), MAX_LIMIT))
+    );
+    for input in [
+        json!({"query": " "}),
+        json!({}),
+        json!({"query": "a", "limit": -1}),
+        json!({"query": "a", "scope": "all"}),
+    ] {
+        let error = recall(input).unwrap_err();
+        assert!(error.starts_with("invalid input: "), "{error}");
+    }
+}
+
+#[tokio::test]
+async fn invalid_input_and_unknown_agents_are_error_results() {
+    let s = Setup::new().await;
+    let me = Actor::owner();
+    assert!(
+        err(&s.add(json!({"core": true}), &me).await)
+            .starts_with("invalid input: missing field `content`")
+    );
+    assert!(
+        err(&s.edit(json!({"id": 1}), &me).await).starts_with("invalid input: give at least one")
+    );
+    assert!(err(&s.forget(json!({}), &me).await).starts_with("invalid input: missing field `id`"));
+    assert!(
+        err(&s.recall(json!({"query": ""}), &me).await)
+            .starts_with("invalid input: query is empty")
+    );
+
+    let mut ghost = Actor::owner();
+    ghost.session.agent = AgentId::new("ghost").unwrap();
+    assert_eq!(
+        err(&s.add(json!({"content": "x"}), &ghost).await),
+        "agent `ghost` is not configured"
     );
 }
 
 #[test]
 fn specs_name_the_reserved_tools_with_closed_schemas() {
-    let memory = memory::spec();
-    assert_eq!(memory.name, MEMORY);
-    assert!(crate::registry::is_core_tool(&memory.name));
-    let schema = &memory.input_schema;
-    assert_eq!(schema["required"], json!(["scope", "operations"]));
-    assert_eq!(schema["additionalProperties"], json!(false));
+    let specs = [
+        (memory_add::spec(), MEMORY_ADD, json!(["content"])),
+        (memory_edit::spec(), MEMORY_EDIT, json!(["id"])),
+        (memory_forget::spec(), MEMORY_FORGET, json!(["id"])),
+        (memory_recall::spec(), MEMORY_RECALL, json!(["query"])),
+    ];
+    for (spec, name, required) in specs {
+        assert_eq!(spec.name, name);
+        assert!(crate::registry::is_core_tool(&spec.name), "{name}");
+        let schema = &spec.input_schema;
+        assert_eq!(schema["type"], json!("object"), "{name}");
+        assert_eq!(schema["required"], required, "{name}");
+        assert_eq!(schema["additionalProperties"], json!(false), "{name}");
+        for (property, definition) in schema["properties"].as_object().unwrap() {
+            let description = definition["description"].as_str().unwrap_or_default();
+            assert!(
+                !description.is_empty(),
+                "{name}.{property} has no description"
+            );
+            assert!(definition["type"].is_string(), "{name}.{property}");
+        }
+        assert!(!spec.description.is_empty(), "{name}");
+    }
+    // The old single `memory` tool is gone.
+    assert!(!crate::registry::is_core_tool("memory"));
+
+    let add = memory_add::spec();
+    let properties = &add.input_schema["properties"];
     assert_eq!(
-        schema["properties"]["scope"]["enum"],
-        json!(["agent", "user"])
+        properties["content"]["maxLength"],
+        json!(giles_store::MAX_MEMORY_CHARS)
     );
-    let variants = schema["properties"]["operations"]["items"]["oneOf"]
-        .as_array()
-        .unwrap();
-    let names: Vec<&Value> = variants
-        .iter()
-        .map(|v| &v["properties"]["op"]["enum"][0])
-        .collect();
-    assert_eq!(names, [&json!("add"), &json!("patch"), &json!("remove")]);
-    assert!(
-        variants
-            .iter()
-            .all(|v| v["additionalProperties"] == json!(false))
+    assert_eq!(properties["core"]["type"], json!("boolean"));
+    assert_eq!(properties["shared"]["type"], json!("boolean"));
+    for needle in [
+        "core",
+        "shared",
+        "memory_recall",
+        "memory_edit",
+        "memory_forget",
+        "snapshot",
+    ] {
+        assert!(add.description.contains(needle), "memory_add: {needle}");
+    }
+    let edit = memory_edit::spec();
+    assert_eq!(
+        edit.input_schema["properties"]["id"]["type"],
+        json!("integer")
     );
+    assert!(edit.description.contains("whole old content"));
+    let recall = memory_recall::spec();
+    let limit = &recall.input_schema["properties"]["limit"];
+    assert_eq!(limit["minimum"], json!(1));
+    assert_eq!(limit["maximum"], json!(MAX_LIMIT));
+    assert_eq!(limit["default"], json!(DEFAULT_LIMIT));
+}
+
+#[test]
+fn only_recall_is_parallel_safe() {
+    use crate::agent_loop::PARALLEL_SAFE_CORE_TOOLS;
+
+    for name in [MEMORY_ADD, MEMORY_EDIT, MEMORY_FORGET, MEMORY_RECALL] {
+        assert_eq!(
+            PARALLEL_SAFE_CORE_TOOLS.contains(&name),
+            name == MEMORY_RECALL,
+            "{name}"
+        );
+    }
 }
 
 /// Stores `texts` (alternating user and assistant, starting with the user) in a new direct

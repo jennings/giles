@@ -72,8 +72,10 @@ parse is logged and skipped.
    user message: the time prefix, `Scheduled job <label>. Your reply is sent to the user; reply
    exactly NO_REPLY to send nothing.`, for `dm_excerpt = N` the text of the DM's last N messages
    (`**User:**`/`**You:**`, tool blocks left out), then the prompt.
-   - `isolated`: a fresh job session owned by the user (their memory is in its prompt), ended
-     after the run.
+   - `isolated`: a fresh job session owned by the user (their core memories are in its prompt),
+     ended after the run. A config job's turn has no requester, so its memory tools see and write
+     shared memories only ([Skills and Memory](skills-and-memory.md#who-sees-what)); a runtime job
+     runs as its creator, with the creator's memories.
    - `dm`: the user's open DM session (`Sessions::open_direct`, `idle_reset` applied), held
      (`Sessions::hold`) so the run is its own turn after the turns ahead of it; `/stop` there
      cancels it. With no DM yet it runs like an isolated job.

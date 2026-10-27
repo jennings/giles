@@ -93,7 +93,7 @@ pub struct Runtime {
     pub root: DataRoot,
     /// The database, `data/giles.db`.
     pub store: Store,
-    /// The agents' memory databases, `data/agents/<agent>/memory.db`, opened on first use in the
+    /// The agents' memory databases, `agents/<agent>/memory.db`, opened on first use in the
     /// journal mode of `giles.db`.
     pub memory_dbs: MemoryDbs,
     /// The blob store, `data/blobs`.

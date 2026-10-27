@@ -39,7 +39,7 @@ files:
 | Included                                   | Why                                                          |
 | ------------------------------------------ | ------------------------------------------------------------ |
 | `giles.toml`                               | Startup settings.                                            |
-| `agents/`, `users/`, `skills/` (whole trees) | Config and Markdown people and memory tools write. Taken whole, not filtered by extension, since a skill can carry scripts and the trees hold nothing else. The one exception is each agent's `memory.db` and the files SQLite keeps beside it: see below. |
+| `agents/`, `users/`, `skills/` (whole trees) | Config and Markdown people write. Taken whole, not filtered by extension, since a skill can carry scripts and the trees hold nothing else. The one exception is each agent's `memory.db` and the files SQLite keeps beside it: see below. |
 | `agents/<agent>/memory.db` (a snapshot)    | The agent's memories, written with `VACUUM INTO` and archived in place of the live file. |
 | `data/blobs/` (whole tree)                 | Attachments; the database holds their metadata.              |
 
@@ -55,9 +55,9 @@ their modes) so a restore into an empty root gets the same private layout.
 Every entry, including `giles.toml` and the four tree roots, goes through `Walk::visit`, which
 uses `symlink_metadata`:
 
-- **Links** (a symlinked `giles.toml`, memory file, or whole tree) are never followed and never
+- **Links** (a symlinked `giles.toml`, `USER.md`, or whole tree) are never followed and never
   written as link entries, which a restore would leave dangling. Each one skipped is logged as a
-  `warn` with its path, because linked memory files are a supported setup and the gap shouldn't be
+  `warn` with its path, because linked Markdown files are a supported setup and the gap shouldn't be
   silent. Other file types (sockets, FIFOs) are skipped quietly.
 - **Regular files** are opened, and the size and identity come from the open file (`fstat`), not
   the path. The tar header records the size up front, so `ExactReader` copies exactly that many

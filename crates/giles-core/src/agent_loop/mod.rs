@@ -58,6 +58,7 @@ pub use prompt::{PromptError, SessionPrompt, SessionTools};
 
 use crate::approvals::ApprovalBoard;
 use crate::config::{AgentConfig, BusyMode};
+use crate::memory_dbs::MemoryDbs;
 use crate::registry::Registry;
 use crate::runtime::Runtime;
 use crate::sessions::{Clock, SystemClock, Turn, TurnMessage, TurnOutcome, TurnRunner};
@@ -83,8 +84,8 @@ pub const NOTICE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Each session's prompt prefix ([`SessionPrompt`]) is assembled at its first turn and cached
 /// in memory by session key, so every later request of the session reuses the same tools and
 /// `system` bytes. Only the newest session of a key is kept. After a daemon restart the cache
-/// is empty and the first turn assembles the prefix again from the files and tools of that
-/// moment: if memory files changed meanwhile, that one turn misses the provider's cache. An
+/// is empty and the first turn assembles the prefix again from the files, memories, and tools of
+/// that moment: if core memories changed meanwhile, that one turn misses the provider's cache. An
 /// edit to the agent in the web UI doesn't touch a cached prefix (the session keeps its tools and
 /// `system` until compaction rebuilds `system`), but an agent removed and created again under
 /// the same id is another agent
@@ -93,6 +94,7 @@ pub const NOTICE_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct AgentLoop {
     registry: Arc<Registry>,
     store: Store,
+    memory_dbs: MemoryDbs,
     clock: Arc<dyn Clock>,
     dispatcher: Arc<dyn ToolDispatcher>,
     approvals: Arc<ApprovalBoard>,
@@ -123,12 +125,14 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl AgentLoop {
     /// An agent loop resolving agents, models, tools, and skills through `registry` (and its
-    /// configuration and data root), storing transcripts and usage in `store`, running tools
-    /// through `dispatcher`, and asking for approvals on `approvals` (which must be the board
-    /// the session manager hands approval replies to).
+    /// configuration and data root), storing transcripts and usage in `store`, reading the
+    /// core memories of the prompt from `memory_dbs`, running tools through `dispatcher`, and
+    /// asking for approvals on `approvals` (which must be the board the session manager hands
+    /// approval replies to).
     pub fn new(
         registry: Arc<Registry>,
         store: Store,
+        memory_dbs: MemoryDbs,
         clock: Arc<dyn Clock>,
         dispatcher: Arc<dyn ToolDispatcher>,
         approvals: Arc<ApprovalBoard>,
@@ -136,6 +140,7 @@ impl AgentLoop {
         Self {
             registry,
             store,
+            memory_dbs,
             clock,
             dispatcher,
             approvals,
@@ -144,12 +149,13 @@ impl AgentLoop {
         }
     }
 
-    /// The daemon's agent loop: the runtime's registry and store, the system clock, the
-    /// [`PolicyDispatcher`], and `approvals`.
+    /// The daemon's agent loop: the runtime's registry, store, and memory databases, the system
+    /// clock, the [`PolicyDispatcher`], and `approvals`.
     pub fn from_runtime(runtime: &Runtime, approvals: Arc<ApprovalBoard>) -> Self {
         Self::new(
             runtime.registry.clone(),
             runtime.store.clone(),
+            runtime.memory_dbs.clone(),
             Arc::new(SystemClock),
             Arc::new(PolicyDispatcher::new(runtime.registry.clone())),
             approvals,
@@ -175,14 +181,15 @@ impl AgentLoop {
         {
             return Ok(cached.prompt.clone());
         }
-        let prompt = Arc::new(prompt::assemble(&self.registry, agent, session).await?);
+        let prompt = prompt::assemble(&self.registry, &self.memory_dbs, agent, session).await?;
+        let prompt = Arc::new(prompt);
         self.remember(key, session.id, prompt.clone());
         Ok(prompt)
     }
 
-    /// Rebuilds `session`'s `system` and the skills it lists from the files as they are now (a
-    /// fresh memory snapshot), keeping `current`'s tools (fixed for the session's life), and
-    /// caches the result: for compaction (PLAN section 6.7).
+    /// Rebuilds `session`'s `system` and the skills it lists from the files and memories as they
+    /// are now (a fresh memory snapshot), keeping `current`'s tools (fixed for the session's
+    /// life), and caches the result: for compaction (PLAN section 6.7).
     ///
     /// # Errors
     ///
@@ -194,7 +201,8 @@ impl AgentLoop {
         current: &SessionPrompt,
     ) -> Result<Arc<SessionPrompt>, PromptError> {
         let tools = current.tools.clone();
-        let prompt = Arc::new(prompt::build(&self.registry, agent, session, tools).await?);
+        let prompt = prompt::build(&self.registry, &self.memory_dbs, agent, session, tools).await?;
+        let prompt = Arc::new(prompt);
         self.remember(session.key(), session.id, prompt.clone());
         Ok(prompt)
     }

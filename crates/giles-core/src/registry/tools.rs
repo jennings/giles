@@ -22,9 +22,12 @@ use crate::config::InstanceName;
 
 /// The reserved names of the core tools (PLAN section 6.5), sorted. Only these may be added
 /// with [`ToolIndex::set_core_tool`].
-pub const CORE_TOOLS: [&str; 5] = [
+pub const CORE_TOOLS: [&str; 8] = [
     "load_skill",
-    "memory",
+    "memory_add",
+    "memory_edit",
+    "memory_forget",
+    "memory_recall",
     "memory_search",
     "schedule",
     "send_attachment",
@@ -411,7 +414,7 @@ mod tests {
             assert!(!name.contains(PREFIX_SEPARATOR), "{name}");
             assert!(is_core_tool(name));
         }
-        assert!(!is_core_tool("github__memory"));
+        assert!(!is_core_tool("github__memory_add"));
     }
 
     #[test]
@@ -478,18 +481,18 @@ mod tests {
     #[test]
     fn only_reserved_names_can_be_core_tools() {
         let index = ToolIndex::new();
-        index.set_core_tool(spec("memory")).unwrap();
+        index.set_core_tool(spec("memory_add")).unwrap();
         assert_eq!(
             index.set_core_tool(spec("shell")),
             Err(ToolNameError::NotCoreTool("shell".into()))
         );
         assert_eq!(
-            index.set_core_tool(spec("github__memory")),
-            Err(ToolNameError::NotCoreTool("github__memory".into()))
+            index.set_core_tool(spec("github__memory_add")),
+            Err(ToolNameError::NotCoreTool("github__memory_add".into()))
         );
         let snapshot = index.snapshot();
-        assert_eq!(names(&snapshot), ["memory"]);
-        assert_eq!(snapshot.get("memory").unwrap().target, ToolTarget::Core);
+        assert_eq!(names(&snapshot), ["memory_add"]);
+        assert_eq!(snapshot.get("memory_add").unwrap().target, ToolTarget::Core);
     }
 
     #[test]
@@ -520,7 +523,7 @@ mod tests {
         );
         assert!(snapshot.get("b").is_none());
         assert!(snapshot.get("github__").is_none());
-        assert!(snapshot.get("memory").is_none());
+        assert!(snapshot.get("memory_add").is_none());
     }
 
     #[test]

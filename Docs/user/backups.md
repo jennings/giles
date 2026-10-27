@@ -33,7 +33,7 @@ running.
 - `giles-<time>.tar` is a tar of what the database doesn't hold:
   - `giles.toml`;
   - everything under `agents/`, `users/`, and `skills/`: the `agent.toml` and `user.toml` files,
-    `SOUL.md`, `USER.md`, memory files, skills, and whatever else you keep in those directories;
+    `SOUL.md`, `USER.md`, skills, and whatever else you keep in those directories;
   - each agent's memory database, `agents/<agent>/memory.db`, as a consistent snapshot taken the
     same way as `giles-<time>.db` (what the agent remembers, including the memories it keeps for
     group conversations). Only the snapshot is in the tar, never the live file or its `-wal` and
@@ -52,7 +52,7 @@ The archive leaves out:
   agent](web.md#removing-an-agent)). It stays on that machine; copy it yourself if you want it kept
   elsewhere. A backup holds the agents you have, not the ones you removed.
 - `backups/`, `run/`, and `cache/`. Giles recreates them.
-- Symbolic links, which are never followed. If `giles.toml`, a memory file, or an agent's
+- Symbolic links, which are never followed. If `giles.toml` or an agent's
   `memory.db` is a link (a dotfiles manager does that), the link and its target are both missing
   from the backup and `giles backup` logs a warning for each; back those files up yourself.
 

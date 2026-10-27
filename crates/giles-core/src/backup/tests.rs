@@ -566,7 +566,7 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logs {
 fn symlinks_are_left_out_with_a_warning_each() {
     let (_dir, root) = data_root();
     populate(&root);
-    // A dotfiles manager's `giles.toml`, a linked memory file, and a linked directory.
+    // A dotfiles manager's `giles.toml`, a linked agent file, and a linked directory.
     let elsewhere = tempfile::tempdir().unwrap();
     put(&elsewhere.path().join("real.toml"), "[owner]\n");
     put(&elsewhere.path().join("memory.md"), "remember\n");

@@ -16,7 +16,7 @@ pub use create::{
 pub use edit::{AgentEdit, AgentForm, EditError, MAX_EDIT_FILE_BYTES, edited_toml};
 pub use files::{
     AgentFile, AgentFiles, Content, FileKind, MAX_DEPTH, MAX_FILE_BYTES, MAX_FILES,
-    MAX_TOTAL_BYTES, list_files, percent_decode,
+    MAX_TOTAL_BYTES, list_files,
 };
 pub use manager::{AgentManager, AgentManagerOptions};
 pub use remove::{AgentActivity, DaemonActivity, RemovalPreview, RemoveError, Removed, RouteRef};
