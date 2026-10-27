@@ -11,6 +11,7 @@ use std::io;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
+use giles_proto::handshake::SOCKET_COMMAND;
 use serde::Deserialize;
 
 use crate::remote::RemoteAuth;
@@ -139,7 +140,7 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Command, CliError> {
         return Err(CliError::NoCommand);
     };
     match first.to_str() {
-        Some("socket") => match args.next() {
+        Some(SOCKET_COMMAND) => match args.next() {
             None => Ok(Command::Socket),
             Some(extra) => Err(CliError::Unexpected {
                 command: "socket",

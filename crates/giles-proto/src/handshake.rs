@@ -24,6 +24,11 @@ pub const PROTOCOLS_ENV: &str = "GILES_PLUGIN_PROTOCOLS";
 /// (PLAN section 11.6).
 pub const DATA_ENV: &str = "GILES_PLUGIN_DATA";
 
+/// The subcommand the core launches a plugin with, as `giles-channel-<name> socket`: the plugin
+/// serves on [`PLUGIN_FD`] and follows the rest of this handshake. The other subcommand, `serve`,
+/// is for an operator running a remote plugin (PLAN section 7.6).
+pub const SOCKET_COMMAND: &str = "socket";
+
 /// The descriptor of the plugin's end of the socket pair.
 pub const PLUGIN_FD: i32 = 3;
 

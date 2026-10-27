@@ -227,6 +227,17 @@ async fn exit_76_is_no_shared_protocol_and_not_retryable() {
 }
 
 #[tokio::test]
+async fn an_unsandboxed_plugin_is_launched_with_the_socket_subcommand_alone() {
+    let home = Home::new(&unsandboxed("argv"));
+    home.script("argv", "echo \"$# $1\" >&2; exit 3");
+    let error = launch_err(&home, &home.launcher(), "argv").await;
+    let LaunchError::Exited { stderr, .. } = &error else {
+        panic!("{error}");
+    };
+    assert_eq!(stderr[0], "1 socket");
+}
+
+#[tokio::test]
 async fn an_early_exit_logs_scrubbed_stderr_under_the_instance_span() {
     let log = Log::global();
     let home = Home::new(&unsandboxed("leaky"));
@@ -297,7 +308,7 @@ async fn a_failing_trampoline_is_a_non_retryable_sandbox_error() {
     write_script(
         &trampoline,
         &format!(
-            "cat \"$2\" > {out}.spec; ls -l \"$2\" > {out}.mode; echo \"$1|$3|$4|$#\" > {out}.args\n\
+            "cat \"$2\" > {out}.spec; ls -l \"$2\" > {out}.mode; echo \"$1|$3|$4|$5|$#\" > {out}.args\n\
              echo 'Error: the fake sandbox refuses' >&2; exit 125",
             out = out.display()
         ),
@@ -317,7 +328,7 @@ async fn a_failing_trampoline_is_a_non_retryable_sandbox_error() {
     let spec_file = home.root.sandbox_spec_file("boxed").unwrap();
     assert_eq!(
         fs::read_to_string(format!("{}.args", out.display())).unwrap(),
-        format!("sandbox-exec|--|{}|4\n", binary.display())
+        format!("sandbox-exec|--|{}|socket|5\n", binary.display())
     );
     assert!(
         fs::read_to_string(format!("{}.mode", out.display()))

@@ -20,7 +20,8 @@ use giles_proto::channel::v1::{
     EventAck, EventsRequest, EventsResponse, OutputMode, SendRequest, events_request, send_request,
 };
 use giles_proto::handshake::{
-    DATA_ENV, EXIT_NO_SHARED_PROTOCOL, HandshakeLine, MAGIC_COOKIE, MAGIC_COOKIE_ENV, PROTOCOLS_ENV,
+    DATA_ENV, EXIT_NO_SHARED_PROTOCOL, HandshakeLine, MAGIC_COOKIE, MAGIC_COOKIE_ENV,
+    PROTOCOLS_ENV, SOCKET_COMMAND,
 };
 use giles_proto::plugin::v1::plugin_service_client::PluginServiceClient;
 use giles_proto::plugin::v1::{
@@ -63,10 +64,12 @@ fn plugin_env(data: &Path) -> Vec<(&'static str, String)> {
     ]
 }
 
-/// A command for the echo plugin with exactly `env` and piped stdio.
+/// A command for the echo plugin, launched with `socket` as the core does, with exactly `env` and
+/// piped stdio.
 fn command(env: &[(&str, String)]) -> Command {
     let mut command = Command::new(BINARY);
     command
+        .arg(SOCKET_COMMAND)
         .env_clear()
         .envs(env.iter().map(|(k, v)| (*k, v)))
         .stdin(Stdio::piped())
