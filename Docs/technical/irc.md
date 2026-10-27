@@ -1,4 +1,4 @@
-# IRC Channel
+# IRC channel
 
 `plugins/giles-channel-irc` (`publish = false`) is the IRC channel plugin: a library crate (so tests
 drive the channel directly) and a binary that serves it with the plugin SDK. User-facing behavior

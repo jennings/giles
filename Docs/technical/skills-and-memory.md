@@ -1,11 +1,11 @@
-# Skills and Memory
+# Skills and memory
 
 Skills are Markdown files that people write and the agent reads; memory is a per-agent database the
 agent writes through tools ([Plan](../PLAN.md) §6.6, §6.7, §11.3). This page covers how the core
 parses and discovers skills and how memory is built on the memory database. The user-facing format
-is in [Skills and Memory](../user/skills-and-memory.md).
+is in [Skills and memory](../user/skills-and-memory.md).
 
-## Front-Matter
+## Front-matter
 
 `SKILL.md` and the user profile `USER.md` may start with YAML front-matter. The private module
 `giles_core::front_matter` only finds the block's boundaries:
@@ -77,7 +77,7 @@ file I/O; async callers run it on a blocking thread.
 from that source is named `<instance>__<skill>`. Name validation and the directory-name check apply
 to the bare name.
 
-### Resource Files
+### Resource files
 
 The files next to `SKILL.md` are a skill's resources; plugins never read `GILES_HOME`, so the core
 hands them over as media (§6.6). `list_resources(dir)` lists them and `read_resource(dir, path)`
@@ -106,7 +106,7 @@ as for the directories of binaries Giles runs). Local skills live under `GILES_H
 can't overlap anyway. `giles_core::media::media_type_for(name, bytes)` gives a file's media type
 from its extension, else `text/plain` for UTF-8 text, else `application/octet-stream`.
 
-### The `load_skill` and `send_attachment` Tools
+### The `load_skill` and `send_attachment` tools
 
 Core tools in `giles_core::core_tools::{load_skill, send_attachment}`, registered by
 `core_tools::register` with the runtime's blob store.
@@ -152,13 +152,13 @@ visibility, limits, all enforced inside the write transaction) is
 | `memory_add`, `memory_edit`, `memory_forget`, `memory_recall`                 | `giles_core::core_tools::memory_*`                                 |
 | the `# Memory` section                                                        | `giles_core::agent_loop::prompt` ([Agent Loop](agent-loop.md#system)) |
 
-### Data Layout
+### Data layout
 
 - `agents/<agent>/memory.db` (`DataRoot::agent_memory_db`, in the agent's directory, not under
   `data/`) holds the agent's memories. It is created on first use with mode 0600, and moves with the
   agent when it is removed or restored, is part of every backup, and is rewritten by an instance
   rename ([Storage](storage.md#memory-database), [Backups](backups.md),
-  [Instance Rename](instance-rename.md)).
+  [Instance rename](instance-rename.md)).
 - `users/<user>/USER.md` is the person-written profile, the only memory-related file left. People
   edit it, and the prompt loads it in a user's direct and job sessions; no tool reads or writes it.
 - Nothing reads or writes `MEMORY.md` any more, at any level. Existing files stay on disk and are
@@ -177,7 +177,7 @@ until its first `get`. `close(agent)` drops the registry's handle so the writer 
 therefore never keep a `MemoryStore` between calls or turns: each use gets a handle with `get` and
 drops it.
 
-### Who Sees What
+### Who sees what
 
 `giles_core::memory` decides which `MemoryViewer` (the session's owner scope and `can_write_shared`)
 a call or the prompt uses; the store applies it. The scopes:
@@ -188,7 +188,7 @@ a call or the prompt uses; the store applies it. The scopes:
   `MemoryOwner::Group { instance, conversation }`: the channel instance and its conversation id, so
   the same conversation id on another instance is another group. A participant's private memories
   are never in a group, and a group's never in a participant's DM. v1 ignores groups at the router
-  ([Identity and Routing](identity-and-routing.md)), so no group session exists yet, but the scope,
+  ([Identity and routing](identity-and-routing.md)), so no group session exists yet, but the scope,
   the store, the tools, and the prompt handle it.
 - A config job has no requester. Its viewer is `MemoryOwner::None`: shared memories only, and what
   it writes has no owner and is shared.
@@ -226,7 +226,7 @@ The rules are enforced in three places:
 So a guest or a group can't plant a shared memory (shared memories reach every prompt, including the
 owner's tool-enabled DMs), and a bug in a tool can't skip the check: the store refuses it.
 
-### The Limits
+### The limits
 
 All checked by `MemoryStore` in the transaction of each write, so concurrent writers can't break
 them (the single writer connection also runs writes one at a time):
@@ -249,7 +249,7 @@ Tool results and the prompt show a memory the same way (`memory::line`):
 so 100% means exactly at the cap and an over-cap scope shows more; numbers use commas between
 thousands. With a cap of 0, empty is 0% and anything else 100%.
 
-### The Memory Tools
+### The memory tools
 
 Four core tools in
 `giles_core::core_tools::{memory_add, memory_edit, memory_forget, memory_recall}`, registered by
@@ -295,7 +295,7 @@ and the cap, that a memory is private by default, who may share, and that the pr
 | Requester isn't the session's user             | `not permitted for <requester>: ...`                                                     |
 | The agent isn't configured, or the database fails | ``agent `<agent>` is not configured``, `the memory database is unavailable`, `the memory database failed` (the cause is logged) |
 
-## The `memory_search` Tool
+## The `memory_search` tool
 
 A core tool (§6.7) in `giles_core::core_tools::memory_search`, registered by `core_tools::register`
 with the others. It searches transcripts in `giles.db`, not memories, and the memory database

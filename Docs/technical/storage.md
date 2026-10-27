@@ -9,7 +9,7 @@ SQL.
 Each agent's memories are in a separate database, `agents/<agent>/memory.db`, opened with
 `MemoryStore` ([Memory database](#memory-database)).
 
-## Connections and Concurrency
+## Connections and concurrency
 
 SQLite comes from `rusqlite` with the `bundled` feature, so every build has the same SQLite with
 FTS5 and the JSON functions compiled in (a test checks both). Every connection sets
@@ -51,7 +51,7 @@ way to copy a live database ([Backups](backups.md)).
 A dedicated writer was chosen over a pool of interchangeable connections because with SQLite a
 second writer connection only adds `SQLITE_BUSY` retries, never throughput.
 
-## Journal Modes
+## Journal modes
 
 The journal mode is `OpenOptions::journal_mode(JournalMode)`, WAL unless the caller says otherwise.
 The daemon sets it from `[core] journal_mode` ([Configuration](config.md)): that is
@@ -184,7 +184,7 @@ instance, conversation id). Isolated job runs get keyless `job` sessions.
 
 `Session::last_message_at` is the `created_at` of the session's last message, for `idle_reset`.
 
-## Messages and Tool-Result Slots
+## Messages and tool-result slots
 
 Each message is one `messages` row: its `seq` (1, 2, ... per session), role, `content` as the JSON
 array of `giles_types::Block`, `meta` as JSON `MessageMeta`, and `created_at = meta.at`. Message ids
@@ -244,7 +244,7 @@ and accent folding.
 - Each hit has the message's ids, seq, role, time, the session's channel and conversation, and a
   snippet with matches wrapped in `**`.
 
-## Memory Database
+## Memory database
 
 Each agent has its own database, `agents/<agent>/memory.db`, owned by `giles-store`.
 `MemoryStore::open(path, options)` opens it through the same connection machinery as `giles.db` (one
@@ -420,7 +420,7 @@ exclusive; the admin `UsageReport`). The prompt cache hit rate,
 cache reads + cache writes), since `input_tokens` excludes cached tokens. Token counts above
 `i64::MAX` are rejected, not truncated.
 
-## Instance Names
+## Instance names
 
 Instance names (PLAN 7.2) are stored in `sessions.channel`, `inbox.instance`, `outbox.instance`,
 `usage.provider`, `routes.channel`, and in the `provider` field of an assistant message's `meta`
@@ -444,7 +444,7 @@ caller does its filesystem work in the hook, so that work and the rows succeed o
 caller still has to undo that work if the commit itself fails. `messages.meta` is updated without a
 trigger on the column, so the search index is untouched.
 
-## Web Sessions
+## Web sessions
 
 `web_sessions` backs the login cookie (PLAN 3.4). The store hashes the cookie token with SHA-256 and
 keeps only the hash, so a database copy can't be replayed as a login. The token is random with at
@@ -479,7 +479,7 @@ how many it stored. If the row exists it does nothing and returns `None`, even w
 something new and even when every route has since been deleted: the marker, not the table being
 empty, says the import happened. A config with no `[[routes]]` still records the import.
 
-## Blob Store
+## Blob store
 
 `BlobStore` keeps attachments and tool media as content-addressed files (PLAN 11.5). The core opens
 it once with `BlobStore::open(data_root.blobs_dir(), store)`; it takes the directory from the caller

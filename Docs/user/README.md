@@ -1,4 +1,4 @@
-# User Guide
+# User guide
 
 This part of the book is for the person running Giles. It covers installing and configuring Giles,
 and talking to its agents.
@@ -20,4 +20,4 @@ query, and a web chat are each a separate conversation.
 All of Giles' state lives in one data directory, `~/.giles` by default. It holds the config files,
 the agent directories, the database, and blobs.
 
-Start with [Installing and Running](running.md), then [Configuration](configuration.md).
+Start with [Installing and running](running.md), then [Configuration](configuration.md).

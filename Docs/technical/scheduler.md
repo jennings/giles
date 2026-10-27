@@ -52,7 +52,7 @@ runs to its end and its reply is delivered, so a job that cancels itself in its 
 reports. Only `/stop` in the DM (a `dm` run) and shutdown cut a started turn off. A spec it can't
 parse is logged and skipped.
 
-## One Run
+## One run
 
 1. **The DM.** The job's user is a runtime job's creator, else the owner. Their DM is the direct
    session of that user with the agent, open or ended, with the newest activity on a channel
@@ -68,7 +68,7 @@ parse is logged and skipped.
    `JobDelivery` as `ApprovalPrompt` (prefixed `Scheduled job <label>:`, expiring after
    `approval_timeout`) and removed when the approval resolves first; replies come from the DM
    ([Approvals](approvals.md)). Without a DM there is nobody to answer, so they're denied.
-5. **The turn**, a `Turn` with `job: Some(JobTurn)` ([Agent Loop](agent-loop.md)). Its prompt is a
+5. **The turn**, a `Turn` with `job: Some(JobTurn)` ([Agent loop](agent-loop.md)). Its prompt is a
    user message: the time prefix,
    `Scheduled job <label>. Your reply is sent to the user; reply exactly NO_REPLY to send nothing.`,
    for `dm_excerpt = N` the text of the DM's last N messages (`**User:**`/`**You:**`, tool blocks
@@ -88,7 +88,7 @@ parse is logged and skipped.
      message (under a hold, between turns); a `dm` run's reply is in the DM already.
    - A cancelled or failed turn delivers nothing (logged).
 
-## The `schedule` Tool
+## The `schedule` tool
 
 `core_tools::ScheduleTool` (registered by `core_tools::register`, not parallel-safe) is how the
 agent manages runtime jobs for the turn's requester. Input (strict: `deny_unknown_fields`, each

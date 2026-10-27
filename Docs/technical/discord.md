@@ -1,4 +1,4 @@
-# Discord Channel
+# Discord channel
 
 The design of `giles-channel-discord`, the Discord channel plugin (PLAN sections 3.3, 8.5, and 10;
 tracked in [issue #12](https://github.com/jennings/giles/issues/12)). A bot account receives direct
@@ -14,14 +14,14 @@ does that.** This page records the decisions of issue #13: the library, the Gate
 catch-up algorithm, the status mapping, the configuration, and the client seam the tests use, and
 what each issue built on top of them. Facts about Discord were checked against the official
 documentation on 2026-10-25 and link to it; where the documentation is silent or two pages disagree,
-the text says so, and [What Needs a Real Bot](#what-needs-a-real-bot) lists what issue #20 must
+the text says so, and [What needs a real bot](#what-needs-a-real-bot) lists what issue #20 must
 confirm.
 
 ## Decisions
 
 | Question | Decision |
 | --- | --- |
-| Library | `twilight-gateway`, `twilight-http`, and `twilight-model` 0.17.1 (ISC), default features off, `rustls-webpki-roots` only. Serenity and a hand-written Gateway client are rejected ([The Library](#the-library)) |
+| Library | `twilight-gateway`, `twilight-http`, and `twilight-model` 0.17.1 (ISC), default features off, `rustls-webpki-roots` only. Serenity and a hand-written Gateway client are rejected ([The library](#the-library)) |
 | Licences | No copyleft anywhere in the tree; nothing new for the repo's licensing. No owner decision needed |
 | Intents | `DIRECT_MESSAGES` (`1 << 12`) only. **Not** `MESSAGE_CONTENT`: Discord delivers the content of DMs to the bot without it ([Intents](#gateway-intents)) |
 | Missing `MESSAGE_CONTENT` | Not a failure mode. A defensive check reports three DMs in a row with no text, no attachment, and no sticker |
@@ -29,13 +29,13 @@ confirm.
 | Conversation id | The DM channel id, kind `Direct` |
 | Identity | `discord:<user id>` (the plugin sends the bare `<user id>`; the core adds the namespace), `sender_authenticated = true` ([Identity](#identity)) |
 | Output mode | `Blocks`; no edits, no typing indicator ([Output](#output)) |
-| Catch-up | A cursor per DM channel in the plugin's data directory, REST `after=<id>` paging after every new session, 24 h default age limit ([Catch-Up](#catch-up)) |
+| Catch-up | A cursor per DM channel in the plugin's data directory, REST `after=<id>` paging after every new session, 24 h default age limit ([Catch-up](#catch-up)) |
 | Status | Rejected token (close 4004, REST 401) is `NeedsAuth` with a `Url`; every other failure is `Error` ([Status](#status)) |
 | Config keys | `token`, `max_blob`, `catch_up_max_age` ([Configuration](#configuration)) |
 | Attachments | In: streamed from the CDN into blobs under `max_blob`, a note in the text for a file that can't be fetched. Out: uploaded as multipart files, 20 MiB each and 10 to a message ([Attachments](#attachments)) |
-| Seam | A `Discord` trait with six methods ([Implementation](#the-seam-as-built)); the twilight types stay in one `real` module ([The Client Seam](#the-client-seam)) |
+| Seam | A `Discord` trait with six methods ([Implementation](#the-seam-as-built)); the twilight types stay in one `real` module ([The client seam](#the-client-seam)) |
 
-## The Library
+## The library
 
 Candidates, as resolved on 2026-10-25 with Rust 1.99.1 (the repo's pinned toolchain) in a scratch
 crate outside the repository, for `x86_64-unknown-linux-gnu`, normal (non-dev) dependencies only:
@@ -69,7 +69,7 @@ off), so they show order of magnitude only: none of the three is a compile-time 
   `Shard` is a plain `Stream`, so the plugin keeps control of its loop. REST rate limiting
   (per-route buckets from the `X-RateLimit-*` headers, the global limit, 429 retry) and a 401
   lock-out (after one `401 Unauthorized` the client refuses every later request, which the
-  documentation asks for, see [Rate Limits](#rate-limits)) come with `twilight-http`.
+  documentation asks for, see [Rate limits](#rate-limits)) come with `twilight-http`.
 - **The smallest tree.** Eleven crates are new to `Cargo.lock`: six twilight crates (ISC),
   `ordered-float` 2, `serde-value`, `serde_repr`, `sha1_smol`, and `smallvec` 1. Gateway WebSockets
   reuse `tokio-websockets` 0.13, which the WhatsApp plugin's tree already contains.
@@ -115,7 +115,7 @@ What twilight costs, and how it is contained:
   message. A message of a history page that doesn't parse is skipped the same way, and paging goes
   by the raw page (its length and highest id), so one bad message never ends a pass early. Neither
   is fetched again later: the channel's mark moves on with the next message, and the channel id of a
-  live event that doesn't parse isn't known to re-fetch it ([Catch-Up](#catch-up)).
+  live event that doesn't parse isn't known to re-fetch it ([Catch-up](#catch-up)).
 
 Feature set (one manifest, `plugins/giles-channel-discord`; nothing joins `[workspace.dependencies]`
 except what a second crate would share):
@@ -149,7 +149,7 @@ scratch crate outside the repository, so the names are real; it was not run agai
   trait seam means only `real` changes. Its in-process fake Gateway would be a loopback WebSocket
   server (see [Testing](#testing)).
 
-## Discord Facts
+## Discord facts
 
 Verified against the official documentation on 2026-10-25, with the page that says it. Prefix
 `https://discord.com/developers/docs/` (the HTTP API is `https://discord.com/api/v10/`; the default
@@ -187,7 +187,7 @@ from server members, and any numeric limit on DMs a bot may open. Bots cannot li
 (the user resource has no such endpoint; there is only Create DM), which shapes the
 [catch-up](#catch-up).
 
-## Gateway Intents
+## Gateway intents
 
 The plugin identifies with **`DIRECT_MESSAGES` only**.
 
@@ -209,7 +209,7 @@ The plugin identifies with **`DIRECT_MESSAGES` only**.
 - No presence, no compression, no `shard`, no `capabilities`. Identify `properties` are the
   library's.
 
-### Detecting a Missing Intent
+### Detecting a missing intent
 
 Issue #16 asked how to detect a missing `MESSAGE_CONTENT`. With the intent set above there is
 nothing to detect, but the documentation's DM exception is the one fact the whole design leans on
@@ -251,7 +251,7 @@ and it is checked only against documentation, so the plugin guards it cheaply:
 - Namespace `discord`. User ids are global across Discord, so a second bot instance would report the
   same identity for the same person.
 
-## Conversation Id
+## Conversation id
 
 The DM channel id (a snowflake as a string), `ConversationRef { kind: Direct, title: None }`.
 `POST /users/@me/channels` is idempotent per recipient ("if one already exists, it will be returned
@@ -291,7 +291,7 @@ the cursor below.
 Status events use ids `status:<nanos>:<counter>`, as the other plugins do, and are only sent when
 the status changes.
 
-## Catch-Up
+## Catch-up
 
 The Gateway has no acknowledgement. What survives a drop is Resume: Discord replays everything after
 `seq` for "a few minutes" (no number is documented), and the library does this itself. What does not
@@ -358,7 +358,7 @@ inbox deduplicates (instance, event id) for 30 days. `catch_up_max_age` is valid
 for that reason.
 
 **Moving the cursor.** The same rule as the email plugin's UID cursor
-([Delivery and the Cursor](email.md#delivery-and-the-cursor)): the SDK writes each event to disk
+([Delivery and the cursor](email.md#delivery-and-the-cursor)): the SDK writes each event to disk
 before polling the stream again, so the persisted cursor moves to a message's id when the stream is
 next polled. A message that is dropped (a bot's, an empty one) moves the cursor too, but in order:
 it goes through the same queue as the events, so the cursor never passes a delivered message the SDK
@@ -453,8 +453,8 @@ for a day, and a nonce derived from the text would also suppress two genuine ide
 
 ## Attachments
 
-Issue #18 built both directions. Discord's facts are in [Discord Facts](#discord-facts); how the
-code is laid out is in [Attachments in the Code](#attachments-in-the-code).
+Issue #18 built both directions. Discord's facts are in [Discord facts](#discord-facts); how the
+code is laid out is in [Attachments in the code](#attachments-in-the-code).
 
 **Limits.** Each is a named constant or a config key, and each is enforced by the plugin before
 Discord is asked, because the plugin can say what is wrong and Discord's answer to some of them is
@@ -474,7 +474,7 @@ only a status.
 - An attachment's `url` is a signed CDN URL (`ex`, `is`, `hm` query parameters), valid when the
   message arrives live or is fetched, and expiring afterwards, so the plugin downloads at once:
   before the message is handed to the SDK, so a message and its files are one event.
-- `reqwest` (see [The Library](#the-library)), with the SDK's bundled roots, streams the body into
+- `reqwest` (see [The library](#the-library)), with the SDK's bundled roots, streams the body into
   `Blobs::put_reader`: the plugin holds a chunk and the blob store's 64 KiB buffer, never a file,
   and `max_blob` is counted as bytes arrive (`client::limited`), whatever size Discord or the CDN
   declared. A file the declared size or `Content-Length` puts over the limit is never requested or
@@ -547,7 +547,7 @@ Two things this design does not do: it doesn't convert or shrink a file that is 
 image over 20 MiB is refused, not resized: the agent can say so and try again), and it doesn't split
 a file across messages.
 
-## Rate Limits
+## Rate limits
 
 - **REST.** `twilight-http` handles it: a per-route bucket from `X-RateLimit-Bucket` and the limit
   headers, the 50 requests per second global limit, and a retry after a 429. The plugin's traffic is
@@ -629,11 +629,11 @@ Gateway, and the CDN are all HTTPS or secure WebSocket on that port), plus its d
 
 The binary is in the container image: `giles-channel-discord` is in the `bins` list of the
 `Dockerfile`, and the image smoke test checks that the file is there
-([Container Image](container-image.md), [Continuous Integration](ci.md)). No image-level change is
+([Container image](container-image.md), [Continuous integration](ci.md)). No image-level change is
 needed beyond that, because of how plugins start:
 
 - The core launches a plugin only for a configured instance (`[channel.<name>]` with
-  `component = "discord"`, [Plugin Host](plugin-host.md)), so an image with no Discord instance
+  `component = "discord"`, [Plugin host](plugin-host.md)), so an image with no Discord instance
   never starts the plugin and never contacts Discord. The CI smoke test configures none.
 - The plugin has no configuration of its own outside `giles.toml`: a missing or malformed `token`
   fails `Configure` and the instance stays down with the message in the log and in `giles status`.
@@ -644,7 +644,7 @@ needed beyond that, because of how plugins start:
 The image itself was not built when this was written (the development machine has no Docker); CI's
 image job builds it and runs the smoke test.
 
-## The Client Seam
+## The client seam
 
 Everything above the `real` module talks to Discord through one trait, in the style of the WhatsApp
 plugin's `Backend`. The plugin's own types cross it (`DiscordMessage`, `Attachment`,
@@ -719,7 +719,7 @@ No test may contact Discord, and none needs a token.
   Issue #15 built it ([Implementation](#running-the-tests)). Its REST counterpart, a plain HTTP
   server on loopback reached with `ClientBuilder::proxy(.., use_http = true)`, checks the history
   requests, their errors, and a 429 (issue #16), and with both servers the whole inbound path runs
-  through `RealDiscord` ([Running the Tests](#running-the-tests)).
+  through `RealDiscord` ([Running the tests](#running-the-tests)).
 
 ## Implementation
 
@@ -740,15 +740,15 @@ as the IRC plugin's do; nothing in it is an API for anyone else.
 | `config` | `Config` as written (unknown keys refused) and `Settings` as validated; `Secret`, whose `Debug` is `<redacted>` |
 | `client` | The `Discord` trait and `GatewayEvent`: the seam |
 | `status` | `classify`: a Gateway event to `Up`, `Down`, or `Final(ChannelStatus)`; the status messages |
-| `inbound` | `map`: a `DiscordMessage` to a `Delivery` (an `InboundMessage` and the files to download into it), `Empty`, or `Dropped(reason)`; pure ([The Mapping](#the-mapping)) |
+| `inbound` | `map`: a `DiscordMessage` to a `Delivery` (an `InboundMessage` and the files to download into it), `Empty`, or `Dropped(reason)`; pure ([The mapping](#the-mapping)) |
 | `ingest` | `Ingest`: the per-channel marks, buffers, and catch-up passes, merging live and fetched messages; no I/O ([Ingest](#ingest)) |
-| `state` | `StateFile`: `discord-state.json`, the DM channels, their cursors and users ([The State File](#the-state-file)) |
+| `state` | `StateFile`: `discord-state.json`, the DM channels, their cursors and users ([The state file](#the-state-file)) |
 | `snowflake` | Snowflake arithmetic: the time of an id, the first id of a time |
 | `outbound` | `Outbound`: `send` for `DiscordChannel`: target parsing, rendering, the messages in order, finding or opening the DM channel, the error mapping, and the progress of unfinished sends ([Sending](#sending)); `outbound::plan` (the limits, and which files go in which message) |
-| `deliver` | The task between the session and the SDK: downloads a message's files into blobs and notes the ones that fail ([Attachments in the Code](#attachments-in-the-code)) |
+| `deliver` | The task between the session and the SDK: downloads a message's files into blobs and notes the ones that fail ([Attachments in the code](#attachments-in-the-code)) |
 | `media` | The SDK's `Blobs` as a `MediaStore`, and the media types and file names of attachments |
-| `session` | `Session`, `Timing`, and `run`: the task that owns the connection and the history request in flight ([State Machine](#state-machine)) |
-| `token` | `TokenState`: whether Discord rejected the token, shared by the session and everything that calls REST ([A Rejected Token](#a-rejected-token)) |
+| `session` | `Session`, `Timing`, and `run`: the task that owns the connection and the history request in flight ([State machine](#state-machine)) |
+| `token` | `TokenState`: whether Discord rejected the token, shared by the session and everything that calls REST ([A rejected token](#a-rejected-token)) |
 | `channel` | `DiscordChannel` (the SDK's `Channel`) and the event stream that moves the cursor, `configure`, `configure_with`, and the `SessionSlot` that lets `main` stop the session |
 | `fake` | `FakeDiscord`, the scripted client for tests: a Gateway queue, a REST history per channel, a CDN, and the messages posted; `FakeMedia`, a blob store in memory |
 | `real` | `RealDiscord`, the client on `twilight-gateway` and `twilight-http`: the only module with twilight types; `real::cdn` (downloads on `reqwest`) and `real::multipart` (the body of a message with files) |
@@ -765,9 +765,9 @@ twilight Shard ── real ──GatewayEvent──▶ session ──Staged─�
                     (the cursor moves in the state file when the stream is polled again)
 ```
 
-### The Seam as Built
+### The seam as built
 
-[The Client Seam](#the-client-seam) lists the six methods the finished plugin needs, and the trait
+[The client seam](#the-client-seam) lists the six methods the finished plugin needs, and the trait
 has all six: `next_event` and `shutdown` (the Gateway connection, issue #15), `messages_after`
 (channel history for catch-up, issue #16), `create_message` and `create_dm` (sends, issue #17), and
 `download` (attachments, issue #18), each added with its `real` implementation, its fake, and its
@@ -812,10 +812,10 @@ tests by the issue that calls it. Ids are plain `u64`s (the sketch's `ChannelId`
   a client that isn't polled doesn't reconnect: both are properties of `twilight-gateway`'s `Shard`
   that the trait states as its contract.
 
-### The State File
+### The state file
 
 `state::StateFile` is the plugin's one persistent file, `<data dir>/discord-state.json`, in the
-format under [Catch-Up](#catch-up) (`version` 1; ids as strings). It is a cloneable handle on a map
+format under [Catch-up](#catch-up) (`version` 1; ids as strings). It is a cloneable handle on a map
 from DM channel id to `{ cursor, user }`, shared by everything that needs it:
 
 - `advance(channel, message)` moves a cursor forward (never back) and adds the channel if it is new.
@@ -837,7 +837,7 @@ file that doesn't read, doesn't parse, has another `version`, or holds an id tha
 renamed to `discord-state.json.corrupt` (replacing an older one) and the plugin starts empty, never
 deleting it. Unknown fields are ignored.
 
-### The Mapping
+### The mapping
 
 `inbound::map(message, bot_id)` applies the table under [Inbound](#inbound) in its order: a bot
 author, the plugin's own id (from `Ready`; a message before `Ready` can't be checked against it), a
@@ -864,7 +864,7 @@ an event with the cursor to move once the SDK has persisted it, `Advance` a curs
 that is done with, `Status`). Per DM channel it keeps the high-water mark (the highest id handled,
 starting at the state file's cursor) and a mode, `Live` or `CatchingUp` with a buffer of live
 messages (at most 1000, then it discards and remembers that it did). The algorithm under
-[Catch-Up](#catch-up) is this module, with these details:
+[Catch-up](#catch-up) is this module, with these details:
 
 - **Calls.** `on_ready(bot)` (a new session): every known channel, the ones in the state file and
   the ones the process has seen, becomes `CatchingUp` with a queued pass, lower id first; passes of
@@ -897,7 +897,7 @@ messages (at most 1000, then it discards and remembers that it did). The algorit
   `tokio::time`: the limit is about when Discord created a message, which paused test time can't
   say.
 
-### State Machine
+### State machine
 
 `session::run` is one loop over five things: the stop signal, the grace timer, the history request
 in flight, the retry timer of a queued request, and the pending `next_event` call. It reacts to what
@@ -912,7 +912,7 @@ in flight, the retry timer of a queued request, and the pending `next_event` cal
 | `Closed` with 4004 | Report `NeedsAuth` (the Developer Portal URL) and stop polling for good |
 | A send reported a 401 (`TokenState::reject`), in any state, even after another final status | Drop the request in flight, release every channel waiting for history (`Ingest::on_token_rejected`), and report `NeedsAuth`; the Gateway is polled as before. The same as a 401 on a history page |
 | `Closed` with 4010 to 4014 | Report an `Error` that says what happened and stop polling for good |
-| The stream ended (`None`) with no final close before it | Report an `Error` ("restart this plugin") and stop polling for good: nothing starts another shard, for the reason in [Rate Limits](#rate-limits) |
+| The stream ended (`None`) with no final close before it | Report an `Error` ("restart this plugin") and stop polling for good: nothing starts another shard, for the reason in [Rate limits](#rate-limits) |
 | The grace timer ran out (10 s after the first close with no `Ready` or `Resumed`) | Report `Error` "disconnected from Discord, reconnecting"; the client is still trying |
 | Stop | End the pending poll and the request in flight (nothing of it was handled, and the cursor didn't move), call `shutdown` on the client once, bounded by 5 s |
 
@@ -922,7 +922,7 @@ operator who fixes `secrets.toml` and restarts the instance gets a new process, 
 `Connected`. All the delays are in `Timing` (`Default` is what the plugin uses), and the clock is
 `tokio::time`, so the tests run on paused time and check the exact delays.
 
-### The Library's Silent Reconnect
+### The library's silent reconnect
 
 `twilight-gateway` reports a close frame, a transport error, a missed heartbeat ACK, and a failed
 connect, but not a connection that ends with a plain TCP close and no close frame: its `Shard` notes
@@ -953,7 +953,7 @@ sessions (op 9) are handled by the shard, which sends a close frame (code 1000 f
 can't be resumed, so it Identifies again; 4000 otherwise, so it resumes) and surfaces Discord's
 answering close as a `Closed` event; the plugin relies on that answer to count them.
 
-### A Rejected Token
+### A rejected token
 
 Discord asks apps to stop making requests once a token is invalid, and `twilight-http` refuses every
 request after its first 401. The plugin makes that one state for every REST caller and the Gateway,
@@ -1030,7 +1030,7 @@ the `TokenState`, and the `StateFile` only, so every case below is a test agains
   The bound is what ends a reply into a conversation, which has no outbox. A send queued behind
   another one waits for it.
 - **The token.** A 401 from `create_message` or `create_dm` is `Unavailable` ("Discord rejected the
-  bot token") and rejects the `TokenState` ([A Rejected Token](#a-rejected-token)): the session
+  bot token") and rejects the `TokenState` ([A rejected token](#a-rejected-token)): the session
   reports `NeedsAuth`, and every later send fails at once with the same error and no request. A 401
   on a history request or a 4004 on the Gateway does the same to sends.
 - **Logs.** A failed send logs one `warn` with the error text above and the counts: never the
@@ -1054,7 +1054,7 @@ over before that can happen (`shutdown_does_not_reconnect_when_the_close_is_neve
 no session (never connected, a rejected token) it does nothing, and the connection is dropped with
 the process.
 
-### Configuration and the Token
+### Configuration and the token
 
 `Config` derives `Deserialize` with `deny_unknown_fields`, and `Settings::new` validates it; every
 error is `invalid config: <key>: <reason>`. `token` is a `Secret`: no `Display`, `Debug` prints
@@ -1073,7 +1073,7 @@ without one. The design said `main` would do it; doing it where the shard is bui
 can forget it, and `tests/crypto_provider.rs`, a binary of its own so that no other test can have
 installed the provider first, checks it.
 
-### Attachments in the Code
+### Attachments in the code
 
 - **Inbound.** `inbound::map` returns a `Delivery`: the `InboundMessage` (text, no attachments) and
   the message's files. `Ingest` passes both on in `Out::Deliver`, the session stages them
@@ -1123,7 +1123,7 @@ for the plugin, no `ring` in its tree, and no duplicate of anything heavy (the d
 `server` feature as a dev-dependency, and `tokio`'s `io-util` for the REST server of
 `tests/loopback/rest.rs`.
 
-### Running the Tests
+### Running the tests
 
 ```sh
 cargo test -p giles-channel-discord
@@ -1231,7 +1231,7 @@ No test contacts Discord, and none needs a token or a network beyond loopback.
 - `real`: the conversions from the library's events (a documented READY payload and a DM with a
   reply, a file, and a sticker), a history page, and the 60 second bound on a REST call.
 
-## What Needs a Real Bot
+## What needs a real bot
 
 Issue #20 confirms, in addition to its own list:
 
@@ -1272,7 +1272,7 @@ Issue #20 confirms, in addition to its own list:
     in the same channel as the user's.
 13. That Discord answers with a close frame when the shard closes the connection after a Reconnect
     (op 7) or an Invalid Session (op 9), which is how the plugin counts them for its reconnect delay
-    ([The Library's Silent Reconnect](#the-librarys-silent-reconnect)), and what the first reconnect
+    ([The library's silent reconnect](#the-librarys-silent-reconnect)), and what the first reconnect
     after a drop really costs in time (the loopback test shows only the library's own one-second
     sleep). Also how Discord ends a connection it drops: with a close frame, with a plain TCP close
     (which the client reports itself), or before Hello (which it cannot see: no status, retried

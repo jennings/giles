@@ -1,4 +1,4 @@
-# Plugin Transport
+# Plugin transport
 
 A gRPC plugin and the core talk over the two ends of one Unix socket pair (PLAN section 7.4). The
 plugin is the gRPC server on its end, inherited as fd 3; the core is the client on the other. No

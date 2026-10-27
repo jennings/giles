@@ -1,27 +1,27 @@
-# The `giles` Binary
+# The `giles` binary
 
 `crates/giles` holds the command-line interface and the daemon's process lifecycle. Everything else
 lives in library crates.
 
-## Command Line
+## Command line
 
 `clap` (derive). `cli::Cli` has the global options and a `cli::Command` enum with one variant per
 subcommand, each carrying its own `clap::Args` struct (`Serve(ServeArgs)`,
 `SandboxExec(SandboxExecArgs)`, ...). `status`, `usage`, `backup`, and `admin login-link` call the
-running daemon's admin service ([Admin Service](admin.md)) through `admin_client::call`, which
+running daemon's admin service ([Admin service](admin.md)) through `admin_client::call`, which
 builds a current-thread Tokio runtime and words connection and token errors for the operator.
 `instance rename` is the opposite: it works on the data root with the core stopped, taking the same
-single-instance lock `serve` takes ([Instance Rename](instance-rename.md)). Later subcommands
+single-instance lock `serve` takes ([Instance rename](instance-rename.md)). Later subcommands
 (`pair`) are added as variants with their own argument structs and modules, dispatched from `main`.
 
 `giles sandbox-exec <SPEC> -- <COMMAND>...` is the internal plugin sandbox trampoline (see
-[Plugin Sandbox](sandbox.md)); `--home` is accepted there but unused. Its failures exit 125 to 127
-like `env(1)` instead of 1 (see [Exit Status](sandbox.md#exit-status)).
+[Plugin sandbox](sandbox.md)); `--home` is accepted there but unused. Its failures exit 125 to 127
+like `env(1)` instead of 1 (see [Exit status](sandbox.md#exit-status)).
 
 `--home <DIR>` is global, so it is accepted before or after the subcommand. It is not tied to
 `GILES_HOME` through `clap`; `giles_core::paths::resolve_root` applies the precedence (flag, then
 `GILES_HOME`, then `$HOME/.giles`) so it can be tested as a pure function (see
-[Data Root](data-root.md)).
+[Data root](data-root.md)).
 
 `main` is synchronous. Only `serve` builds a multi-threaded Tokio runtime, and the admin client
 commands a current-thread one, so subcommands that must not start threads, such as the
@@ -36,7 +36,7 @@ One `tracing-subscriber` `fmt` subscriber, installed in `main` before any subcom
 to stderr, with ANSI colors only when stderr is a terminal. The filter is `GILES_LOG`, else
 `RUST_LOG`, else `info`; an invalid filter fails startup rather than being ignored.
 
-## `giles serve` Lifecycle
+## `giles serve` lifecycle
 
 1. Resolve the data root (`DataRoot::from_env`) and create its layout (`create_layout`), then take
    the single-instance lock on `run/giles.lock` (`giles_core::admin::InstanceLock`,
@@ -63,13 +63,13 @@ to stderr, with ANSI colors only when stderr is a terminal. The filter is `GILES
    fresh admin token and bind the admin socket (`AdminListener::bind`, removing one a crash left).
 8. Start the outbox's sender (`Runtime::start_outbox`, [Outbox](outbox.md)): drop the approval
    prompts the previous process left, then deliver proactive sends as their channels come up. Start
-   the sessions (`Runtime::start_sessions`, [Sessions and Turns](sessions.md)): recover from an
+   the sessions (`Runtime::start_sessions`, [Sessions and turns](sessions.md)): recover from an
    earlier crash or shutdown (interrupted turns), resume queued messages, and consume the events of
    every registered channel. Turns run on the agent loop (`AgentLoop::from_runtime`,
-   [Agent Loop](agent-loop.md)). This is the last step that can fail: recovery changes state and
+   [Agent loop](agent-loop.md)). This is the last step that can fail: recovery changes state and
    resumed turns start running, so nothing after it may abort startup. Then start the HTTP server on
    its own task ([HTTP Server](http.md#lifecycle)) and the admin service on another
-   ([Admin Service](admin.md)), and start supervising every plugin channel (`PluginHost::start`,
+   ([Admin service](admin.md)), and start supervising every plugin channel (`PluginHost::start`,
    [Plugin Host](plugin-host.md#supervision)), which waits for each one's first launch attempt,
    while also waiting for every toolset's first start (`ToolsetHost::started`); both waits end if a
    shutdown signal arrives first. Each plugin is registered with the registry and attached to the

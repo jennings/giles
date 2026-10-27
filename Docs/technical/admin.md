@@ -1,11 +1,11 @@
-# Admin Service
+# Admin service
 
 `giles_core::admin` serves `giles.admin.v1.AdminService` (PLAN section 8.7,
 [gRPC Protocols](protocols.md)) on the admin socket. The `giles` CLI is its client over the socket;
 the web admin pages are another, calling the same `Arc<AdminService>` in-process behind the web
 login ([Web Channel](web-channel.md#admin-pages)).
 
-## One Core per Data Root
+## One core per data root
 
 `giles serve` takes `InstanceLock::acquire` right after creating the data root's layout, before it
 loads the configuration: an exclusive, non-blocking `flock` on `run/giles.lock` (mode 0600), into
@@ -17,7 +17,7 @@ The kernel drops the lock when the process exits, however it exits, so a crash n
 lock behind. The descriptor is close-on-exec, so plugins don't inherit it. The lock is what makes a
 leftover `admin.sock` safe to delete: whoever holds it is the only core that could be listening.
 
-## Socket and Token
+## Socket and token
 
 `AdminListener::bind(&root, &lock)` runs after the HTTP listener is bound and before the sessions
 start (it can fail; nothing after the sessions may):
@@ -59,7 +59,7 @@ token (after the socket answers, so it's the running core's). A missing socket, 
 
 Store failures are logged and answered with `INTERNAL`.
 
-### Plugin Instances
+### Plugin instances
 
 Each `PluginInstance` combines three sources:
 
@@ -74,7 +74,7 @@ Each `PluginInstance` combines three sources:
   the last error, the version, and the `requested_grants` from `Describe`. Without supervision, or
   for an instance it doesn't report, these stay unset and `state` is `UNSPECIFIED`.
 
-## Seams for Later Subsystems
+## Seams for later subsystems
 
 `AdminOptions` takes trait objects, so the service is tested with fakes and later subsystems plug in
 without changing it:

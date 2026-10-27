@@ -1,4 +1,4 @@
-# MCP Client
+# MCP client
 
 Toolsets are MCP servers (PLAN section 7.10). The core's MCP client is `giles_core::mcp`, built on
 `rmcp` 3.7 (the official Rust SDK, client features only). One `McpToolset` is one connection to one
@@ -62,7 +62,7 @@ instance's `env` values ([Toolsets](toolsets.md)).
   when the `McpToolset` is dropped it kills the server right away, without waiting for it to notice
   its stdin closing. Either way the whole process group gets `SIGKILL` before the server is reaped
   (while its pid still reserves the group id), so children a server started die with it, as for
-  plugins ([Plugin Host](plugin-host.md)). `kill_on_drop` backs this up for the server itself if the
+  plugins ([Plugin host](plugin-host.md)). `kill_on_drop` backs this up for the server itself if the
   runtime is already gone.
 - Failing to spawn, the server exiting during the handshake, and no answer in time are all
   `Error::Unavailable`. If the server exited, the message ends with its status, e.g.
@@ -90,7 +90,7 @@ section 7.10).
 - Sessions, the `GET` event stream, and session re-creation after an expired session (HTTP 404) are
   `rmcp`'s defaults.
 
-## Mapping MCP to the Toolset Trait
+## Mapping MCP to the toolset trait
 
 | MCP                                | `Toolset`                                                    |
 | ---------------------------------- | ------------------------------------------------------------ |
@@ -190,7 +190,7 @@ question.
 
 **Media inputs** (PLAN sections 5 and 7.10). The dispatcher resolves each `{"$media": "<id>"}` in a
 tool input against the session's media and puts the media in `ToolCall::media`
-([Agent Loop](agent-loop.md)). For a connection made with `McpMedia::files_in(dir)` (the toolset
+([Agent loop](agent-loop.md)). For a connection made with `McpMedia::files_in(dir)` (the toolset
 launcher passes the stdio server's `TMPDIR`, `data/plugins/<instance>/tmp/`), `call` copies each
 blob into `dir` and replaces every reference object with the copy's absolute path, as a string,
 before sending `tools/call`; an id missing from `ToolCall::media` is `InvalidRequest`

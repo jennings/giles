@@ -1,4 +1,4 @@
-# Technical Overview
+# Technical overview
 
 This part of the book describes how Giles is implemented: the significant design decisions, the
 architecture, the wire protocols, and the major subsystems. It records what was built; the design it

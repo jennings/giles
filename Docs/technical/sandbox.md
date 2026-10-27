@@ -1,4 +1,4 @@
-# Plugin Sandbox
+# Plugin sandbox
 
 Code: `crates/giles-core/src/sandbox/` (`giles_core::sandbox`) and the `sandbox-exec` subcommand in
 `crates/giles/src/sandbox_exec.rs`. Design: PLAN section 12.
@@ -48,7 +48,7 @@ the contract below.
 The trampoline stays single-threaded: `main` is synchronous, only `serve` builds a Tokio runtime,
 and the `tracing` subscriber writes to stderr synchronously. Keep it that way.
 
-## Exit Status
+## Exit status
 
 Like `env(1)` and `chroot(1)`, so the [plugin host](plugin-host.md) and its supervision can tell the
 trampoline's failures from the plugin's own exits without parsing stderr. The codes are constants in
@@ -80,7 +80,7 @@ true for 125, and on macOS for 71; the plugin host and the MCP client (for stdio
 tell a launch that retrying won't fix. (`sandbox-exec` exits 65 for a profile it can't parse, which
 would be a bug in the generator.)
 
-## File Descriptors
+## File descriptors
 
 The trampoline doesn't touch file descriptors. Everything it inherits without `FD_CLOEXEC` reaches
 the plugin: stdin (the token pipe), stdout (the handshake line), stderr, and fd 3 (the plugin's end
@@ -89,7 +89,7 @@ of the socket pair, PLAN section 7.4). The spec file and anything else the tramp
 without `FD_CLOEXEC`. The integration test hands the trampoline a file as fd 3 and checks that the
 plugin writes to it, reads stdin, and writes to stdout and stderr.
 
-## Spec Format
+## Spec format
 
 `giles_core::sandbox::Spec`, serialized as one JSON object. The spec is a file, not an argument, so
 it isn't limited by `ARG_MAX` or visible in `ps`. The plugin host writes it with `Spec::to_json`
@@ -178,7 +178,7 @@ process and lists their names in `inherit_env`, so the values never touch the sp
 command line. Only the listed names pass: a variable the core's own environment happens to have
 under another name doesn't.
 
-## Backend Trait
+## Backend trait
 
 An internal trait in `sandbox/backend.rs`, one implementation per platform selected with `cfg`
 (`sandbox/linux.rs`, `sandbox/macos.rs`; other platforms fail to compile):
@@ -209,7 +209,7 @@ Linux). Tests: unit tests there, and `crates/giles/tests/sandbox_macos.rs`, whic
 (`/bin/sh`, `/bin/cat`, `/usr/bin/nc`, and the test binary itself as a Rust program) under the real
 `giles sandbox-exec` and checks each grant from both sides.
 
-`apply` checks the command (see [Exit Status](#exit-status)), generates a profile for the spec, and
+`apply` checks the command (see [Exit status](#exit-status)), generates a profile for the spec, and
 returns `/usr/bin/sandbox-exec -p <profile> <program> <args>`. `sandbox-exec` applies the profile to
 itself and `exec`s the program, so the pid, fds 0 to 3, the scrubbed environment, and the working
 directory all pass through, and every child the plugin starts inherits the profile. The profile is
@@ -228,7 +228,7 @@ stored spelling (`/tmp` becomes `/private/tmp`, `/var/folders` becomes `/private
 missing component and the rest of the path are appended as spelled, so a grant that doesn't exist
 yet still names where it will appear. Grants are resolved again at every launch, which is what makes
 links dangerous (see
-[Writable Roots and Links](#writable-roots-and-links)).
+[Writable roots and links](#writable-roots-and-links)).
 
 Reaching a path also takes `lstat` on each component on the way, including links (`/tmp`,
 `/opt/homebrew/bin/node`), and `getcwd` walks up from the data directory. The walk records what it
@@ -240,7 +240,7 @@ non-UTF-8) stands for itself; tests run `sandbox-exec` with data directories nam
 `x")(allow default)(literal "` to prove a path can't add rules. The profile is built as bytes, so
 non-UTF-8 paths work.
 
-### Writable Roots and Links
+### Writable roots and links
 
 Resolving at launch means a link decides what the launch grants. The plugin can create links
 anywhere it can write, so a link it planted on one run would choose its grants on the next, and a
@@ -317,7 +317,7 @@ the reason is next to each.
 | `file-read-metadata` | `/etc`, `/var`, and the lookup paths above | Time zones and name resolution go through the `/etc` and `/var` links (they fail without them); `getcwd` and links in grants need the rest |
 | `file-read*` | `(literal <command>)`, `(subpath <read>)`, `(subpath <execute>)` | The plugin binary and the grants |
 | `file-read* file-write*` | `(subpath <data_dir>)`, `(subpath <write>)` | The data directory (with its `tmp/`, the plugin's `TMPDIR`) and `write` grants |
-| `deny file-write-unlink file-write-create` | `(literal <data_dir>)`, `(literal <write>)` | The roots themselves can't be removed, renamed, or replaced ([Writable Roots and Links](#writable-roots-and-links)) |
+| `deny file-write-unlink file-write-create` | `(literal <data_dir>)`, `(literal <write>)` | The roots themselves can't be removed, renamed, or replaced ([Writable roots and links](#writable-roots-and-links)) |
 | `network-outbound` | `(remote ip "*:*")` for `network = true`, else `(remote tcp "*:<port>")` per granted port | IPv4 and IPv6 outbound; a port list allows TCP to those ports and no UDP |
 | `network-outbound` | `(remote unix-socket (path-literal "/private/var/run/mDNSResponder"))` with any network grant | `getaddrinfo` resolves every name that isn't in `/etc/hosts` through mDNSResponder's socket, not a Mach service; without it every lookup fails |
 | `network-outbound` | `(remote unix-socket (path-literal <unix>))` per `unix` grant | Connecting to exactly those sockets |
@@ -405,7 +405,7 @@ without launching anything.
 ### Rules
 
 The ruleset handles every filesystem right (the plugin may do nothing to any file it isn't granted),
-TCP rights as described in [Network and Sockets](#network-and-sockets), and, from ABI 6, scoping of
+TCP rights as described in [Network and sockets](#network-and-sockets), and, from ABI 6, scoping of
 signals and abstract Unix sockets to the plugin's own processes. A rule on anything but a directory
 carries only the rights that apply to files.
 
@@ -446,9 +446,9 @@ readable ELF file without execute rights on it. Execute rules keep scripts and w
 to their grants (and a planted binary in the data directory doesn't run by `exec`); they don't stop
 a plugin that wants to run a program it can read.
 
-### Paths and Links
+### Paths and links
 
-The same design as macOS's [Writable Roots and Links](#writable-roots-and-links), for the same
+The same design as macOS's [Writable roots and links](#writable-roots-and-links), for the same
 reason: a Landlock rule attaches to whatever inode the trampoline opened at launch, so a link the
 plugin planted inside a writable root on an earlier run (or flips right now, from a child that
 outlived it) would decide what the next launch grants.
@@ -469,7 +469,7 @@ outlived it) would decide what the next launch grants.
   `data_dir_cannot_be_swapped_for_a_link` checks it; `a_racing_link_never_redirects_a_grant` runs
   the macOS race against Landlock.
 
-### Network and Sockets
+### Network and sockets
 
 `socket()` is allowed by seccomp only for granted families: `AF_INET` and `AF_INET6` with any
 network grant, `AF_UNIX` with any `unix` grant, nothing else (no `AF_NETLINK`, `AF_PACKET`,
@@ -543,7 +543,7 @@ socket families, `clone` flags, `personality`, other architectures, `truncate` p
 real kernel: the filters are installed between `fork` and `exec` of `/bin/sh` and of the test binary
 itself, whose probe checks each answer.
 
-### Testing Without Landlock
+### Testing without Landlock
 
 The sandbox tests in `crates/giles/tests/sandbox_linux.rs` need Landlock. On a kernel without it
 each test prints `skipping: the Linux sandbox can't run on this kernel (...)` and passes, except
@@ -556,7 +556,7 @@ locally, build the same kernel version with it: take its configuration from `/pr
 `scripts/config --enable SECURITY_LANDLOCK`, `make olddefconfig Image`, and pass the resulting
 `arch/arm64/boot/Image` to `container run -k`. That kernel offers ABI 6.
 
-## Host Check
+## Host check
 
 `giles_core::sandbox::check_host() -> Result<HostReport, HostError>` (backed by
 `SandboxBackend::check_host`) tells whether this host can apply the sandbox at all, so a broken host

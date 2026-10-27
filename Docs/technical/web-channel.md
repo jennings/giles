@@ -1,4 +1,4 @@
-# Web Channel
+# Web channel
 
 The built-in web channel (PLAN sections 9 and 10) is `giles_core::channels::web`, behind the Cargo
 feature `channel-web` (default on, forwarded by the `giles` crate). It has two halves:
@@ -6,7 +6,7 @@ feature `channel-web` (default on, forwarded by the `giles` crate). It has two h
 - `WebChannel` implements `giles_types::Channel` with
   `ChannelInfo { identity_namespace: "web", output: Deltas, can_initiate: false }`. It's built by
   the registry's built-in channel builder (`WebChannel::from_instance`, see
-  [Registry and Startup](registry.md)), registered like any channel, and attached to the session
+  [Registry and startup](registry.md)), registered like any channel, and attached to the session
   manager by `Runtime::start_sessions` with the other registered channels. At most one instance may
   use the component.
 - `WebApp` is its HTTP side on the core's server ([HTTP Server](http.md)): `giles serve` builds it
@@ -14,12 +14,12 @@ feature `channel-web` (default on, forwarded by the `giles` crate). It has two h
   it also spawns the hourly expired-session cleanup) and `web.install(RouterBuilder::new())`, which
   replaces the placeholder `/` with the chat list and merges the other routes, all behind the
   authentication middleware. `web.install_admin(builder, admin)` adds the admin pages
-  ([Admin Pages](#admin-pages)). If a trusted proxy is configured, `serve` also opens
+  ([Admin pages](#admin-pages)). If a trusted proxy is configured, `serve` also opens
   `web.bind_proxy(&root)` before startup completes and serves `web.proxy_app(app)` on it
   ([Login](#login)).
 
 Neither half touches the agent loop: posted messages go through the normal inbound pipeline (router,
-inbox, turns; [Sessions and Turns](sessions.md)), and replies come back through `Channel::send` or
+inbox, turns; [Sessions and turns](sessions.md)), and replies come back through `Channel::send` or
 the live-output hook.
 
 ## Routes
@@ -36,10 +36,10 @@ the live-output hook.
 | `GET /login/<token>`           | A login link: a page with a button that posts the token.         |
 | `POST /login`                  | Uses up the link (`token`), sets the session cookie, 303 to `/`. |
 | `POST /logout`                 | Ends a cookie login (CSRF-checked), 303 to `/`.                  |
-| `GET /admin`                   | The status page ([Admin Pages](#admin-pages)).                   |
+| `GET /admin`                   | The status page ([Admin pages](#admin-pages)).                   |
 | `GET /admin/plugins`           | The plugins page.                                                |
 | `POST /admin/plugins/<i>/restart` | Restarts plugin instance `<i>` (CSRF-checked), 303 back.      |
-| `GET /admin/agents`            | Every agent ([Agent Pages](#agent-pages)).                       |
+| `GET /admin/agents`            | Every agent ([Agent pages](#agent-pages)).                       |
 | `GET /admin/agents/new`        | The form that creates an agent.                                  |
 | `POST /admin/agents`           | Creates the agent (CSRF-checked), 303 to its page.               |
 | `GET /admin/agents/<agent>`    | The agent's settings and files.                                  |
@@ -47,11 +47,11 @@ the live-output hook.
 | `POST /admin/agents/<agent>/edit` | Saves the edit (CSRF-checked), 303 to the agent's page.       |
 | `GET /admin/agents/<agent>/remove` | What removing the agent would do, and the button.            |
 | `POST /admin/agents/<agent>/remove` | Removes the agent (CSRF-checked); 200 with what happened, or the page again with why not (409). |
-| `GET /admin/agents/<agent>/memory` | The agent's memories the user can see, and a search (`q`) ([Memory Page](#memory-page)). |
+| `GET /admin/agents/<agent>/memory` | The agent's memories the user can see, and a search (`q`) ([Memory page](#memory-page)). |
 | `POST /admin/agents/<agent>/memory` | Adds a memory (CSRF-checked), 303 back. |
 | `POST /admin/agents/<agent>/memory/edit` | Changes a memory's content and flags (CSRF-checked), 303 back; 409 if it changed since the form. |
 | `POST /admin/agents/<agent>/memory/forget` | Forgets a memory (CSRF-checked), 303 back. |
-| `GET /admin/routes`            | Every route in order ([Route Pages](#route-pages)).              |
+| `GET /admin/routes`            | Every route in order ([Route pages](#route-pages)).              |
 | `GET /admin/routes/new`        | The form that adds a route.                                      |
 | `POST /admin/routes`           | Adds the route (CSRF-checked), 303 to the list.                  |
 | `GET /admin/routes/<id>/edit`  | The form, filled in with the route.                              |
@@ -67,7 +67,7 @@ and any other id in a path is a 404. A chat is `ConversationKind::Direct`; v1 ha
 chat is the owner's. The chat id helpers are in `channels::chat_ids`, outside the feature, because
 the router reads them.
 
-### Choosing an Agent
+### Choosing an agent
 
 A plain chat goes to whichever agent the stored routes pick. The chat list also has a picker, a
 `GET` form to `/chats/new?agent=<id>`, listing the agents the user may start a chat with
@@ -80,7 +80,7 @@ page shows its agent ("with Jeeves (jeeves)"), and so does the chat list. If the
 configured (any more), or the user may not use it, `/chats/new?agent=`, the chat page, and both
 POSTs answer 404 "No such agent" (and the router would drop the message anyway).
 
-## Who Is Asking
+## Who is asking
 
 `channels::web::WebUser { user: UserId, sender: NativeId, csrf: String, .. }` is an axum extractor
 (`FromRequestParts` for any state) that reads a `WebUser` from the request's extensions, or rejects
@@ -133,7 +133,7 @@ are scrubbed of secrets):
   `secret_header` are errors and the listener is the Unix socket. Neither header may be
   `Authorization`, `Cookie`, `Host`, `X-CSRF-Token`, `X-Forwarded-Proto`, or `Last-Event-ID`.
 
-### Login Links
+### Login links
 
 `WebChannel::create_login_link(&UserId, now) -> Result<LoginLink { url, expires_at }, LoginLinkError>`
 is what `giles admin login-link --user` calls over the admin service (2.24; the registry's
@@ -157,7 +157,7 @@ token out of `Referer`.
 No login CSRF check on `POST /login`: v1 has one user, so a forged login would log the victim in as
 the owner, which needs a valid link anyway.
 
-### The Session Cookie
+### The session cookie
 
 The middleware reads `giles_session` (`WEB_SESSION_TTL`, 30 days), looks the token up with
 `Store::web_session(token, now)` (expired rows don't count), and builds the `WebUser`: `user` and
@@ -169,7 +169,7 @@ expired rows now and every hour (`Store::web_sessions_expire`) until shutdown.
 `POST /logout` (CSRF-checked) deletes the session and the cookie. A proxy login has nothing to end,
 so the chat list shows no logout button for it.
 
-### The Trusted-Proxy Listener
+### The trusted-proxy listener
 
 The identity header is honored only on a request marked `TrustedProxy`, a request extension only the
 proxy listener's layer adds, and a client can't forge an extension. The main listener never reads
@@ -193,14 +193,14 @@ there.
   applies as usual.
 - `X-Forwarded-Proto: https` marks the cookie `Secure` only with the mark.
 
-### Rate Limits
+### Rate limits
 
 PLAN section 3.4 rate-limits the login *code* flow per user name and per client address, because an
 8-character code can be guessed. Link and session tokens carry 256 random bits, so guessing is
 hopeless at any rate, and a limit on redemption would only let a local process lock the owner out.
 So there's no limiter yet; it comes with the code flow.
 
-## Inbound: Events and Acks
+## Inbound: events and acks
 
 `WebChannel::post(user, chat, text, now)` builds a `ChannelEvent::Message` (event id `web-` plus 128
 random bits, also used as the `message_id`), queues it, and shows the message on the chat's open
@@ -221,7 +221,7 @@ Validation: the text must not be blank and is at most `MAX_MESSAGE_BYTES` (32 Ki
 the form back (empty on success, with the text and an error otherwise, as 200 because htmx swaps
 only successful responses); plain posts get a 303 back to the chat, or an error page.
 
-## Outbound and Live Output
+## Outbound and live output
 
 Each chat has a hub (`hub.rs`): an event log every open page of the chat follows. A hub event is an
 HTML fragment for the page's message list. Fragments that change an element already on the page
@@ -244,12 +244,12 @@ in use, not every chat since the start.
   sent); `finish` replaces it with the final rendering. A writer dropped unfinished leaves its text,
   marked "Stopped before the end."
 
-The agent loop's output delivery (`agent_loop::output`, see [Agent Loop](agent-loop.md)) streams
+The agent loop's output delivery (`agent_loop::output`, see [Agent loop](agent-loop.md)) streams
 every assistant text block of a turn in a web chat through this hook: `start` at the block's first
 non-whitespace delta, `push` for each delta, and `finish` once the response is stored. Whole-message
 `send` keeps working on this channel either way (notices, restart notices).
 
-### Event Streams and Cursors
+### Event streams and cursors
 
 A page is rendered with a cursor naming the last hub event it reflects, `<epoch>-<seq>`, where the
 epoch is random per run of the daemon. Event numbers come from one counter for every chat, so a
@@ -312,7 +312,7 @@ The page is assembled so that a message is shown once, whatever happens while it
 A post the router drops (no route) isn't in the inbox, so after a reload it's gone, like any dropped
 message.
 
-## Approval Prompts (Hook for 2.7)
+## Approval prompts (hook for 2.7)
 
 `WebChannel::send_approval(chat, code, markdown) -> Result<MessageId>` shows a prompt with three
 buttons in `/chats/<id>/approvals` forms: Allow (`yes`), Allow for this session (`yes!`), Deny
@@ -352,10 +352,10 @@ for anything else, and `Cache-Control: private, max-age=31536000, immutable` (th
 hash). An HTML or SVG blob therefore downloads, and even opened directly it runs in a sandboxed
 opaque origin.
 
-## Admin Pages
+## Admin pages
 
 PLAN sections 8.7 and 10; code in `admin.rs` (pages) and `qr.rs` (QR codes). The admin pages are a
-client of the admin service ([Admin Service](admin.md)), like `giles status`, but in-process:
+client of the admin service ([Admin service](admin.md)), like `giles status`, but in-process:
 `WebApp::install_admin(builder, admin: Arc<dyn AdminService>)` takes the generated `giles.admin.v1`
 server trait, and `giles serve` passes the same `Arc<AdminService>` it serves on the admin socket
 (`AdminListener::serve` takes the `Arc`). So the pages show exactly what the CLI shows, and there's
@@ -402,18 +402,18 @@ URLs, locations) goes through askama's HTML escaping; the QR `<svg>` is the only
 service never returns secrets: plugin errors and stderr are scrubbed by the plugin host, configs
 aren't part of `Status`, and remote URLs can't carry credentials (config validation).
 
-## Agent Pages
+## Agent pages
 
 In `agents.rs`: `web.install_agents(builder, Arc<agents::AgentManager>)`, which `serve` calls after
 `install_admin` with a manager over the runtime's registry (so the chat list, reading the same
 `LiveConfig`, offers a new agent at once). Like the admin pages: the same authentication middleware,
 `may_administer` (the owner only; a guest gets 403, no login 401) on every route including the POST
-(except the memory page's, see [Memory Page](#memory-page)), `no-store` on every answer, and
+(except the memory page's, see [Memory page](#memory-page)), `no-store` on every answer, and
 `check_csrf` on the POST. Unlike them, they call the core directly (`giles_core::agents`) rather
 than the admin service: there are no agent RPCs yet (PLAN section 8.7).
 
 - The list reads the running configuration: id, label (`Name (id)`), models, and links to the page
-  and to `/chats/new?agent=<id>` ([Choosing an Agent](#choosing-an-agent)).
+  and to `/chats/new?agent=<id>` ([Choosing an agent](#choosing-an-agent)).
 - An agent's page looks the id up in the running configuration (anything else, `..` included, is a
   404) and lists its directory with `agents::list_files(&agent, &viewer)` on a blocking thread. The
   walk never follows a link: entries come from `read_dir` with `file_type()` (a link is listed
@@ -426,7 +426,7 @@ than the admin service: there are no agent RPCs yet (PLAN section 8.7).
   `MAX_TOTAL_BYTES` (1 MiB) of contents per page. Text is UTF-8 without NUL (a character split
   by the cut is dropped); anything else is listed with its size (so `memory.db` is listed by
   its size and its contents are never shown; the memories have their own page,
-  [Memory Page](#memory-page)). Contents are shown escaped in `<pre>`. Each entry has a
+  [Memory page](#memory-page)). Contents are shown escaped in `<pre>`. Each entry has a
   `FileKind` (`Config`, `Soul`, `JobPrompt` from the agent's `prompt_file`s, `Skill`, `Other`)
   that orders and labels it.
 - Who sees which file is one hook, `FileKind::visible_to(viewer)`, applied before a file is read or
@@ -584,7 +584,7 @@ together. A chat of the removed agent stays in the chat list (labelled by the id
 404. Sessions, messages, summaries, usage, and inbox rows are not touched; the id is free (creation
 checks the live configuration and the directory, neither of which has it), and creating it again
 gives it a new incarnation, so the old sessions' cached prompts are not reused
-([Agent Loop](agent-loop.md)). Whether to refuse creating an id that has history was decided
+([Agent loop](agent-loop.md)). Whether to refuse creating an id that has history was decided
 against: reattaching the old chats is what the owner who recreates an agent most likely wants, and
 the page says so.
 
@@ -599,7 +599,7 @@ configuration: the agent loop and core tools through `Registry::config()`, the s
 configuration too (a created, edited, or removed agent's jobs start, change, or stop); general
 reload stays deferred (D28).
 
-### Memory Page
+### Memory page
 
 In `memory.rs`, routed by `install_agents` (its `AgentPages` state, `agents.rs`) under the agent
 pages' middleware (authentication, `no-store`). Unlike the other agent pages it is **not**
@@ -660,12 +660,12 @@ handlers don't assume it, and a test signs in as another user.
   resolution. Forget has no guard: it is deliberate and the user sees what they forget.
 - **Running sessions** keep the core memories their prompt was built with; the page says that a
   change reaches a session after it compacts or when a new session starts
-  ([Agent Loop](agent-loop.md)). Nothing here notifies a session.
+  ([Agent loop](agent-loop.md)). Nothing here notifies a session.
 - **Escaping.** Content, flags, the search words, and group ids are template values, so Askama
   escapes them; the `done` code is never echoed. Memory text is shown in `<pre>` and in the
   `<textarea>` of its edit form.
 
-## Route Pages
+## Route pages
 
 In `routes.rs`: `web.install_routes(builder, Arc<routes::Routes>)`, which `serve` calls last, with
 the runtime's `Routes` (the object whose `RouteList` the router reads). Like the agent pages: the
@@ -695,7 +695,7 @@ it.
 - A move that would hide a route is refused with the reason, as is an edit; reordering therefore
   passes only through valid lists.
 
-## Templates and Styles
+## Templates and styles
 
 Templates are in `crates/giles-core/templates/web/`: pages `chats.html`, `chat.html`, `error.html`,
 `login_required.html`, `login.html`, `admin_status.html`, `admin_plugins.html`, `admin_agents.html`,

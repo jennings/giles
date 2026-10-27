@@ -1,16 +1,16 @@
-# Plugin Host
+# Plugin host
 
 Code: `crates/giles-core/src/plugin_host/` (`giles_core::plugin_host`). Design: PLAN sections 4.3,
 7.3, 7.4, 7.5, 7.6, 7.7, 7.8, 7.9, 8.3, 8.5, 11.6, 12.1, 12.4, and 13.4. The plugin side of the same
-steps is the [Plugin SDK](plugin-sdk.md); the wire setup is [Plugin Transport](plugin-transport.md);
-the trampoline is the [Plugin Sandbox](sandbox.md).
+steps is the [Plugin SDK](plugin-sdk.md); the wire setup is [Plugin transport](plugin-transport.md);
+the trampoline is the [Plugin sandbox](sandbox.md).
 
 The plugin host launches gRPC channel plugins (provider plugins aren't supported in v1). It takes a
 configured `[channel.<instance>]` without `address` from its binary to a configured plugin, wraps
 the result in a `RemoteChannel`, registers that with the registry and the session manager, and
 supervises it: health checks, relaunches with backoff, and the stop sequence. A
 `[channel.<instance>]` with `address` is a remote plugin that someone else runs: the host connects
-to it instead ([Remote Plugins](#remote-plugins)), and supervises the connection the same way.
+to it instead ([Remote plugins](#remote-plugins)), and supervises the connection the same way.
 
 ## Launch
 
@@ -67,7 +67,7 @@ namespace, stderr) has the instance's secret values and the token replaced by `<
 | A namespace that isn't the plugin's own | `Namespace` | no |
 | `connect_remote` on an instance without `address` (or `launch_channel` on one with it) | `NotRemote` (`NotLaunched`) | no |
 
-Supervision retries every failure of a remote plugin anyway ([Remote Plugins](#remote-plugins)).
+Supervision retries every failure of a remote plugin anyway ([Remote plugins](#remote-plugins)).
 
 The failures before the handshake completes carry the plugin's last stderr lines (`stderr()`), and
 their message ends with the last non-empty one, so a trampoline failure reads like
@@ -92,7 +92,7 @@ In the child, between `fork` and `exec` (`pre_exec`, async-signal-safe calls onl
 
 The pid survives both `exec`s, so the spawned process is the plugin.
 
-## The Sandbox Spec
+## The sandbox spec
 
 Written with `Spec::to_json` to `run/sandbox/<instance>.json`, mode 0600 (via a temporary file and a
 rename), outside every plugin's grants. From PLAN section 12.4:
@@ -110,7 +110,7 @@ rename), outside every plugin's grants. From PLAN section 12.4:
 The binary's directory isn't granted: a binary installed in, say, a home directory would expose the
 whole directory. The trampoline adds `GILES_PLUGIN_DATA`, `HOME`, `TMPDIR`, `PATH`, and `LANG`.
 
-## The Process
+## The process
 
 `PluginProcess` owns the child, its stdin, its pid file, and the stderr task:
 
@@ -135,9 +135,9 @@ whole directory. The trampoline adds `GILES_PLUGIN_DATA`, `HOME`, `TMPDIR`, `PAT
   for a crash, drop the handle, and relaunch without leaving children behind.
 
 A child that calls `setsid` itself leaves the group and escapes all of this; fully containing a
-plugin's descendants needs more (a cgroup on Linux), as [Plugin Sandbox](sandbox.md) notes.
+plugin's descendants needs more (a cgroup on Linux), as [Plugin sandbox](sandbox.md) notes.
 
-## Pid Files and Orphans
+## Pid files and orphans
 
 `run/pids/<instance>.pid`, mode 0600, written right after the spawn: the pid and the resolved binary
 path, one per line. A clean stop or a failed launch removes it.
@@ -156,7 +156,7 @@ orphan to go, so two copies never share the data directory, and removes the file
 ## gRPC
 
 `PluginConnection` is the one HTTP/2 connection, made with the one-shot connector from
-[Plugin Transport](plugin-transport.md) (no reconnect). `plugin()`, `channel()`, and `health()`
+[Plugin transport](plugin-transport.md) (no reconnect). `plugin()`, `channel()`, and `health()`
 build clients with the 16 MiB limits; `transport()` is the intercepted channel for others.
 
 `CallMetadata`, the interceptor on every client, adds `authorization: Bearer <token>` (marked
@@ -188,7 +188,7 @@ pub struct LaunchedPlugin {
 stdin, up to `grace` (`STOP_GRACE`, 10 s: the SDK drains for up to 5 s) for the plugin to exit, then
 `terminate(TERM_GRACE)` (5 s), which also kills what's left of the group and removes the pid file.
 
-## Remote Plugins
+## Remote plugins
 
 A `[channel.<instance>]` with `address` (PLAN section 7.6) is a plugin someone runs themselves; the
 config loader already checked the URL (`http` or `https`, no credentials, plain `http` only to
@@ -241,7 +241,7 @@ old `RemoteChannel` fail.
 connection as above. The SDK takes `Shutdown` as the core disconnecting and keeps serving. Dropping
 a `RemotePlugin` disconnects the same way without `Shutdown`.
 
-### OAuth Client Credentials
+### OAuth client credentials
 
 `oauth::TokenClient` (RFC 6749 section 4.4) posts `grant_type=client_credentials` (and `scope`, the
 scopes joined by spaces, if any) as a form to `token_url`, authenticated with HTTP Basic, the client
@@ -261,7 +261,7 @@ whole refresh period). A token without `expires_in` is kept until the connection
 token expires before a refresh succeeds, calls fail with `UNAUTHENTICATED`, the next health check
 fails, and supervision reconnects, which requests a new token first.
 
-### Supervision of Remote Plugins
+### Supervision of remote plugins
 
 `PluginHost::start` supervises remote instances like launched ones, through a `RemoteLaunch` whose
 `launch` is `connect_remote` followed by `ChannelWiring::attach_remote`, so each connection
@@ -308,7 +308,7 @@ rules, so the two sides can't disagree (`giles-core` depends on `giles-plugin-sd
   `INVALID_ARGUMENT` is `InvalidRequest`, `NOT_FOUND` is `NotFound`, anything else `Other`. An
   attachment missing from the blob store fails before anything is sent.
 
-### Inbound Attachments
+### Inbound attachments
 
 The attachments are taken out of a message event before conversion, so a plugin may use any handle.
 The core never trusts a handle as a claim about the content, not even one that looks like a SHA-256:
@@ -353,7 +353,7 @@ event refers to at startup, so a release lost to a crash or a restart leaks noth
 it). A launch is `Launcher::launch_channel` followed by `ChannelWiring::attach` (below), so every
 launch, the first and each relaunch, registers its new `RemoteChannel` and attaches it to the
 session manager, replacing the old one and its event pump. Remote plugins differ as described under
-[Supervision of Remote Plugins](#supervision-of-remote-plugins).
+[Supervision of remote plugins](#supervision-of-remote-plugins).
 
 While the plugin runs, the task waits for the first of:
 
@@ -401,12 +401,12 @@ Messages in `last_error` are safe to show: `LaunchError` messages and health-che
 scrubbed of the instance's secrets and the token. The channel's own status (`Connected`,
 `NeedsAuth`, ...) is recorded by the session manager (`Sessions::channel_status`).
 
-`PluginHost` implements `admin::PluginControl` for the [Admin Service](admin.md): `plugins()`
+`PluginHost` implements `admin::PluginControl` for the [Admin service](admin.md): `plugins()`
 returns the statuses as `PluginRuntime`s (the state as is; the version and `requested_grants`, field
 for field as `SandboxGrants`, from `describe`), and `restart` is `PluginHost::restart`. `serve`
 shares one `Arc<PluginHost>` between the two.
 
-### The Describe Cache
+### The Describe cache
 
 `DescribeCache` (PLAN section 7.9) keeps what each instance's binary reported in `Describe`, as
 `DescribeInfo`, in `<root>/cache/describe/<instance>.json` (mode 0600, written atomically): the
@@ -418,11 +418,11 @@ capabilities and requested grants of a plugin that is failing or backing off. Th
 the version before a launch, so it matches the binary and the config and returns the version
 recorded with them. A damaged file is a miss.
 
-## Startup and Shutdown
+## Startup and shutdown
 
 `PluginHost::new(launcher, ChannelWiring { registry, sessions, blobs })` and then `start(&config)`
 start supervising every plugin channel after the sessions start, and return once each has had its
-first launch attempt, before `giles started` (see [The `giles` Binary](daemon.md)). Each launched
+first launch attempt, before `giles started` (see [The `giles` binary](daemon.md)). Each launched
 plugin is wired at once by `ChannelWiring::attach(&plugin, max_blob)` (a remote one by
 `attach_remote`): its `RemoteChannel` is registered with `Registry::register_channel` (so replies
 and `Registry::pending` see it) and attached with

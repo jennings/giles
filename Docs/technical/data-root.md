@@ -1,4 +1,4 @@
-# Data Root
+# Data root
 
 Everything Giles stores lives under one directory, the data root (`GILES_HOME`, PLAN section 11.1).
 The module `giles_core::paths` owns its layout: no other code joins path strings onto the root.
@@ -60,7 +60,7 @@ grammar: config validation applies the stricter `[a-zA-Z0-9-]+`, but names also 
 (e.g. a user created through the admin service), and those must not be able to traverse paths
 either. It matters most for `data/plugins/<instance>/`, the only directory a plugin can write.
 
-## Creating the Layout
+## Creating the layout
 
 `DataRoot::create_layout` runs at `giles serve` startup and is idempotent. It creates the root and
 every directory above, each with mode 0700. It creates no files: `giles.toml` and `secrets.toml` are
@@ -69,7 +69,7 @@ written by people, and the database, token, sockets, and pid files by the subsys
 Existing directories keep their modes, so an operator may loosen one deliberately, except `run/`,
 which is reset to 0700 on every start because it holds the admin token and the sockets.
 
-## Socket Path Fallback
+## Socket path fallback
 
 A Unix socket path must fit in `sockaddr_un.sun_path` with its terminating NUL: 104 bytes on macOS
 and the BSDs, 108 on Linux, so at most 103 and 107 bytes of path (`MAX_SOCKET_PATH_LEN`). A test

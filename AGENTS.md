@@ -44,8 +44,9 @@ The reader is someone installing and running Giles. Implementation detail belong
 - Make a series of three or more items a bullet list.
 - Keep paragraphs to one to three sentences, one idea each.
 - Give each page one Diátaxis type (tutorial, how-to, reference, or explanation).
-- Headings name the topic or what the reader does ("Create a data volume"). Use sentence case for
-  new or retitled headings.
+- Headings name the topic or what the reader does ("Create a data volume").
+- Every heading in `Docs/`, user or technical, and every `SUMMARY.md` entry uses sentence case:
+  capitalize only the first word, proper nouns, and acronyms.
 - Write in the second person; contractions are fine. Use plain subject–verb sentences: no semicolon
   chains, "X: Y" constructions, or "so … so …" links.
 - Avoid "just as", "at the cost of", "as long as", "simply", and needless contrast ("X, not Y").

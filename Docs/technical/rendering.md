@@ -1,4 +1,4 @@
-# Rendering Model Output
+# Rendering model output
 
 The model writes Markdown, and every channel receives it as CommonMark ([Plan](../PLAN.md) §6.9).
 Each channel turns it into its own format. The renderers live in `giles_plugin_sdk::render`, so the
@@ -14,7 +14,7 @@ built-in web channel and the Rust channel plugins share one implementation (§10
 | `whatsapp(markdown)`            | WhatsApp               | WhatsApp markup                           |
 | `discord(markdown, max_chars)`  | Discord                | Messages in Discord's Markdown            |
 
-## Shared Rules
+## Shared rules
 
 All renderers parse with the same options, so a message means the same thing on every channel:
 
@@ -77,7 +77,7 @@ tags in the output are the fixed set `pulldown-cmark` writes for CommonMark cons
 script and image tags, `javascript:` in every spelling, attribute breakout through URLs and titles,
 remote, protocol-relative, reference-style, and linked images.
 
-## Text Layout
+## Text layout
 
 The text renderers share one layout:
 
@@ -97,7 +97,7 @@ The text renderers share one layout:
   client that does.
 - Raw HTML is shown as text. Thematic breaks are `---`.
 
-## Plain Text
+## Plain text
 
 `plain_text` renders the text part of email:
 

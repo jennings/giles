@@ -27,7 +27,7 @@ won't help (the host can't sandbox, an invalid spec, the sandbox trampoline fail
 125 or macOS's 71, rejected credentials); `Unavailable` covers the rest (program not found, a server
 that fails to start or answer, an unreachable URL).
 
-## Finding the Program
+## Finding the program
 
 `command` is an absolute path or a name looked up on the operator's `PATH` (`config::find_program`,
 the same lookup config loading uses to protect binary directories). Without `command`, the plugin
@@ -79,9 +79,9 @@ of `~/.local` for `~/.local/bin/x`, all of `~/.cargo` (including `credentials.to
 `~/.cargo/bin/x`. Only the home directory itself (and `/`) is ruled out. Operators who mind install
 servers in a prefix of their own, such as a venv or `npm --prefix`.
 
-## The Launch
+## The launch
 
-Like a plugin launch ([Plugin Host](plugin-host.md)), without the gRPC parts:
+Like a plugin launch ([Plugin host](plugin-host.md)), without the gRPC parts:
 
 - Data directory `data/plugins/<instance>/` and its `tmp/`, mode 0700, refused if it is a link
   (`plugin_host::prepare_data_dir`). Instance names are unique across kinds, so toolsets share the
@@ -171,7 +171,7 @@ and the next call relaunches the server, which also refreshes the list. A server
 idleness didn't crash, so the restart backoff starts over at 1 s; otherwise a server whose
 `idle_stop` is under `HEALTHY_RESET` would never reset it.
 
-## Tool-List Cache
+## Tool-list cache
 
 `toolsets/cache.rs`, PLAN section 7.9: one JSON file per instance in `<root>/cache/toolsets/`
 (written atomically, mode 0600), holding the format version, the key, and the bare tool list:

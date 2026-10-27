@@ -3,7 +3,7 @@
 `giles-plugin-sdk` is the plugin side of PLAN sections 7.4 and 8: everything a gRPC plugin must do
 between being launched by the core and serving its kind service. The core side (launch, supervision,
 the `Remote*` adapters) lives in `giles-core`. The wire setup it builds on is in
-[Plugin Transport](plugin-transport.md); the shared constants are `giles_proto::handshake` (see
+[Plugin transport](plugin-transport.md); the shared constants are `giles_proto::handshake` (see
 [gRPC Protocols](protocols.md#launch-handshake)).
 
 ## Startup
@@ -19,7 +19,7 @@ The SDK does these steps in order, and any failure ends the process with a messa
    (`EXIT_NO_SHARED_PROTOCOL`), naming both sides' versions, so the core knows not to retry the same
    binary.
 3. Data directory: `GILES_PLUGIN_DATA` must be an absolute path to an existing directory.
-4. Fd 3: adopted as described in [Plugin Transport](plugin-transport.md). Before taking ownership,
+4. Fd 3: adopted as described in [Plugin transport](plugin-transport.md). Before taking ownership,
    the SDK checks with `F_GETFD` that it's open and with `fstat` that it's a socket, so a missing fd
    3 (whose number the runtime may already have reused for its own kqueue or epoll descriptor) is
    reported instead of being closed. It then sets `FD_CLOEXEC` and non-blocking mode, and checks
@@ -40,7 +40,7 @@ the SDK never writes to stdout; the core drains and ignores it.
 A `tonic` interceptor layered over the whole server, health included, requires the metadata
 `authorization: Bearer <token>`; anything else gets `UNAUTHENTICATED` without affecting the
 connection. The comparison doesn't exit early on the first differing byte. A remote plugin checks
-the token its `RemoteAuth` names instead ([Remote Plugins](#remote-plugins)).
+the token its `RemoteAuth` names instead ([Remote plugins](#remote-plugins)).
 
 ## State in the data directory
 
@@ -67,7 +67,7 @@ a partial one.
 `PluginService` delegates `Describe` and `Configure` to the kind (see [Channels](#channels)).
 `Configure` parses `config_json` first and answers `INVALID_ARGUMENT` if it isn't JSON. `Shutdown`
 answers at once and then starts the bounded shutdown described under [Lifecycle](#lifecycle); in a
-remote plugin it only ends the core's open `Events` stream ([Remote Plugins](#remote-plugins)).
+remote plugin it only ends the core's open `Events` stream ([Remote plugins](#remote-plugins)).
 
 ### Blobs
 
@@ -134,7 +134,7 @@ async fn main() -> ExitCode {
   the process's `ExitCode`. It uses the ambient tokio runtime; `#[tokio::main]` is enough. Fd 3 is
   adopted after the runtime started, which is why step 4 above checks it's a socket before taking
   ownership. `serve_remote(RemoteServer, configure)` runs the same channel as a remote plugin
-  ([Remote Plugins](#remote-plugins)); `RemoteServer` and `RemoteAuth` are re-exported at the crate
+  ([Remote plugins](#remote-plugins)); `RemoteServer` and `RemoteAuth` are re-exported at the crate
   root.
 - `Configure` gives `instance()`, `config()` (the JSON `Value`), `parse_config::<T>()` (serde,
   errors as `Error::InvalidRequest("invalid config: ...")` naming the key), `data_dir()`, and
@@ -243,7 +243,7 @@ converting it, so it accepts any handle, and it never trusts one: it fetches the
 
 `Unavailable`'s `retry_after` doesn't cross the wire in v1; the outbox retries with its own backoff.
 
-## Remote Plugins
+## Remote plugins
 
 A plugin someone runs themselves, which the core connects to over TCP (PLAN section 7.6, the core
 side in [Plugin Host](plugin-host.md#remote-plugins)), calls

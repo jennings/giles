@@ -1,4 +1,4 @@
-# Model Providers
+# Model providers
 
 A provider instance connects Giles to a model API.
 

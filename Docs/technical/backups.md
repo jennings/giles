@@ -3,9 +3,9 @@
 `giles_core::backup` writes the snapshots of PLAN section 11.4, for two callers: the admin service's
 `Backup` RPC (`giles backup <dir>`) and the core's own startup, before schema migrations. The
 database halves are `giles_store::Store::vacuum_into` ([Storage](storage.md)), for `giles.db` and,
-through `MemoryStore`, for each agent's `memory.db` (see [Memory Databases](#memory-databases)).
+through `MemoryStore`, for each agent's `memory.db` (see [Memory databases](#memory-databases)).
 
-## Anatomy of a Snapshot
+## Anatomy of a snapshot
 
 A snapshot is two files that share a stem, `Snapshot { database, archive }`:
 
@@ -30,7 +30,7 @@ of `VACUUM INTO`, and writes into it without changing its permissions. A failed 
 both files (`Snapshot::discard`), so a partial one is never left to be mistaken for a good one.
 Stems are `giles-<UTC time as YYYYMMDDTHHMMSSZ>`, so name order is time order.
 
-### The Archive
+### The archive
 
 `write_archive` walks a fixed list, in name order, so the archive's content depends only on the
 files:
@@ -81,7 +81,7 @@ while puts carry on, except behind a sweep that is already queued. With it, ever
 snapshot's rows name is in the archive; one stored in between is extra and harmless. A test starts a
 sweep between the two steps and checks that it waits and that the archive has the blob.
 
-### Memory Databases
+### Memory databases
 
 Each agent's memories live in `agents/<agent>/memory.db`, a SQLite file with its own schema
 (`giles_store::MemoryStore`). It is under `agents/`, so the walk would otherwise archive it as a
@@ -149,7 +149,7 @@ and the work runs on the store's read pool and Tokio's blocking pool, so other R
 on. Like every RPC it needs the admin token. The `giles.admin.v1` messages didn't change; `Backup`
 was declared with the service.
 
-## Before Migrations
+## Before migrations
 
 `Runtime::start` opens the store with `backup::open_options(&root)`, which installs the store's
 `before_migrate` hook ([Storage](storage.md#migrations)). The store calls it only for a database at

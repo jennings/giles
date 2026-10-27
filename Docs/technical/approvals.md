@@ -2,9 +2,9 @@
 
 `giles_core::approvals` makes calls to the tools an agent's `ask` globs name, and questions a tool
 asks mid-call (MCP elicitation), wait for the requester's answer ([Plan](../PLAN.md) §6.4, §7.10).
-The agent loop asks through it ([Agent Loop](agent-loop.md)); the session manager hands it the
-`yes`/`no`/`yes!` replies ([Sessions and Turns](sessions.md)), which the router recognizes only
-while it says an approval is pending ([Identity and Routing](identity-and-routing.md)).
+The agent loop asks through it ([Agent loop](agent-loop.md)); the session manager hands it the
+`yes`/`no`/`yes!` replies ([Sessions and turns](sessions.md)), which the router recognizes only
+while it says an approval is pending ([Identity and routing](identity-and-routing.md)).
 
 | Item                    | What it is                                                              |
 | ----------------------- | ----------------------------------------------------------------------- |
@@ -26,7 +26,7 @@ so the replies the session manager receives reach the approvals the agent loop w
 gets a `TurnApprovals::for_turn(board, agent, turn)`: the agent's `ask` globs and
 `approval_timeout`, answered by the turn's requester in the session's conversation.
 
-## What Waits
+## What waits
 
 When a call starts, after the dispatcher's call-time checks (an unavailable tool is reported as
 such, not asked about), `approve_call(tool, input)`:
@@ -129,7 +129,7 @@ core, never queued for the agent. `answer(to, reply)` then:
 that session (in any turn) run without asking, and the session's other calls of that tool still
 waiting are allowed at once too. Replies from another conversation or another user never match.
 
-## New Messages
+## New messages
 
 A message from the requester while one of the turn's approvals waits denies it (§6.4) and becomes
 part of the turn. The session code wakes `Turn::steering` for each requester message. In its
@@ -142,10 +142,10 @@ arrived while nothing waited, denies nothing. At the batch boundary the queued r
 are taken into the turn (`Steering::take`, every one, in order) and stored after the tool results,
 so the model sees both; with `busy_mode = "queue"` this happens only when a message denied an
 approval. A turn that `/stop` ends first takes nothing, so the message starts the next turn. In
-`steer` mode the batch's unstarted calls are also skipped ([Agent Loop](agent-loop.md), Turn
+`steer` mode the batch's unstarted calls are also skipped ([Agent loop](agent-loop.md), Turn
 Control).
 
-## Questions (Elicitation)
+## Questions (elicitation)
 
 A running call's `ToolCallEvent::ApprovalRequest { id, message, schema }` goes to
 `answer_question(tool, message)` through the same board: same codes, prompts, replies, expiry, and
@@ -157,12 +157,12 @@ board, the MCP client declines it at once ([MCP Client](mcp.md#mapping-mcp-to-th
 The wait is part of the running call, so its deadline keeps running; an unattended turn declines at
 once.
 
-## Web Buttons
+## Web buttons
 
 `ChannelPresenter` shows a prompt for a conversation on the web channel's instance
 (`registry.web_channel()` whose `instance()` is `reply.instance()`) with
 `WebChannel::send_approval(chat, code, markdown)`: the prompt with Allow / Allow for this session /
-Deny buttons ([Web Channel](web-channel.md)). Every outcome (an answer, a typed reply, expiry, a new
+Deny buttons ([Web channel](web-channel.md)). Every outcome (an answer, a typed reply, expiry, a new
 message, `/stop`) retires it with `WebChannel::resolve_approval(chat, code, outcome)`, so the page
 shows how it ended. A button posts `yes <code>`, `yes! <code>`, or `no <code>` as the user, which
 reaches the board like a typed reply. On every other channel the prompt is the text, sent with

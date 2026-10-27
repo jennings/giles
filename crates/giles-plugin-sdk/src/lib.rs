@@ -24,7 +24,7 @@
 //! `config` module parses durations and sizes in a plugin's `config` table the way `giles.toml`
 //! writes them.
 //!
-//! See [`ChannelPlugin`] for a complete example. The user guide's "Writing a Plugin" page and
+//! See [`ChannelPlugin`] for a complete example. The user guide's "Writing a plugin" page and
 //! `Docs/technical/plugin-sdk.md` in the repository describe the behavior in detail.
 //!
 //! [`Channel::events`]: giles_types::Channel::events

@@ -1,4 +1,4 @@
-# Running in a Container
+# Running in a container
 
 Giles can run as a Linux container.
 
@@ -29,7 +29,7 @@ docker run --detach --name giles --restart unless-stopped \
   ghcr.io/jennings/giles:latest
 ```
 
-## The Web Port
+## The web port
 
 Giles listens on `127.0.0.1:8080` by default, so you'll probably want to bind to all interfaces by
 setting `http_listen` in `giles.toml`:
@@ -55,7 +55,7 @@ refer to it as `{ env = "ANTHROPIC_API_KEY" }` and pass it with
 
 The plugin sandbox works with Docker's default security settings; no `--privileged` or extra
 capabilities are needed. It does need Landlock in the host's kernel, since a container shares the
-host's kernel ([Plugin Sandbox Check](running.md#plugin-sandbox-check)). Check the second line of
+host's kernel ([Plugin sandbox check](running.md#plugin-sandbox-check)). Check the second line of
 `docker exec giles giles status`:
 
 ```text

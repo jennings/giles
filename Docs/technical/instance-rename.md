@@ -1,11 +1,11 @@
-# Instance Rename
+# Instance rename
 
 Instance names are permanent ids (PLAN section 7.2). `giles_core::rename` renames one,
 `rename_instance`, which `giles instance rename <old> <new>` calls, and refuses a configuration that
 looks like a rename done in `giles.toml` alone, `check_unused_instance_data`, which `Runtime::start`
 calls. This page covers what a name keys, the order of the steps, and what a failure leaves behind.
 
-## What a Name Keys
+## What a name keys
 
 An audit of every place the implementation stores or derives something from an instance name. A
 rename must move each of them, and the startup check treats each as data.
@@ -62,7 +62,7 @@ Not rewritten, by design:
 `Store::instance_rows`, `Store::instance_routes` and `Store::rename_instance` (storage.md, "Instance
 Names") do the database half.
 
-## Editing Config With Comments Intact
+## Editing config with comments intact
 
 `rename::edit` uses `toml_edit` so the files stay as the operator wrote them. It removes every entry
 of the `[provider]`, `[channel]`, or `[toolset]` table and puts them back, the renamed one under a
@@ -82,7 +82,7 @@ identity namespace, which must start with the component's name. When the renamed
 after editing compares the component the old and the new table resolve to and refuses if they
 differ.
 
-## The Steps
+## The steps
 
 `rename_instance(root, store, lock, old, new)` takes the data root's `InstanceLock` as an argument:
 the caller proves the core is stopped by holding the same `flock` `giles serve` holds, so no admin
@@ -164,7 +164,7 @@ and no longer looks new: the daemon would start, with the old rows stranded. Run
 before the next start. After the daemon has written rows under the new name the command refuses (the
 new name has data), and merging by hand is the only way back.
 
-## Startup Check
+## Startup check
 
 `Runtime::start` calls `check_unused_instance_data(root, config, store)` right after the database
 opens, before anything else uses the data, and fails with `StartError::InstanceData`. It refuses the

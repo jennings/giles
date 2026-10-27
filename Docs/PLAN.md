@@ -31,7 +31,7 @@ flowchart LR
   Browser --> Http
 ```
 
-### 1.1 v1 Scope
+### 1.1 v1 scope
 
 v1 is used by one person, the owner, who talks to agents on several channels. Sections describing
 several users and group chats are the design for later; v1 builds this subset of them:
@@ -54,7 +54,7 @@ several users and group chats are the design for later; v1 builds this subset of
 Deferred decisions, each with what v1 does meanwhile and when to revisit it, are in
 `Docs/decisions/`: D28, D49, D57, D58, D63, D65, D66.
 
-## 2. Parts of the System
+## 2. Parts of the system
 
 | Part     | What it is                                       | Where it comes from                            |
 | -------- | ------------------------------------------------ | ---------------------------------------------- |
@@ -68,9 +68,9 @@ Deferred decisions, each with what v1 does meanwhile and when to revisit it, are
 Agents and users are not pluggable. A toolset is an MCP server (section 7.10); one server exposes
 many tools from one process.
 
-## 3. Users, Roles, and Identity
+## 3. Users, roles, and identity
 
-### 3.1 Users and Roles
+### 3.1 Users and roles
 
 - The operator writes the startup settings in `giles.toml` and the credentials in `secrets.toml`.
   Users, agents, routes, and the rest are managed by Giles and changed by admins in the web UI
@@ -91,7 +91,7 @@ many tools from one process.
 A tool call is allowed only if both the agent's allowlist and the role of the turn's requester allow
 it. Every turn has exactly one requester (section 6.3).
 
-### 3.2 Identity Links
+### 3.2 Identity links
 
 An identity is (namespace, native identifier), e.g. `whatsapp:+15551234567`, `email:me@example.com`,
 or `irc:libera.chat:account:stephen`. The namespace is reported by the channel in its
@@ -139,7 +139,7 @@ Codes (pairing, `/link`, and web login):
 Core commands (`/new`, `/stop`, `/link`, approval replies) are handled by the core and never reach
 an agent. They're recognized after routing, before the agent, since they act on the routed session.
 
-### 3.3 Sender Authenticity
+### 3.3 Sender authenticity
 
 A channel reports a sender only as an identity it has verified. `InboundMessage` carries
 `sender_authenticated`; the core drops unauthenticated messages (logged) before the unknown-sender
@@ -160,7 +160,7 @@ Channels also drop messages that must never start a turn: echoes of the agent's 
 | Discord  | User id                    | The bot's authenticated Gateway connection                      |
 | Web      | Login (section 3.4)        | The web login                                                   |
 
-### 3.4 Web Login
+### 3.4 Web login
 
 - One-time login code: the user enters their user name, Giles sends a code to that user's default
   channel, and entering it sets a session cookie (`HttpOnly`, `SameSite=Lax`, `Secure` when served
@@ -178,9 +178,9 @@ Channels also drop messages that must never start a turn: echoes of the agent's 
   the first login before any channel is linked.
 - Passkeys: later.
 
-## 4. Components and Traits
+## 4. Components and traits
 
-### 4.1 One Trait, Two Backings
+### 4.1 One trait, two backings
 
 For each kind there is:
 
@@ -195,7 +195,7 @@ v1 doesn't promise that one component can ship either built-in or as a plugin; e
 or the other. Provider plugins are deferred: both v1 providers are built in, and Ollama uses the
 OpenAI-compatible client. The `Provider` trait stays, so provider plugins can be added later.
 
-### 4.2 v1 Packaging
+### 4.2 v1 packaging
 
 | Component                             | Packaging                              | Reason                                 |
 | ------------------------------------- | -------------------------------------- | -------------------------------------- |
@@ -224,7 +224,7 @@ Public enums in `giles-types` and the SDK (`Block`, `CompletionEvent`, `ChannelE
 `ToolCallEvent`, ...) are `#[non_exhaustive]`, so adding a variant isn't a breaking change for
 third-party plugin code.
 
-### 4.4 Trait Shapes
+### 4.4 Trait shapes
 
 ```rust
 #[async_trait]
@@ -289,7 +289,7 @@ from plugins is the `Remote*` adapter's job (section 8.3); traits never see it.
 Configuration and lifecycle are not on these traits. Built-ins are constructed from config; plugins
 get the base service (section 8.2).
 
-### 4.5 How the Parts Interact
+### 4.5 How the parts interact
 
 One inbound message, end to end. A scheduled job enters at the session step instead of the channel.
 
@@ -316,7 +316,7 @@ sequenceDiagram
   Ag->>Ch: send (deltas or blocks)
 ```
 
-## 5. Message Model
+## 5. Message model
 
 Giles has its own content-block model, patterned on Anthropic's. Each provider implementation
 translates it to and from its wire format; the core never sees wire formats.
@@ -393,7 +393,7 @@ Media:
 - Providers declare the media types they accept. Anything else reaches the model only as its text
   reference, so an unsupported type can't make every later request fail.
 
-## 6. Agent Runtime
+## 6. Agent runtime
 
 ### 6.1 Routing
 
@@ -486,7 +486,7 @@ that breaks this.
   were running as `unknown`, and tells each requester "Interrupted by a restart; resend if needed."
   Nothing is replayed, so a tool with side effects never runs twice.
 
-### 6.4 Tool Policy and Approvals
+### 6.4 Tool policy and approvals
 
 A tool may run only if both of these allow it:
 
@@ -529,7 +529,7 @@ way.
   The tool result reads "Not approved. The user said: ...", and the turn continues with that message
   visible to the model. Messages from other people wait in the inbox for their own turns.
 
-### 6.5 Tool Names
+### 6.5 Tool names
 
 - Plugin tools are always `<instance>__<tool>`. The plugin reports bare names; the core adds the
   prefix.
@@ -558,7 +558,7 @@ Markdown body) and optional resource files.
   plugin. Plugins never read `GILES_HOME`; when a call needs a skill's files, the core hands them
   over like any other media (section 7.10).
 
-### 6.7 Prompt and Memory
+### 6.7 Prompt and memory
 
 The prompt is laid out so provider prompt caching hits on almost every turn. Anthropic caches the
 prefix in the order tools, then system, then messages, and a change at one level invalidates
@@ -649,7 +649,7 @@ in that user's DMs. What an agent learns about a user goes into that agent's pri
 that user. The old `MEMORY.md` files and the `memory` tool they were written through are gone;
 existing files stay on disk, ignored, and nothing is migrated.
 
-### 6.8 Context Overflow
+### 6.8 Context overflow
 
 When a session's prompt approaches the model's context limit, the core summarizes older history into
 a summary record. The prompt then uses the summary plus recent messages. Original messages stay in
@@ -669,7 +669,7 @@ own format (section 10). Providers always stream. Each channel declares an outpu
 
 Reasoning and tool blocks never reach channels.
 
-### 6.10 Models and Fallback
+### 6.10 Models and fallback
 
 An agent lists models in order as `<provider instance>/<model id>` (split at the first `/`):
 
@@ -729,7 +729,7 @@ identity, not a conversation (section 8.5).
 
 ## 7. Plugins
 
-### 7.1 Kinds and Naming
+### 7.1 Kinds and naming
 
 | Kind       | What it is                                                     | Protocol                 |
 | ---------- | -------------------------------------------------------------- | ------------------------ |
@@ -759,7 +759,7 @@ the rename command. An instance removed on purpose, whose data stays, is listed 
 `component` key keeps its component by writing `component = "<old>"`, since the component defaults
 to the instance name.
 
-### 7.3 Discovery and Enablement
+### 7.3 Discovery and enablement
 
 The core looks for `giles-<type>-<name>` in `<root>/plugins/`, then on `$PATH`. Only configured
 instances run; installing a binary does nothing by itself. A future registry installs into
@@ -799,7 +799,7 @@ pair, so no other process can reach it.
 `tonic` serves on the one pre-connected stream (`serve_with_incoming_shutdown` with a one-item
 stream that then stays pending) and the core connects over it with a one-shot connector; the
 transport spike confirmed this, with 16 MiB limits and the bearer token. See
-[Plugin Transport](technical/plugin-transport.md) for the exact setup and its caveats.
+[Plugin transport](technical/plugin-transport.md) for the exact setup and its caveats.
 
 Because plugins never need to create Unix sockets, seccomp denies `socket(AF_UNIX, ...)` to every
 plugin without an explicit grant (section 12). On every supported kernel that closes the paths a
@@ -839,7 +839,7 @@ clean up:
 | Added       | An instance added to config starts without restarting `giles` (reload: _Deferred, D28_). |
 | Stop        | `Shutdown` with a deadline, then SIGTERM, then SIGKILL.                                 |
 
-### 7.6 Remote Plugins
+### 7.6 Remote plugins
 
 User-run plugins reached over TCP, with optional TLS and a bearer token or OAuth client credentials.
 
@@ -853,7 +853,7 @@ User-run plugins reached over TCP, with optional TLS and a bearer token or OAuth
 - OAuth authorization code grant: not in v1.
 - Remote plugins manage their own state.
 
-### 7.7 Configuration and Secrets
+### 7.7 Configuration and secrets
 
 - The core sends the instance's `config` table (section 11.2) to the plugin, as JSON, in
   `Configure`. The plugin validates it and returns an error naming the bad key; the core logs it and
@@ -879,7 +879,7 @@ User-run plugins reached over TCP, with optional TLS and a bearer token or OAuth
   doesn't resend it forever), and ignores unknown `CompleteResponse` and `CallServerMessage`
   variants. Plugins ignore unknown fields and fall back to defaults.
 
-### 7.9 Tool Discovery Cache
+### 7.9 Tool discovery cache
 
 Every instance starts at boot, so problems show up then, not at the first tool call. The cache
 exists so a toolset can stop when idle and still have its tools offered to the model.
@@ -942,7 +942,7 @@ Making stdio servers work under the sandbox:
 - The container image (section 14.2) has no Node or Python; use HTTP servers there or extend the
   image.
 
-## 8. gRPC Contracts
+## 8. gRPC contracts
 
 ### 8.1 Conventions
 
@@ -957,7 +957,7 @@ Making stdio servers work under the sandbox:
   instead of `tonic`'s 4 MiB default, which a long `CompleteRequest` would exceed. Media never
   counts against it; it moves as blobs (section 8.3).
 
-### 8.2 Base Service
+### 8.2 Base service
 
 ```proto
 syntax = "proto3";
@@ -1220,7 +1220,7 @@ The route pages (list, add, edit, remove, and reorder the routes of section 6.1)
 admin pages too, also without RPCs: they call the core's route management in-process, and a change
 applies to the next inbound message.
 
-## 9. HTTP and Web
+## 9. HTTP and web
 
 - The core runs one HTTP server, built on `axum` (already a dependency through `tonic`'s router),
   for web chat, the admin pages, and the login flow.
@@ -1240,7 +1240,7 @@ applies to the next inbound message.
 - TLS is terminated by a reverse proxy, not by Giles.
 - Login: section 3.4.
 
-## 10. v1 Channels
+## 10. v1 channels
 
 | Channel  | Packaging                | Receive                   | Send | Conversation id                         |
 | -------- | ------------------------ | ------------------------- | ---- | --------------------------------------- |
@@ -1278,7 +1278,7 @@ token is reported as `NeedsAuth` with the Developer Portal's address (section 8.
 
 ## 11. Storage
 
-### 11.1 Data Root
+### 11.1 Data root
 
 Everything lives under `GILES_HOME`, default `~/.giles`.
 
@@ -1445,7 +1445,7 @@ settle (500 ms), it parses and validates the whole config.
 Markdown files (`SOUL.md`, `USER.md`, job prompt files, skills) are read when a turn assembles its
 prompt, so they need no reload.
 
-### 11.3 Agent and User Files
+### 11.3 Agent and user files
 
 ```text
 agents/<agent>/
@@ -1514,14 +1514,14 @@ the core writes the same snapshot to `backups/`, so a bad upgrade can be undone 
 the old binary. In a rollback-journal mode the snapshot runs on the writer connection, so writes
 wait for it.
 
-### 11.5 Blob Store
+### 11.5 Blob store
 
 Content-addressed files under `data/blobs/`, named by SHA-256. Messages reference blobs by id, so
 repeated attachments are stored once. A periodic sweep removes blobs that nothing references (no
 message, inbox or outbox row, or job) and that are older than 48 hours, so a blob in flight is never
 swept.
 
-### 11.6 Plugin State
+### 11.6 Plugin state
 
 Each launched instance gets `data/plugins/<instance>/`, passed as `GILES_PLUGIN_DATA`. It's the
 plugin's only writable directory; its `TMPDIR` is inside it (section 7.4). It survives restarts and
@@ -1533,7 +1533,7 @@ One `usage` row per provider request: time, provider instance, model, agent, use
 input, output, cache-read and cache-write tokens, and whether it was a fallback. Recorded only; no
 budgets or limits in v1. `giles usage` summarizes it, including the prompt cache hit rate per agent.
 
-## 12. Platforms and Sandboxing
+## 12. Platforms and sandboxing
 
 Linux and macOS in v1. Transport and sandbox sit behind internal traits so Windows can be added
 without changing plugin contracts.
@@ -1543,7 +1543,7 @@ start. A per-instance `unsandboxed = true` overrides this, with a warning at eve
 security settings in `giles.toml` allow instances to opt out (section 11.2). Built-ins run in the
 core and remote plugins run elsewhere, so neither is sandboxed by the core.
 
-### 12.1 Applying It
+### 12.1 Applying it
 
 The core never sets up a sandbox inside its own multi-threaded process. It spawns the plugin through
 a trampoline, `giles sandbox-exec <spec> -- <plugin>`: a fresh single-threaded process that builds
@@ -1636,11 +1636,11 @@ Defaults:
 | Network     | On for `provider` and `channel`; off for stdio toolsets unless granted                 |
 | Unix sockets | None (section 7.4)                                                                    |
 
-## 13. Internal Implementation
+## 13. Internal implementation
 
 Provisional; can be refactored freely.
 
-### 13.1 Repository Layout
+### 13.1 Repository layout
 
 | Path                          | Contents                                       |
 | ----------------------------- | ---------------------------------------------- |
@@ -1666,7 +1666,7 @@ with `toml`, `tracing`, `thiserror` in libraries and `anyhow` in the binary, `cr
 Core also: `rmcp` (MCP client). First-party plugins: `rmcp` (toolset servers), `whatsapp-rust`
 (WhatsApp), `twilight` (Discord). IRC and email libraries are chosen when those plugins are built.
 
-### 13.3 Core Modules
+### 13.3 Core modules
 
 | Module        | Responsibility                                                           |
 | ------------- | ------------------------------------------------------------------------ |
@@ -1689,7 +1689,7 @@ Core also: `rmcp` (MCP client). First-party plugins: `rmcp` (toolset servers), `
 `tracing` throughout. Plugin stderr is captured line by line under a span per plugin instance. Trace
 context is propagated in gRPC metadata. OpenTelemetry export later.
 
-## 14. Build and Packaging
+## 14. Build and packaging
 
 ### 14.1 Build
 
@@ -1706,7 +1706,7 @@ plugins. (Bazel may be added later.)
 - A snapshot test renders the system prompt and tool list for representative agent configs, so any
   change to the cached prompt prefix shows up in review.
 
-### 14.2 Container Image
+### 14.2 Container image
 
 A `Dockerfile` at the repository root builds a basic system: `giles` plus the first-party plugins
 meant for real use (the test-only echo channel plugin is left out).

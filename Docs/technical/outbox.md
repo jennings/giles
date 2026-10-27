@@ -62,7 +62,7 @@ by name) and the channels registered for them now, so a restarted plugin's chann
 3. Otherwise no configured channel can own it (the configuration changed since it was enqueued):
    dropped.
 
-## The Sender
+## The sender
 
 One task, because rows aren't leased. Each pass:
 
@@ -79,7 +79,7 @@ One task, because rows aren't leased. Each pass:
      s .. 1 h), else 1 s doubled per earlier failure up to 60 s. The first failure is logged at
      `info`, later ones at `debug`. A row removed meanwhile is left alone. A plugin that dies or
      drains for a restart mid-send fails it with `UNKNOWN` or `CANCELLED`, which `RemoteChannel`
-     reports as `Unavailable` ([Plugin Host](plugin-host.md)); either way the row is retried until
+     reports as `Unavailable` ([Plugin host](plugin-host.md)); either way the row is retried until
      it expires.
 
    After a send times out, the pass doesn't send to that instance again: its other due rows get a
@@ -110,9 +110,9 @@ message's content.
   nothing enqueues them yet.
 - Everything else expires 24 hours after it was enqueued.
 
-## Restart Notices
+## Restart notices
 
-The "Interrupted by a restart" notices of startup recovery ([Sessions and Turns](sessions.md)) don't
+The "Interrupted by a restart" notices of startup recovery ([Sessions and turns](sessions.md)) don't
 go through the outbox: they're replies into the conversation the turn ran in
 (`SendTarget::Conversation`), not sends to an identity, and recovery already holds them per instance
 until a plugin channel attaches.

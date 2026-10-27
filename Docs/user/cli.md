@@ -1,4 +1,4 @@
-# Command Line
+# Command line
 
 Besides [`giles serve`](running.md), the `giles` command has these commands for managing Giles.
 
@@ -118,7 +118,7 @@ The command renames:
 
 If the table has no `component` key, the command adds `component = "<old>"`, so the instance keeps
 running the same component. You don't need to change `[owner] identities`, because they're named
-after the network, not the instance. [Instance Rename](../technical/instance-rename.md) lists
+after the network, not the instance. [Instance rename](../technical/instance-rename.md) lists
 everything the command touches.
 
 Names use only letters, digits, and `-`. `<new>` must not differ from another instance's name only

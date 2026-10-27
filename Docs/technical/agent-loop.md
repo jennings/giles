@@ -1,10 +1,10 @@
-# Agent Loop
+# Agent loop
 
 `giles_core::agent_loop` runs turns ([Plan](../PLAN.md) §6.3, §6.7): it assembles each session's
 prompt prefix and, per turn, calls the provider, runs the requested tools, and repeats until the
 model stops asking for tools. The session code that hands it turns is in
-[Sessions and Turns](sessions.md); the skills and the memory it loads are in
-[Skills and Memory](skills-and-memory.md).
+[Sessions and turns](sessions.md); the skills and the memory it loads are in
+[Skills and memory](skills-and-memory.md).
 
 | Item                          | What it is                                                         |
 | ----------------------------- | ------------------------------------------------------------------ |
@@ -29,7 +29,7 @@ model stops asking for tools. The session code that hands it turns is in
 | `glob::matches(_any)`         | Tool-name globs (`*`, `?`) for `tools` and `ask`                   |
 | `compaction`                  | Summarizes older history near the context window (§6.8)           |
 
-## The Prompt Prefix
+## The prompt prefix
 
 Anthropic caches the prefix in the order tools, `system`, messages, and a change at one level
 invalidates everything after it (§6.7). So both tools and `system` are built once per session and
@@ -85,7 +85,7 @@ One text block (none at all when every part is empty), with these parts separate
    is omitted too.
 
 What each session sees comes from `memory::prompt_viewer(session)`, one viewer per session, since no
-requester exists when the prompt is built; see [Who Sees What](skills-and-memory.md#who-sees-what)
+requester exists when the prompt is built; see [Who sees what](skills-and-memory.md#who-sees-what)
 for the scopes and for the one known difference: a config job's prompt lists its session user's
 private core memories, which its tools can't read. The usage header is
 `memory::usage_header(scope's core characters, memory_cap)`, e.g. `[67% — 1,474/2,200]`:
@@ -107,7 +107,7 @@ guest's read-only shared memories, a session without a user, a per-scope cap, an
 `memory_recall` mention. A change to the cached prefix therefore changes a file in review. Rerun
 with `GILES_UPDATE_SNAPSHOTS=1` to accept one.
 
-### Caching the Prefix
+### Caching the prefix
 
 `AgentLoop` keeps each session's `SessionPrompt` in memory, keyed by session key (agent, channel
 instance, conversation) with the session id, so only the newest session of a conversation is kept
@@ -235,10 +235,10 @@ Ends other than completion:
   `Sorry, something went wrong: the turn stopped unexpectedly.`, and it returns
   `Failed("the turn panicked: <message>")`.
 
-### Turn Control
+### Turn control
 
 New messages from the requester during a turn follow the agent's `busy_mode` (§6.3). The session
-code queues them in the inbox and wakes `Turn::steering` ([Sessions and Turns](sessions.md)). While
+code queues them in the inbox and wakes `Turn::steering` ([Sessions and turns](sessions.md)). While
 a batch runs the agent loop only looks at them (`Steering::peek`, rows stay `queued`); it takes them
 into the turn (`Steering::take`) only at the tool-batch boundary. So a turn that `/stop` or an error
 ends mid-batch leaves them queued, and they start the next turn.
@@ -260,7 +260,7 @@ ends mid-batch leaves them queued, and they start the next turn.
   and at the boundary every queued requester message joins the turn, in order, after the results
   ([Approvals](approvals.md)). A message already queued before the prompt denies nothing.
 
-### Iteration Caps
+### Iteration caps
 
 An iteration is one request with the session's tools offered. A turn's cap is the agent's
 `max_iterations_jobs` (default 25) for a job run (a `Turn::job`, or any turn in a job session) and
@@ -272,7 +272,7 @@ since the tools are part of it. Its response ends the turn: any calls it asks fo
 `iteration limit` too (logged). So a capped turn makes at most cap + 1 requests and runs tools at
 most cap − 1 times. A response at the cap that asks for no tools just ends the turn, as always.
 
-### Job Runs
+### Job runs
 
 The scheduler (§6.11) starts a job run as a `Turn` with
 `job: Some(JobTurn { prompt, model, approvals })`, no `messages`, detached steering, and no `reply`:
@@ -350,7 +350,7 @@ refuses it and the turn fails with its error (above), and the next turn tries co
 `/stop` during a summary request cancels the turn as usual. A database error fails the turn like any
 other.
 
-## Tool Dispatch
+## Tool dispatch
 
 `ToolDispatcher::dispatch(ToolBatch { calls, tools, context, media, turn, skip, approvals })`
 returns a stream of `(index, ToolOutput { content, is_error })`, one per call, in any order.
@@ -367,7 +367,7 @@ future, its events stream with it, which cancels the call at the toolset (MCP
 call starts; once `skip` has fired it starts nothing, and each waiting call is answered with
 `Skipped to read a new message` right away, without waiting for the running ones.
 
-### Order and Parallelism
+### Order and parallelism
 
 Calls start in model order. Each has a `CallPolicy`:
 
@@ -383,7 +383,7 @@ finishes the next waiting one starts. Any other call is a barrier: it starts onc
 it has finished and runs alone, and the calls after it wait for it. So `[p1, p2, s, p3]` runs `p1`
 and `p2` together, then `s`, then `p3`.
 
-### Checks at Call Time
+### Checks at call time
 
 When a call starts (not when the batch arrives, so a tool dropped meanwhile is caught), it gets the
 error result `tool unavailable` when the session doesn't offer the tool (outside the allowlist, or
@@ -402,7 +402,7 @@ to, and the first `ToolCallEvent::Result` is the output; a `call` error, an `Err
 that ends without a result becomes an error result with the error's text. Progress is logged. A
 `ToolCallEvent::ApprovalRequest` (MCP elicitation) is asked through `TurnApprovals::answer_question`
 and answered on the handle's `answers`; that wait is part of the call. A core tool runs
-`CoreTool::call(CoreCall { id, input, context, turn, media })` (see [Core Tools](#core-tools)), and
+`CoreTool::call(CoreCall { id, input, context, turn, media })` (see [Core tools](#core-tools)), and
 its `ToolOutput` is the output. Its `$media` inputs are checked against the session's media too.
 
 ### Deadlines
@@ -412,7 +412,7 @@ the wait for an `ask` approval before it). A call still running at its deadline 
 (cancelled at the toolset, as above) and gets the error result `timed out after <deadline>`, e.g.
 `timed out after 5m`; the batch goes on.
 
-### Core Tools
+### Core tools
 
 The core tools (§6.5) live in `giles_core::core_tools`, one module per tool, each implementing
 `CoreTool { fn spec() -> ToolSpec; async fn call(CoreCall) -> ToolOutput }`. A tool keeps its

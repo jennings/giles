@@ -1,4 +1,4 @@
-# Email Channel
+# Email channel
 
 `plugins/giles-channel-email` is the email channel plugin (PLAN sections 3.3, 8.5, and 10): a binary
 on the plugin SDK ([Plugin SDK](plugin-sdk.md)) whose `Channel` reads one IMAP mailbox and sends by
@@ -64,7 +64,7 @@ The event stream is a state machine (`channel::Source`) polled by the SDK's pump
 
 Command timeouts are 2 min (IDLE excepted); a timeout is a broken connection.
 
-### Failures and Status
+### Failures and status
 
 A connection failure (connecting, or any command on the connection) drops the connection and
 reconnects after 1 s, doubling to 5 min while failures repeat. The delay resets only on progress: a
@@ -84,7 +84,7 @@ A message the server never hands over (FETCH returns nothing, but `UID SEARCH` s
 retried forever rather than skipped, so no mail is lost; it holds up later mail until the operator
 moves or deletes it. The user guide says how to find it from the error (its UID).
 
-### Delivery and the Cursor
+### Delivery and the cursor
 
 Event id: `UIDVALIDITY:UID`, stable across restarts (PLAN section 8.5). The SDK writes every event
 to its spool before polling the stream again, so the cursor moves to a message's UID when the stream
@@ -104,7 +104,7 @@ In order, before anything else is looked at:
 - our own copy: `From:` is our address and the `Message-ID` starts with `giles.` (every id we make;
   our mail also carries `Auto-Submitted`, so the rule above usually catches it first).
 
-### Sender Verification
+### Sender verification
 
 `auth_results::verify` gets the first (topmost) `Authentication-Results` header's raw, unfolded
 value. The tokenizer drops comments (nested, with `\` escapes), unquotes quoted strings, and splits
@@ -137,7 +137,7 @@ controls its subdomains, so this never trusts a signer that couldn't already pub
 (`d=mail.example.com` for `me@example.com`); mail like that still passes when the receiving server
 reports `dmarc=pass`, which it computes with the real list.
 
-### The Event
+### The event
 
 - `sender`: the `From:` address, domain lowercased (identity `email:<address>`);
   `sender_display_name` from `From:`.

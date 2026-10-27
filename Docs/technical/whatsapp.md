@@ -1,11 +1,11 @@
-# WhatsApp Channel
+# WhatsApp channel
 
 `plugins/giles-channel-whatsapp` (`publish = false`) is the WhatsApp channel plugin (PLAN sections
 3.3, 8.5, and 10): a binary on the plugin SDK ([Plugin SDK](plugin-sdk.md)) whose `Channel` is a
 linked device on the WhatsApp Web protocol, built on `whatsapp-rust`.
 `ChannelInfo { identity_namespace: "whatsapp", output: Blocks, can_initiate: true }`. User-facing
 behavior and settings: [WhatsApp](../user/whatsapp.md). Why this library:
-[WhatsApp Spike](whatsapp-spike.md).
+[WhatsApp spike](whatsapp-spike.md).
 
 **Verified against a fake client only.** The owner chose to build on `whatsapp-rust` without waiting
 for the live device run ([issue #1](https://github.com/jennings/giles/issues/1), still open), so
@@ -15,7 +15,7 @@ conversion functions, and is verified for real only by the
 [live test plan](whatsapp-spike.md#owner-test-plan), which is also how to check this plugin once
 someone links an account.
 
-## The Library, and Why It's a Git Dependency
+## The library, and why it's a Git dependency
 
 `whatsapp-rust` is pinned to a commit of `main`, not to a release:
 
@@ -81,7 +81,7 @@ to SSH, fetching the git source needs `CARGO_NET_GIT_FETCH_WITH_CLI=true` and an
 - **The image.** It ships the plugin binary, so the OCI license label is
   `(MIT OR Apache-2.0) AND AGPL-3.0-only`, and the license texts and `THIRD-PARTY` (the AGPL source
   offer: the repository at the image's commit, and the pinned library revision) are in
-  `/usr/share/doc/giles/` ([Container Image](container-image.md)).
+  `/usr/share/doc/giles/` ([Container image](container-image.md)).
 - **Not legal advice.** This records how the code is licensed and what the project does about it. A
   decision to relicense the plugin or drop the library would change this section, the crate's
   `license`, the image label, and `ci.yml` together.
@@ -104,7 +104,7 @@ to SSH, fetching the git source needs `CARGO_NET_GIT_FETCH_WITH_CLI=true` and an
 | `media`     | `MediaStore`: the SDK's `Blobs`, or an in-memory fake in tests                     |
 | `channel`   | `WhatsApp` (the `Channel`), `configure` (the SDK entry point)                      |
 
-### The Seam
+### The seam
 
 The plugin's logic never sees the library's client. `Connector::connect` starts a client and returns
 a `Connection`: a `Backend` (own addresses, LID-to-phone lookup, phone-number resolution, send text,
@@ -120,7 +120,7 @@ download. Tests implement the seam with `testing::FakeBackend` and `FakeConnecto
 `EventHandler`, and the durability hook, and runs it on a task. When that task ends it sends
 `WaEvent::Stopped`.
 
-## Event Flow and Durability
+## Event flow and durability
 
 Messages reach the plugin only through the library's inbound durability hook
 (`BotBuilder::with_inbound_durability_hook`), not through `Event::Messages`: with the hook
@@ -167,7 +167,7 @@ on client operations for the same sender. The plugin only downloads media (the C
 session) and never replies from inside the hook, so there's no lock to wait on, but a slow download
 does hold back inbound processing. Downloads are bounded by `max_blob`.
 
-### Event Ids
+### Event ids
 
 An event id is `<chat>:<sender>:<message id>`, with the chat and sender JIDs as the library reported
 them (devices stripped). WhatsApp message ids are chosen by the sending device and are unique only
@@ -201,7 +201,7 @@ code differs, so each is. The messages never contain a phone number or message t
 Status events pass through the SDK's spool like any other event, so a core that is away during
 linking sees the queued codes in order when it connects; the newest is what it shows.
 
-### Reconnection, and Linking on Demand
+### Reconnection, and linking on demand
 
 The library reconnects dropped connections by itself, so the session only reports (after the grace
 period, since WhatsApp recycles connections) and gates sends: `Backend` is published to a `watch` on
@@ -234,7 +234,7 @@ session store). `configure` leaves the session's stop token and `JoinHandle` in 
 while still connecting, calls `Backend::shutdown` (itself bounded by `shutdown_wait`), and ends. The
 core's own kill deadline still applies on top.
 
-## Session Store and Lock
+## Session store and lock
 
 The library's SQLite store is `<GILES_PLUGIN_DATA>/whatsapp.db`. `DataDir::open` takes an exclusive
 `flock` on `<data>/lock` (`File::try_lock`) at `configure`, held for the life of the channel, and
@@ -243,7 +243,7 @@ twice, and WhatsApp would disconnect one with a "replaced" error forever. The op
 releases the lock when the process exits, however it exits. A remote plugin's data directory works
 the same way.
 
-## Identity, Echoes, and Authentication
+## Identity, echoes, and authentication
 
 - **Identity.** `SenderIds` collects the phone number and the LID from the sender's address and the
   alternate address the server sent with it (`sender_alt`), then asks the backend for the

@@ -1,4 +1,4 @@
-# Skills and Memory
+# Skills and memory
 
 An agent's knowledge has three parts:
 

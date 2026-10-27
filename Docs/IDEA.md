@@ -11,7 +11,7 @@ This doc lists the features and explains roughly how each one works. The detaile
 `Docs/PLAN.md`; where the two differ, `PLAN.md` wins. Decisions still open are tracked in
 `Docs/DECISIONS.md`.
 
-## Design Principles
+## Design principles
 
 - Small core. The core handles orchestration: identity, routing, sessions, the agent loop,
   scheduling, policy, storage, and supervising plugins. Work that needs isolation, a long-lived
@@ -34,7 +34,7 @@ This doc lists the features and explains roughly how each one works. The detaile
   the web UI; v1 still reads the owner and instances from `giles.toml`, and they move out as their
   web UI lands (`PLAN.md` section 11.2).
 
-## v1 Scope
+## v1 scope
 
 v1 is used by one person, the owner, who talks to agents on several channels.
 
@@ -46,7 +46,7 @@ v1 is used by one person, the owner, who talks to agents on several channels.
 
 The multi-user, group-chat, and fallback designs in `PLAN.md` are kept for later.
 
-## Feature: Channels
+## Feature: channels
 
 Channels are how users talk to an agent. OpenClaw calls these "channels".
 
@@ -78,7 +78,7 @@ Identity and access control:
 - In v1 the owner's identities are listed in config. The multi-user design (users, roles, pairing
   codes, self-linking) is in `PLAN.md` section 3.
 
-## Feature: Providers
+## Feature: providers
 
 Providers are how the system calls an LLM.
 
@@ -89,7 +89,7 @@ Providers are how the system calls an LLM.
   to and from its wire format.
 - Provider plugins are deferred. The `Provider` trait stays, so they can be added later.
 
-## Feature: Agents
+## Feature: agents
 
 An agent is the personality the user talks to. Agents are managed by Giles itself, not through
 plugins, and are meant to be edited in the web UI.
@@ -109,7 +109,7 @@ Each agent has:
 Routing rules decide which agent handles which channel and conversation. Like agents, they're
 managed by Giles and meant to be edited in the web UI.
 
-## Feature: Sessions (v1)
+## Feature: sessions (v1)
 
 - Every conversation is its own session with its own history: each WhatsApp chat, email thread, IRC
   query, and web chat.
@@ -121,7 +121,7 @@ managed by Giles and meant to be edited in the web UI.
 - `/new` starts a fresh session, and `/stop` cancels the running turn.
 - When a session nears the model's context limit, older history is summarized.
 
-## Feature: Scheduling (v1)
+## Feature: scheduling (v1)
 
 There is one scheduler and one kind of job.
 
@@ -131,7 +131,7 @@ There is one scheduler and one kind of job.
 - A job's reply goes to the owner. A reply of exactly `NO_REPLY` sends nothing.
 - Missed runs while the core was down are coalesced into one run at startup.
 
-## Feature: Tools and Skills
+## Feature: tools and skills
 
 Tools come from toolsets. A toolset is an MCP server; one server exposes many tools.
 
@@ -157,7 +157,7 @@ Skills use the Agent Skills format: a directory with a `SKILL.md`. They come fro
 per-agent skill directories and from directories a toolset lists. Each skill's name and description
 go into the prompt, and the model loads the full skill on demand.
 
-## Feature: MCP Support
+## Feature: MCP support
 
 - The core is an MCP client, built on the official Rust SDK (`rmcp`).
 - Transports: stdio and streamable HTTP. The deprecated HTTP+SSE transport is not supported; current
@@ -165,7 +165,7 @@ go into the prompt, and the model loads the full skill on demand.
 - MCP elicitation becomes a mid-call question or approval, asked through the channel.
 - A first-party toolset is an MCP server written with `rmcp`.
 
-## Feature: Plugins
+## Feature: plugins
 
 Plugins come in three kinds with little overlap. One plugin never mixes kinds.
 
@@ -189,7 +189,7 @@ gRPC plugins:
 - Proto packages are versioned, and changes within a major version are additive only.
 - A plugin SDK (`giles-plugin-sdk`) handles the plugin side for plugins written in Rust.
 
-## Feature: Sandboxing
+## Feature: sandboxing
 
 There are two layers:
 
@@ -212,7 +212,7 @@ Linux and macOS in v1. Transport and sandbox sit behind internal traits so Windo
 later without changing plugin contracts. A container image ships the core and the first-party
 plugins.
 
-## Out of Scope for v1
+## Out of scope for v1
 
 - A ClawHub-style registry for plugins and skills. It's wanted eventually, and the design assumes it
   will exist later: it would install into `<root>/plugins/`.

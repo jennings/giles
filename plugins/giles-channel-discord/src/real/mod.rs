@@ -35,7 +35,7 @@ pub use cdn::{CdnPolicy, MAX_REDIRECTS};
 
 /// What the plugin asks Discord for: direct messages. Not `MESSAGE_CONTENT`: Discord delivers the
 /// content of a bot's DMs without it, so no privileged intent has to be enabled in the Developer
-/// Portal (`Docs/technical/discord.md`, "Gateway Intents").
+/// Portal (`Docs/technical/discord.md`, "Gateway intents").
 const INTENTS: Intents = Intents::DIRECT_MESSAGES;
 
 /// The events the client deserializes; `twilight-gateway` skips the rest without parsing them.

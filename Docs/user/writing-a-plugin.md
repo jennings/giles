@@ -1,4 +1,4 @@
-# Writing a Plugin
+# Writing a plugin
 
 This page shows how to write a channel plugin in Rust with the `giles-plugin-sdk` crate.
 

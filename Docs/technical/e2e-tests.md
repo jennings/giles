@@ -1,4 +1,4 @@
-# End-to-End Tests
+# End-to-end tests
 
 `crates/giles/tests/e2e/` runs the whole daemon, scripted from outside. Each test starts the real
 `giles serve` binary on a temporary data root, with the echo channel plugin

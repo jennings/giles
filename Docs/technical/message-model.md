@@ -1,4 +1,4 @@
-# Message Model and Component Traits
+# Message model and component traits
 
 The `giles-types` crate holds the domain types and the three component traits the core uses:
 `Provider`, `Channel`, and `Toolset` (PLAN sections 4.3, 4.4, and 5). Built-in components implement

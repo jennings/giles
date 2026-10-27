@@ -1,4 +1,4 @@
-# Cargo Workspace
+# Cargo workspace
 
 Cargo builds the whole repository. The root `Cargo.toml` is a virtual workspace (`resolver = "3"`)
 whose members are `crates/*` and `plugins/*`. First-party plugins live in
@@ -20,9 +20,9 @@ so far is [the WhatsApp spike](whatsapp-spike.md).
 | `giles-plugin-sdk`   | lib      | yes       | Serves a trait implementation as an out-of-process plugin    |
 | `giles-store`        | lib      | no        | SQLite and file storage under `GILES_HOME`                   |
 | `giles-channel-echo` | bin      | no        | Test-only channel plugin for host and end-to-end tests       |
-| `giles-channel-irc`  | lib, bin | no        | The IRC channel plugin ([IRC Channel](irc.md))               |
-| `giles-channel-whatsapp` | bin  | no        | The WhatsApp channel plugin ([WhatsApp Channel](whatsapp.md)) |
-| `giles-channel-discord` | lib, bin | no     | The Discord channel plugin ([Discord Channel](discord.md))   |
+| `giles-channel-irc`  | lib, bin | no        | The IRC channel plugin ([IRC channel](irc.md))               |
+| `giles-channel-whatsapp` | bin  | no        | The WhatsApp channel plugin ([WhatsApp channel](whatsapp.md)) |
+| `giles-channel-discord` | lib, bin | no     | The Discord channel plugin ([Discord channel](discord.md))   |
 
 Dependencies between them:
 

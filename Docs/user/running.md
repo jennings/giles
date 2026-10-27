@@ -1,4 +1,4 @@
-# Installing and Running
+# Installing and running
 
 This page covers installing Giles, starting it, and what it needs from the machine. Giles runs on
 Linux and macOS.

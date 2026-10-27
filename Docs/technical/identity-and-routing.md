@@ -1,10 +1,10 @@
-# Identity and Routing
+# Identity and routing
 
 Every message a channel receives passes one pure decision before anything is stored: drop it, handle
 it as a core command, or hand it to an agent's session ([Plan](../PLAN.md) §1.1, §3.2, §3.3,
 §6.1–§6.4). Three modules of `giles-core` implement it; the inbox and sessions code calls
 `Router::classify` for every `ChannelEvent::Message`. The user-facing side is in
-[Configuration](../user/configuration.md) and [Chat Commands](../user/commands.md).
+[Configuration](../user/configuration.md) and [Chat commands](../user/commands.md).
 
 | Module     | Contents                                                                    |
 | ---------- | --------------------------------------------------------------------------- |
@@ -13,7 +13,7 @@ it as a core command, or hand it to an agent's session ([Plan](../PLAN.md) §1.1
 | `router`   | `Router`, `ChannelSource`, `Routed`, `Inbound`, `DropReason`                |
 | `routes`   | `Route`, `RouteList`                                                        |
 
-## The Decision
+## The decision
 
 ```rust
 let router = Router::new(&config.owner, RouteList::new(config.routes.clone()), agents);
@@ -56,7 +56,7 @@ operator can add a missing identity) and for unrouted conversations and chats wi
 (with the conversation id), and `debug` for group conversations, which an IRC channel can produce on
 every line.
 
-## The Owner
+## The owner
 
 v1 has one implicit user, the owner (§1.1). `identity::OWNER` is its user id, `"owner"`, and
 `identity::owner()` returns it as a `UserId`. Everything keyed by user uses it: `Routed::user` (the
@@ -64,7 +64,7 @@ turn's requester), session rows, inbox and usage rows, per-user files (`users/ow
 the owner of a user's memories (below). With no roles in v1, routes have no `user` key: every routed
 message is from the owner.
 
-### Identity in Memory
+### Identity in memory
 
 Memory ([Skills and Memory](skills-and-memory.md#memory)) uses identity in three ways, all in
 `giles_core::memory`:
@@ -82,10 +82,10 @@ Memory ([Skills and Memory](skills-and-memory.md#memory)) uses identity in three
   (`MemoryOwner::Group { instance, conversation }`), taken from the session, not from whoever
   speaks: every participant shares it, and none of their own memories is in it. The conversation id
   alone isn't enough, since the same id can exist on two instances; `giles instance rename` rewrites
-  the instance part of these keys ([Instance Rename](instance-rename.md)). v1 drops group messages
+  the instance part of these keys ([Instance rename](instance-rename.md)). v1 drops group messages
   at `classify` (above), so no group session exists yet.
 
-## Identity Namespaces
+## Identity namespaces
 
 A channel reports its namespace in `ChannelInfo::identity_namespace` (§3.2).
 `validate_namespace(component, namespace)` accepts it only if it is the component name itself
@@ -98,7 +98,7 @@ Channel registration (plugin host and the built-in web channel) calls `validate_
 refuses a channel that fails. `classify` repeats the check per event (a few byte comparisons) so the
 decision is complete on its own.
 
-## Matching Identities
+## Matching identities
 
 An identity is `<namespace>:<native id>` (§3.2). `OwnerIdentities::contains(namespace, id)` compares
 that string to each `[owner]` identity without building it: the configured identity must start with
@@ -177,7 +177,7 @@ ordinary conversation id. Because `agents` is the running configuration, an agen
 UI is reachable at once, with no route for it. Only the owner gets past the sender check, and the
 web pages offer only the agents the user may use (v1: the owner may use all of them).
 
-## Core Commands
+## Core commands
 
 `commands::parse(text, is_pending)` recognizes a command only when it is the whole message, after
 trimming whitespace, with words compared ASCII case-insensitively (phones capitalize):
@@ -203,5 +203,5 @@ With nothing pending, `yes` and `no` are ordinary messages, so they can answer t
 questions.
 
 The commands' effects belong to the inbox and sessions code (`/new`), turn control (`/stop`), and
-approvals (replies); [Sessions and Turns](sessions.md) records each command's event id as a dedupe
+approvals (replies); [Sessions and turns](sessions.md) records each command's event id as a dedupe
 key before acting on it, so a redelivered command acts once.

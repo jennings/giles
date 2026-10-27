@@ -1,4 +1,4 @@
-# Chat Commands
+# Chat commands
 
 Giles handles these messages itself, and they never reach the agent.
 

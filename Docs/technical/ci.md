@@ -1,4 +1,4 @@
-# Continuous Integration
+# Continuous integration
 
 GitHub Actions runs two workflows on every push to `main` and on every pull request:
 `.github/workflows/ci.yml` checks the code, and `.github/workflows/docs.yml` checks the
@@ -20,14 +20,14 @@ cargo test --workspace --locked
 ```
 
 `--locked` fails the build if `Cargo.lock` is out of date instead of silently updating it, and
-`-D warnings` turns the workspace lints (see [Cargo Workspace](workspace.md)) into errors.
+`-D warnings` turns the workspace lints (see [Cargo workspace](workspace.md)) into errors.
 
 On Ubuntu the tests run with `GILES_REQUIRE_LANDLOCK=1`: the Linux sandbox tests skip on kernels
 without Landlock (like the Apple `container` kernel used locally), and this makes them fail instead,
 so CI always runs them (see [Plugin Sandbox](sandbox.md#testing-without-landlock)). A step before
 the tests runs `host_probes_run` with `--nocapture`, so the log shows the Landlock ABI the runner's
 kernel offers (`host check: Ok(Linux { landlock_abi: N })`), which decides which ABI-dependent
-branches the sandbox tests exercise. The end-to-end suite ([End-to-End Tests](e2e-tests.md)) runs
+branches the sandbox tests exercise. The end-to-end suite ([End-to-end tests](e2e-tests.md)) runs
 inside `cargo test --workspace` and launches its echo plugin in the sandbox wherever the host has
 one.
 
@@ -48,7 +48,7 @@ contracts, or a new branch), there is nothing to compare against and the step on
 See [gRPC Protocols](protocols.md) for the rules.
 
 **Container image** runs only on pushes to `main`, after Rust and Protobuf pass, and publishes the
-image the `Dockerfile` builds ([Container Image](container-image.md)) to the GitHub Container
+image the `Dockerfile` builds ([Container image](container-image.md)) to the GitHub Container
 Registry as `ghcr.io/jennings/giles` (`ghcr.io/` plus the repository name, lowercased by
 `docker/metadata-action`). It is the only job with `packages: write`. Each push is tagged `latest`
 and `sha-<short commit>`, so a deployment can pin a commit. The job's own concurrency group runs one

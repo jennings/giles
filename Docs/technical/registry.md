@@ -1,4 +1,4 @@
-# Registry and Startup
+# Registry and startup
 
 `giles_core::registry` maps configured instance names to the trait objects that serve them (PLAN
 sections 4.1, 7.2, and 13.3), and holds the prefixed tool index, the per-agent skill index, and
@@ -28,7 +28,7 @@ and `outbox` (built here, its sender started by `start_outbox`; [Outbox](outbox.
 `StartError` (`Store`, `Blobs`, `Registry`, and later `Sessions`, `Outbox`); `giles serve` prints it
 and exits.
 
-## The Running Configuration
+## The running configuration
 
 The registry holds the configuration as a `config::LiveConfig`: the `Config` loaded at startup, plus
 the agents created, edited, and removed since (the web UI's agent pages). `Registry::config()`
@@ -51,7 +51,7 @@ Nothing else changes while the core runs: instances and the owner are fixed unti
 is deferred, D28). Routes are stored and change at runtime
 ([Identity and Routing](identity-and-routing.md#routing)).
 
-## Built-in Components
+## Built-in components
 
 `from_config` constructs every built-in instance. Providers are always built in (provider plugins
 are deferred, PLAN section 4.1); a channel is built in when its runtime is
@@ -66,7 +66,7 @@ built-in, so adding one is one arm:
   without it, an error naming the feature). At most one instance may use it: a second is an error at
   its `component` key. The channel is also kept typed,
   `Registry::web_channel() -> Option<Arc<WebChannel>>`, for its pages and approval prompts (see
-  [Web Channel](web-channel.md)).
+  [Web channel](web-channel.md)).
 
 Every failure is a `ConfigError` on `giles.toml` at `<kind>.<name>.component` (missing component) or
 `<kind>.<name>.config` (rejected config). On that error path only, `giles.toml` is read again to
@@ -77,7 +77,7 @@ show a secret.
 Config loading already rejects a model whose provider instance isn't configured, and `from_config`
 either registers every configured provider or fails, so every agent model resolves afterwards.
 
-## Registering Components Later
+## Registering components later
 
 Components built outside the registry are added with:
 
@@ -101,7 +101,7 @@ registers them all before the summary.
 
 `Registry::new(root, config)` makes an empty registry for tests, which register fakes.
 
-## Tool Index
+## Tool index
 
 `registry.tools()` is the `ToolIndex` (PLAN section 6.5):
 
@@ -136,7 +136,7 @@ tools without a toolset object), with the same rules; `remove_toolset` removes i
 feeds the index through `register_toolset` instead: each instance's `ManagedToolset` reports the
 cached and fresh lists through `tool_changes` ([Toolsets](toolsets.md#lifecycle)).
 
-## Skill Index
+## Skill index
 
 `skill_sources(agent)` lists an agent's skill directories, lowest precedence first: each toolset's
 `skills` directories (by instance name, in listed order, as
@@ -154,7 +154,7 @@ or `RegistryError::UnknownProvider`. `agent_model(&AgentConfig)` is the first of
 fallback, PLAN section 1.1); `compaction_model(&AgentConfig)` is `compaction_model`, else the agent
 model.
 
-## Blob Media
+## Blob media
 
 `giles_core::blobs::BlobMedia` implements `providers::MediaSource` over the blob store. A read opens
 the blob (`NotFound` if it isn't stored), reads at most one byte more than its recorded size (enough

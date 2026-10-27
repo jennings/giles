@@ -1,4 +1,4 @@
-# WhatsApp Spike
+# WhatsApp spike
 
 This spike decides which library the WhatsApp channel plugin is built on: `whatsapp-rust` (PLAN
 section 10) or the `whatsmeow` fallback. The spike is a small CLI on `whatsapp-rust` in
@@ -8,7 +8,7 @@ which links a real account, is the owner's: follow the [test plan](#owner-test-p
 [Results](#results). [Issue #1](https://github.com/jennings/giles/issues/1) (verify the WhatsApp
 plugin and library on a real account) stays open until then.
 
-**The owner chose not to wait.** The WhatsApp channel plugin ([WhatsApp Channel](whatsapp.md)) is
+**The owner chose not to wait.** The WhatsApp channel plugin ([WhatsApp channel](whatsapp.md)) is
 built on `whatsapp-rust` on the assumption that it works, so the live run has not happened and the
 plugin's behavior with a real account is unverified. Issue #1 stays open, and the test plan below is
 the way to verify both the spike and the plugin later.

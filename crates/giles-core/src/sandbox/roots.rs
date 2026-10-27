@@ -4,7 +4,7 @@
 //! `linux/paths.rs`) that follows no link at or below a "stop", a writable root where the
 //! command can create links. This module has what the walks share: how a path splits into
 //! components, the link limit, and [`writable_roots`], which finds the stops themselves. See
-//! "Writable Roots and Links" in `Docs/technical/sandbox.md`.
+//! "Writable roots and links" in `Docs/technical/sandbox.md`.
 
 use std::collections::VecDeque;
 use std::ffi::OsString;

@@ -1,4 +1,4 @@
-# Web Chat
+# Web chat
 
 The built-in web channel lets you talk to your agents in a browser. It runs on
 [the same web server](running.md#the-web-interface) as the rest of Giles.
@@ -16,11 +16,11 @@ identities = ["web:owner"]
 You can give the instance another name, such as `[channel.chat]` with `component = "web"`, but you
 can have only one web channel.
 
-## Logging In
+## Logging in
 
 Every page needs a login. You log in with a one-time link, or through a trusted reverse proxy.
 
-### Login Links
+### Login links
 
 Run this to get a login link:
 
@@ -29,7 +29,7 @@ giles admin login-link --user owner
 ```
 
 Open the link and press **Log in** to log that browser in for 30 days. The link works once, and only
-for 10 minutes. **Log out** on the chat list ends the login. See [Command Line](cli.md).
+for 10 minutes. **Log out** on the chat list ends the login. See [Command line](cli.md).
 
 The link starts with the address Giles listens on. If you reach Giles at another address, such as
 through a reverse proxy, set `public_url`:
@@ -41,7 +41,7 @@ public_url = "https://giles.example.com"
 
 Give only the scheme, host, and optional port. Giles is always served at the root of that address.
 
-### A Trusted Reverse Proxy
+### A trusted reverse proxy
 
 If a reverse proxy already authenticates people, such as Tailscale Serve, oauth2-proxy, or Authelia,
 Giles can take your identity from a header the proxy sets:
@@ -102,7 +102,7 @@ When an agent asks before running a tool, the chat shows the request with three 
 
 The buttons send [the same replies](commands.md) you could type, and typing them works too.
 
-## Admin Pages
+## Admin pages
 
 **Status** on the chat list opens the admin pages. Only the owner can open them.
 
@@ -111,7 +111,7 @@ The buttons send [the same replies](commands.md) you could type, and typing them
 `/admin/plugins` shows each plugin in detail, including its state, restarts, and last error.
 **Restart** restarts a plugin now, even one that failed for good or is waiting to retry.
 
-### Linking a Channel
+### Linking a channel
 
 A channel that needs linking or a login, such as WhatsApp before you've linked it, shows what it
 needs on the status page:

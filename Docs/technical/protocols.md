@@ -1,4 +1,4 @@
-# gRPC Protocols
+# gRPC protocols
 
 The core talks to provider and channel plugins over gRPC, and serves an admin service to the CLI and
 the web admin pages (PLAN section 8). Toolsets speak MCP instead and have no `.proto` contract. The
@@ -26,7 +26,7 @@ client.
 section 8.7 belong to multi-user support and are added when it is built. Beyond PLAN section 8.7's
 sketch, `StatusResponse` also reports the host's sandbox (`SandboxHost`) and every configured
 channel with its last status (`ChannelInstance`), so built-in channels show up too. The core's side
-is described in [Admin Service](admin.md).
+is described in [Admin service](admin.md).
 
 ## Conventions
 
@@ -174,7 +174,7 @@ buf breaking --against '<base>' # e.g. a directory or '.git#ref=<commit>'
 ```
 
 CI runs all three in the Protobuf job, comparing each pull request against its base and each push to
-`main` against the previous tip of `main` (see [Continuous Integration](ci.md)).
+`main` against the previous tip of `main` (see [Continuous integration](ci.md)).
 
 ## Deviations from the PLAN snippets
 

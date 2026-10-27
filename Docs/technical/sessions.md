@@ -1,10 +1,10 @@
-# Sessions and Turns
+# Sessions and turns
 
 `giles_core::sessions` takes every channel event from the stream to a turn ([Plan](../PLAN.md) §4.5,
 §6.2, §6.3, §8.5): classify, store, ack, then act. It owns the per-session turn queue, `/new`,
 `/stop`, `idle_reset`, startup recovery, dedupe-key pruning, and the latest status of each channel.
 The agent loop plugs in as a `TurnRunner`; the decision before anything is stored is
-[Identity and Routing](identity-and-routing.md); the tables are in [Storage](storage.md).
+[Identity and routing](identity-and-routing.md); the tables are in [Storage](storage.md).
 
 | Item                     | What it is                                                              |
 | ------------------------ | ----------------------------------------------------------------------- |
@@ -31,16 +31,16 @@ state and resumed turns start running. It builds the `Router` from `[owner]` and
 an agent no longer configured gets the defaults), runs `Sessions::start` (recovery, then resume,
 then the prune task), and attaches every channel registered so far. The plugin host then registers
 each plugin channel as it comes up and attaches it with
-`Sessions::attach_channel(instance, component, channel)` ([Plugin Host](plugin-host.md)); attaching
+`Sessions::attach_channel(instance, component, channel)` ([Plugin host](plugin-host.md)); attaching
 an instance again (a restarted plugin) stops the earlier pump after its current event.
 
 After the HTTP server has drained at shutdown, `serve` awaits `Sessions::closed()`, which waits for
 every task the manager spawned (pumps, drivers, turns, pruning) to stop.
 
 `serve` passes `AgentLoop::from_runtime(&runtime, board)` as the runner and the same
-`approvals::ApprovalBoard` as `approvals` ([Agent Loop](agent-loop.md), [Approvals](approvals.md)).
+`approvals::ApprovalBoard` as `approvals` ([Agent loop](agent-loop.md), [Approvals](approvals.md)).
 
-## The Inbound Pipeline
+## The inbound pipeline
 
 One pump task per attached channel consumes `Channel::events()` and handles events one at a time:
 
@@ -140,7 +140,7 @@ the DM between turns (§6.11). It does so through a hold:
 - `open_direct(key, user)` opens a DM session the way an inbound message from `user` would,
   `idle_reset` included.
 
-## Startup Recovery
+## Startup recovery
 
 `Sessions::start` runs before any channel is attached:
 
@@ -160,13 +160,13 @@ the DM between turns (§6.11). It does so through a hold:
 (`DEDUPE_RETENTION`) at startup and then hourly (`PRUNE_INTERVAL`). `queued` and `started` rows are
 never pruned.
 
-## Channel Status
+## Channel status
 
 The latest `ChannelEvent::Status` of each instance is kept in memory with the time it arrived, for
 `giles status` and the admin pages: `Sessions::channel_status(instance)` and
 `Sessions::channel_statuses()`. Nothing is stored; a restarted channel reports its state again.
 
-## Time and Tests
+## Time and tests
 
 Every timestamp comes from the `Clock` in `SessionsOptions` (`SystemClock` in the daemon). The tests
 in `sessions/tests.rs` run on paused Tokio time with a clock derived from it, a fake channel that
