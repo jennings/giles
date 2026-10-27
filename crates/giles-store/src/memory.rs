@@ -193,6 +193,21 @@ pub struct MemoryEdit {
     pub core: Option<bool>,
     /// Whether the memory is shared.
     pub shared: Option<bool>,
+    /// The `updated_at` of the memory as the caller loaded it. When set and the stored
+    /// `updated_at` differs, the edit fails with [`Error::StaleMemory`] and changes nothing: the
+    /// compare and the write are one transaction, so a concurrent change can't slip between.
+    pub expected_updated_at: Option<Timestamp>,
+}
+
+/// A group conversation that owns private memories.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryGroup {
+    /// The channel instance.
+    pub instance: String,
+    /// The conversation on it.
+    pub conversation: ConversationId,
+    /// How many private memories the group owns.
+    pub memories: u64,
 }
 
 /// One scope's core memories and their total size.
@@ -326,8 +341,10 @@ impl MemoryStore {
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownMemory`] if the viewer can't see `id`; [`Error::SharedWriteForbidden`] if
-    /// the memory is shared, or the edit shares it, and the viewer can't write shared memories;
+    /// [`Error::UnknownMemory`] if the viewer can't see `id` (checked first);
+    /// [`Error::StaleMemory`] if `edit.expected_updated_at` is set and differs from the stored
+    /// `updated_at`; [`Error::SharedWriteForbidden`] if the memory is shared, or the edit shares
+    /// it, and the viewer can't write shared memories;
     /// [`Error::InvalidRequest`] for an edit that changes nothing, empty content, or an edit that
     /// would leave a memory private with no owner; [`Error::MemoryTooLong`];
     /// [`Error::CoreCapExceeded`].
@@ -437,6 +454,69 @@ impl MemoryStore {
                     ":limit": limit.max(1),
                 };
                 query_all(&mut stmt, params, memory_from_row)
+            })
+            .await
+    }
+
+    /// The memories the viewer sees (shared ones, and its own private ones), core ones
+    /// included: at most `limit` (and at least one), newest first by `updated_at`, then by id.
+    pub async fn list(&self, viewer: &MemoryViewer, limit: u32) -> Result<Vec<Memory>> {
+        let owner = viewer.owner.clone();
+        self.store
+            .read(move |conn| {
+                let (kind, user, instance, conversation) = owner.columns();
+                let mut stmt = conn.prepare_cached(&format!(
+                    "SELECT {COLUMNS}
+                     FROM memories m
+                     WHERE m.shared = 1
+                        OR (:kind <> 'none'
+                            AND m.owner_kind = :kind
+                            AND m.owner_user IS :user
+                            AND m.owner_instance IS :instance
+                            AND m.owner_conversation IS :conversation)
+                     ORDER BY m.updated_at DESC, m.id DESC
+                     LIMIT :limit"
+                ))?;
+                let params = rusqlite::named_params! {
+                    ":kind": kind,
+                    ":user": user,
+                    ":instance": instance,
+                    ":conversation": conversation,
+                    ":limit": limit.max(1),
+                };
+                query_all(&mut stmt, params, memory_from_row)
+            })
+            .await
+    }
+
+    /// The group conversations that own at least one private memory, with how many each owns,
+    /// ordered by instance and then conversation.
+    ///
+    /// Only private memories count: a shared memory a group authored belongs to everyone, so it
+    /// doesn't make its group appear here (and a group with only shared memories isn't listed).
+    /// User-owned and ownerless memories never count. The result isn't filtered by viewer; the
+    /// caller decides who may see the list (the web page restricts it to the agent's owner).
+    pub async fn group_owners(&self) -> Result<Vec<MemoryGroup>> {
+        self.store
+            .read(|conn| {
+                let mut stmt = conn.prepare_cached(
+                    "SELECT owner_instance, owner_conversation, count(*)
+                     FROM memories
+                     WHERE shared = 0 AND owner_kind = 'group'
+                     GROUP BY owner_instance, owner_conversation
+                     ORDER BY owner_instance, owner_conversation",
+                )?;
+                query_all(&mut stmt, params![], |row| {
+                    let instance: String = row.get(0)?;
+                    let conversation: String = row.get(1)?;
+                    let memories: i64 = row.get(2)?;
+                    Ok(MemoryGroup {
+                        instance,
+                        conversation: parse_id(conversation, ConversationId::new)?,
+                        memories: u64::try_from(memories)
+                            .map_err(|_| Error::corrupt("negative memory count"))?,
+                    })
+                })
             })
             .await
     }
@@ -644,6 +724,12 @@ fn edit_memory(
     now: Timestamp,
 ) -> Result<Memory> {
     let memory = visible(conn, viewer, id)?;
+    if edit
+        .expected_updated_at
+        .is_some_and(|expected| to_millis(expected) != to_millis(memory.updated_at))
+    {
+        return Err(Error::StaleMemory(id));
+    }
     if memory.shared && !viewer.can_write_shared {
         return Err(Error::SharedWriteForbidden);
     }

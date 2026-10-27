@@ -306,6 +306,7 @@ async fn add_get_edit_and_forget_round_trip() {
                 content: Some("likes coffee".to_owned()),
                 core: Some(false),
                 shared: None,
+                expected_updated_at: None,
             },
             CAP,
             at(2_000),
@@ -1324,4 +1325,481 @@ async fn renaming_an_instance_needs_two_different_names() {
         visible_to(&store, &group("libera", "#giles"), &[memory.id]).await,
         [memory.id]
     );
+}
+
+fn expecting(content: &str, updated_at: Timestamp) -> MemoryEdit {
+    MemoryEdit {
+        expected_updated_at: Some(updated_at),
+        ..content_edit(content)
+    }
+}
+
+#[tokio::test]
+async fn a_stale_edit_is_refused_and_changes_nothing() {
+    let (_dir, store) = open().await;
+    let alice = guest("alice");
+    let memory = store
+        .add(&alice, new("likes tea"), CAP, at(1_000))
+        .await
+        .unwrap();
+    let changed = store
+        .edit(
+            &alice,
+            memory.id,
+            content_edit("likes coffee"),
+            CAP,
+            at(2_000),
+        )
+        .await
+        .unwrap();
+
+    // Based on the version from before the change.
+    let err = store
+        .edit(
+            &alice,
+            memory.id,
+            MemoryEdit {
+                core: Some(true),
+                ..expecting("likes cocoa", memory.updated_at)
+            },
+            CAP,
+            at(3_000),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::StaleMemory(id) if id == memory.id),
+        "{err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        format!("memory {} changed since it was loaded", memory.id)
+    );
+    // Content, flags, and updated_at are all as the other writer left them.
+    assert_eq!(store.get(&alice, memory.id).await.unwrap(), changed);
+    assert_eq!(changed.updated_at, at(2_000));
+    assert!(!changed.core);
+    assert!(store.recall(&alice, "cocoa", 10).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn an_edit_with_the_current_updated_at_succeeds() {
+    let (_dir, store) = open().await;
+    let alice = guest("alice");
+    let memory = store
+        .add(&alice, new("likes tea"), CAP, at(1_000))
+        .await
+        .unwrap();
+
+    let edited = store
+        .edit(
+            &alice,
+            memory.id,
+            expecting("likes coffee", memory.updated_at),
+            CAP,
+            at(2_000),
+        )
+        .await
+        .unwrap();
+    assert_eq!(edited.content, "likes coffee");
+    assert_eq!(edited.updated_at, at(2_000));
+
+    // The new version's updated_at is the one the next edit must name.
+    store
+        .edit(
+            &alice,
+            memory.id,
+            expecting("likes cocoa", edited.updated_at),
+            CAP,
+            at(3_000),
+        )
+        .await
+        .unwrap();
+    let err = store
+        .edit(
+            &alice,
+            memory.id,
+            expecting("likes juice", edited.updated_at),
+            CAP,
+            at(4_000),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::StaleMemory(_)), "{err:?}");
+    assert_eq!(
+        store.get(&alice, memory.id).await.unwrap().content,
+        "likes cocoa"
+    );
+}
+
+#[tokio::test]
+async fn an_edit_without_an_expected_updated_at_is_never_stale() {
+    let (_dir, store) = open().await;
+    let alice = guest("alice");
+    let memory = add(&store, &alice, new("likes tea")).await;
+    for (content, now) in [("likes coffee", 2_000), ("likes cocoa", 3_000)] {
+        store
+            .edit(&alice, memory.id, content_edit(content), CAP, at(now))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        store.get(&alice, memory.id).await.unwrap().content,
+        "likes cocoa"
+    );
+}
+
+#[tokio::test]
+async fn the_stale_check_comes_after_visibility_and_before_the_rest() {
+    let (_dir, store) = open().await;
+    let alice = guest("alice");
+    let bob = guest("bob");
+    let private = add(&store, &alice, new("alice's")).await;
+    let shared = add(&store, &owner(), new_shared("for everyone")).await;
+    let wrong = at(999);
+
+    // Not visible: unknown, even though the timestamp doesn't match either.
+    let err = store
+        .edit(
+            &bob,
+            private.id,
+            expecting("mine now", wrong),
+            CAP,
+            at(2_000),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::UnknownMemory(id) if id == private.id),
+        "{err:?}"
+    );
+    let err = store
+        .edit(
+            &bob,
+            MemoryId::new(999),
+            expecting("x", wrong),
+            CAP,
+            at(2_000),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::UnknownMemory(_)), "{err:?}");
+
+    // Visible but stale beats the shared-write rule, the empty edit, and the content checks.
+    let err = store
+        .edit(&bob, shared.id, expecting("bob's", wrong), CAP, at(2_000))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::StaleMemory(_)), "{err:?}");
+    let err = store
+        .edit(
+            &alice,
+            private.id,
+            MemoryEdit {
+                expected_updated_at: Some(wrong),
+                ..MemoryEdit::default()
+            },
+            CAP,
+            at(2_000),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::StaleMemory(_)), "{err:?}");
+    let err = store
+        .edit(
+            &alice,
+            private.id,
+            expecting(&"x".repeat(2_000), wrong),
+            CAP,
+            at(2_000),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::StaleMemory(_)), "{err:?}");
+
+    // With a matching timestamp those rules apply again.
+    let err = store
+        .edit(
+            &bob,
+            shared.id,
+            expecting("bob's", shared.updated_at),
+            CAP,
+            at(2_000),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::SharedWriteForbidden), "{err:?}");
+    let err = store
+        .edit(
+            &alice,
+            private.id,
+            MemoryEdit {
+                expected_updated_at: Some(private.updated_at),
+                ..MemoryEdit::default()
+            },
+            CAP,
+            at(2_000),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::InvalidRequest(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn two_writers_loading_the_same_memory_second_one_is_refused() {
+    let (_dir, store) = open().await;
+    let alice = guest("alice");
+    let memory = store
+        .add(&alice, new("lives in Oslo"), CAP, at(1_000))
+        .await
+        .unwrap();
+
+    // Both load the memory, then each saves what it wants based on that version.
+    let loaded_by_a = store.get(&alice, memory.id).await.unwrap();
+    let loaded_by_b = store.get(&alice, memory.id).await.unwrap();
+    assert_eq!(loaded_by_a, loaded_by_b);
+
+    let saved_by_a = store
+        .edit(
+            &alice,
+            memory.id,
+            expecting("lives in Bergen", loaded_by_a.updated_at),
+            CAP,
+            at(2_000),
+        )
+        .await
+        .unwrap();
+    let err = store
+        .edit(
+            &alice,
+            memory.id,
+            expecting("lives in Tromsø", loaded_by_b.updated_at),
+            CAP,
+            at(2_001),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::StaleMemory(_)), "{err:?}");
+    assert_eq!(store.get(&alice, memory.id).await.unwrap(), saved_by_a);
+
+    // After reloading, the second writer's save goes through.
+    let reloaded = store.get(&alice, memory.id).await.unwrap();
+    store
+        .edit(
+            &alice,
+            memory.id,
+            expecting("lives in Tromsø", reloaded.updated_at),
+            CAP,
+            at(3_000),
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn list_orders_newest_first_with_the_id_as_tiebreak() {
+    let (_dir, store) = open().await;
+    let alice = guest("alice");
+    let a = store.add(&alice, new("a"), CAP, at(1)).await.unwrap();
+    let b = store.add(&alice, new("b"), CAP, at(2)).await.unwrap();
+    let c = store.add(&alice, new("c"), CAP, at(2)).await.unwrap();
+    let d = store.add(&alice, new("d"), CAP, at(3)).await.unwrap();
+    assert_eq!(
+        ids(&store.list(&alice, 10).await.unwrap()),
+        [d.id, c.id, b.id, a.id]
+    );
+
+    // An edit makes the memory the newest.
+    store
+        .edit(&alice, a.id, content_edit("a again"), CAP, at(4))
+        .await
+        .unwrap();
+    let listed = store.list(&alice, 10).await.unwrap();
+    assert_eq!(ids(&listed), [a.id, d.id, c.id, b.id]);
+    assert_eq!(listed[0].content, "a again");
+}
+
+#[tokio::test]
+async fn list_honours_the_limit() {
+    let (_dir, store) = open().await;
+    let alice = guest("alice");
+    let mut added = Vec::new();
+    for ms in 1..=5 {
+        added.push(
+            store
+                .add(&alice, new("note"), CAP, at(ms))
+                .await
+                .unwrap()
+                .id,
+        );
+    }
+    assert_eq!(
+        ids(&store.list(&alice, 2).await.unwrap()),
+        [added[4], added[3]]
+    );
+    assert_eq!(store.list(&alice, 50).await.unwrap().len(), 5);
+    // A limit of zero still returns one.
+    assert_eq!(ids(&store.list(&alice, 0).await.unwrap()), [added[4]]);
+}
+
+#[tokio::test]
+async fn list_shows_shared_and_own_memories_including_core_ones() {
+    let (_dir, store) = open().await;
+    let alice = guest("alice");
+    let bob = guest("bob");
+    let team = group("slack", "C1");
+    let elsewhere = group("slack", "C2");
+    let other_instance = group("discord", "C1");
+
+    let shared = store
+        .add(&owner(), new_shared("for everyone"), CAP, at(1))
+        .await
+        .unwrap();
+    let shared_core = store
+        .add(&owner(), new_shared_core("house rules"), CAP, at(2))
+        .await
+        .unwrap();
+    let alice_plain = store
+        .add(&alice, new("alice plain"), CAP, at(3))
+        .await
+        .unwrap();
+    let alice_core = store
+        .add(&alice, new_core("alice core"), CAP, at(4))
+        .await
+        .unwrap();
+    let bob_private = store.add(&bob, new("bob's"), CAP, at(5)).await.unwrap();
+    let owner_private = store
+        .add(&owner(), new("owner's"), CAP, at(6))
+        .await
+        .unwrap();
+    let team_private = store.add(&team, new("team's"), CAP, at(7)).await.unwrap();
+    let elsewhere_private = store
+        .add(&elsewhere, new("elsewhere's"), CAP, at(8))
+        .await
+        .unwrap();
+    let other_private = store
+        .add(&other_instance, new("other instance's"), CAP, at(9))
+        .await
+        .unwrap();
+
+    // Other users' private memories are excluded; shared and core ones are in.
+    assert_eq!(
+        ids(&store.list(&alice, 50).await.unwrap()),
+        [alice_core.id, alice_plain.id, shared_core.id, shared.id]
+    );
+    assert_eq!(
+        ids(&store.list(&bob, 50).await.unwrap()),
+        [bob_private.id, shared_core.id, shared.id]
+    );
+    // The agent's owner sees their own private memories, not other users' or the groups'.
+    assert_eq!(
+        ids(&store.list(&owner(), 50).await.unwrap()),
+        [owner_private.id, shared_core.id, shared.id]
+    );
+    // A group viewer sees only that group conversation's memories and the shared ones.
+    assert_eq!(
+        ids(&store.list(&team, 50).await.unwrap()),
+        [team_private.id, shared_core.id, shared.id]
+    );
+    assert_eq!(
+        ids(&store.list(&elsewhere, 50).await.unwrap()),
+        [elsewhere_private.id, shared_core.id, shared.id]
+    );
+    assert_eq!(
+        ids(&store.list(&other_instance, 50).await.unwrap()),
+        [other_private.id, shared_core.id, shared.id]
+    );
+    // A config job sees the shared memories only.
+    assert_eq!(
+        ids(&store.list(&config_job(), 50).await.unwrap()),
+        [shared_core.id, shared.id]
+    );
+}
+
+#[tokio::test]
+async fn list_of_an_empty_store_is_empty() {
+    let (_dir, store) = open().await;
+    assert!(store.list(&guest("alice"), 10).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn group_owners_lists_each_group_once_with_its_private_count() {
+    let (_dir, store) = open().await;
+    assert!(store.group_owners().await.unwrap().is_empty());
+
+    let team = group("slack", "C2");
+    let team_too = group("slack", "C2");
+    let first = group("slack", "C1");
+    let elsewhere = group("discord", "C9");
+    add(&store, &team, new("one")).await;
+    add(&store, &team_too, new_core("two")).await;
+    add(&store, &team, new("three")).await;
+    add(&store, &first, new("four")).await;
+    add(&store, &elsewhere, new("five")).await;
+
+    let owners = store.group_owners().await.unwrap();
+    let summary: Vec<_> = owners
+        .iter()
+        .map(|g| (g.instance.as_str(), g.conversation.as_str(), g.memories))
+        .collect();
+    // Ordered by instance, then conversation; the same conversation id on another instance is
+    // a different group.
+    assert_eq!(
+        summary,
+        [("discord", "C9", 1), ("slack", "C1", 1), ("slack", "C2", 3)]
+    );
+}
+
+#[tokio::test]
+async fn group_owners_counts_private_group_memories_only() {
+    let (_dir, store) = open().await;
+    let owner_viewer = owner();
+    let team = group("slack", "C1");
+    let quiet = group("slack", "C2");
+
+    // User-owned and ownerless memories never make a group.
+    add(&store, &guest("alice"), new("alice's")).await;
+    add(&store, &owner_viewer, new("owner's")).await;
+    add(&store, &config_job(), new_shared("job's")).await;
+    // A shared memory authored by a user doesn't either.
+    add(&store, &owner_viewer, new_shared("shared by the owner")).await;
+    assert!(store.group_owners().await.unwrap().is_empty());
+
+    // A memory a group authored and then shared stays the group's as author, but it is shared
+    // now, so it doesn't make the group appear.
+    let shared_by_group = add(&store, &quiet, new("quiet's")).await;
+    let group_with_share = MemoryViewer::new(group_owner("slack", "C2"), true);
+    store
+        .edit(
+            &group_with_share,
+            shared_by_group.id,
+            MemoryEdit {
+                shared: Some(true),
+                ..MemoryEdit::default()
+            },
+            CAP,
+            at(2_000),
+        )
+        .await
+        .unwrap();
+    let shared = store.get(&owner_viewer, shared_by_group.id).await.unwrap();
+    assert!(shared.shared);
+    assert_eq!(shared.owner, group_owner("slack", "C2"));
+    assert!(store.group_owners().await.unwrap().is_empty());
+
+    // Private group memories count, and forgetting them removes the group again.
+    let kept = add(&store, &team, new("team's")).await;
+    add(&store, &quiet, new("quiet's again")).await;
+    let owners = store.group_owners().await.unwrap();
+    assert_eq!(
+        owners
+            .iter()
+            .map(|g| (g.instance.as_str(), g.conversation.as_str(), g.memories))
+            .collect::<Vec<_>>(),
+        [("slack", "C1", 1), ("slack", "C2", 1)]
+    );
+    store.forget(&team, kept.id).await.unwrap();
+    let owners = store.group_owners().await.unwrap();
+    assert_eq!(owners.len(), 1);
+    assert_eq!(owners[0].conversation.as_str(), "C2");
 }

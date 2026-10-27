@@ -82,6 +82,10 @@ pub enum Error {
     /// owner's turns and config jobs are.
     #[error("only the owner and config jobs can write shared memories")]
     SharedWriteForbidden,
+    /// The memory was changed after the caller loaded it: an edit that named the `updated_at` it
+    /// was based on found a different one. Nothing changed; the caller reloads and decides again.
+    #[error("memory {0} changed since it was loaded")]
+    StaleMemory(crate::MemoryId),
     /// A memory's content is longer than the limit.
     #[error("memory content is {chars} characters; the limit is {max}")]
     MemoryTooLong {

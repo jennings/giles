@@ -46,8 +46,8 @@ pub use instances::{InstanceRows, RenamedRows};
 pub use jobs::{JobKey, RuntimeJob, RuntimeJobId};
 pub use journal_mode::{JournalMode, ParseJournalModeError};
 pub use memory::{
-    CoreMemories, CoreOverflow, CoreScope, MAX_MEMORY_CHARS, Memory, MemoryEdit, MemoryId,
-    MemoryOwner, MemoryScope, MemoryStore, MemoryViewer, NewMemory,
+    CoreMemories, CoreOverflow, CoreScope, MAX_MEMORY_CHARS, Memory, MemoryEdit, MemoryGroup,
+    MemoryId, MemoryOwner, MemoryScope, MemoryStore, MemoryViewer, NewMemory,
 };
 pub use messages::{
     Appended, Entry, History, Slot, StoredMessage, StoredMessageId, Summary, SummaryId,

@@ -306,8 +306,27 @@ and for config jobs.
   `forget(viewer, id)`, and `get(viewer, id)`. `edit` replaces the whole content and changes
   `core` and `shared` when set, and always sets `updated_at`. An edit that changes nothing is
   `Error::InvalidRequest`. `forget` deletes the row, keeping no history.
+- `MemoryEdit.expected_updated_at` is an optional compare-and-swap for callers that show a memory
+  and save it later (the web page). When set and the stored `updated_at` differs, `edit` fails
+  with `Error::StaleMemory(id)` and changes nothing; the compare and the write are one
+  transaction, so a change by another writer between the caller's load and save is always
+  caught. The check runs right after the visibility check and before every other rule: an
+  invisible or missing id is `UnknownMemory` even with a mismatching timestamp, and a stale edit
+  never reaches the shared-write, empty-edit, or limit checks. Timestamps compare at the stored
+  millisecond precision, so an edit made in the same millisecond as the one it follows isn't
+  detected. The model's tools leave it `None`.
 - `core_memories(viewer)`: the core memories the viewer sees as `CoreMemories`, the shared scope
   first and then the viewer's own, each ordered by id with its total characters.
+- `list(viewer, limit)`: every memory the viewer sees (shared ones and its own private ones, core
+  ones included), newest first by `updated_at`, then id newest first. At least one row is
+  returned, like `recall`. It is the web page's listing; the same visibility as `recall`, so
+  another user's or another group's private memories never appear.
+- `group_owners()`: the group conversations that own private memories, as `MemoryGroup`
+  (`instance`, `conversation`, `memories`), ordered by instance and then conversation. Only
+  private memories count: a shared memory a group authored is everyone's and doesn't list its
+  group, and user-owned or ownerless memories never do. It isn't filtered by viewer; the caller
+  restricts it (the web page shows it to the agent's owner only, who then lists a group's
+  memories with a `MemoryViewer` for that group).
 - `recall(viewer, query, limit)`: FTS5 over the visible memories, core ones included. The query is
   turned into FTS5 syntax as for transcript search: each word with a letter or digit becomes a
   quoted string (so `"`, `*`, `-`, `:`, `(`, `AND`, `NEAR` in the query are matched as text) and the
