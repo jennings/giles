@@ -1,6 +1,6 @@
 //! `giles-channel-whatsapp`: the Giles WhatsApp channel plugin. Links to WhatsApp as a companion
-//! device with `whatsapp-rust`. Run by Giles, not by hand. See `Docs/user/whatsapp.md` and
-//! `Docs/technical/whatsapp.md`.
+//! device with `whatsapp-rust`. Giles launches it (`socket`); an operator can run it as a remote
+//! plugin (`serve`). See `Docs/user/whatsapp.md` and `Docs/technical/whatsapp.md`.
 
 mod backend;
 mod channel;
@@ -44,13 +44,13 @@ async fn main() -> ExitCode {
         )
         .init();
     // The SDK owns the channel, so the session is reached through a slot `configure` fills: after
-    // `serve` returns, the client is disconnected (flushing the session store) before exiting.
+    // `run` returns, the client is disconnected (flushing the session store) before exiting.
     let slot = channel::SessionSlot::default();
     let configure_slot = slot.clone();
     let code = ChannelPlugin::new("whatsapp", env!("CARGO_PKG_VERSION"))
         .output(OutputMode::Blocks)
         .can_initiate(true)
-        .serve(move |ctx| {
+        .run(move |ctx| {
             let slot = configure_slot.clone();
             async move { channel::configure(ctx, &slot).await }
         })
