@@ -600,6 +600,10 @@ async fn run_call(mut task: CallTask, handle: RequestHandle<RoleClient>) {
             }
         }
     };
+    // The call no longer takes questions. Released before the result goes out, so a caller that
+    // starts its next call on seeing the result finds this one gone: with no stream information
+    // (stdio), a question goes to the only call registered.
+    drop(task.slot);
     // Progress already routed when the response came in still goes first.
     while let Ok(params) = task.progress.receiver.try_recv() {
         if let Some(event) = convert::progress_event(params, &mut last) {
