@@ -89,21 +89,18 @@ repository's Actions workflows keep write access to it.
 
 ## Docs jobs
 
-**Build** runs on `ubuntu-latest`. It installs prebuilt binaries of pinned versions of `rumdl` (with
-the `rvben/rumdl` action) and mdBook (the official release archive from GitHub), then runs:
+**Lint** runs on `ubuntu-latest`. It installs a prebuilt binary of a pinned `rumdl` (with the
+`rvben/rumdl` action) and runs `rumdl check .`. `rumdl` reads `.config/rumdl.toml` (100-column
+lines, reflowed) and lints every Markdown file in the repository, not only the book, so the workflow
+is not path-filtered.
 
-```sh
-rumdl check .
-mdbook build Docs
-```
+**Build** runs on `ubuntu-latest`. It installs a prebuilt binary of a pinned mdBook (the official
+release archive from GitHub) and runs `mdbook build Docs`. The tool versions are set once, in the
+workflow's `env` block (`RUMDL_VERSION`, `MDBOOK_VERSION`); update them there. On a push to `main`,
+the job also uploads `Docs/book/` as the Pages artifact (`actions/upload-pages-artifact`); pull
+requests stop after the build.
 
-`rumdl` reads `.config/rumdl.toml` (100-column lines, reflowed) and lints every Markdown file in the
-repository, not only the book, so the workflow is not path-filtered. The tool versions are set once,
-in the workflow's `env` block (`RUMDL_VERSION`, `MDBOOK_VERSION`); update them there. On a push to
-`main`, the job also uploads `Docs/book/` as the Pages artifact (`actions/upload-pages-artifact`);
-pull requests stop after the build.
-
-**Deploy** runs only on pushes to `main`, after Build. It publishes the artifact with
+**Deploy** runs only on pushes to `main`, after Lint and Build. It publishes the artifact with
 `actions/deploy-pages` to the `github-pages` environment; it is the only job with the `pages: write`
 and `id-token: write` permissions (the rest of both workflows get `contents: read`). Deployments
 share the `pages` concurrency group without cancelling, so they run one at a time in push order. The

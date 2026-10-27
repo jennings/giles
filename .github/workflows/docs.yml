@@ -21,8 +21,8 @@ env:
   MDBOOK_VERSION: "0.4.40"
 
 jobs:
-  build:
-    name: Build
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -31,14 +31,20 @@ jobs:
         with:
           version: ${{ env.RUMDL_VERSION }}
           install-only: "true"
+      - name: Lint Markdown
+        run: rumdl check .
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
       # The official prebuilt release binary.
       - name: Install mdBook
         run: |
           curl -fsSL "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
             | tar -xz -C "$RUNNER_TEMP" mdbook
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-      - name: Lint Markdown
-        run: rumdl check .
       - name: Build book
         run: mdbook build Docs
       # Only pushes to main publish; pull requests stop after the build.
@@ -50,7 +56,7 @@ jobs:
 
   deploy:
     name: Deploy
-    needs: build
+    needs: [lint, build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
