@@ -81,34 +81,36 @@ jobs:
             echo "::notice::No buf module at base ${BASE}; skipping buf breaking."
           fi
 
-  # Builds the container image from each push to main, smoke-tests it, and publishes it to the
-  # GitHub Container Registry. Pull requests don't build it.
+  # Builds the container image, smoke-tests it, and publishes it to the GitHub Container Registry.
   image:
     name: Container image
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     needs: [rust, protobuf]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    # One publish at a time, in push order, so `latest` ends at the newest commit.
+    # One publish at a time, in push order, so `latest` ends at the newest commit. Each pull request
+    # has its own group.
     concurrency:
-      group: ${{ github.workflow }}-image
+      group: ${{ github.workflow }}-image-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
       cancel-in-progress: false
     env:
       TEST_TAG: giles:test
     steps:
       - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v4
-      # ghcr.io/<owner>/<repo>, lowercased, tagged `latest` and `sha-<short commit>`. GitHub reports
-      # the repository's license as Apache-2.0 alone, which would replace the Dockerfile's label.
+      # ghcr.io/<owner>/<repo>, lowercased, tagged `latest` for a push to main and `pr-<number>` for a
+      # pull request. GitHub reports the repository's license as Apache-2.0 alone, which would
+      # replace the Dockerfile's label.
       - name: Image tags and labels
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
+            type=ref,event=pr,enable=${{ github.event_name == 'pull_request' }}
           labels: |
             org.opencontainers.image.licenses=(MIT OR Apache-2.0) AND AGPL-3.0-only
       # amd64 only: an arm64 Rust release build under QEMU emulation is too slow.

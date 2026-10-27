@@ -47,13 +47,16 @@ full history so the base is available. If the base has no `buf.yaml` (the push t
 contracts, or a new branch), there is nothing to compare against and the step only logs a notice.
 See [gRPC Protocols](protocols.md) for the rules.
 
-**Container image** runs only on pushes to `main`, after Rust and Protobuf pass, and publishes the
-image the `Dockerfile` builds ([Container image](container-image.md)) to the GitHub Container
-Registry as `ghcr.io/jennings/giles` (`ghcr.io/` plus the repository name, lowercased by
-`docker/metadata-action`). It is the only job with `packages: write`. Each push is tagged `latest`
-and `sha-<short commit>`, so a deployment can pin a commit. The job's own concurrency group runs one
-publish at a time, in push order, so `latest` ends at the newest commit; a push that arrives while
-another is waiting replaces it, and the skipped commit gets no `sha-` tag.
+**Container image** runs after Rust and Protobuf pass, on pushes to `main` and on pull requests from
+the same repository. It publishes the image the `Dockerfile` builds
+([Container image](container-image.md)) to the GitHub Container Registry as `ghcr.io/jennings/giles`
+(`ghcr.io/` plus the repository name, lowercased by `docker/metadata-action`). It is the only job
+with `packages: write`. Each push to `main` is tagged `latest`. Each pull request is tagged
+`pr-<number>` (`pr-37` for pull request 37), and a new push to the pull request moves the tag. Pull
+requests from forks skip the job, because their `GITHUB_TOKEN` can't write packages. The job's own
+concurrency group runs one publish at a time for `main`, in push order, so `latest` ends at the
+newest commit, and one at a time per pull request. A push that arrives while another is waiting
+replaces it.
 
 The job sets up Buildx (`docker/setup-buildx-action`), builds the image for `linux/amd64` with
 `docker/build-push-action`, loads it into the runner's Docker as `giles:test`, and smoke-tests it

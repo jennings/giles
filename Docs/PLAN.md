@@ -1732,10 +1732,11 @@ meant for real use (the test-only echo channel plugin is left out).
   `spikes/`, and the docs stay out.
 
 CI publishes the image to `ghcr.io/jennings/giles` from every push to the main branch, tagged
-`latest` and `sha-<short commit>`, for `linux/amd64` only (an arm64 build under QEMU emulation is
-too slow; a native arm64 runner can add it later). Before pushing, it smoke-tests the image: the
-binaries run, and `giles serve` starts on a fresh `/data` volume with the HTTP port reachable and
-the sandbox startup check passing (section 12.1). Pull requests don't build the image.
+`latest`, and from every pull request in the repository (not from forks), tagged `pr-<number>`. It
+builds for `linux/amd64` only (an arm64 build under QEMU emulation is too slow; a native arm64
+runner can add it later). Before pushing, it smoke-tests the image: the binaries run, and
+`giles serve` starts on a fresh `/data` volume with the HTTP port reachable and the sandbox startup
+check passing (section 12.1).
 
 The plugin sandbox works inside the container: Docker's default seccomp profile allows the
 `landlock_*` and `seccomp` syscalls (checked in `moby/profiles` `seccomp/default.json`). The host
