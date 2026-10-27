@@ -252,6 +252,16 @@ impl DataRoot {
         Ok(self.agents_dir().join(checked_name(agent)?))
     }
 
+    /// `agents/<agent>/memory.db`: the agent's memory database (`giles_store::MemoryStore`). It
+    /// lives in the agent's directory, so moving the directory moves the memory with it.
+    ///
+    /// # Errors
+    ///
+    /// [`PathsError::InvalidName`] if `agent` is not a valid name ([`is_valid_name`]).
+    pub fn agent_memory_db(&self, agent: &str) -> Result<PathBuf, PathsError> {
+        Ok(self.agent_dir(agent)?.join("memory.db"))
+    }
+
     /// `users/`: one directory per user (section 11.3).
     pub fn users_dir(&self) -> PathBuf {
         self.root.join("users")

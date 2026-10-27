@@ -92,6 +92,7 @@ impl Env {
         Arc::new(AgentManager::new(AgentManagerOptions {
             registry: self.registry.clone(),
             store: self.store.clone(),
+            memory_dbs: self.memory_dbs.clone(),
             routes: self.shared_routes().await,
             jobs: self.jobs.clone(),
             activity: self.activity.clone(),

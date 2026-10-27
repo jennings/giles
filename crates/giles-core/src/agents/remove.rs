@@ -21,14 +21,19 @@
 //!    (a new incarnation, and its config job tasks start afresh) and the removal refused. A
 //!    scheduled job whose time came in that instant finds no agent and stops its task for good;
 //!    that one job doesn't run again until the next start.
-//! 3. **Moves the agent's directory aside**: `agents/<agent>/` is renamed to
+//! 3. **Closes the agent's memory database** ([`MemoryDbs::close`](crate::memory_dbs::MemoryDbs::close)),
+//!    which checkpoints its WAL and removes the `-wal` and `-shm` files, so `memory.db` is one
+//!    complete file when the directory moves. Nothing can reopen it in between: no turn or tool
+//!    call can start for an agent that is out of the configuration.
+//! 4. **Moves the agent's directory aside**: `agents/<agent>/` is renamed to
 //!    `trash/agents/<agent>-<UTC time>/` under the data root (`YYYYMMDDTHHMMSSZ`, with `-1`, `-2`
-//!    on a collision), so its `agent.toml`, `SOUL.md`, memory, job prompt files, and skills can be
-//!    put back by hand (move the directory back to `agents/<agent>/`; a restart loads it). A
-//!    rename within the data root is atomic and keeps everything; nothing is deleted. If the
-//!    rename fails the agent is put back as in step 2 and nothing else changed. A failing
-//!    directory fsync after the rename is logged, not an error: the move happened.
-//! 4. **Deletes the agent's runtime jobs** (rows of `jobs`, with the last-run times of every job
+//!    on a collision), so its `agent.toml`, `SOUL.md`, `memory.db`, job prompt files, and skills
+//!    can be put back by hand (move the directory back to `agents/<agent>/`; a restart loads it,
+//!    memory included). A rename within the data root is atomic and keeps everything; nothing is
+//!    deleted. If the rename fails the agent is put back as in step 2 and nothing else changed
+//!    (the memory database is opened again by its next use). A failing directory fsync after the
+//!    rename is logged, not an error: the move happened.
+//! 5. **Deletes the agent's runtime jobs** (rows of `jobs`, with the last-run times of every job
 //!    of the agent) and tells the scheduler, so the jobs it made with the `schedule` tool stop
 //!    and can't run again if the id is used again. If the database fails here the agent is
 //!    already gone; the error is returned inside [`Removed`] and logged. The jobs then can't run
@@ -42,8 +47,9 @@
 //! would fail with "agent is not configured". Creating an agent with the same id again
 //! reattaches them (its old chats continue with the new agent, under the new agent's prompt), and
 //! the id is free to create at once. Outbox rows expire on their own. Blobs the history still
-//! references stay; the sweep handles the rest. The agent's per-user memory under
-//! `agents/<agent>/users/` moves with the directory; `users/<user>/` isn't the agent's.
+//! references stay; the sweep handles the rest. The agent's memory database,
+//! `agents/<agent>/memory.db`, moves with the directory, and so does its per-user memory under
+//! `agents/<agent>/users/`; `users/<user>/` isn't the agent's.
 //! `trash/` isn't read by Giles and isn't in backups.
 
 use std::fs::{self, DirBuilder, File};
@@ -253,6 +259,11 @@ impl AgentManager {
             put_back(taken_out);
             return Err(RemoveError::Busy);
         }
+        // Close the memory database before its directory moves: the last handle checkpoints the
+        // WAL and deletes `-wal` and `-shm`, so `memory.db` moves as one complete file. Nothing
+        // can reopen it meanwhile (no turn or tool call can start for an agent that is out of the
+        // configuration); if the move fails and the agent is put back, the next use reopens it.
+        self.memory_dbs.close(&agent.id).await;
         let from = agent.dir.clone();
         let trash = self.registry.root().trash_dir().join("agents");
         let name = agent.id.to_string();

@@ -51,6 +51,8 @@ const WAIT: Duration = Duration::from_secs(10);
 struct Env {
     _dir: TempDir,
     store: Store,
+    /// The agents' memory databases, the ones the agent manager closes on removal.
+    memory_dbs: crate::memory_dbs::MemoryDbs,
     blobs: BlobStore,
     channel: Arc<WebChannel>,
     /// The registry of the configuration [`load_config`] wrote; the app reads its running
@@ -160,6 +162,10 @@ async fn env_with(config: WebConfig, identities: &[&str]) -> Env {
     Env {
         _dir: dir,
         store,
+        memory_dbs: crate::memory_dbs::MemoryDbs::new(
+            registry.root().clone(),
+            giles_store::JournalMode::Wal,
+        ),
         blobs,
         channel,
         registry,
@@ -1971,6 +1977,7 @@ async fn the_agent_loop_streams_a_reply_live_to_the_page() {
         .unwrap();
     let env = Env {
         store: runtime.store.clone(),
+        memory_dbs: runtime.memory_dbs.clone(),
         blobs: runtime.blobs.clone(),
         channel: runtime.registry.web_channel().unwrap(),
         registry: runtime.registry.clone(),

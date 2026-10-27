@@ -197,6 +197,82 @@ async fn the_confirmation_page_says_exactly_what_will_happen() {
 }
 
 #[tokio::test]
+async fn the_memory_database_is_closed_moves_to_the_trash_and_comes_back_when_restored() {
+    use giles_store::{MemoryOwner, MemoryStore, MemoryViewer, NewMemory, OpenOptions};
+
+    let env = env().await;
+    let manager = env.manager().await;
+    let live = env.root().agents_dir().join("jeeves");
+    let user = MemoryViewer::new(MemoryOwner::User(UserId::new("owner").unwrap()), true);
+    let group = MemoryViewer::new(
+        MemoryOwner::Group {
+            instance: INSTANCE.into(),
+            conversation: giles_types::ConversationId::new("room").unwrap(),
+        },
+        false,
+    );
+    let (core, grouped) = {
+        let store = env.memory_dbs.get(&jeeves()).await.unwrap();
+        let new = |content: &str| NewMemory {
+            content: content.into(),
+            core: true,
+            shared: false,
+            source_session: None,
+        };
+        let at = Timestamp::from_millisecond(1_000).unwrap();
+        let core = store.add(&user, new("Likes tea."), 2200, at).await.unwrap();
+        let grouped = store
+            .add(&group, new("The room likes biscuits."), 2200, at)
+            .await
+            .unwrap();
+        (core, grouped)
+        // The handle is dropped here: only the manager's registry keeps the database open.
+    };
+    // Open and live: the WAL is still beside it.
+    assert!(live.join("memory.db-wal").exists());
+
+    let (status, html) = env.remove_post(&manager, "jeeves").await;
+    assert_eq!(status, StatusCode::OK, "{html}");
+
+    // The database moved with the agent as one complete file: closed, so checkpointed.
+    assert!(!live.exists());
+    assert!(!env.root().agent_memory_db("jeeves").unwrap().exists());
+    let trashed = env.trashed();
+    assert_eq!(trashed.len(), 1, "{trashed:?}");
+    let moved = env.trash_agents().join(&trashed[0]);
+    assert!(moved.join("memory.db").is_file());
+    assert!(!moved.join("memory.db-wal").exists());
+    assert!(!moved.join("memory.db-shm").exists());
+
+    // Restoring is moving the directory back; the memories are all there.
+    std::fs::rename(&moved, &live).unwrap();
+    let restored = MemoryStore::open(live.join("memory.db"), OpenOptions::new())
+        .await
+        .unwrap();
+    let memories = restored.core_memories(&user).await.unwrap();
+    assert_eq!(memories.own.memories, [core]);
+    let memories = restored.core_memories(&group).await.unwrap();
+    assert_eq!(memories.own.memories, [grouped]);
+}
+
+#[tokio::test]
+async fn an_agent_without_a_memory_database_is_removed_without_making_one() {
+    let env = env().await;
+    let manager = env.manager().await;
+    let (status, html) = env.remove_post(&manager, "bunter").await;
+    assert_eq!(status, StatusCode::OK, "{html}");
+    let trashed = env.trashed();
+    assert_eq!(trashed.len(), 1, "{trashed:?}");
+    assert!(
+        !env.trash_agents()
+            .join(&trashed[0])
+            .join("memory.db")
+            .exists()
+    );
+    assert!(!env.root().agents_dir().join("bunter").exists());
+}
+
+#[tokio::test]
 async fn removing_moves_the_files_aside_and_takes_the_agent_out_of_service() {
     let env = env().await;
     let manager = env.manager().await;
@@ -657,6 +733,7 @@ impl Env {
         AgentManager::new(crate::agents::AgentManagerOptions {
             registry: self.registry.clone(),
             store: self.store.clone(),
+            memory_dbs: self.memory_dbs.clone(),
             routes: self.shared_routes().await,
             jobs: self.jobs.clone(),
             activity,

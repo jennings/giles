@@ -13,6 +13,7 @@ use giles_store::Store;
 use super::create::remove_stale_staging;
 use super::remove::AgentActivity;
 use crate::config::LiveConfig;
+use crate::memory_dbs::MemoryDbs;
 use crate::registry::Registry;
 use crate::routes::Routes;
 use crate::scheduler::JobChanges;
@@ -27,6 +28,8 @@ pub struct AgentManagerOptions {
     pub registry: Arc<Registry>,
     /// The database: the runtime jobs of a removed agent.
     pub store: Store,
+    /// The agents' memory databases: a removed agent's is closed before its directory moves.
+    pub memory_dbs: MemoryDbs,
     /// The routes, which keep an agent from being removed while they name it.
     pub routes: Arc<Routes>,
     /// Tells the scheduler that runtime jobs were deleted.
@@ -40,6 +43,7 @@ pub struct AgentManagerOptions {
 pub struct AgentManager {
     pub(super) registry: Arc<Registry>,
     pub(super) store: Store,
+    pub(super) memory_dbs: MemoryDbs,
     pub(super) routes: Arc<Routes>,
     pub(super) jobs: JobChanges,
     pub(super) activity: Arc<dyn AgentActivity>,
@@ -57,11 +61,17 @@ impl AgentManager {
         Self {
             registry: options.registry,
             store: options.store,
+            memory_dbs: options.memory_dbs,
             routes: options.routes,
             jobs: options.jobs,
             activity: options.activity,
             lock: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// The agents' memory databases, shared with whatever else opens them.
+    pub fn memory_dbs(&self) -> &MemoryDbs {
+        &self.memory_dbs
     }
 
     /// The running configuration the agents are in.

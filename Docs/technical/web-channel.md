@@ -526,7 +526,8 @@ form has no id field.
 `AgentManager::removal_preview(id)` and `AgentManager::remove(id)` (`agents/remove.rs`), behind
 `GET` and `POST /admin/agents/<agent>/remove` (`remove_page`, `remove` in `agents.rs`; templates
 `admin_agent_remove.html` and `admin_agent_removed.html`). The manager is built from
-`AgentManagerOptions`: the registry, the store, the `Routes`, the scheduler's `JobChanges`, and an
+`AgentManagerOptions`: the registry, the store, the `MemoryDbs` (the registry of open per-agent
+`memory.db` handles, `memory_dbs.rs`, built once in `Runtime::start` and shared), the `Routes`, the scheduler's `JobChanges`, and an
 `AgentActivity` (the daemon's `DaemonActivity`: the session manager's `Sessions::agent_busy` or the
 scheduler's `Scheduler::agent_busy`). The semantics are in the module docs; in short, under the
 manager's lock:
@@ -550,13 +551,23 @@ manager's lock:
    whose time came between the take-out and its count finds no agent and its task ends for good
    (a runtime job's too, until a restart); config job tasks of a put-back agent are started again by
    the scheduler's reconcile.
-4. `move_aside`: creates `trash/agents/` (mode 0700; `DataRoot::trash_dir`), picks
+4. `MemoryDbs::close(agent)`: drops the registry's handle to `agents/<agent>/memory.db`, so the
+   last handle to go closes the database and, in WAL mode, the writer checkpoints and deletes
+   `-wal` and `-shm`; `memory.db` then moves as one complete file. Nothing can reopen it before
+   the move (opening is lazy, by `MemoryDbs::get` per use, and no turn can start for an agent
+   that is out of the configuration). A caller that kept a `MemoryStore` clone would keep the
+   file open: handles are fetched per use. A database that was never opened stays absent
+   (`close` does nothing for it and creates no file). If the move below fails nothing needs
+   reopening: the next `get` does it.
+5. `move_aside`: creates `trash/agents/` (mode 0700; `DataRoot::trash_dir`), picks
    `<agent>-<YYYYMMDDTHHMMSSZ>` (`-1`, `-2` while the name exists), renames `agents/<agent>/` to it
    (one atomic rename inside the data root; `EXDEV` for a symlinked `agents/` on another file
    system is an `Io` error), and fsyncs both parents (a failure there is logged, since the move
-   happened). If the move fails the agent is put back and the answer is a 500 page (logged) saying
-   nothing changed. Then the route guard is dropped.
-5. `Store::agent_jobs_delete` deletes the agent's runtime jobs and every `job_runs` row of the
+   happened). `memory.db` is in the directory, so it moves with the agent: restoring
+   `trash/agents/<id>-<time>/` by moving it back to `agents/<id>/` brings the memories back. If the
+   move fails the agent is put back and the answer is a 500 page (logged) saying nothing changed.
+   Then the route guard is dropped.
+6. `Store::agent_jobs_delete` deletes the agent's runtime jobs and every `job_runs` row of the
    agent, in one transaction; `JobChanges::notify` makes the scheduler stop the runtime jobs'
    tasks. The scheduler stops the agent's config job tasks by itself, because it follows
    `LiveConfig` ([Scheduler](scheduler.md#timing)). A database failure here is reported inside

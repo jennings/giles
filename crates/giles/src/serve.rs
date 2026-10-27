@@ -156,6 +156,7 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
                 giles_core::agents::AgentManagerOptions {
                     registry: runtime.registry.clone(),
                     store: runtime.store.clone(),
+                    memory_dbs: runtime.memory_dbs.clone(),
                     routes: runtime.routes.clone(),
                     jobs: runtime.jobs.clone(),
                     activity: Arc::new(giles_core::agents::DaemonActivity {

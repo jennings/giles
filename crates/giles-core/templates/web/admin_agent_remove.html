@@ -21,7 +21,7 @@
 {%- endif %}
 <p>Removing the agent <code>{{ id }}</code> does this:</p>
 <ul>
-<li>Moves its directory <code>agents/{{ id }}/</code> (<code>agent.toml</code>, <code>SOUL.md</code>, its memory, its jobs' prompt files, its skills) to <code>{{ trash }}/{{ id }}-&lt;date and time, UTC&gt;/</code> in Giles' data directory. Nothing is deleted. To bring the agent back, move that directory back to <code>agents/{{ id }}/</code> and restart Giles.</li>
+<li>Moves its directory <code>agents/{{ id }}/</code> (<code>agent.toml</code>, <code>SOUL.md</code>, its memory database <code>memory.db</code>, its jobs' prompt files, its skills) to <code>{{ trash }}/{{ id }}-&lt;date and time, UTC&gt;/</code> in Giles' data directory. Nothing is deleted. To bring the agent back, move that directory back to <code>agents/{{ id }}/</code> and restart Giles; its memories come back with it.</li>
 <li>Takes the agent out of the running Giles at once: it no longer shows in the lists or the chat chooser, a chat can't be started with it, and its existing chats can't be continued.</li>
 <li>{% if config_jobs == 0 %}It has no jobs in <code>agent.toml</code>.{% else %}Stops the {{ config_jobs }} job{% if config_jobs != 1 %}s{% endif %} in its <code>agent.toml</code>; they stay in the moved file.{% endif %}</li>
 <li>{% if runtime_jobs == 0 %}It has no jobs it scheduled itself.{% else %}Deletes the {{ runtime_jobs }} job{% if runtime_jobs != 1 %}s{% endif %} the agent scheduled itself (with the <code>schedule</code> tool). That can't be undone.{% endif %}</li>

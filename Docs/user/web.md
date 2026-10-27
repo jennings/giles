@@ -176,11 +176,14 @@ as they were. Otherwise it saves, and the agent changed without a restart:
 does, with a **Remove agent** button. Nothing happens until you press it.
 
 - **The files are moved, not deleted.** `agents/<id>/` (`agent.toml`, `SOUL.md`, `MEMORY.md`, the
-  memory of each user and group, job prompt files, skills) is renamed to
-  `trash/agents/<id>-<date and time in UTC>/` in the data directory, for example
+  memory of each user and group, the memory database `memory.db`, job prompt files, skills) is
+  renamed to `trash/agents/<id>-<date and time in UTC>/` in the data directory, for example
   `trash/agents/jeeves-20261024T120000Z/`. To bring the agent back, move that directory to
-  `agents/<id>/` and restart Giles. Giles never reads, empties, or backs up `trash/`
-  ([Backups](backups.md)); delete what you don't want, whenever you like.
+  `agents/<id>/` and restart Giles; its memories come back with it. Giles never reads, empties,
+  or backs up `trash/` ([Backups](backups.md)); delete what you don't want, whenever you like.
+- **Its memory database goes with it.** Giles closes the agent's `memory.db` first, so the
+  trashed directory holds one complete `memory.db` file with nothing left in `memory.db-wal` or
+  `memory.db-shm`.
 - **The agent is out of Giles at once**, without a restart: it disappears from the agent list and
   the **Chat with** chooser, a chat can't be started with it, and its existing chats can't be
   opened or continued.

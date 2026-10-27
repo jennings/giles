@@ -16,6 +16,7 @@ pub mod identity;
 pub mod mcp;
 pub mod media;
 pub mod memory;
+pub mod memory_dbs;
 pub mod net;
 pub mod outbox;
 pub mod paths;

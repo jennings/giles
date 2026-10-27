@@ -10,6 +10,7 @@ use crate::backup;
 use crate::blobs::{BlobMedia, BlobSweep, SweepSchedule};
 use crate::config::Config;
 use crate::core_tools;
+use crate::memory_dbs::MemoryDbs;
 use crate::outbox::Outbox;
 use crate::paths::DataRoot;
 use crate::registry::{Registry, RegistryError};
@@ -92,6 +93,9 @@ pub struct Runtime {
     pub root: DataRoot,
     /// The database, `data/giles.db`.
     pub store: Store,
+    /// The agents' memory databases, `data/agents/<agent>/memory.db`, opened on first use in the
+    /// journal mode of `giles.db`.
+    pub memory_dbs: MemoryDbs,
     /// The blob store, `data/blobs`.
     pub blobs: BlobStore,
     /// Configured instances and their objects, the tool index, the skill index, and the running
@@ -143,6 +147,7 @@ impl Runtime {
         let routes = Arc::new(Routes::open(store.clone(), registry.live_config().clone()).await?);
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let runtime = Self {
+            memory_dbs: MemoryDbs::new(root.clone(), mode),
             root,
             outbox: Outbox::new(store.clone(), registry.clone(), clock),
             store,
