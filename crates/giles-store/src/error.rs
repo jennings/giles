@@ -74,6 +74,28 @@ pub enum Error {
     /// A blocking task panicked or was cancelled by the runtime shutting down.
     #[error("blocking task failed: {0}")]
     Task(#[from] tokio::task::JoinError),
+    /// The memory doesn't exist or isn't visible to the session. The two cases are
+    /// indistinguishable on purpose, so ids of other scopes' memories leak nothing.
+    #[error("unknown memory {0}")]
+    UnknownMemory(crate::MemoryId),
+    /// The session isn't allowed to create, mark, change, or delete a shared memory: only the
+    /// owner's turns and config jobs are.
+    #[error("only the owner and config jobs can write shared memories")]
+    SharedWriteForbidden,
+    /// A memory's content is longer than the limit.
+    #[error("memory content is {chars} characters; the limit is {max}")]
+    MemoryTooLong {
+        /// The content's length in characters.
+        chars: usize,
+        /// The limit in characters.
+        max: usize,
+    },
+    /// The write would take a scope's core memories over the cap. Nothing changed.
+    #[error(
+        "core memories would exceed the {}-character cap by {} characters",
+        .0.cap, .0.overflow
+    )]
+    CoreCapExceeded(Box<crate::CoreOverflow>),
 }
 
 /// `Result` with the store's [`Error`].

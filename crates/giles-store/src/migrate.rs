@@ -39,6 +39,16 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
 /// The schema version this binary writes.
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
+/// Every migration of the per-agent memory database (`memory.db`), oldest first. It has its own
+/// `user_version`, independent of [`MIGRATIONS`].
+pub(crate) const MEMORY_MIGRATIONS: &[Migration] = &[Migration {
+    name: "memory_0001_initial",
+    sql: include_str!("memory_migrations/0001_initial.sql"),
+}];
+
+/// The schema version of the memory database this binary writes.
+pub const MEMORY_SCHEMA_VERSION: i64 = MEMORY_MIGRATIONS.len() as i64;
+
 /// The hook [`crate::OpenOptions::before_migrate`] installs.
 pub(crate) type BeforeMigrate =
     Box<dyn FnOnce(&MigrationPlan<'_>) -> Result<(), BoxError> + Send + 'static>;

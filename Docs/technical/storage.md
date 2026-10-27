@@ -6,6 +6,9 @@ blob store under `data/blobs/` (PLAN 11.5). The core opens the database once wit
 `Store` handle (`Store::open(path)` is the same with default options, WAL); no other crate writes
 SQL.
 
+Each agent's memories are in a separate database, `data/agents/<agent>/memory.db`, opened with
+`MemoryStore` ([Memory database](#memory-database)).
+
 ## Connections and Concurrency
 
 SQLite comes from `rusqlite` with the `bundled` feature, so every build has the same SQLite with
@@ -124,6 +127,9 @@ version 0). Opening:
 Reopening an up-to-date database runs nothing. A released migration file is never edited; schema
 changes are new files.
 
+`MemoryStore` opens `memory.db` with its own list, so its version counts that list alone; the same
+rules apply, and `before_migrate` receives that file's plan.
+
 ## Conventions
 
 - Times are Unix milliseconds in `INTEGER` columns. They sort and compare in SQL without parsing,
@@ -239,6 +245,95 @@ stemming, case and accent folding.
   and rarer words first.
 - Each hit has the message's ids, seq, role, time, the session's channel and conversation, and a
   snippet with matches wrapped in `**`.
+
+## Memory Database
+
+Each agent has its own database, `data/agents/<agent>/memory.db` (parent issue: memory redesign,
+#30), owned by `giles-store`. `MemoryStore::open(path, options)` opens it through the same
+connection machinery as `giles.db` (one writer, a pool of readers, the journal mode from
+`OpenOptions`, the `before_migrate` hook), but it is a separate file with its own migration list,
+`crates/giles-store/src/memory_migrations/`, and its own `user_version` (`MEMORY_SCHEMA_VERSION`,
+independent of `SCHEMA_VERSION`). `MemoryStore` wraps the handle and exposes only the memory
+methods, never `giles.db`'s. `MemoryStore::path()` and `MemoryStore::vacuum_into(dest)` (the same
+`VACUUM INTO` as `Store::vacuum_into`) are for the backup code.
+
+The first open creates the missing parent directories with mode 0700 and the file with mode 0600
+(SQLite gives the `-wal` and `-shm` files the same mode). An existing file or directory keeps its
+mode.
+
+Schema (version 1):
+
+| Table           | Columns and rules                                                                    |
+| --------------- | ------------------------------------------------------------------------------------ |
+| `memories`      | `id` (integer, what the model names a memory by), `content`, owner (`owner_kind` of `user`, `group`, or `none`, with `owner_user`, or `owner_instance` and `owner_conversation`; checks keep the columns consistent with the kind), `shared`, `core`, `created_at`, `updated_at`, `source_session`. |
+| `memory_search` | FTS5 over `content`, `rowid` = memory id.                                            |
+
+`source_session` is the `giles.db` session the memory was written in. It is only recorded: the
+session is in another file, so it isn't a foreign key, and it stays after the session is deleted.
+Partial indexes serve the core totals: core memories of the shared scope, and private memories by
+owner.
+
+`memory_search` is an ordinary FTS5 table like `search`, with the same tokenizer (`porter
+unicode61 remove_diacritics 2`). Three triggers on `memories` maintain it on insert, on update of
+`content`, and on delete, so no code path can forget to update the index.
+
+**Owner.** The owner is who created the memory: a user (internal user id), a group (channel
+instance and conversation), or nobody (`none`: a config job, which has no requester). It is kept
+for shared memories too, as their author.
+
+**Visibility.** Every method takes a `MemoryViewer`: the session's owner scope
+(`MemoryOwner::User`, `Group`, or `None`) and `can_write_shared`, true for the agent owner's turns
+and for config jobs.
+
+- A private memory is visible to viewers whose owner scope equals its owner exactly: one user's
+  sessions, or one group conversation. Two users, two groups (same conversation id on another
+  instance counts), and a user's DMs versus a group they're in are all separate.
+- A shared memory is visible to every viewer.
+- A config job (`None`) sees shared memories only. It can't write a private memory, which nothing
+  could read back, so the `none` owner only ever has shared memories and has no core scope of its
+  own.
+- A memory the viewer can't see gives `Error::UnknownMemory`, the same error, with the same
+  message, as an id that doesn't exist, so ids of other scopes' memories leak nothing. Visibility
+  is checked before permissions, so a hidden id never reaches the shared-write check.
+- Only a viewer with `can_write_shared` can create a shared memory, mark a private memory shared,
+  or edit or forget a shared memory (including un-sharing it); the others get
+  `Error::SharedWriteForbidden`. A shared memory keeps its author as owner. Un-sharing makes it
+  private to the viewer who un-shared it.
+
+**Methods** (`now` and `core_cap` are arguments, as elsewhere):
+
+- `add(viewer, NewMemory, core_cap, now)`, `edit(viewer, id, MemoryEdit, core_cap, now)`,
+  `forget(viewer, id)`, and `get(viewer, id)`. `edit` replaces the whole content and changes
+  `core` and `shared` when set, and always sets `updated_at`. An edit that changes nothing is
+  `Error::InvalidRequest`. `forget` deletes the row, keeping no history.
+- `core_memories(viewer)`: the core memories the viewer sees as `CoreMemories`, the shared scope
+  first and then the viewer's own, each ordered by id with its total characters.
+- `recall(viewer, query, limit)`: FTS5 over the visible memories, core ones included. The query is
+  turned into FTS5 syntax as for transcript search: each word with a letter or digit becomes a
+  quoted string (so `"`, `*`, `-`, `:`, `(`, `AND`, `NEAR` in the query are matched as text) and the
+  words are OR-ed. A query with no words returns nothing. Results are ordered by BM25, then
+  `updated_at` newest first, then id newest first. The caller clamps `limit`; at least one row is
+  returned.
+
+**Limits.** Each write is one `IMMEDIATE` transaction on the single writer connection, and the
+limits are checked inside it, after the memory is read and before it's written, so no other write
+can interleave:
+
+- Content is trimmed and must not be empty (`Error::InvalidRequest`). It has at most
+  `MAX_MEMORY_CHARS` (1,000) characters, counted as characters and not bytes
+  (`Error::MemoryTooLong`).
+- The core memories of one scope must total at most `core_cap` characters. A scope is the shared
+  memories, or the private memories of one owner (a user, a group). An add or edit that would take
+  a scope over the cap fails with `Error::CoreCapExceeded` and writes nothing. The error carries a
+  `CoreOverflow`: the scope, its current core memories, their characters (`used`), the cap, and the
+  overflow (how far over the rejected write would have gone), so the model can trim or demote
+  some. An edit that grows a core memory, turns `core` on, or moves a core memory into a scope
+  (sharing moves it into the shared scope, un-sharing into the viewer's own) is checked against
+  that scope; the memory's old content never counts twice. A write that doesn't grow its scope's
+  total is always allowed, so a scope that is over a lowered cap can still shrink.
+
+Concurrent writers can't break the cap because the single writer connection runs the writes one at
+a time (a test has 20 tasks adding core memories against a small cap).
 
 ## Inbox
 

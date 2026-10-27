@@ -7,6 +7,9 @@
 //! [`BlobStore`] is the content-addressed file store under `data/blobs/` (PLAN 11.5), with its
 //! metadata in the database.
 //!
+//! [`MemoryStore`] is an agent's memory database (`data/agents/<agent>/memory.db`), a separate
+//! SQLite file with its own migrations ([`MEMORY_SCHEMA_VERSION`]) and its own typed methods.
+//!
 //! Conventions shared by every method:
 //!
 //! - Times are [`Timestamp`]s, stored as Unix milliseconds, so they come back truncated to the
@@ -21,6 +24,7 @@ mod inbox;
 mod instances;
 mod jobs;
 mod journal_mode;
+mod memory;
 mod messages;
 mod migrate;
 mod outbox;
@@ -41,10 +45,14 @@ pub use inbox::{InboxEntry, InboxId, InboxState, NewInboxEvent};
 pub use instances::{InstanceRows, RenamedRows};
 pub use jobs::{JobKey, RuntimeJob, RuntimeJobId};
 pub use journal_mode::{JournalMode, ParseJournalModeError};
+pub use memory::{
+    CoreMemories, CoreOverflow, CoreScope, MAX_MEMORY_CHARS, Memory, MemoryEdit, MemoryId,
+    MemoryOwner, MemoryScope, MemoryStore, MemoryViewer, NewMemory,
+};
 pub use messages::{
     Appended, Entry, History, Slot, StoredMessage, StoredMessageId, Summary, SummaryId,
 };
-pub use migrate::{MigrationPlan, SCHEMA_VERSION};
+pub use migrate::{MEMORY_SCHEMA_VERSION, MigrationPlan, SCHEMA_VERSION};
 pub use outbox::{NewOutbox, OutboxEntry, OutboxId};
 pub use routes::{NewRoute, RouteId, StoredRoute};
 pub use search::{SNIPPET_ELLIPSIS, SNIPPET_END, SNIPPET_START, SearchHit, SearchScope};
