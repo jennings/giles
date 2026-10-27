@@ -777,6 +777,11 @@ pair, so no other process can reach it.
 
 1. The core creates a Unix `socketpair` and spawns the plugin through the sandbox trampoline
    (section 12) with:
+   - the argument `socket`: the plugin's only one. A plugin binary has two subcommands: `socket`
+     (this section) and `serve` (section 7.6). A plugin that gets no subcommand, or one that isn't
+     `socket`, while `GILES_PLUGIN_MAGIC` is set, can tell that it's launched by a core that doesn't
+     know about the subcommands, and exits with a message. A plugin that predates subcommands
+     ignores the argument.
    - fd 3: the plugin's end of the pair.
    - stdin: a pipe the core keeps open. The core writes one line, a random per-launch token, and
      nothing more.
@@ -852,6 +857,18 @@ User-run plugins reached over TCP, with optional TLS and a bearer token or OAuth
 - The core only calls `Shutdown` (optionally) and disconnects; it never manages the process.
 - OAuth authorization code grant: not in v1.
 - Remote plugins manage their own state.
+- Every shipped channel plugin is runnable this way: `giles-channel-<name> serve [--config <file>]`
+  binds TCP, with TLS if given a certificate, and checks a static bearer token. The SDK parses its
+  transport settings (`listen`, `data`, `tls_cert`, `tls_key`, `token_file`; each also a flag),
+  which are the same for every plugin. The token is `GILES_CHANNEL_<NAME>_TOKEN` or `token_file`
+  (refused if group or others can read it), and `serve` won't start without one unless `--no-auth`
+  says to accept anyone. OAuth verification isn't part of it: a plugin that wants it calls
+  `serve_remote` itself.
+- The plugin's own settings (a Discord bot token, an IRC server) come from the instance's `config`
+  in the core's `giles.toml`, as for a launched plugin (section 7.7), so they cross the network to
+  the plugin. A remote plugin builds its channel from the first `Configure` it gets and refuses a
+  different config until it restarts. Reading plugin settings on the plugin's own machine, so that a
+  secret never leaves it, is deferred.
 
 ### 7.7 Configuration and secrets
 

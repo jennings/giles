@@ -10,6 +10,7 @@
 - [Command line](user/cli.md)
 - [Backups](user/backups.md)
 - [Configuration](user/configuration.md)
+- [Running a plugin on another machine](user/remote-plugins.md)
 - [Chat commands](user/commands.md)
 - [Model providers](user/providers.md)
 - [Web chat](user/web.md)

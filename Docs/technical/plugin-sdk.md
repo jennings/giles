@@ -6,9 +6,65 @@ the `Remote*` adapters) lives in `giles-core`. The wire setup it builds on is in
 [Plugin transport](plugin-transport.md); the shared constants are `giles_proto::handshake` (see
 [gRPC Protocols](protocols.md#launch-handshake)).
 
+## Command line
+
+A plugin's `main` calls `ChannelPlugin::run(configure)`, which parses the binary's command line
+(`cli.rs`) with a hand-written parser, so the SDK needs no `clap`:
+
+- `socket` is how the core launches the plugin (`giles_proto::handshake::SOCKET_COMMAND`, the
+  plugin's only argument). It runs `serve` below, so [Startup](#startup) applies. Nobody runs it by
+  hand; run so, it still says that it's a Giles plugin. It takes no further argument.
+- `serve` runs the plugin as a [remote plugin](#remote-plugins). Its transport settings are flags,
+  each also a key of a TOML file given with `--config` (unknown keys refused, flags win), the same
+  for every plugin.
+- No command, or `--help`, `-h`, or `help`, prints the usage for both. A mistake (an unknown command
+  or option, a missing value, a repeated flag) names itself and exits with status 2, as does a
+  `serve` setting that can't be used.
+
+`ChannelPlugin::serve` and `serve_remote` stay for authors who want their own command line. Call
+`run` first thing in `main`, because `socket` adopts fd 3.
+
+### Version skew
+
+The core passes `socket` to every plugin it launches. A plugin built before `run` ignores the
+argument and keeps working with a newer core, so `GILES_PLUGIN_PROTOCOLS` stays at 1. In the other
+direction, a plugin built on `run` that an older core launches with no argument and with
+`GILES_PLUGIN_MAGIC` set prints that the core is older than the plugin and exits with status 1. The
+core reports the exit and its stderr as a failed launch.
+
+### Transport settings of `serve`
+
+| Key (flag `--<key>` with `-` for `_`) | Meaning                                                        |
+| ------------------------------------- | -------------------------------------------------------------- |
+| `listen`                              | The address `tokio::net::TcpListener` binds. Required.         |
+| `data`                                | The data directory `RemoteServer` creates if missing. Required. |
+| `tls_cert`, `tls_key`                 | PEM certificate chain and private key. Both or neither.        |
+| `token_file`                          | A regular file holding the bearer token                         |
+
+`--no-auth` is a flag only, never a file key, so every start says that it accepts any caller.
+
+- Relative paths in the file are relative to the working directory, not to the file.
+- The settings here are the plugin's transport. The plugin's own settings, which a launched plugin
+  also gets, come from the instance's `config` in the core's `giles.toml` through `Configure`, in
+  both modes (PLAN section 7.7). `serve` has no file for them, so one place defines an instance.
+  Their secrets therefore travel to a remote plugin, which is why the core wants TLS off loopback.
+- The token is `RemoteAuth::Bearer`. It comes from `token_file`, or from the environment variable
+  `GILES_CHANNEL_<NAME>_TOKEN` (the plugin name in capitals, anything but a letter or digit as `_`).
+  There's no flag for the token, as it would show in the process list. Both sources, or either with
+  `--no-auth`, is an error, as is neither without `--no-auth`. A token must be one non-empty line of
+  visible ASCII, the same rule as a launched plugin's; its trailing newline is dropped. A token file
+  with any `0o077` mode bit set is refused, as the core refuses a `secrets.toml` that others can
+  read.
+- OAuth (`RemoteAuth::Verify`) needs issuer and key settings that differ per deployment, so `serve`
+  supports only a static token. A plugin that wants OAuth calls `serve_remote` itself.
+- After binding, `serve` prints `listening on <address>` to stdout (useful with port 0), then runs
+  `serve_remote`. Errors after the settings check (a failed bind, an unreadable certificate) exit
+  with status 1.
+
 ## Startup
 
-The SDK does these steps in order, and any failure ends the process with a message on stderr:
+With `socket`, the SDK does these steps in order, and any failure ends the process with a message on
+stderr:
 
 1. Magic cookie: `GILES_PLUGIN_MAGIC` must equal `giles_proto::handshake::MAGIC_COOKIE`. Without it,
    someone ran the binary by hand: the plugin says that it's a Giles plugin, launched by Giles, and
@@ -119,7 +175,7 @@ async fn main() -> ExitCode {
         .output(OutputMode::Blocks)
         .can_initiate(true)
         .requested_grants(Grants::default())
-        .serve(|ctx: Configure| async move {
+        .run(|ctx: Configure| async move {
             let config: IrcConfig = ctx.parse_config()?;
             IrcChannel::connect(config, ctx.data_dir(), ctx.blobs().clone()).await
         })
@@ -130,12 +186,13 @@ async fn main() -> ExitCode {
 - `ChannelPlugin::new(name, version)` with builder methods `output`, `can_initiate`, and
   `requested_grants` (a `Grants { network_all, network_ports, read, write }`, mirroring
   `SandboxGrants`). These answer `Describe` before the channel exists.
-- `serve(configure)` takes `Fn(Configure) -> impl Future<Output = Result<impl Channel>>` and returns
-  the process's `ExitCode`. It uses the ambient tokio runtime; `#[tokio::main]` is enough. Fd 3 is
-  adopted after the runtime started, which is why step 4 above checks it's a socket before taking
-  ownership. `serve_remote(RemoteServer, configure)` runs the same channel as a remote plugin
-  ([Remote plugins](#remote-plugins)); `RemoteServer` and `RemoteAuth` are re-exported at the crate
-  root.
+- `run(configure)` takes `Fn(Configure) -> impl Future<Output = Result<impl Channel>>` and returns
+  the process's `ExitCode`. It parses the [command line](#command-line) and runs `serve` or a remote
+  plugin. It uses the ambient tokio runtime; `#[tokio::main]` is enough. `serve(configure)` is its
+  `socket` half: fd 3 is adopted after the runtime started, which is why step 4 above checks it's a
+  socket before taking ownership. `serve_remote(RemoteServer, configure)` runs the same channel as a
+  remote plugin ([Remote plugins](#remote-plugins)); `RemoteServer` and `RemoteAuth` are re-exported
+  at the crate root.
 - `Configure` gives `instance()`, `config()` (the JSON `Value`), `parse_config::<T>()` (serde,
   errors as `Error::InvalidRequest("invalid config: ...")` naming the key), `data_dir()`, and
   `blobs()`.
@@ -246,9 +303,10 @@ converting it, so it accepts any handle, and it never trusts one: it fetches the
 ## Remote plugins
 
 A plugin someone runs themselves, which the core connects to over TCP (PLAN section 7.6, the core
-side in [Plugin Host](plugin-host.md#remote-plugins)), calls
-`ChannelPlugin::serve_remote(server, configure)` instead of `serve`. The services, `Configure`,
-persistence, and blobs are the same; what differs:
+side in [Plugin Host](plugin-host.md#remote-plugins)), is
+`ChannelPlugin::serve_remote(server, configure)` instead of `serve`. The `serve` subcommand of
+[`run`](#command-line) builds the `RemoteServer` from its settings and calls it. The services,
+`Configure`, persistence, and blobs are the same; what differs:
 
 - `RemoteServer::new(listener, data_dir, auth)` takes a bound `tokio::net::TcpListener`, the data
   directory (created with mode 0700 if missing; `giles-sdk/` inside it as above), and a
@@ -308,15 +366,14 @@ when set, every sent message comes back as an inbound message from `echo_sender`
 stored again as the plugin's own blobs); `unavailable` (recipients whose sends fail with
 `UNAVAILABLE`). It reports `output = blocks` and `can_initiate = true`.
 
-With arguments it runs as a remote plugin, the example of `serve_remote`:
-`giles-channel-echo --listen <address> --data <dir> [--tls-cert <pem> --tls-key <pem>]` accepts
-`Bearer $GILES_ECHO_TOKEN` (anything if that isn't set), prints `listening on <address>` on stdout
-once bound (for port 0), and runs until `SIGINT` or `SIGTERM`, with `<dir>` as its data directory.
+It's built on `run` like the shipped plugins, so `giles-channel-echo serve` runs it as a remote
+plugin, with the token in `GILES_CHANNEL_ECHO_TOKEN` or `--no-auth`.
+`plugins/giles-channel-echo/tests/cli.rs` tests the command line through the binary.
 
 Its integration tests (`plugins/giles-channel-echo/tests/plugin.rs`) launch the binary exactly as
-the core will: a `socketpair`, the plugin's end made fd 3 with `dup2` in `pre_exec`, the token on
-stdin, the scrubbed environment, then the handshake line, then every RPC through the generated
-clients with a bearer interceptor and 16 MiB limits.
+the core will: the `socket` argument, a `socketpair`, the plugin's end made fd 3 with `dup2` in
+`pre_exec`, the token on stdin, the scrubbed environment, then the handshake line, then every RPC
+through the generated clients with a bearer interceptor and 16 MiB limits.
 
 ### Using it from other tests
 

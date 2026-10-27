@@ -752,7 +752,7 @@ as the IRC plugin's do; nothing in it is an API for anyone else.
 | `channel` | `DiscordChannel` (the SDK's `Channel`) and the event stream that moves the cursor, `configure`, `configure_with`, and the `SessionSlot` that lets `main` stop the session |
 | `fake` | `FakeDiscord`, the scripted client for tests: a Gateway queue, a REST history per channel, a CDN, and the messages posted; `FakeMedia`, a blob store in memory |
 | `real` | `RealDiscord`, the client on `twilight-gateway` and `twilight-http`: the only module with twilight types; `real::cdn` (downloads on `reqwest`) and `real::multipart` (the body of a message with files) |
-| `main` | Logging, `ChannelPlugin::new("discord", ..).output(Blocks).can_initiate(true).serve(..)`, then the session is stopped |
+| `main` | Logging, `ChannelPlugin::new("discord", ..).output(Blocks).can_initiate(true).run(..)`, then the session is stopped |
 
 ```text
 twilight Shard ── real ──GatewayEvent──▶ session ──Staged──▶ deliver
@@ -1040,19 +1040,18 @@ the `TokenState`, and the `StateFile` only, so every case below is a test agains
 
 ### Shutdown
 
-`ChannelPlugin::serve` owns the channel and gives no hook for its end, and a process that exits when
-`serve` returns would cut the session off before it closes the Gateway, leaving the bot shown online
+`ChannelPlugin::run` owns the channel and gives no hook for its end, and a process that exits when
+`run` returns would cut the session off before it closes the Gateway, leaving the bot shown online
 until Discord times the connection out. As in the WhatsApp plugin, `configure` leaves a
-`SessionHandle` in a `SessionSlot` that `main` holds; after `serve` returns, `main` stops the
-session and waits up to 6 seconds for it. The session ends the pending poll and calls
-`Discord::shutdown`, bounded by 5 seconds. `RealDiscord::shutdown` sends close code 1000 (which ends
-the session and shows the bot offline) and polls the shard until Discord's answer arrives, if there
-is a session to end, for at most 900 milliseconds. The limit is under the second the library sleeps
-before every connect: if the peer ends the TCP connection without answering, the shard starts
-reconnecting and would Identify, putting the bot back online after it was shut down, and the wait is
-over before that can happen (`shutdown_does_not_reconnect_when_the_close_is_never_answered`). With
-no session (never connected, a rejected token) it does nothing, and the connection is dropped with
-the process.
+`SessionHandle` in a `SessionSlot` that `main` holds; after `run` returns, `main` stops the session
+and waits up to 6 seconds for it. The session ends the pending poll and calls `Discord::shutdown`,
+bounded by 5 seconds. `RealDiscord::shutdown` sends close code 1000 (which ends the session and
+shows the bot offline) and polls the shard until Discord's answer arrives, if there is a session to
+end, for at most 900 milliseconds. The limit is under the second the library sleeps before every
+connect: if the peer ends the TCP connection without answering, the shard starts reconnecting and
+would Identify, putting the bot back online after it was shut down, and the wait is over before that
+can happen (`shutdown_does_not_reconnect_when_the_close_is_never_answered`). With no session (never
+connected, a rejected token) it does nothing, and the connection is dropped with the process.
 
 ### Configuration and the token
 

@@ -233,9 +233,10 @@ scopes = ["channel"]
 
 ##### Remote plugins
 
-A channel with `address` is a plugin
-[you run yourself](writing-a-plugin.md#running-a-plugin-remotely), on this machine or another one.
-Giles never starts, stops, or sandboxes it, and the plugin keeps its own state.
+A channel with `address` is a plugin you run yourself, on this machine or another one. The plugins
+that ship with Giles [run this way](remote-plugins.md), and
+[you can write your own](writing-a-plugin.md#running-a-plugin-remotely). Giles never starts, stops,
+or sandboxes it, and the plugin keeps its own state.
 
 - While Giles can't connect, it runs without that channel and keeps retrying. That includes when the
   plugin refuses Giles' token or its certificate doesn't check out. `giles status` shows the

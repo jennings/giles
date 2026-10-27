@@ -76,11 +76,17 @@ arrived.
 
 ## Spawning
 
-The program is the trampoline, `<giles exe> sandbox-exec run/sandbox/<instance>.json -- <binary>`.
-The trampoline inherits the core's environment and builds the plugin's scrubbed one itself. With
-`unsandboxed = true` the host skips the trampoline, logs `running the plugin unsandboxed` at warn
-level on every launch, and runs the binary itself with exactly the environment the trampoline would
-give it (`sandbox::scrubbed_env`) and the data directory as working directory.
+The program is the trampoline,
+`<giles exe> sandbox-exec run/sandbox/<instance>.json -- <binary> socket`. The trampoline inherits
+the core's environment and builds the plugin's scrubbed one itself. With `unsandboxed = true` the
+host skips the trampoline, logs `running the plugin unsandboxed` at warn level on every launch, and
+runs `<binary> socket` itself with exactly the environment the trampoline would give it
+(`sandbox::scrubbed_env`) and the data directory as working directory.
+
+`socket` (`giles_proto::handshake::SOCKET_COMMAND`) is the plugin's only argument. It tells a plugin
+built on `ChannelPlugin::run` that the core launched it and that fd 3 is its socket; the same binary
+run with `serve` is a [remote plugin](#remote-plugins). A plugin built before `run` ignores the
+argument ([Plugin SDK](plugin-sdk.md#version-skew)).
 
 In the child, between `fork` and `exec` (`pre_exec`, async-signal-safe calls only):
 
@@ -193,7 +199,8 @@ stdin, up to `grace` (`STOP_GRACE`, 10 s: the SDK drains for up to 5 s) for the 
 A `[channel.<instance>]` with `address` (PLAN section 7.6) is a plugin someone runs themselves; the
 config loader already checked the URL (`http` or `https`, no credentials, plain `http` only to
 loopback unless `insecure = true`) and `auth` ([Configuration](config.md)). The SDK side is
-`ChannelPlugin::serve_remote` ([Plugin SDK](plugin-sdk.md#remote-plugins)).
+`ChannelPlugin::serve_remote` ([Plugin SDK](plugin-sdk.md#remote-plugins)), which every shipped
+plugin's `serve` subcommand calls ([Command line](plugin-sdk.md#command-line)).
 
 `Launcher::connect_remote(&ChannelInstance)` (module `remote`), under a `plugin{instance=<name>}`
 span:
@@ -489,9 +496,9 @@ crashed stays registered (its `RemoteChannel` fails every call) until its relaun
   keeps running, logs the retryable one's backoff and the other as waiting for a new binary, and
   stops cleanly; a shutdown signal while a plugin launches exits at once and kills the plugin.
 - `plugins/giles-channel-echo/tests/remote.rs`: the echo binary as a remote plugin on `127.0.0.1`
-  (`--listen`) of a running core: a bearer token, messages both ways, `Running` without a pid or
-  binary; stopping the core leaves the plugin running, and the next core (configuring it again) gets
-  the message that arrived in between; a wrong token backing off with `UNAUTHENTICATED`; an
+  (`serve --listen`) of a running core: a bearer token, messages both ways, `Running` without a pid
+  or binary; stopping the core leaves the plugin running, and the next core (configuring it again)
+  gets the message that arrived in between; a wrong token backing off with `UNAUTHENTICATED`; an
   unreachable address backing off until the plugin comes up, a killed plugin reported as
   `the plugin disconnected` and reconnected once it's back; OAuth client credentials from a fake
   token endpoint (and a refused request backing off, scrubbed); TLS with a test certificate
