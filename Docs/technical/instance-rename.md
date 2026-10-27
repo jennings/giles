@@ -24,7 +24,8 @@ rename must move each of them, and the startup check treats each as data.
 | `usage.provider`                             | The provider instance of a request             | Updates in the transaction     |
 | `messages.meta` `$.provider`                 | The provider that wrote an assistant message   | Updates in the transaction     |
 | `data/plugins/<name>/`                       | The plugin's only writable directory           | Moves (`rename(2)`)            |
-| `agents/<agent>/groups/<name>/`              | Memory a channel's groups wrote                | Moves                          |
+| `agents/<agent>/groups/<name>/`              | Per-group `MEMORY.md` files of the old memory design | Moves                   |
+| `agents/<agent>/memory.db`, `memories.owner_instance` | The channel instance of a group that owns a memory (also a shared memory's author) | Updates in the hook, one transaction per database |
 | `cache/describe/<name>.json`, `cache/toolsets/<name>.json` | Discovery caches                 | Moves if present; they are disposable |
 | `run/pids/<name>.pid`                        | The launched plugin's pid, killed at the next start | Moves if present, so a plugin that outlived the core is still found |
 
@@ -99,43 +100,64 @@ socket probing is needed and a core that starts mid-rename is refused instead.
    - If neither is configured, it is refused: with no data it is an unknown instance, and with
      data the kind can't be known, so the message says to configure `new` first.
    - `new` must have no data: no database rows, no `data/plugins/<new>`, no `groups/<new>` (routes
-     that name `new` don't count). The
+     that name `new` don't count). The memory databases aren't checked: nothing in their schema is
+     unique over the owner, and an interrupted run (below) legitimately leaves some of them
+     already renamed. The
      exception is an interrupted rename run again (below): `giles.toml` already names `new`, so
      `old` is no longer configured, and rows still exist under `old`. While `old` is still
      configured, a directory called `new` belongs to something else and is refused.
 2. **Stage.** Every file's new text is computed in memory: the `agent.toml` files that name the
-   instance, then `giles.toml`; and the list of directory and file moves is computed. Any parse
-   error or conflict ends the command here with nothing changed.
+   instance, then `giles.toml`; and the list of directory and file moves is computed. The memory
+   databases to update are listed: every `agents/<agent>/memory.db` that exists. An agent without
+   one is skipped (the rename never creates a database), and a removed agent's database is in
+   `trash/agents/`, outside `agents/`, so it is not touched, like the agent's directories and
+   `agent.toml` there. Any parse error or conflict ends the command here with nothing changed.
 3. **One database transaction** (`Store::rename_instance`): update every row, then run a hook,
    then commit. The hook does the file system work, in this order, recording each completed step
    in a journal:
    1. rewrite the `agent.toml` files (a temporary file in the same directory renamed over the
       original, with the original's permissions),
    2. rewrite `giles.toml` the same way,
-   3. move the directories, then the disposable files, with `rename(2)`.
+   3. move the directories, then the disposable files, with `rename(2)`,
+   4. in each agent's memory database, in agent-name order, run `MemoryStore::rename_instance(old,
+      new)`: `UPDATE memories SET owner_instance = new WHERE owner_kind = 'group' AND
+      owner_instance = old`, one write transaction per database, the file opened with
+      `OpenOptions::keep_journal_mode` (the core is stopped, and the rename must not undo the
+      daemon's journal mode). The hook runs on the blocking pool and drives these async calls with
+      the runtime's handle. A database that changed is recorded in a second journal with its row
+      count (`RenameReport::memory_dbs`).
 
-   If any step fails, the journal is undone newest first (files rewritten from the text read
-   in step 1, moves reversed) and the error returns, which rolls the transaction back. If the commit
-   itself fails after the hook, the caller undoes the journal too.
+   If any step fails, the journal is undone newest first (the memory databases first: the same
+   update with the names swapped in each database that changed; then files rewritten from the text
+   read in step 1, and moves reversed) and the error returns, which rolls the transaction back. If
+   the commit itself fails after the hook, the caller undoes the journal too.
 4. The report lists what changed, for the command to print.
 
 Why this order. The database transaction is the only step that can't be undone by hand-editing, so
 it is the one that is held open until everything else worked: every failure the code can observe
 leaves the data root exactly as it was. `giles.toml` is rewritten before the directories, so a
 crash between them leaves the startup check's situation (config renamed, data not) and not the
-reverse.
+reverse. The memory databases come last, after `giles.toml`, for the same reason and one more:
+each of them commits on its own, so a step after them would have to rename them back with another
+write. Renaming the owners is also idempotent (rows already under `new` don't match), which
+makes it safe to repeat after a crash.
 
 ## Crashes
 
 A failure the process can see is undone. If the process is killed (power loss, `kill -9`) during
-step 3, some files or directories may have changed while the database has not committed. The
-journal exists only in memory, so recovery is to run the same command again:
+step 3, some files or directories may have changed, and some memory databases may already name
+`new`, while `giles.db` has not committed. The journals exist only in memory, so recovery is to run
+the same command again:
 
 - The database still has rows under `old`, so a directory that is already at its new path (and no
   longer at the old one) is treated as moved. A directory at both paths is a conflict, and the
   command refuses and says which.
 - `giles.toml` already naming `new` is the "only `new` is configured" case above.
 - Rewriting an `agent.toml` is idempotent: only references to `old` are changed.
+- A memory database that was already updated has no group owner under `old` any more, so the
+  rerun changes nothing in it and lists only the databases it did update
+  (`RenameReport::memory_dbs`); the others are finished. In a database whose commit never happened
+  nothing changed, since a database is one transaction.
 
 The window is the few system calls of step 3, and the startup check usually notices the unfinished
 state if the daemon is started in between (`giles.toml` renamed, rows still under `old`). It cannot
@@ -157,7 +179,9 @@ Definitions:
   `usage.provider` (not `routes.channel`, see above), or is a directory `data/plugins/<name>` or
   `agents/*/groups/<name>`. Only directories with a valid name count (`.DS_Store` doesn't). An
   agent removed in the web UI lives in `trash/agents/`, outside `agents/`, so its directories
-  count for nothing here, and a rename neither reads nor rewrites its `agent.toml`.
+  count for nothing here, and a rename neither reads nor rewrites its `agent.toml` or its
+  `memory.db`. The memories in a restored agent's database keep the old instance name, so the
+  renamed instance's groups don't see them. Memory databases are not data to this check.
 - A configured instance is **fresh** if its name has no data.
 - A name is **unused** if it has data, is not configured, and is not in `[core] retired_instances`.
 - An unused name **matches** a fresh instance if the kinds fit. Rows of `sessions`, `inbox`, or

@@ -16,7 +16,7 @@ use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use giles_store::{BoxError, InstanceRows, RenamedRows, Store};
+use giles_store::{BoxError, InstanceRows, MemoryStore, OpenOptions, RenamedRows, Store};
 
 use crate::admin::InstanceLock;
 use crate::config::{Kind, is_valid_name};
@@ -43,6 +43,10 @@ pub struct RenameReport {
     pub agent_files: Vec<(PathBuf, usize)>,
     /// The directories and files moved, `(from, to)`.
     pub moved: Vec<(PathBuf, PathBuf)>,
+    /// The agents' memory databases (`agents/<agent>/memory.db`) whose group owners moved to the
+    /// new instance name, with the number of memories changed in each. Databases with nothing
+    /// under the old name, including every one an interrupted run already did, aren't listed.
+    pub memory_dbs: Vec<(PathBuf, usize)>,
 }
 
 /// A rename didn't happen.
@@ -173,8 +177,9 @@ fn failed_message(step: &str, error: &str, undo_errors: &[String]) -> String {
 ///
 /// `old` is the name in `giles.toml` (`[<kind>.<old>]`), or, if the operator already renamed the
 /// table by hand, the name the data still has; `new` must not have any data. The database rows
-/// move in one transaction, and the file changes happen inside it before it commits. A failure
-/// at any step undoes the earlier ones and changes nothing.
+/// move in one transaction, and the file changes happen inside it before it commits, ending with
+/// the group owners in each agent's memory database (`agents/<agent>/memory.db`, if it has one).
+/// A failure at any step undoes the earlier ones and changes nothing.
 ///
 /// # Errors
 ///
@@ -222,6 +227,7 @@ pub async fn rename_instance(
     }
 
     let rows = store.instance_rows().await.map_err(RenameError::Store)?;
+    let memory_dbs = memory_databases(root)?;
     let dirs = dirs::scan_dirs(root).map_err(|(path, source)| RenameError::Io { path, source })?;
     // Routes name an instance without being data (the startup check ignores them), but a name
     // only they use is still worth renaming.
@@ -275,17 +281,33 @@ pub async fn rename_instance(
 
     let plan = Plan::build(root, old, new, kind, &config_text, &dirs)?;
     let journal = Journal::default();
+    let memory = MemoryJournal::default();
     let hook = {
-        let (plan, journal) = (plan.clone(), journal.clone());
+        let (plan, journal, memory) = (plan.clone(), journal.clone(), memory.clone());
+        let (handle, old, new) = (
+            tokio::runtime::Handle::current(),
+            old.to_owned(),
+            new.to_owned(),
+        );
+        // The hook runs on the blocking pool, where the memory databases (async) can be driven
+        // with the runtime's handle.
         move |_: &RenamedRows| -> Result<(), BoxError> {
-            plan.apply(&journal).map_err(|(step, error)| {
-                let undo_errors = journal.undo();
+            let fail = |step: String, error: String| {
+                let mut undo_errors = handle.block_on(memory.undo(&old, &new));
+                undo_errors.extend(journal.undo());
                 Box::new(Failure {
                     step,
                     error,
                     undo_errors,
                 }) as BoxError
-            })
+            };
+            plan.apply(&journal)
+                .map_err(|(step, error)| fail(step, error))?;
+            // The memory databases come last: each commits by itself, so they are the one step
+            // that can only be taken back by writing again.
+            handle
+                .block_on(memory.apply(&memory_dbs, &old, &new))
+                .map_err(|(step, error)| fail(step, error))
         }
     };
     match store.rename_instance(old, new, hook).await {
@@ -300,6 +322,7 @@ pub async fn rename_instance(
                 .iter()
                 .map(|m| (m.from.clone(), m.to.clone()))
                 .collect(),
+            memory_dbs: memory.changed(),
         }),
         Err(giles_store::Error::Hook(error)) => match error.downcast::<Failure>() {
             Ok(failure) => Err(RenameError::Failed {
@@ -310,7 +333,7 @@ pub async fn rename_instance(
             Err(other) => Err(RenameError::Failed {
                 step: "renaming".to_owned(),
                 error: other.to_string(),
-                undo_errors: journal.undo(),
+                undo_errors: undo_all(&memory, &journal, old, new).await,
             }),
         },
         Err(giles_store::Error::Conflict(what)) => Err(RenameError::NewHasData {
@@ -319,8 +342,12 @@ pub async fn rename_instance(
         }),
         // A failure of the commit itself comes after the hook did its work.
         Err(error) => {
-            let touched = !journal.is_untouched();
-            Err(store_failure(error, touched, journal.undo()))
+            let touched = !journal.is_untouched() || !memory.is_untouched();
+            Err(store_failure(
+                error,
+                touched,
+                undo_all(&memory, &journal, old, new).await,
+            ))
         }
     }
 }
@@ -597,6 +624,96 @@ impl Journal {
         }
         errors
     }
+}
+
+/// The agents' memory databases a rename updates: every `agents/<agent>/memory.db` that exists.
+/// An agent without one is skipped (the rename never creates one), and an agent removed in the
+/// web UI lives in `trash/`, outside `agents/`, so its database is left as it is.
+fn memory_databases(root: &DataRoot) -> Result<Vec<PathBuf>, RenameError> {
+    Ok(sorted_dirs(&root.agents_dir())?
+        .into_iter()
+        .map(|(_, dir)| dir.join("memory.db"))
+        .filter(|path| path.is_file())
+        .collect())
+}
+
+/// The memory databases whose group owners were renamed, with how many memories changed in
+/// each, shared between the hook that renames them and the code that undoes them. Each database
+/// commits by itself, so taking one back means renaming the owners back in it.
+#[derive(Debug, Clone, Default)]
+struct MemoryJournal(Arc<Mutex<Vec<(PathBuf, usize)>>>);
+
+impl MemoryJournal {
+    fn push(&self, path: PathBuf, changed: usize) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((path, changed));
+    }
+
+    fn is_untouched(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+    }
+
+    /// The databases changed so far, with the memories changed in each.
+    fn changed(&self) -> Vec<(PathBuf, usize)> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Renames the group owners of `old` to `new` in each database in turn, recording the ones
+    /// that changed. A database is opened in the journal mode it has: the core is stopped, and
+    /// the rename must not undo the daemon's choice. On failure returns the step's description
+    /// and the error; that database is unchanged (one transaction), the caller undoes the rest.
+    async fn apply(&self, dbs: &[PathBuf], old: &str, new: &str) -> Result<(), (String, String)> {
+        for path in dbs {
+            let step = || format!("renaming the group owners in {}", path.display());
+            let store = MemoryStore::open(path.clone(), OpenOptions::new().keep_journal_mode())
+                .await
+                .map_err(|e| (step(), e.to_string()))?;
+            let changed = store
+                .rename_instance(old, new)
+                .await
+                .map_err(|e| (step(), e.to_string()))?;
+            if changed > 0 {
+                self.push(path.clone(), changed);
+            }
+        }
+        Ok(())
+    }
+
+    /// Renames the group owners back, newest database first, and returns what couldn't be taken
+    /// back.
+    async fn undo(&self, old: &str, new: &str) -> Vec<String> {
+        let done = std::mem::take(&mut *self.0.lock().unwrap_or_else(PoisonError::into_inner));
+        let mut errors = Vec::new();
+        for (path, _) in done.into_iter().rev() {
+            let back = async {
+                let store =
+                    MemoryStore::open(path.clone(), OpenOptions::new().keep_journal_mode()).await?;
+                store.rename_instance(new, old).await
+            };
+            if let Err(e) = back.await {
+                errors.push(format!(
+                    "rename the group owners back in {}: {e}",
+                    path.display()
+                ));
+            }
+        }
+        errors
+    }
+}
+
+/// Takes every step back: the memory databases, which came last, then the files and moves.
+async fn undo_all(memory: &MemoryJournal, journal: &Journal, old: &str, new: &str) -> Vec<String> {
+    let mut errors = memory.undo(old, new).await;
+    errors.extend(journal.undo());
+    errors
 }
 
 /// Replaces `path` with `contents` all at once (a temporary file in the same directory, renamed

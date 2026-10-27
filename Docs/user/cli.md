@@ -91,8 +91,11 @@ and start a new, empty instance. This command renames everything together:
 - the database rows that name the instance (sessions, inbound and outbound messages, usage, the
   provider recorded on past replies, and the [routes](configuration.md#routes) Giles stores, which
   keep their order),
-- the directories `data/plugins/<old>/` and `agents/*/groups/<old>/`, and the instance's cache and
-  pid files,
+- the memory each agent keeps (`agents/<agent>/memory.db`): the memories a group of this channel
+  wrote are renamed to the new instance, so the group still sees them. Memories of users and shared
+  memories don't change,
+- the directories `data/plugins/<old>/` and `agents/*/groups/<old>/` (the per-group `MEMORY.md`
+  files), and the instance's cache and pid files,
 - the `[<kind>.<old>]` table in `giles.toml`, with its comments, formatting, and sub-tables, and the
   `[[routes]]` that name a renamed channel (Giles imports those once and then ignores them, so this
   only matters before its first start with routes in the database, or to keep a leftover block
@@ -109,6 +112,7 @@ Renamed channel instance "libera" to "libera-chat".
   database: 3 sessions, 10 inbox rows, 0 outbox rows, 0 usage rows, 0 messages, 2 routes
   giles.toml: [channel.libera] -> [channel.libera-chat]
   giles.toml: 1 [[routes]] rule(s) updated (Giles no longer reads them once they are imported)
+  agents/jeeves/memory.db: 2 group memories moved to "libera-chat"
   moved data/plugins/libera -> data/plugins/libera-chat
 Start giles again to use the new name.
 ```
@@ -128,14 +132,20 @@ in case. It refuses, changing nothing, if:
   and run the command again. Globs such as `*`, `memory*` and `*__create_issue` are fine.
 
 The rename is all or nothing as far as Giles can tell. The database changes happen in one
-transaction and the file changes inside it, and if any step fails, the earlier ones are undone and
-the error says what failed. If the process is killed in the middle (a power loss), run the same
-command again: it finishes what was left, treating directories that already moved as done. If
-undoing a failed rename also fails, the error lists what to fix by hand.
+transaction and the file changes inside it, ending with each agent's memory database (which is
+its own file, so the command renames the owners back in the ones it already did if a later step
+fails), and if any step fails, the earlier ones are undone and the error says what failed. If the
+process is killed in the middle (a power loss), run the same command again: it finishes what was
+left, treating directories that already moved as done and memory databases that already have the
+new name as done. If undoing a failed rename also fails, the error lists what to fix by hand.
 
 What the command leaves alone:
 
 - Tool names in old conversations: a renamed toolset's past calls still read `<old>__<tool>`.
+- The memory of an agent you removed in the web UI. It is in `trash/agents/`, outside the live
+  agents, and keeps the old instance name inside its `memory.db`; if you restore that agent later,
+  the groups of the renamed instance won't see those memories, because they are still filed under
+  the old name. An agent without a `memory.db` is skipped, and the command never creates one.
 - Your identities: `irc:libera:account:me` is named after the network the channel reports, not
   after the instance, so `[owner] identities` stay as they are.
 

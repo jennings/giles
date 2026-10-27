@@ -83,6 +83,14 @@ fn format_report(root: &DataRoot, old: &str, new: &str, report: &RenameReport) -
     for (path, changes) in &report.agent_files {
         let _ = writeln!(text, "  {}: {changes} reference(s) updated", relative(path));
     }
+    for (path, memories) in &report.memory_dbs {
+        let _ = writeln!(
+            text,
+            "  {}: {memories} group memor{} moved to {new:?}",
+            relative(path),
+            if *memories == 1 { "y" } else { "ies" }
+        );
+    }
     for (from, to) in &report.moved {
         let _ = writeln!(text, "  moved {} -> {}", relative(from), relative(to));
     }
@@ -122,6 +130,7 @@ mod tests {
                 Path::new("/g/data/plugins/libera").to_owned(),
                 Path::new("/g/data/plugins/libera-chat").to_owned(),
             )],
+            memory_dbs: vec![(Path::new("/g/agents/jeeves/memory.db").to_owned(), 5)],
         };
         let text = format_report(&root(), "libera", "libera-chat", &report);
         let expected = [
@@ -129,6 +138,7 @@ mod tests {
             "  database: 3 sessions, 10 inbox rows, 0 outbox rows, 0 usage rows, 0 messages, 4 routes",
             "  giles.toml: [channel.libera] -> [channel.libera-chat]",
             "  giles.toml: 2 [[routes]] rule(s) updated (Giles no longer reads them once they are imported)",
+            "memory.db: 5 group memories moved to \"libera-chat\"",
         ];
         for line in expected {
             assert!(text.contains(line), "{text}");

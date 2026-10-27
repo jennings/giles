@@ -891,6 +891,303 @@ fn undo_reports_what_it_could_not_take_back() {
     assert!(message.contains("partly done"), "{message}");
 }
 
+/// The agents' memory databases (`agents/<agent>/memory.db`): the group owners' channel instance
+/// is renamed with the rest.
+mod memory {
+    use giles_store::{Memory, MemoryId, MemoryOwner, MemoryViewer, NewMemory};
+
+    use super::*;
+
+    /// What `seed_memories` wrote.
+    struct Seeded {
+        /// jeeves: a private group memory of `libera` `#giles`, and a shared one that group wrote.
+        jeeves_group: Memory,
+        jeeves_shared_by_group: Memory,
+        /// jeeves: a user's private memory, and a group memory of the instance `web`.
+        jeeves_user: Memory,
+        jeeves_web: Memory,
+        /// bunter: a private group memory of `libera` `nick`, and a shared memory of the owner.
+        bunter_group: Memory,
+        bunter_shared: Memory,
+    }
+
+    fn group(instance: &str, conversation: &str, can_write_shared: bool) -> MemoryViewer {
+        MemoryViewer::new(
+            MemoryOwner::Group {
+                instance: instance.to_owned(),
+                conversation: ConversationId::new(conversation).unwrap(),
+            },
+            can_write_shared,
+        )
+    }
+
+    fn user(name: &str) -> MemoryViewer {
+        MemoryViewer::new(MemoryOwner::User(UserId::new(name).unwrap()), true)
+    }
+
+    async fn open_db(path: PathBuf) -> MemoryStore {
+        MemoryStore::open(path, OpenOptions::new()).await.unwrap()
+    }
+
+    async fn remember(
+        store: &MemoryStore,
+        viewer: &MemoryViewer,
+        shared: bool,
+        content: &str,
+    ) -> Memory {
+        let new = NewMemory {
+            content: content.to_owned(),
+            core: false,
+            shared,
+            source_session: None,
+        };
+        let now = jiff::Timestamp::from_second(1_800_000_000).unwrap();
+        store.add(viewer, new, 2200, now).await.unwrap()
+    }
+
+    /// Whether `viewer` can read memory `id` of the database at `path`.
+    async fn sees(path: PathBuf, viewer: &MemoryViewer, id: MemoryId) -> bool {
+        open_db(path).await.get(viewer, id).await.is_ok()
+    }
+
+    /// `jeeves` and `bunter` each get a memory database with group memories on `libera`, and
+    /// memories a rename must leave alone.
+    async fn seed_memories(home: &Home) -> Seeded {
+        let jeeves = open_db(home.path("agents/jeeves/memory.db")).await;
+        let bunter = open_db(home.path("agents/bunter/memory.db")).await;
+        Seeded {
+            jeeves_group: remember(&jeeves, &group("libera", "#giles", false), false, "quiet")
+                .await,
+            jeeves_shared_by_group: remember(
+                &jeeves,
+                &group("libera", "#giles", true),
+                true,
+                "said on irc",
+            )
+            .await,
+            jeeves_user: remember(&jeeves, &user("owner"), false, "likes tea").await,
+            jeeves_web: remember(&jeeves, &group("web", "chat-1", false), false, "on web").await,
+            bunter_group: remember(&bunter, &group("libera", "nick", false), false, "dm-ish").await,
+            bunter_shared: remember(&bunter, &user("owner"), true, "for everyone").await,
+        }
+    }
+
+    fn db(home: &Home, agent: &str) -> PathBuf {
+        home.path(&format!("agents/{agent}/memory.db"))
+    }
+
+    #[tokio::test]
+    async fn group_memories_follow_the_instance_to_its_new_name() {
+        let home = Home::populated().await;
+        let s = seed_memories(&home).await;
+
+        let report = home.rename("libera", "oftc").await.unwrap();
+        // Agents in name order; the count is the memories whose group owner changed.
+        assert_eq!(
+            report.memory_dbs,
+            [(db(&home, "bunter"), 1), (db(&home, "jeeves"), 2)]
+        );
+
+        let jeeves = db(&home, "jeeves");
+        let (new_giles, old_giles) = (
+            group("oftc", "#giles", false),
+            group("libera", "#giles", false),
+        );
+        for id in [s.jeeves_group.id, s.jeeves_shared_by_group.id] {
+            assert!(sees(jeeves.clone(), &new_giles, id).await);
+        }
+        // The private one isn't visible to the old name any more; the shared one still is.
+        assert!(!sees(jeeves.clone(), &old_giles, s.jeeves_group.id).await);
+        assert!(sees(jeeves.clone(), &old_giles, s.jeeves_shared_by_group.id).await);
+        let author = open_db(jeeves.clone())
+            .await
+            .get(&user("owner"), s.jeeves_shared_by_group.id)
+            .await
+            .unwrap()
+            .owner;
+        assert_eq!(
+            author,
+            MemoryOwner::Group {
+                instance: "oftc".to_owned(),
+                conversation: ConversationId::new("#giles").unwrap(),
+            }
+        );
+        let bunter = db(&home, "bunter");
+        assert!(
+            sees(
+                bunter.clone(),
+                &group("oftc", "nick", false),
+                s.bunter_group.id
+            )
+            .await
+        );
+        assert!(
+            !sees(
+                bunter.clone(),
+                &group("libera", "nick", false),
+                s.bunter_group.id
+            )
+            .await
+        );
+
+        // Memories of a user, of the instance `web`, and shared ones are untouched.
+        assert_eq!(
+            open_db(jeeves.clone())
+                .await
+                .get(&user("owner"), s.jeeves_user.id)
+                .await
+                .unwrap(),
+            s.jeeves_user
+        );
+        assert_eq!(
+            open_db(jeeves.clone())
+                .await
+                .get(&group("web", "chat-1", false), s.jeeves_web.id)
+                .await
+                .unwrap(),
+            s.jeeves_web
+        );
+        assert_eq!(
+            open_db(bunter)
+                .await
+                .get(&group("elsewhere", "x", false), s.bunter_shared.id)
+                .await
+                .unwrap(),
+            s.bunter_shared
+        );
+        // The rows and the group directories still move as before.
+        assert_eq!(home.rows().await["oftc"].sessions, 2);
+        assert!(
+            home.path("agents/jeeves/groups/oftc/%23giles/MEMORY.md")
+                .is_file()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_removed_agents_memory_database_in_the_trash_is_left_alone() {
+        let home = Home::populated().await;
+        let s = seed_memories(&home).await;
+        let trashed = home.path("trash/agents/jeeves-20261024T120000Z");
+        fs::create_dir_all(trashed.parent().unwrap()).unwrap();
+        fs::rename(home.path("agents/jeeves"), &trashed).unwrap();
+
+        let report = home.rename("libera", "oftc").await.unwrap();
+        assert_eq!(report.memory_dbs, [(db(&home, "bunter"), 1)]);
+        // The trashed copy keeps the old name, so restoring the agent restores what it had.
+        let trashed_db = trashed.join("memory.db");
+        assert!(
+            sees(
+                trashed_db.clone(),
+                &group("libera", "#giles", false),
+                s.jeeves_group.id
+            )
+            .await
+        );
+        assert!(
+            !sees(
+                trashed_db,
+                &group("oftc", "#giles", false),
+                s.jeeves_group.id
+            )
+            .await
+        );
+    }
+
+    #[tokio::test]
+    async fn agents_without_a_memory_database_are_skipped_and_none_is_created() {
+        let home = Home::populated().await;
+        let report = home.rename("libera", "oftc").await.unwrap();
+        assert!(report.memory_dbs.is_empty(), "{:?}", report.memory_dbs);
+        for agent in ["jeeves", "bunter"] {
+            assert!(!db(&home, agent).exists(), "{agent}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_after_a_partial_rename_finishes_the_databases_left() {
+        let home = Home::populated().await;
+        let s = seed_memories(&home).await;
+        // The first attempt rewrote giles.toml and renamed the owners in bunter's database, then
+        // died before jeeves's and the commit.
+        home.write(
+            "giles.toml",
+            &GILES_TOML
+                .replace("[channel.libera]", "[channel.oftc]")
+                .replace("channel = \"libera\"", "channel = \"oftc\""),
+        );
+        let done = open_db(db(&home, "bunter")).await;
+        assert_eq!(done.rename_instance("libera", "oftc").await.unwrap(), 1);
+        drop(done);
+
+        let report = home.rename("libera", "oftc").await.unwrap();
+        // Only what was left is counted: bunter's database has nothing under `libera` any more.
+        assert_eq!(report.memory_dbs, [(db(&home, "jeeves"), 2)]);
+        assert!(
+            sees(
+                db(&home, "jeeves"),
+                &group("oftc", "#giles", false),
+                s.jeeves_group.id
+            )
+            .await
+        );
+        assert!(
+            sees(
+                db(&home, "bunter"),
+                &group("oftc", "nick", false),
+                s.bunter_group.id
+            )
+            .await
+        );
+        assert_eq!(home.rows().await["oftc"].sessions, 2);
+    }
+
+    #[tokio::test]
+    async fn a_database_that_cannot_be_renamed_undoes_the_ones_before_it() {
+        let home = Home::populated().await;
+        let s = seed_memories(&home).await;
+        // `zed` sorts after the other agents, so theirs are renamed first.
+        home.write("agents/zed/memory.db", &"not a database. ".repeat(40));
+
+        let err = home.rename("libera", "oftc").await.unwrap_err();
+        assert!(
+            matches!(&err, RenameError::Failed { step, undo_errors, .. }
+                if step.contains("zed") && undo_errors.is_empty()),
+            "{err}"
+        );
+        assert!(err.to_string().contains("Nothing was changed"), "{err}");
+
+        // The memories, the rows, the configuration and the directories are as they were.
+        assert!(
+            sees(
+                db(&home, "jeeves"),
+                &group("libera", "#giles", false),
+                s.jeeves_group.id
+            )
+            .await
+        );
+        assert!(
+            sees(
+                db(&home, "bunter"),
+                &group("libera", "nick", false),
+                s.bunter_group.id
+            )
+            .await
+        );
+        assert!(
+            !sees(
+                db(&home, "jeeves"),
+                &group("oftc", "#giles", false),
+                s.jeeves_group.id
+            )
+            .await
+        );
+        assert_eq!(home.read("giles.toml"), GILES_TOML);
+        assert_eq!(home.rows().await["libera"].sessions, 2);
+        assert!(home.path("data/plugins/libera/state.json").is_file());
+        assert!(home.path("agents/jeeves/groups/libera").is_dir());
+    }
+}
+
 mod startup_check {
     use super::*;
 

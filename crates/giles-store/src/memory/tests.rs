@@ -1206,3 +1206,122 @@ async fn recall_matches_fts5_syntax_characters_as_text() {
     found.sort();
     assert_eq!(found, [memory.id, other.id]);
 }
+
+#[tokio::test]
+async fn renaming_an_instance_moves_its_group_memories_to_the_new_name() {
+    let (_dir, store) = open().await;
+    let mine = add(&store, &group("libera", "#giles"), new("topic is rust")).await;
+    let core = add(&store, &group("libera", "#giles"), new_core("be brief")).await;
+    let other_conversation = add(&store, &group("libera", "#other"), new("elsewhere")).await;
+    let other_instance = add(&store, &group("web", "#giles"), new("on the web")).await;
+    let user = add(&store, &owner(), new("private to the owner")).await;
+    let shared = add(&store, &owner(), new_shared("for everyone")).await;
+    // A shared memory keeps the group that wrote it as its author.
+    let shared_by_group = add(
+        &store,
+        &MemoryViewer::new(group_owner("libera", "#giles"), true),
+        new_shared("said in the channel"),
+    )
+    .await;
+    let job = add(&store, &config_job(), new_shared("from a job")).await;
+    assert_eq!(shared_by_group.owner, group_owner("libera", "#giles"));
+
+    let changed = store.rename_instance("libera", "oftc").await.unwrap();
+    assert_eq!(changed, 4);
+
+    let old_viewer = group("libera", "#giles");
+    let new_viewer = group("oftc", "#giles");
+    // Visible to the same conversation under the new name, and no longer under the old one.
+    assert_eq!(
+        visible_to(&store, &new_viewer, &[mine.id, core.id]).await,
+        [mine.id, core.id]
+    );
+    assert!(
+        visible_to(&store, &old_viewer, &[mine.id, core.id])
+            .await
+            .is_empty()
+    );
+    let core_memories = store.core_memories(&new_viewer).await.unwrap();
+    assert_eq!(ids(&core_memories.own.memories), [core.id]);
+    assert!(
+        store
+            .core_memories(&old_viewer)
+            .await
+            .unwrap()
+            .own
+            .memories
+            .is_empty()
+    );
+    assert_eq!(
+        store.get(&new_viewer, mine.id).await.unwrap().owner,
+        group_owner("oftc", "#giles")
+    );
+    // The memory itself is unchanged.
+    let moved = store.get(&new_viewer, mine.id).await.unwrap();
+    assert_eq!(
+        (moved.content.as_str(), moved.created_at, moved.updated_at),
+        ("topic is rust", mine.created_at, mine.updated_at)
+    );
+    assert_eq!(
+        store.get(&owner(), shared_by_group.id).await.unwrap().owner,
+        group_owner("oftc", "#giles")
+    );
+    // Search follows the memory, not the old name.
+    let found = store.recall(&new_viewer, "rust", 10).await.unwrap();
+    assert_eq!(ids(&found), [mine.id]);
+
+    // Other conversations of the instance moved too; the same conversation id on another
+    // instance, users, and shared and ownerless memories didn't.
+    assert_eq!(
+        visible_to(&store, &group("oftc", "#other"), &[other_conversation.id]).await,
+        [other_conversation.id]
+    );
+    assert_eq!(
+        visible_to(&store, &group("web", "#giles"), &[other_instance.id]).await,
+        [other_instance.id]
+    );
+    assert!(
+        visible_to(&store, &new_viewer, &[other_instance.id])
+            .await
+            .is_empty()
+    );
+    assert_eq!(
+        store.get(&owner(), user.id).await.unwrap().owner,
+        user_owner("owner")
+    );
+    assert_eq!(store.get(&owner(), shared.id).await.unwrap(), shared);
+    assert_eq!(store.get(&config_job(), job.id).await.unwrap(), job);
+}
+
+#[tokio::test]
+async fn renaming_an_instance_again_or_one_without_memories_changes_nothing() {
+    let (_dir, store) = open().await;
+    let one = add(&store, &group("libera", "#giles"), new("one")).await;
+    add(&store, &owner(), new("two")).await;
+    assert_eq!(store.rename_instance("libera", "oftc").await.unwrap(), 1);
+    // Run again: nothing is left under the old name.
+    assert_eq!(store.rename_instance("libera", "oftc").await.unwrap(), 0);
+    // An instance no group of which wrote anything.
+    assert_eq!(store.rename_instance("quiet", "loud").await.unwrap(), 0);
+    assert_eq!(
+        visible_to(&store, &group("oftc", "#giles"), &[one.id]).await,
+        [one.id]
+    );
+}
+
+#[tokio::test]
+async fn renaming_an_instance_needs_two_different_names() {
+    let (_dir, store) = open().await;
+    let memory = add(&store, &group("libera", "#giles"), new("one")).await;
+    for (from, to) in [("libera", "libera"), ("", "oftc"), ("libera", ""), ("", "")] {
+        let err = store.rename_instance(from, to).await.unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidRequest(_)),
+            "{from:?} {to:?}: {err:?}"
+        );
+    }
+    assert_eq!(
+        visible_to(&store, &group("libera", "#giles"), &[memory.id]).await,
+        [memory.id]
+    );
+}

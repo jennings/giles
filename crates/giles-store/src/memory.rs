@@ -270,6 +270,37 @@ impl MemoryStore {
         self.store.vacuum_into(dest).await
     }
 
+    /// Renames a channel instance in the group owners: every memory whose owner is a group of
+    /// the instance `old` becomes a group of `new`, in one write transaction. A shared memory
+    /// keeps its author, so one written by a group counts too. User-owned and ownerless memories
+    /// don't change. Returns how many memories changed (none if no group of `old` wrote any).
+    ///
+    /// Nothing in the schema is unique over the owner columns, so the rows of `new` already
+    /// there (if any) stay and the two instances' groups are not told apart afterwards; a caller
+    /// that must not merge instances checks `new` first. This is the memory half of
+    /// `giles instance rename`; running it again after it succeeded changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidRequest`] if the names are equal or empty.
+    pub async fn rename_instance(&self, old: &str, new: &str) -> Result<usize> {
+        if old.is_empty() || new.is_empty() || old == new {
+            return Err(Error::invalid(
+                "an instance rename needs two different, non-empty names",
+            ));
+        }
+        let (old, new) = (old.to_owned(), new.to_owned());
+        self.store
+            .write(move |conn| {
+                Ok(conn.execute(
+                    "UPDATE memories SET owner_instance = ?2
+                     WHERE owner_kind = 'group' AND owner_instance = ?1",
+                    params![old, new],
+                )?)
+            })
+            .await
+    }
+
     /// Adds a memory and returns it.
     ///
     /// # Errors
