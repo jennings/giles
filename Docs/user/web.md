@@ -140,8 +140,8 @@ text.
   of its tools.
 - **Other tools**: optional names or globs the boxes can't show, such as `github__create_*`,
   separated by commas or spaces. A box that one of these already allows is ticked and greyed out.
-- **Ask first**: optional tool names or globs that need your approval before each call, separated
-  by commas or spaces.
+- **Ask first**: optional tool names or globs that need your approval before each call, separated by
+  commas or spaces.
 - **Time zone**: optional, such as `Europe/London`.
 - **SOUL.md**: who the agent is.
 

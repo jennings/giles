@@ -444,10 +444,10 @@ than the admin service: there are no agent RPCs yet (PLAN section 8.7).
   (`tools`): `split` separates the two when the form is filled in, `compose` joins them on save
   (boxes in the picker's order, then the text as written, without repeats), so a hand-written
   `github__create_*` or `memory*` survives a save. An entry in the text that covers a box
-  (`glob::matches(entry, <box's entry>)`; for a toolset the probe is `<instance>__*` itself, so
-  `*` covers it and `github__create_*` doesn't) shows the box ticked and disabled, and `compose`
-  leaves that box out. A posted `tool:` field that no box stands for is ignored. Saving rewrites
-  `tools` only if the resulting list differs from the file's.
+  (`glob::matches(entry, <box's entry>)`; for a toolset the probe is `<instance>__*` itself, so `*`
+  covers it and `github__create_*` doesn't) shows the box ticked and disabled, and `compose` leaves
+  that box out. A posted `tool:` field that no box stands for is ignored. Saving rewrites `tools`
+  only if the resulting list differs from the file's.
 - The form asks for the name before the id. The id is derived from the name by
   `agents::agent_id_from_name`, a pure function: lowercase (`str::to_lowercase`), each space to `-`,
   every other character outside `a-z`, `0-9`, `-` removed. Nothing is trimmed or collapsed, ids are
