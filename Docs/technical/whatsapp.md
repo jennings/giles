@@ -226,13 +226,13 @@ restart would reuse the dead session and be logged out again.
 
 ### Shutdown
 
-The SDK owns the channel and returns from `serve` when the core stops the plugin, and a process that
-exited then would cut the session task off before it disconnects the client (which flushes the
-session store). `configure` leaves the session's stop token and `JoinHandle` in a `SessionSlot` that
-`main` keeps; after `serve` returns, `main` cancels the session and awaits it for
-`Timing::shutdown_wait` (10 s) plus a second. The session stops on its next event or wait, also
-while still connecting, calls `Backend::shutdown` (itself bounded by `shutdown_wait`), and ends. The
-core's own kill deadline still applies on top.
+The SDK owns the channel and returns from `run` when the core stops the plugin (or, as a remote
+plugin with `serve`, on `SIGINT` or `SIGTERM`), and a process that exited then would cut the session
+task off before it disconnects the client (which flushes the session store). `configure` leaves the
+session's stop token and `JoinHandle` in a `SessionSlot` that `main` keeps; after `run` returns,
+`main` cancels the session and awaits it for `Timing::shutdown_wait` (10 s) plus a second. The
+session stops on its next event or wait, also while still connecting, calls `Backend::shutdown`
+(itself bounded by `shutdown_wait`), and ends. The core's own kill deadline still applies on top.
 
 ## Session store and lock
 

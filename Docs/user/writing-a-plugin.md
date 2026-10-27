@@ -82,7 +82,7 @@ impl Channel for Example {
 async fn main() -> ExitCode {
     ChannelPlugin::new("example", env!("CARGO_PKG_VERSION"))
         .output(OutputMode::Blocks)
-        .serve(|ctx: Configure| async move {
+        .run(|ctx: Configure| async move {
             let config: Config = ctx.parse_config()?;
             Ok(Example {
                 info: ChannelInfo {
@@ -104,7 +104,9 @@ component = "example"
 config = { server = "chat.example.com" }
 ```
 
-Run by hand, the binary only says that it's a Giles plugin and exits.
+`run` gives the binary two subcommands. Giles launches it with `socket`; run by hand, that only says
+that it's a Giles plugin and exits. An operator can also run it as a
+[remote plugin](remote-plugins.md) with `serve`.
 
 ## The pieces
 
@@ -118,7 +120,7 @@ Run by hand, the binary only says that it's a Giles plugin and exits.
 - `requested_grants`: sandbox grants to suggest to the operator. They're shown in `giles status` and
   never applied by themselves.
 
-Call `serve(configure)` first thing in `main` and return its exit code. `configure` runs when Giles
+Call `run(configure)` first thing in `main` and return its exit code. `configure` runs when Giles
 sends the instance config.
 
 For a bad config, return `Error::InvalidRequest`. Giles shows the message and doesn't start the
@@ -183,7 +185,7 @@ same inside the sandbox on every host.
 ## Lifecycle
 
 When Giles stops the plugin, the SDK lets open calls finish for a few seconds and returns from
-`serve`. It also returns when Giles itself goes away, so a plugin never outlives the daemon.
+`run`. It also returns when Giles itself goes away, so a plugin never outlives the daemon.
 
 A plugin that is killed loses nothing. Events not yet acknowledged are already on disk.
 
@@ -197,8 +199,13 @@ name and discards anything written to stdout.
 The same channel can run on another machine. You start it yourself, and Giles connects to it over
 the network as a [remote plugin](configuration.md#remote-plugins).
 
-Call `serve_remote` instead of `serve`. The rest of `src/main.rs` stays as above, and `tokio` needs
-its `net` feature:
+A plugin built with `run` already does this: `giles-channel-example serve` takes its listen address,
+data directory, TLS files, and token from flags or a file, as
+[Running a plugin on another machine](remote-plugins.md) describes. The plugin's own settings still
+come from the instance's `config` in `giles.toml`.
+
+For your own command line, call `serve_remote` instead of `run`. The rest of `src/main.rs` stays as
+above, and `tokio` needs its `net` feature:
 
 ```rust
 use giles_plugin_sdk::{RemoteAuth, RemoteServer, tls};
