@@ -336,15 +336,15 @@ row like any other (compaction model, agent, requester, session), and nothing of
 channel.
 
 **Storing.** The response's text blocks, trimmed and joined, become a `summaries` row covering
-`from_seq` (the previous summary's, else the first message's) through the last summarized
-message, so each summary rolls up everything before it. History loads then send it as the leading
-`User` message (above, Messages) followed by the kept messages; the originals stay in the
-transcript, where the web chat and `memory_search` still find them. Up to `MAX_PASSES` (3)
-summaries are written in one check while the estimate stays over the threshold. Then the session's
-`system` is rebuilt with `AgentLoop::rebuild_prompt` (a fresh snapshot of the core memories, §6.7:
-memory written during the session reaches the prompt now) and the tools stay as they were; the rest of
-the turn and later turns use the rebuilt prompt. The rebuilt `system` and the new history miss the
-provider's prompt cache once.
+`from_seq` (the previous summary's, else the first message's) through the last summarized message,
+so each summary rolls up everything before it. History loads then send it as the leading `User`
+message (above, Messages) followed by the kept messages; the originals stay in the transcript, where
+the web chat and `memory_search` still find them. Up to `MAX_PASSES` (3) summaries are written in
+one check while the estimate stays over the threshold. Then the session's `system` is rebuilt with
+`AgentLoop::rebuild_prompt` (a fresh snapshot of the core memories, §6.7: memory written during the
+session reaches the prompt now) and the tools stay as they were; the rest of the turn and later
+turns use the rebuilt prompt. The rebuilt `system` and the new history miss the provider's prompt
+cache once.
 
 **Failures.** A summary request that fails (refused, a stream error, an empty summary, or no
 usable compaction model) is logged, and the turn goes on without compacting: the request goes out
@@ -378,8 +378,8 @@ Calls start in model order. Each has a `CallPolicy`:
 
 - A toolset tool takes its instance's `parallel` (default `false`) and `deadline` (default 5 m).
 - A core tool is parallel-safe if it only reads (`PARALLEL_SAFE_CORE_TOOLS`: `load_skill`,
-  `memory_recall`, `memory_search`), with the default deadline. MCP's `readOnlyHint` is ignored: it's untrusted
-  (§7.10).
+  `memory_recall`, `memory_search`), with the default deadline. MCP's `readOnlyHint` is ignored:
+  it's untrusted (§7.10).
 - A tool the session doesn't offer runs nothing, so it counts as parallel-safe and never holds up
   another call.
 
@@ -422,13 +422,13 @@ the wait for an `ask` approval before it). A call still running at its deadline 
 
 The core tools (§6.5) live in `giles_core::core_tools`, one module per tool, each implementing
 `CoreTool { fn spec() -> ToolSpec; async fn call(CoreCall) -> ToolOutput }`. A tool keeps its
-long-lived dependencies (store, memory databases, configuration) in its own fields; per call it gets the
-`ToolUse` id, the input, the `CallContext`, the shared `TurnContext` (`session`, `reply` where
+long-lived dependencies (store, memory databases, configuration) in its own fields; per call it gets
+the `ToolUse` id, the input, the `CallContext`, the shared `TurnContext` (`session`, `reply` where
 `send_attachment` sends, `skills` that `load_skill` answers from), and the batch's session media
-(`media`, for tools that take a media id). Failures are error
-results, never panics. `Registry::register_core_tool(Arc<dyn CoreTool>)` stores the
-implementation and adds its spec to the tool index (`ToolIndex::set_core_tool`), and the dispatcher
-finds it with `Registry::core_tool(name)` when the call starts.
+(`media`, for tools that take a media id). Failures are error results, never panics.
+`Registry::register_core_tool(Arc<dyn CoreTool>)` stores the implementation and adds its spec to the
+tool index (`ToolIndex::set_core_tool`), and the dispatcher finds it with
+`Registry::core_tool(name)` when the call starts.
 
 The core tools are `load_skill`, `memory_add`, `memory_edit`, `memory_forget`, `memory_recall`,
 `memory_search`, `schedule`, and `send_attachment`. Of those, `memory_recall` (with `load_skill`

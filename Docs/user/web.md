@@ -173,12 +173,12 @@ as they were. Otherwise it saves, and the agent changed without a restart:
 **Remove**, on the list and on an agent's page, opens a page that says what removing the agent
 does, with a **Remove agent** button. Nothing happens until you press it.
 
-- **The files are moved, not deleted.** `agents/<id>/` (`agent.toml`, `SOUL.md`, the memory
-  database `memory.db` with the memories of the agent, its users and groups, job prompt files,
-  skills) is renamed to `trash/agents/<id>-<date and time in UTC>/` in the data directory, for example
+- **The files are moved, not deleted.** `agents/<id>/` (`agent.toml`, `SOUL.md`, the memory database
+  `memory.db` with the memories of the agent, its users and groups, job prompt files, skills) is
+  renamed to `trash/agents/<id>-<date and time in UTC>/` in the data directory, for example
   `trash/agents/jeeves-20261024T120000Z/`. To bring the agent back, move that directory to
-  `agents/<id>/` and restart Giles; its memories come back with it. Giles never reads, empties,
-  or backs up `trash/` ([Backups](backups.md)); delete what you don't want, whenever you like.
+  `agents/<id>/` and restart Giles; its memories come back with it. Giles never reads, empties, or
+  backs up `trash/` ([Backups](backups.md)); delete what you don't want, whenever you like.
 - **Its memory database goes with it.** Giles closes the agent's `memory.db` first, so the
   trashed directory holds one complete `memory.db` file with nothing left in `memory.db-wal` or
   `memory.db-shm`.

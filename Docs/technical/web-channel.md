@@ -416,21 +416,20 @@ agent RPCs yet (PLAN section 8.7).
 
 - The list reads the running configuration: id, label (`Name (id)`), models, and links to the
   page and to `/chats/new?agent=<id>` ([Choosing an Agent](#choosing-an-agent)).
-- An agent's page looks the id up in the running configuration (anything else, `..` included, is
-  a 404) and lists its directory with `agents::list_files(&agent, &viewer)` on a blocking thread.
-  The walk never follows a link: entries come from `read_dir` with `file_type()` (a link is listed
-  as one), files are opened with `O_NOFOLLOW | O_NONBLOCK`, and the descriptor's path
-  (`F_GETPATH` on macOS, `/proc/self/fd` on Linux, the helper `load_skill` uses) must be inside the
-  canonical agent directory. A directory swapped for a link mid-walk can still be listed (the
-  names and sizes below it, since `read_dir` follows it), but no contents from elsewhere are shown.
-  The walk stops once it has `MAX_FILES` entries. Dot names are skipped. Caps: `MAX_FILES` (200)
-  entries, `MAX_DEPTH` (8), the first
-  `MAX_FILE_BYTES` (64 KiB) of each file, `MAX_TOTAL_BYTES` (1 MiB) of contents per page. Text is
-  UTF-8 without NUL (a character split by the cut is dropped); anything else is listed with its
-  size (so `memory.db` is listed by its size and its contents are never shown; the memories have
-  their own page, [Memory Page](#memory-page)). Contents are shown escaped in `<pre>`. Each entry has a `FileKind`
-  (`Config`, `Soul`, `JobPrompt` from the agent's `prompt_file`s, `Skill`, `Other`) that orders and
-  labels it.
+- An agent's page looks the id up in the running configuration (anything else, `..` included, is a
+  404) and lists its directory with `agents::list_files(&agent, &viewer)` on a blocking thread. The
+  walk never follows a link: entries come from `read_dir` with `file_type()` (a link is listed as
+  one), files are opened with `O_NOFOLLOW | O_NONBLOCK`, and the descriptor's path (`F_GETPATH` on
+  macOS, `/proc/self/fd` on Linux, the helper `load_skill` uses) must be inside the canonical agent
+  directory. A directory swapped for a link mid-walk can still be listed (the names and sizes below
+  it, since `read_dir` follows it), but no contents from elsewhere are shown. The walk stops once it
+  has `MAX_FILES` entries. Dot names are skipped. Caps: `MAX_FILES` (200) entries, `MAX_DEPTH` (8),
+  the first `MAX_FILE_BYTES` (64 KiB) of each file, `MAX_TOTAL_BYTES` (1 MiB) of contents per page.
+  Text is UTF-8 without NUL (a character split by the cut is dropped); anything else is listed with
+  its size (so `memory.db` is listed by its size and its contents are never shown; the memories have
+  their own page, [Memory Page](#memory-page)). Contents are shown escaped in `<pre>`. Each entry
+  has a `FileKind` (`Config`, `Soul`, `JobPrompt` from the agent's `prompt_file`s, `Skill`, `Other`)
+  that orders and labels it.
 - Who sees which file is one hook, `FileKind::visible_to(viewer)`, applied before a file is read
   or counted. It allows everything now: v1's only user is the owner, the only one who can open the
   pages. With several users it is where a user is limited to the files that are their own.
@@ -533,10 +532,10 @@ form has no id field.
 `GET` and `POST /admin/agents/<agent>/remove` (`remove_page`, `remove` in `agents.rs`; templates
 `admin_agent_remove.html` and `admin_agent_removed.html`). The manager is built from
 `AgentManagerOptions`: the registry, the store, the `MemoryDbs` (the registry of open per-agent
-`memory.db` handles, `memory_dbs.rs`, built once in `Runtime::start` and shared), the `Routes`, the scheduler's `JobChanges`, and an
-`AgentActivity` (the daemon's `DaemonActivity`: the session manager's `Sessions::agent_busy` or the
-scheduler's `Scheduler::agent_busy`). The semantics are in the module docs; in short, under the
-manager's lock:
+`memory.db` handles, `memory_dbs.rs`, built once in `Runtime::start` and shared), the `Routes`, the
+scheduler's `JobChanges`, and an `AgentActivity` (the daemon's `DaemonActivity`: the session
+manager's `Sessions::agent_busy` or the scheduler's `Scheduler::agent_busy`). The semantics are in
+the module docs; in short, under the manager's lock:
 
 1. `AgentActivity::is_busy`, a first look. `Sessions::agent_busy`: some session of the agent has a
    driver, that is a running turn, a holder (`Sessions::hold`, which `dm` jobs use), or queued rows;

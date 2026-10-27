@@ -526,17 +526,16 @@ When a turn reaches its iteration limit, the tools the model asked for in that l
 run; Giles makes one more request without tools, so the model tells you where it stopped. `/stop`
 ends a turn with no iteration limit.
 
-When a conversation gets long (its next request would fill about 80% of the model's context
-window), Giles first has `compaction_model` summarize the older messages, keeping facts, decisions,
-and open tasks, and the model then sees the summary plus the most recent messages. The full
-transcript stays in the database. A cheaper model works well for this, as long as its own context
-window is large enough to read a good part of the conversation at once. Compaction also refreshes
-the memory shown to the model, so the core memories it saved during the conversation now show in
-its prompt. Giles takes a model's context window from the provider; for OpenAI-compatible servers the
-`context_window` you set in the provider's config ([Providers](providers.md)) applies too, also
-when the server doesn't list the model under that exact id. Without either, Giles assumes 128,000
-tokens. If writing the summary fails, Giles logs it and goes on without it, and tries again on
-your next message.
+When a conversation gets long (its next request would fill about 80% of the model's context window),
+Giles first has `compaction_model` summarize the older messages, keeping facts, decisions, and open
+tasks, and the model then sees the summary plus the most recent messages. The full transcript stays
+in the database. A cheaper model works well for this, as long as its own context window is large
+enough to read a good part of the conversation at once. Compaction also refreshes the memory shown
+to the model, so the core memories it saved during the conversation now show in its prompt. Giles
+takes a model's context window from the provider; for OpenAI-compatible servers the `context_window`
+you set in the provider's config ([Providers](providers.md)) applies too, also when the server
+doesn't list the model under that exact id. Without either, Giles assumes 128,000 tokens. If writing
+the summary fails, Giles logs it and goes on without it, and tries again on your next message.
 
 With `busy_mode = "steer"`, a message you send while the agent is running tools reaches it as soon
 as the tools already running finish: tool calls it asked for but hadn't started yet are skipped

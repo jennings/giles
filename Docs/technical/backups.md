@@ -110,9 +110,9 @@ plain file, and for a live WAL database that is the wrong thing to copy. So the 
    this one doesn't delete the WAL while the other is open.
 
 When the walk reaches the live `memory.db`, `Walk::file` appends the staged snapshot under the live
-name (`agents/<agent>/memory.db`, mode 0600), so the tar stays in name order and a restore puts every
-database back where it was. The staging directory is removed when `MemorySnapshots` is dropped,
-after the archive is written or when anything fails.
+name (`agents/<agent>/memory.db`, mode 0600), so the tar stays in name order and a restore puts
+every database back where it was. The staging directory is removed when `MemorySnapshots` is
+dropped, after the archive is written or when anything fails.
 
 Any failure to snapshot a memory database (it isn't a database, its schema is newer than the binary,
 the disk is full) fails the backup with `BackupError::MemoryDatabase` naming the file, and the

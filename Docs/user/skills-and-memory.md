@@ -143,7 +143,7 @@ In the prompt, memory comes after `SOUL.md` and the skills, under `# Memory`, in
 
 Each core memory is a line with its id and flags, for example:
 
-```
+```text
 ## Shared memory [4% — 49/1,000]
 
 What you remember in general, shared by all your conversations.
