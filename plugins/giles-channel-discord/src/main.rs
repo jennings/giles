@@ -1,5 +1,5 @@
-//! `giles-channel-discord`: the Giles Discord channel plugin. Run by Giles, not by hand. See
-//! `Docs/technical/discord.md`.
+//! `giles-channel-discord`: the Giles Discord channel plugin. Giles launches it (`socket`); an
+//! operator can run it as a remote plugin (`serve`). See `Docs/technical/discord.md`.
 
 use std::io;
 use std::process::ExitCode;
@@ -23,13 +23,13 @@ async fn main() -> ExitCode {
         )
         .init();
     // The SDK owns the channel, so the session is reached through a slot `configure` fills: after
-    // `serve` returns, the Gateway is closed (the bot goes offline at once) before exiting.
+    // `run` returns, the Gateway is closed (the bot goes offline at once) before exiting.
     let slot = SessionSlot::default();
     let configure_slot = slot.clone();
     let code = ChannelPlugin::new("discord", env!("CARGO_PKG_VERSION"))
         .output(OutputMode::Blocks)
         .can_initiate(true)
-        .serve(move |ctx| {
+        .run(move |ctx| {
             let slot = configure_slot.clone();
             async move { channel::configure(ctx, &slot).await }
         })

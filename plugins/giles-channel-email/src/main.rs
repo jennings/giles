@@ -1,6 +1,7 @@
 //! `giles-channel-email`: the Giles email channel. Receives mail with IMAP IDLE, sends with SMTP,
 //! and trusts a sender only as far as the receiving server's `Authentication-Results` vouch for
-//! them. See `Docs/user/email.md` and `Docs/technical/email.md`.
+//! them. Giles launches it (`socket`); an operator can run it as a remote plugin (`serve`). See
+//! `Docs/user/email.md` and `Docs/technical/email.md`.
 
 mod address;
 mod auth_results;
@@ -37,6 +38,6 @@ async fn main() -> ExitCode {
     ChannelPlugin::new("email", env!("CARGO_PKG_VERSION"))
         .output(OutputMode::Blocks)
         .can_initiate(true)
-        .serve(EmailChannel::configure)
+        .run(EmailChannel::configure)
         .await
 }

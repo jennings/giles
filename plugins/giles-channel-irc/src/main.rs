@@ -1,4 +1,5 @@
-//! `giles-channel-irc`: the Giles IRC channel plugin. Run by Giles, not by hand.
+//! `giles-channel-irc`: the Giles IRC channel plugin. Giles launches it (`socket`); an operator can
+//! run it as a remote plugin (`serve`).
 
 use std::io;
 use std::process::ExitCode;
@@ -19,6 +20,6 @@ async fn main() -> ExitCode {
     ChannelPlugin::new("irc", env!("CARGO_PKG_VERSION"))
         .output(OutputMode::Blocks)
         .can_initiate(true)
-        .serve(giles_channel_irc::configure)
+        .run(giles_channel_irc::configure)
         .await
 }
