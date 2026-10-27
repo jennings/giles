@@ -1,11 +1,12 @@
 # Installing and Running
 
-Giles runs on Linux and macOS.
+This page covers installing Giles, starting it, and what it needs from the machine. Giles runs on
+Linux and macOS.
 
 ## Installing
 
-Giles is built from source with Cargo. The repository pins its Rust toolchain in
-`rust-toolchain.toml`, so `rustup` installs the right one automatically.
+Build Giles from source with Cargo. If you use `rustup`, it installs the Rust toolchain the
+repository asks for.
 
 ```sh
 git clone https://github.com/jennings/giles
@@ -13,86 +14,18 @@ cd giles
 cargo install --locked --path crates/giles
 ```
 
-This puts the `giles` binary in `~/.cargo/bin/`. To run Giles in a Linux container instead, see
-[Running in a Container](container.md).
+This puts the `giles` binary in `~/.cargo/bin/`. You can also
+[run Giles in a Linux container](container.md).
 
-## Running the Daemon
+## The data root
 
-```sh
-giles serve
-```
-
-`giles serve` runs in the foreground and logs to standard error. On first start it creates the data
-root (below). It then reads `giles.toml` and every `agents/<agent>/agent.toml`
-([Configuration](configuration.md)) and refuses to start if they're missing or invalid; the smallest
-valid `giles.toml` declares the owner:
-
-```toml
-[owner]
-identities = ["web:owner"]
-```
-
-Next it opens its database (`data/giles.db`, created on first start) and builds the components the
-configuration names. A provider or channel whose `config` it rejects stops startup with an error
-naming the file, line, and key. Channel plugins start next ([Plugins](#plugins)).
-
-Then it starts every toolset ([Configuration](configuration.md#toolsets)) and logs `giles started`
-once each has started or failed. A toolset that fails doesn't stop Giles: it's logged
-(`cannot start the toolset; retrying`, with the reason) and retried after 1 second, then 2, 4, and
-so on up to every 5 minutes, while everything else works. A stdio server that crashes later is
-restarted the same way. A remote server's tools are offered only while it's reachable; a stdio
-server's tools stay offered while it restarts, and calls to them fail until it's back. A failure
-that retrying can't fix, such as rejected credentials, a host that can't sandbox, or the sandbox
-refusing to start the server (its configuration or grants), is logged once and not retried until
-Giles restarts, and that toolset's tools are no longer offered.
-
-It runs until it receives SIGINT (Ctrl-C) or SIGTERM, then shuts down and exits with status 0. If
-shutdown takes too long, a second Ctrl-C or SIGTERM makes it exit at once with status 130. Any other
-non-zero status means it failed to start; the error is printed on standard error.
-
-Only one `giles serve` can use a data root at a time. A second one exits at once with
-`giles is already running with the data root ... as pid <pid>`; stop the first one, or give the
-second its own data root.
-
-Messages are saved as they arrive, so stopping Giles loses none. If it stops while an agent is
-answering, that answer is not resumed: at the next start Giles says "Interrupted by a restart;
-resend if needed." in the conversation, as soon as that channel is up. Messages still waiting for an
-answer are answered after the restart.
-
-## The Web Interface
-
-`giles serve` also runs a web server, by default on `http://127.0.0.1:8080/`. The `giles started`
-log line shows the address, for example `http=http://127.0.0.1:8080/`. Set `http_listen` in the
-`[core]` table of `giles.toml` to change it ([Configuration](configuration.md#core)):
-
-```toml
-[core]
-http_listen = "127.0.0.1:9090"
-```
-
-The default only accepts connections from the same machine. If the address is in use (another Giles,
-or any other server on that port), `giles serve` fails at startup with
-`cannot listen for HTTP on <address>`. Port `0` picks any free port, which the log line then shows.
-
-Giles speaks plain HTTP. To reach it from another machine, put a reverse proxy that terminates TLS
-(Caddy, nginx, Tailscale Serve) in front of it rather than exposing the port directly.
-
-With a `[channel.web]` instance configured, the web server's home page is your list of chats
-([Web Chat](web.md)), and `/admin` shows what `giles status` shows, including the QR code of a
-channel waiting to be linked ([Admin Pages](web.md#admin-pages)); without one it only shows that
-Giles is running.
-
-## The Data Root
-
-Everything Giles keeps (configuration, secrets, agents, conversation history, attachments, plugin
-state) lives in one directory, the data root. Giles picks it in this order:
+Giles keeps everything in one directory, the data root. It uses the first of these that's set:
 
 1. `--home <DIR>`, accepted by every subcommand: `giles serve --home /srv/giles`.
 2. The `GILES_HOME` environment variable.
 3. `~/.giles`.
 
-On start, `giles serve` creates any missing directories of the layout, readable only by you (mode
-0700):
+The data root looks like this:
 
 ```text
 ~/.giles/
@@ -110,74 +43,106 @@ On start, `giles serve` creates any missing directories of the layout, readable 
   cache/            caches Giles can rebuild
 ```
 
-See [Backups](backups.md) for `giles backup` and the snapshot Giles takes before an upgrade.
+[Backups](backups.md) explains `giles backup` and the snapshot Giles takes before an upgrade.
 
-Giles never loosens permissions you set on these directories, except `run/`, which it always resets
-to 0700.
+Giles regularly deletes stored attachments that nothing refers to anymore. Attachments in your
+conversations are never removed this way.
 
-To run more than one Giles on a machine, give each its own data root.
+Unix socket paths are limited to about 100 bytes. If `run/admin.sock` would be longer, Giles puts
+its sockets in a private directory under `$TMPDIR` and logs a warning naming it. Give `giles`
+commands the same data root path so they find it.
 
-### Long Paths
-
-Unix sockets can't have long paths (about 100 bytes). If your data root is deep enough that
-`run/admin.sock` would be too long, Giles puts its sockets in a private directory under `$TMPDIR`
-instead and logs a warning naming it. Nothing else moves. The directory's name is derived from the
-data root path, so `giles` commands that talk to the daemon find it when given the same data root
-path.
-
-## Attachment Cleanup
-
-Attachments (images, audio, documents) are stored once, in `data/blobs/`, however many messages
-mention them. About a minute after it starts and every six hours after that, Giles deletes the
-stored attachments that are no longer used: those that no conversation message, summary, queued
-incoming event, pending outgoing message, or scheduled job refers to, and that were last stored more
-than 48 hours ago. Attachments in your conversations are never removed this way. When a sweep
-deletes something, the log says how many attachments and bytes
-(`blob sweep removed unreferenced blobs`). A sweep that hits an error deletes nothing and says so in
-the log.
-
-## Logging
-
-Giles logs at the `info` level by default. Set `GILES_LOG` (or `RUST_LOG`; `GILES_LOG` wins) to a
-filter to change that:
+## Running the daemon
 
 ```sh
-GILES_LOG=debug giles serve
-GILES_LOG=info,giles=debug giles serve
+giles serve
 ```
 
-The filter syntax is that of `tracing-subscriber`'s
-[`EnvFilter`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html).
-An invalid filter is an error at startup.
+`giles serve` runs in the foreground and logs to standard error. It reads its
+[configuration](configuration.md) from `giles.toml` and every `agents/<agent>/agent.toml`. The
+smallest valid `giles.toml` declares the owner:
+
+```toml
+[owner]
+identities = ["web:owner"]
+```
+
+Giles doesn't start if the configuration is missing or invalid. When a provider or channel rejects
+its `config`, the error names the file, line, and key.
+
+Giles logs `giles started` once every [toolset](configuration.md#toolsets) has started or failed. A
+toolset that fails doesn't stop Giles. It's logged as `cannot start the toolset; retrying`, with the
+reason, and retried with a growing delay of up to 5 minutes. Some failures can't be fixed by
+retrying, such as rejected credentials or a host that can't sandbox. Those are logged once, and the
+toolset isn't retried until Giles restarts.
+
+Only one `giles serve` can use a data root at a time. A second one exits at once with
+`giles is already running with the data root ... as pid <pid>`. To run more than one Giles on a
+machine, give each its own data root.
+
+### Stopping
+
+Stop Giles with Ctrl-C or SIGTERM. It shuts down and exits with status 0. If shutdown takes too
+long, a second Ctrl-C or SIGTERM makes it exit at once with status 130. Any other non-zero status
+means it failed to start, and the error is on standard error.
+
+Stopping Giles loses no messages. If an agent was answering, that answer isn't resumed. After the
+restart, Giles says "Interrupted by a restart; resend if needed." in that conversation. Messages
+still waiting for an answer are answered after the restart.
+
+## The web interface
+
+`giles serve` also runs a web server, by default on `http://127.0.0.1:8080/`. The `giles started`
+log line shows the address, for example `http=http://127.0.0.1:8080/`. To change it, set
+[`core.http_listen`](configuration.md#core) in `giles.toml`:
+
+```toml
+[core]
+http_listen = "127.0.0.1:9090"
+```
+
+The default only accepts connections from the same machine. If the address is already in use,
+`giles serve` fails at startup with `cannot listen for HTTP on <address>`.
+
+The web interface does not handle TLS, and Giles is very new software.
+**Do not expose it to the public Internet**. Using [Tailscale](https://www.tailscale.com) to make it
+available to your network is recommended.
+
+With a [web channel](web.md) configured, the home page is your list of chats. The
+[admin pages](web.md#admin-pages) at `/admin` show what `giles status` shows, including the QR code
+of a channel waiting to be linked. Without a web channel, the server only shows that Giles is
+running.
 
 ## Plugins
 
-`giles serve` launches every channel plugin at startup and keeps it running:
+`giles serve` starts every channel plugin and restarts one that exits or stops answering, with a
+growing delay of up to 5 minutes.
 
-- Every 30 seconds it checks that each plugin still answers. A plugin that exits or fails the check
-  is stopped (with its child processes) and started again after a delay: 1 second, then 2, 4, and so
-  on up to 5 minutes. A plugin that then runs for 10 minutes starts over at 1 second.
-- A plugin that fails in a way restarting won't fix, such as no sandbox on this machine, a plugin
-  built for another protocol version, or a `config` the plugin rejects, is logged as
-  `cannot launch the plugin; not retrying until its binary changes` and left alone until its binary
-  changes (Giles checks once a minute) or Giles restarts.
-- A message a plugin received but Giles hadn't stored yet when the plugin went down is delivered
-  again once it's back.
+Restarting doesn't help with some failures:
 
-Giles remembers what each plugin binary reported about itself (its version, capabilities, and
-requested sandbox grants) in `cache/`, so it can show them even while the plugin isn't running.
+- This machine can't sandbox plugins.
+- The plugin was built for another protocol version.
+- The plugin rejects its `config`.
 
-## Plugin Sandbox Check
+Giles logs these as `cannot launch the plugin; not retrying until its binary changes`. It tries
+again when the plugin's binary changes or Giles restarts.
 
-Giles runs the plugins it launches in a sandbox, and a plugin that can't be sandboxed doesn't start.
-At startup, `giles serve` checks that this machine can sandbox at all and logs the result:
+## Plugin sandbox check
 
-- Linux: Landlock must be enabled (kernel 5.13 or later, with `landlock` in the kernel's `lsm=`
-  list) and seccomp must be available. In a container, it's the host kernel that matters. The log
-  line names the Landlock ABI; newer kernels enforce more (see
-  [`min_abi`](configuration.md#sandbox)).
-- macOS: `/usr/bin/sandbox-exec` must be present and able to apply a sandbox profile. It can't when
-  Giles itself runs inside another sandbox that forbids it.
+Giles runs the plugins it launches in a sandbox. A plugin that can't be sandboxed doesn't start. The
+sandbox needs:
+
+- **Linux:** Landlock enabled (kernel 5.13 or later, with `landlock` in the kernel's `lsm=` list)
+  and seccomp. In a container, it's the host kernel that matters. Newer kernels enforce more, and
+  [`min_abi`](configuration.md#sandbox) can require them.
+- **macOS:** `/usr/bin/sandbox-exec`, able to apply a sandbox profile. It can't when Giles itself
+  runs inside another sandbox that forbids it.
+
+`giles serve` checks this at startup and logs the result. Check the second line of `giles status`:
+
+```text
+Plugin sandbox: Landlock ABI 6 and seccomp filters
+```
 
 If the check fails, Giles logs one warning naming the cause, for example:
 
@@ -186,3 +151,18 @@ WARN giles::serve: plugin sandbox unavailable on this host; sandboxed plugins wi
 error=Landlock is built into the kernel but not enabled: add `landlock` to the `lsm=` kernel boot
 parameter
 ```
+
+To run a plugin without a sandbox, set `channel.<name>.unsandboxed = true` in `giles.toml`, or
+`toolset.<name>.unsandboxed = true` for a stdio toolset.
+
+## Logging
+
+Giles logs at the `info` level by default. To change that, set `GILES_LOG` to a filter:
+
+```sh
+GILES_LOG=debug giles serve
+GILES_LOG=info,giles=debug giles serve
+```
+
+`RUST_LOG` works too, but `GILES_LOG` wins. The filter syntax is that of `tracing-subscriber`'s
+[`EnvFilter`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html).

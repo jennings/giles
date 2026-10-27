@@ -18,6 +18,46 @@
   - Update user documentation for any user-facing change.
   - Update technical documentation for implementation changes.
 
+## Writing user documentation
+
+The reader is someone installing and running Giles. Implementation detail belongs in
+`Docs/technical/`; link there instead of explaining it.
+
+- Cut anything the reader wouldn't act on:
+  - Mechanism. "Giles listens on loopback, so bind to all interfaces", not why the port can't be
+    reached.
+  - Internals: env vars the system sets, account names, internal paths, signal handling, startup
+    order, retry schedules, log lines nobody looks for.
+  - Build, release, CI, and licensing details.
+  - "Does nothing" statements ("inert until configured", "unknown keys warn").
+  - Results nobody acts on ("Giles creates the rest on first start").
+  - Rare environments. Keep only the one setting that works around them.
+- Before cutting a fact a reader could act on, check that `Docs/technical/` or another page covers
+  it. Otherwise keep it.
+- Keep commands and config verbatim in code blocks, hard requirements, how to check that it worked,
+  and one escape hatch per failure.
+- State safety warnings plainly, bolded once ("**Do not expose it to the public Internet**").
+- Give one concrete recommendation, not a menu of options.
+- State the default before the alternative.
+- Open with one sentence saying what the page is for.
+- Order sections the way the reader does the steps.
+- Make a series of three or more items a bullet list.
+- Keep paragraphs to one to three sentences, one idea each.
+- Give each page one Diátaxis type (tutorial, how-to, reference, or explanation).
+- Headings name the topic or what the reader does ("Create a data volume"). Use sentence case for
+  new or retitled headings.
+- Write in the second person; contractions are fine. Use plain subject–verb sentences: no semicolon
+  chains, "X: Y" constructions, or "so … so …" links.
+- Avoid "just as", "at the cost of", "as long as", "simply", and needless contrast ("X, not Y").
+- Put links inline on the noun (`[The web interface](…) does not handle TLS`), not as parenthetical
+  `([Title](page.md#anchor))` asides.
+- Name a single config key by its dotted path, such as `channel.<name>.unsandboxed = true`.
+- Wrap prose at 100 columns. Don't split inline code across lines.
+- When renaming or removing a heading, fix every `<page>.md#<anchor>` link to it. mdBook doesn't
+  check anchors.
+- Some pages' TOML blocks are parsed by tests (`include_str!` of `Docs/user/*.md`). Keep the blocks
+  those tests read.
+
 ## Tracking work
 
 - Outstanding work is in GitHub issues at jennings/giles (use `gh`). Do not leave TODO or FIXME

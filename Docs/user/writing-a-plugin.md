@@ -1,21 +1,23 @@
 # Writing a Plugin
 
-Channels other than the built-in web chat are plugins: separate programs that Giles starts, one
-process per configured instance. A channel plugin is a binary named `giles-channel-<name>`, found in
-`<GILES_HOME>/plugins/` or on `PATH`. This page shows how to write one in Rust with the
-`giles-plugin-sdk` crate. (Model providers are built in for now; toolsets are ordinary MCP servers
-and need no SDK.)
+This page shows how to write a channel plugin in Rust with the `giles-plugin-sdk` crate.
+
+Channels other than the built-in web chat are plugins. A channel plugin is a binary named
+`giles-channel-<name>`, found in `<GILES_HOME>/plugins/` or on `PATH`. Giles starts one process for
+each configured instance.
+
+Model providers are built in for now. Toolsets are ordinary MCP servers and need no SDK.
 
 ## What Giles does for you
 
-Giles launches the plugin inside a sandbox whose only writable directory is the instance's data
-directory, `<GILES_HOME>/data/plugins/<instance>/`. It talks to the plugin over a private connection
-that no other process can reach, asks it what it is, and sends it the instance's `config` table with
-secrets already filled in. A plugin never reads `giles.toml` or `secrets.toml` and never listens on
-a socket.
+Giles starts the plugin in a sandbox. The only directory it can write to is the instance's data
+directory, `<GILES_HOME>/data/plugins/<instance>/`.
 
-The SDK does the plugin's side of all that. You write a type that implements the `Channel` trait
-from `giles-types`: say what the channel can do, produce inbound events, take acks, and send
+Giles sends the plugin the instance's `config` table with secrets already filled in. A plugin never
+reads `giles.toml` or `secrets.toml`, and never listens on a socket.
+
+The SDK handles the connection to Giles. You write a type that implements the `Channel` trait from
+`giles-types`. It says what the channel can do, produces inbound events, takes acks, and sends
 messages.
 
 ## A minimal channel
@@ -106,76 +108,97 @@ Run by hand, the binary only says that it's a Giles plugin and exits.
 
 ## The pieces
 
-- `ChannelPlugin::new(name, version)`: `name` is the `<name>` in `giles-channel-<name>`. Set
-  `output` (`Blocks` for chat services without message edits, `Deltas` for live streaming; in v1
-  plugin channels get `blocks` output either way, and only the built-in web channel streams) and
-  `can_initiate` (whether the channel can message an identity that hasn't written first, needed for
-  scheduled jobs and login codes). Optionally `requested_grants`: sandbox grants to suggest to the
-  operator, shown in `giles status` and never applied by themselves.
-- `serve(configure)`: call it first thing in `main` and return its exit code. `configure` runs when
-  Giles sends the instance config. Return `Error::InvalidRequest` for a bad config; Giles shows the
-  message and doesn't start the instance. `ctx.parse_config()` does this for you, naming the
-  offending key.
-- The identity namespace your channel reports must be the plugin's name itself or the name, a colon,
-  and more: `irc` or `irc:libera.chat`, but not `ircx`. Each `:`-separated part must be non-empty,
-  without spaces. Instances in the same namespace share identities.
-- `ctx.data_dir()` is the instance's own directory, kept across restarts and upgrades. Keep your
-  state there (session files, cursors); the `giles-sdk/` subdirectory belongs to the SDK.
+`ChannelPlugin::new(name, version)` describes the plugin. `name` is the `<name>` in
+`giles-channel-<name>`. Its builder methods are:
+
+- `output`: `Blocks` for chat services without message edits, `Deltas` for live streaming. For now,
+  plugin channels get `blocks` output either way, and only the built-in web channel streams.
+- `can_initiate`: whether the channel can message an identity that hasn't written first. Scheduled
+  jobs and login codes need it.
+- `requested_grants`: sandbox grants to suggest to the operator. They're shown in `giles status` and
+  never applied by themselves.
+
+Call `serve(configure)` first thing in `main` and return its exit code. `configure` runs when Giles
+sends the instance config.
+
+For a bad config, return `Error::InvalidRequest`. Giles shows the message and doesn't start the
+instance. `ctx.parse_config()` does this for you, naming the offending key.
+
+The identity namespace your channel reports must be the plugin's name, or the name, a colon, and
+more. For example, `irc` or `irc:libera.chat`, but not `ircx`. Each `:`-separated part must be
+non-empty, without spaces. Instances in the same namespace share identities.
+
+Keep your state, such as session files and cursors, in `ctx.data_dir()`. It's the instance's own
+directory, kept across restarts and upgrades. The `giles-sdk/` subdirectory belongs to the SDK.
 
 ## Inbound events
 
-Each event needs an id that is unique within the instance and, where the service allows, the same
-after a restart (a message id from the service, not a counter). Giles stores every event before
-acknowledging it, and drops repeats by id, so delivery is at least once and never twice into a
-conversation.
+Give each event an id that is unique within the instance. Where the service allows, make it the same
+after a restart by using the service's message id instead of a counter. Giles drops repeats by id,
+so a message never reaches a conversation twice.
 
-You don't need to store events yourself: the SDK writes each event to the data directory before
-sending it to Giles and sends it again until Giles acks it, even after your plugin crashed. The SDK
-also stores an event before it asks your stream for the next one, so once your stream is polled
-again you may forget the previous event. A source that can replay (an IMAP mailbox) can instead keep
-a cursor and advance it in `ack`.
+You don't need to store events yourself. The SDK writes each event to the data directory before
+sending it to Giles, and sends it again until Giles acks it, even after your plugin crashed.
 
-Report the connection's state with `ChannelEvent::Status`: `Connected`, `Error`, or `NeedsAuth` with
-a QR code, pair code, or URL that `giles status` and the admin pages show to the operator.
+The SDK stores an event before it asks your stream for the next one. Once your stream is polled
+again, you may forget the previous event. A source that can replay, such as an IMAP mailbox, can
+instead keep a cursor and advance it in `ack`.
+
+Report the connection's state with `ChannelEvent::Status`:
+
+- `Connected`
+- `Error`
+- `NeedsAuth`, with a QR code, pair code, or URL that `giles status` and the admin pages show to the
+  operator
 
 ## Attachments
 
-Attachments never travel inside messages. For an inbound attachment, store the bytes with
-`ctx.blobs().put(bytes, media_type, name)` (or `put_reader`) before emitting the event, and put the
-returned `MediaRef` in the message's `attachments`; Giles fetches it, and the SDK deletes it once
-Giles has acked every event that carries it. Put only blobs you emit: one never sent is deleted at
-the plugin's next start. For an outbound attachment, read it in `send` with `blobs.read(&media)`,
-`open`, or `path`; it's only valid until `send` returns.
+To receive an attachment, store its bytes with `ctx.blobs().put(bytes, media_type, name)` or
+`put_reader` before emitting the event. Put the returned `MediaRef` in the message's `attachments`.
+
+Only put blobs you emit. One that's never sent is deleted at the plugin's next start.
+
+In `send`, read the outbound message's attachments with `blobs.read(&media)`, `open`, or `path`.
+They're only valid until `send` returns.
 
 ## Sending
 
 `send` gets the reply as CommonMark. The SDK's `render` module converts it for the service:
-`render::html`, `render::plain_text`, `render::irc` (split into lines that fit), `render::whatsapp`,
-and `render::discord` (split into messages that fit). If a recipient can't be reached right now (for
-instance an IRC account that isn't online), return `Error::Unavailable`: Giles retries later rather
-than giving up.
+
+- `render::html`
+- `render::plain_text`
+- `render::irc`, split into lines that fit
+- `render::whatsapp`
+- `render::discord`, split into messages that fit
+
+If a recipient can't be reached right now, such as an IRC account that isn't online, return
+`Error::Unavailable`. Giles retries later.
 
 ## TLS
 
-The SDK's `tls` module (on by default) gives `rustls` client settings that trust the Mozilla root
-certificates built into the binary, the same ones Giles itself uses, so connections work the same
-inside the sandbox on every host.
+For outgoing TLS connections, use the SDK's `tls` module, which is on by default. Its `rustls`
+client settings trust the Mozilla root certificates built into the binary, so connections work the
+same inside the sandbox on every host.
 
 ## Lifecycle
 
-The SDK answers Giles' health checks. When Giles stops the plugin, it first asks it to shut down:
-the SDK lets open calls finish for a few seconds and returns from `serve`. The SDK also returns when
-Giles itself goes away, so a plugin never outlives the daemon; these are the only times it exits on
-its own. Events not yet acknowledged are already on disk, so a plugin that is killed loses nothing.
+When Giles stops the plugin, the SDK lets open calls finish for a few seconds and returns from
+`serve`. It also returns when Giles itself goes away, so a plugin never outlives the daemon.
 
-Log to stderr (for example with `tracing-subscriber`); Giles records each line under the instance's
-name. Anything written to stdout is discarded.
+A plugin that is killed loses nothing. Events not yet acknowledged are already on disk.
+
+## Logging
+
+Log to stderr, for example with `tracing-subscriber`. Giles records each line under the instance's
+name and discards anything written to stdout.
 
 ## Running a plugin remotely
 
-The same channel can run on another machine, started by you rather than by Giles, and Giles connects
-to it over the network ([Remote Plugins](configuration.md#remote-plugins)). Call `serve_remote`
-instead of `serve` (the rest of `src/main.rs` as above, plus `tokio`'s `net` feature):
+The same channel can run on another machine. You start it yourself, and Giles connects to it over
+the network as a [remote plugin](configuration.md#remote-plugins).
+
+Call `serve_remote` instead of `serve`. The rest of `src/main.rs` stays as above, and `tokio` needs
+its `net` feature:
 
 ```rust
 use giles_plugin_sdk::{RemoteAuth, RemoteServer, tls};
@@ -205,19 +228,26 @@ async fn main() -> std::io::Result<()> {
 }
 ```
 
-- The directory you pass is the plugin's data directory (`ctx.data_dir()`); it's created if it
-  doesn't exist.
+The directory you pass is the plugin's data directory (`ctx.data_dir()`). It's created if it doesn't
+exist.
+
+Choose how the plugin checks Giles' calls:
+
 - `RemoteAuth::Bearer(token)` accepts only calls carrying the token from the instance's
-  `auth = { bearer = ... }`. With `auth = { oauth = ... }`, Giles gets access tokens from your OAuth
-  server instead: check them with `RemoteAuth::verify(|token| ...)` (by signature or introspection;
-  it runs on every call, so cache slow checks). `RemoteAuth::None` accepts anyone who can reach the
-  port.
-- `.tls(...)` takes your certificate chain and key in PEM. Giles checks the certificate against the
-  public Mozilla roots and the host name in `address`, so use a certificate from a public CA (Let's
-  Encrypt works). Without TLS, Giles connects only to an address on its own machine, or with
-  `insecure = true`.
-- Giles connects at its startup and again after a lost connection, calling `configure` only the
-  first time: the channel you built stays. Restart the plugin to change its config. Events not yet
-  acknowledged wait in the data directory for the next connection.
-- The plugin runs until it gets `SIGINT` or `SIGTERM` (or the future given to `shutdown_on`); Giles
-  never stops it.
+  `auth = { bearer = ... }`.
+- With `auth = { oauth = ... }`, Giles gets access tokens from your OAuth server. Check them with
+  `RemoteAuth::verify(|token| ...)`, by signature or introspection. It runs on every call, so cache
+  slow checks.
+- `RemoteAuth::None` accepts anyone who can reach the port.
+
+`.tls(...)` takes your certificate chain and key in PEM. Giles checks the certificate against the
+public Mozilla roots and the host name in `address`, so use a certificate from a public CA, such as
+Let's Encrypt. Without TLS, Giles only connects to an address on its own machine, unless the
+instance sets `insecure = true`.
+
+Giles connects at its startup and again after a lost connection. It calls `configure` only the first
+time, and the channel you built stays. Restart the plugin to change its config. Events not yet
+acknowledged wait in the data directory for the next connection.
+
+The plugin runs until it gets `SIGINT` or `SIGTERM`, or the future given to `shutdown_on` completes.
+Giles never stops it.

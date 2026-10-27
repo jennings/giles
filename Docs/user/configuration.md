@@ -1,61 +1,36 @@
 # Configuration
 
-Giles reads its configuration once, when `giles serve` starts; after a change, restart it. Two kinds
-of TOML file, both in the data root ([Installing and Running](running.md)):
+This page lists every setting in Giles' configuration files. Both kinds live in the
+[data root](running.md#the-data-root):
 
 - `giles.toml`: the core, the owner, and component instances.
 - `agents/<agent>/agent.toml`: one per agent.
 
-Giles never writes `giles.toml`. It writes `agent.toml` and `SOUL.md` only for an agent you create
-or edit in the web UI ([Agents](web.md#agents)); that agent is added to, or changed in, the running
-configuration at once. An edit in the web UI rewrites only the settings its form has
-([Editing an agent](web.md#editing-an-agent)) and leaves the rest of the file, comments included, as
-you wrote it. The files are ordinary ones you can edit by hand like the rest (edits take effect at
-the next restart). If anything in these files is wrong, `giles serve` refuses to start and prints
-one error naming the file, the line and column when known, the key, and what is wrong (the data
-root's directories are still created, so a first start without `giles.toml` sets them up):
+Giles reads them when `giles serve` starts, so restart it after you edit them. Giles never changes
+`giles.toml`.
+
+Agents you create or edit in [the web UI](web.md#agents) are saved to `agent.toml` and take effect
+at once. The web UI keeps the rest of the file as you wrote it, comments included.
+
+If a file has an error, `giles serve` refuses to start. It prints one error naming the file, the
+line and column when known, the key, and what is wrong:
 
 ```text
 Error: /home/me/.giles/giles.toml:12:12: channel.libera.max_blob: invalid size "50MB": expected a
 number of bytes or an integer and a unit (B, KiB, MiB, GiB), e.g. "50 MiB"
 ```
 
-## Unknown Keys
-
-In `giles.toml`, a key Giles doesn't recognize is a warning, not an error: Giles ignores it and
-starts, logging one line per key with its full path, at every level (a misspelled `[core]` key, a
-misspelled key of a built-in component's `config` table, a whole unknown table):
+A key Giles doesn't recognize in `giles.toml` doesn't stop it. Giles ignores the key and logs a
+warning, so check the log after an edit. A misspelled key leaves its setting at the default.
 
 ```text
 WARN /home/me/.giles/giles.toml:7:1: unknown key `core.http_listn` (ignored)
 WARN /home/me/.giles/giles.toml:12:30: unknown key `provider.anthropic.config.modle` (ignored)
 ```
 
-Watch for these: a misspelled key does nothing, so the setting it was meant to change keeps its
-default. A key Giles does recognize, with a value of the wrong type or an invalid value
-(`http_listen = 5`, `parallel = "yes"`), is still an error that stops startup, even if the same file
-also has unknown keys.
+In `agent.toml`, an unknown key is an error.
 
-Some things stay strict, because ignoring a typo there would be unsafe or change what a route
-matches:
-
-- **`sandbox` tables.** A misspelled `network` or `min_abi` would leave the default (network access
-  on, no minimum ABI) and quietly widen the plugin's sandbox, so an unknown key in `sandbox` is an
-  error naming the key.
-- **`auth` tables.** An `auth` table needs one of `bearer` or `oauth`: ignoring a misspelled method
-  would leave the remote without credentials. Other keys next to the method are warnings.
-- **`[[routes]]`** that are still waiting to be imported ([Routes](#routes)): an unknown key in a
-  rule is an error, because a misspelled `channel` or `conversation` would make the route match more
-  than you meant.
-- **The web channel's `proxy` table**, which configures a listener and its shared secret.
-- **`agent.toml` files:** an unknown key there is an error, so a typo in an agent's `models` or
-  `jobs` never silently does nothing.
-
-An instance's `config` table belongs to the component. The built-in providers and the web channel
-warn about keys they don't know, as above; plugins check their own `config` and say what they accept
-([Instances](#instances)), usually by refusing the instance.
-
-## Value Formats
+## Value formats
 
 - **Names** of instances, components, agents, and jobs use only letters, digits, and `-`:
   `irc-libera`, `jeeves`, `check-in`.
@@ -63,14 +38,13 @@ warn about keys they don't know, as above; plugins check their own `config` and 
   and `d`: `"30s"`, `"10m"`, `"1h30m"`.
 - **Sizes** are a number of bytes, or a string with a unit `B`, `KiB`, `MiB`, or `GiB`: `52428800`,
   `"50 MiB"`, `"512KiB"`.
-- **Models** are `<provider instance>/<model id>`, split at the first `/`: in
+- **Models** are `<provider instance>/<model id>`, split at the first `/`. In
   `"openrouter/anthropic/claude-sonnet-4.5"` the instance is `openrouter` and the model id is
   `anthropic/claude-sonnet-4.5`.
-- **Time zones** are IANA names, e.g. `"America/Los_Angeles"`. Giles uses the system's time zone
-  database, or a copy built into it when the system has none.
-- **Identities** are `<namespace>:<native id>`, e.g. `"whatsapp:+15551234567"`,
-  `"email:me@example.com"`, `"irc:libera.chat:account:stephen"`. Each channel's documentation gives
-  its namespace and id format.
+- **Time zones** are IANA names, such as `"America/Los_Angeles"`.
+- **Identities** are `<namespace>:<native id>`, such as `"whatsapp:+15551234567"`,
+  `"email:me@example.com"`, or `"irc:libera.chat:account:stephen"`. Each channel's page gives its
+  namespace and id format.
 
 ## `giles.toml`
 
@@ -84,22 +58,21 @@ Settings of the core itself. Optional.
 | `retired_instances` | `[]`               | Names of instances you removed on purpose, whose data stays       |
 | `journal_mode`      | `"wal"`            | SQLite journal mode of `data/giles.db`: `wal`, `delete`, `truncate`, `persist` |
 
-`retired_instances` is a list of instance names, each used by no instance table. It tells the
-startup check for a half-done rename to ignore data kept under that name; see
+`retired_instances` tells Giles to ignore the data a removed instance left behind when it checks for
+a half-done rename. No instance table may use a name listed there. See
 [Renaming an instance](cli.md#giles-instance-rename-old-new).
 
-To reach Giles from other machines (or from outside a container), listen on `"0.0.0.0:8080"` and put
-a TLS-terminating reverse proxy in front of it. Giles binds the address at startup and refuses to
-start if it can't (see [The Web Interface](running.md#the-web-interface)).
+To reach Giles from other machines, or from outside a container, set `http_listen` to
+`"0.0.0.0:8080"`. The web interface does not handle TLS, so read
+[The web interface](running.md#the-web-interface) before you do.
 
 #### `journal_mode`
 
-The journal is how SQLite keeps a write from corrupting the database if the machine dies in the
-middle of it. The default, `"wal"` (write-ahead log), lets Giles read the database while it writes
-and is what Giles is built for. Leave it alone unless Giles can't start with it: WAL needs shared
-memory, which network file systems (NFS, SMB, some container and FUSE mounts) don't provide. There
-Giles stops at startup with an error that names this option, and `journal_mode = "delete"` is the
-way out. Moving `~/.giles` to a local disk is better still.
+Leave this at `"wal"` unless Giles can't start with it. WAL needs shared memory, which network file
+systems don't provide. These include NFS, SMB, and some container and FUSE mounts.
+
+On such a file system, Giles stops at startup with an error that names this option. Set
+`journal_mode = "delete"`, or better, move `~/.giles` to a local disk.
 
 | Value        | Journal                                                                         |
 | ------------ | ------------------------------------------------------------------------------- |
@@ -108,26 +81,11 @@ way out. Moving `~/.giles` to a local disk is better still.
 | `"truncate"` | Like `delete`, but empties the journal file instead of deleting it              |
 | `"persist"`  | Like `delete`, but keeps the journal file and marks it unused                   |
 
-Values are case-insensitive. SQLite also has `memory` and `off`; Giles refuses them at startup
-because a crash or power loss during a write could then corrupt the database or lose data.
+Values are case-insensitive. Giles refuses SQLite's `memory` and `off` modes, because a crash or
+power loss during a write could then corrupt the database or lose data.
 
-Switching needs nothing from you except a restart, as with every `[core]` setting: change the value
-and start Giles, and it converts the existing database in place, in either direction. (Stop any
-other program that has `giles.db` open, such as the `sqlite3` shell, first. Leaving WAL needs the
-database to itself.)
-
-In the `delete`, `truncate`, and `persist` modes:
-
-- A write waits for reads in progress, and reads wait for a write that is committing, instead of
-  running at the same time. Giles's reads and writes are short, so you won't notice, and none fails.
-  A backup (`giles backup`, or the one before an upgrade) holds writes for as long as it takes to
-  copy the database, which grows with the size of the database.
-- Writes use a full sync to disk, which is slower than in WAL mode but keeps the database safe on a
-  power loss.
-- `giles.db-journal` exists while a write runs, and in `truncate` and `persist` also between writes;
-  it is removed when Giles stops.
-
-See [Backups](backups.md) for restoring in any mode.
+To switch modes, change the value and restart Giles. It converts the existing database in place.
+First stop any other program that has `giles.db` open, such as the `sqlite3` shell.
 
 ### `[owner]`
 
@@ -139,8 +97,11 @@ Giles v1 serves one person, the owner. Required.
 | `default`    | the only identity        | Where jobs and other proactive messages go; required when there are several identities |
 | `timezone`   | the agent's, else system | The owner's time zone, for message times and job schedules  |
 
-Messages from any identity not listed here are dropped and logged, as are messages a channel
-couldn't verify the sender of, and messages in group conversations, which v1 doesn't support.
+Giles drops and logs these messages:
+
+- messages from any identity not listed here
+- messages whose sender the channel couldn't verify
+- messages in group conversations, which v1 doesn't support
 
 An identity is `<namespace>:<id>`. Each channel decides its namespace and the form of its ids, for
 example:
@@ -153,12 +114,11 @@ example:
 | WhatsApp | `whatsapp:+15551234567`           |
 | Discord  | `discord:82198898841029460`       |
 
-A message counts as the owner's if its sender, or any other id the channel reports for the same
-person (WhatsApp reports both the phone number and an internal id), is listed.
+Giles logs a message from an unlisted identity with the identity as the channel reported it, so you
+can copy it here.
 
-Identities match exactly, capitalization included, except that email domains ignore case
-(`email:me@Example.com` matches `me@example.com`, but not `Me@example.com`). A message from an
-unlisted identity is logged with the identity as the channel reported it, so you can copy it here.
+Identities match exactly, capitalization included. Email domains are the exception:
+`email:me@Example.com` matches `me@example.com`, but not `Me@example.com`.
 
 ```toml
 [owner]
@@ -169,15 +129,23 @@ timezone = "America/Los_Angeles"
 
 ### Instances
 
-Providers, channels, and toolsets are configured as instances, one table each: `[provider.<name>]`,
-`[channel.<name>]`, `[toolset.<name>]`. The instance name is permanent: sessions, history, tool
-names (`<instance>__<tool>`), and the instance's data directory are keyed by it. Names are unique
-across all three kinds, ignoring case (`Libera` and `libera` clash).
+Providers, channels, and toolsets are configured as instances, one table each:
 
-`component` says what runs the instance and defaults to the instance name. If Giles has a built-in
-component of that kind with that name, it's used; otherwise the instance runs the plugin
-`giles-<kind>-<component>`, found in `<data root>/plugins/` or on `$PATH`. Two IRC networks are two
-instances of one component:
+- `[provider.<name>]`
+- `[channel.<name>]`
+- `[toolset.<name>]`
+
+**Choose instance names with care.** Sessions, history, tool names (`<instance>__<tool>`), and the
+instance's data directory are keyed by the name. To change it, use
+[`giles instance rename`](cli.md#giles-instance-rename-old-new).
+
+Names are unique across all three kinds, ignoring case. `Libera` and `libera` clash.
+
+`component` says what runs the instance, and defaults to the instance name. Giles uses its built-in
+component of that kind and name, if it has one. Otherwise the instance runs the plugin
+`giles-<kind>-<component>`, found in `<data root>/plugins/` or on `$PATH`.
+
+Two IRC networks are two instances of one component:
 
 ```toml
 [channel.irc-libera]
@@ -189,16 +157,19 @@ component = "irc"
 config = { server = "irc.oftc.net", nick = "jeeves", network = "oftc.net" }
 ```
 
-Every key of an instance table belongs to Giles, except `config`: that table is passed to the
-component as JSON, unchecked by Giles, and the component validates it when it starts. Its keys are
-documented with each component. A key that doesn't apply to an instance (for example `address` on
-the built-in web channel) is an error.
+Giles passes the `config` table to the component without checking it. The component checks it when
+it starts, and each component's page documents its keys. Every other key of an instance table
+belongs to Giles.
 
 #### Providers
 
-The built-in providers are `anthropic` (the Anthropic Messages API) and `openai` (any
-OpenAI-compatible Chat Completions API: OpenAI, OpenRouter, Ollama). Provider plugins aren't
-supported yet, so `component` must name one of these.
+The built-in providers are:
+
+- `anthropic`: the Anthropic Messages API.
+- `openai`: any OpenAI-compatible Chat Completions API, such as OpenAI, OpenRouter, or Ollama.
+
+Provider plugins aren't supported yet, so `component` must name one of these. Their `config` keys
+are in [Providers](providers.md).
 
 | Key         | Meaning                                         |
 | ----------- | ----------------------------------------------- |
@@ -216,9 +187,11 @@ config = { base_url = "http://127.0.0.1:11434/v1" }
 
 #### Channels
 
-The built-in channel is `web`; its `config` keys (`public_url`, `proxy`) are in
-[Web Chat](web.md#logging-in). Any other component is a plugin, which Giles either launches itself
-or, with `address`, connects to where someone else runs it.
+The built-in channel is `web`. Its `config` keys, `public_url` and `proxy`, are in
+[Web Chat](web.md#logging-in).
+
+Any other component is a plugin. Giles launches it, or with `address`, connects to it where someone
+else runs it.
 
 | Key           | Applies to        | Default    | Meaning                                                  |
 | ------------- | ----------------- | ---------- | -------------------------------------------------------- |
@@ -231,16 +204,13 @@ or, with `address`, connects to where someone else runs it.
 | `auth`        | remote plugins    | none       | `{ bearer = <credential> }` or `{ oauth = { ... } }`, below |
 | `insecure`    | remote plugins    | `false`    | Allow plain `http://` to a host other than this machine  |
 
-An attachment larger than `max_blob` (or one the plugin fails to hand over) doesn't stop the
-message: the agent gets the message without it, plus a line such as this, so it can tell the sender:
+An attachment larger than `max_blob`, or one the plugin fails to hand over, doesn't stop the
+message. The agent gets the message without it, plus a line saying why, so it can tell the sender.
 
-```text
-[attachment "clip.mov" (video/quicktime, 73400320 bytes) not received: it is larger than this channel's limit of 52428800 bytes]`
-```
+Without `insecure`, plain `http://` is accepted only for `localhost`, `127.0.0.0/8`, and `::1`.
+Without TLS, anyone on the network path could inject messages.
 
-Plain `http://` is accepted without `insecure` only for `localhost`, `127.0.0.0/8`, and `::1`:
-without TLS, anyone on the network path could inject messages. Addresses can't contain a user name
-or password; use `auth`:
+An address can't contain a user name or password. Use `auth` instead:
 
 ```toml
 [channel.mail]
@@ -254,30 +224,33 @@ client_secret = { secret = "mail-bridge" }
 scopes = ["channel"]
 ```
 
-`oauth` uses the OAuth 2.0 client credentials grant: `token_url` (`https://`, or `http://` on this
-machine), `client_id`, `client_secret` (a credential), and optional `scopes`.
+`oauth` uses the OAuth 2.0 client credentials grant, with these keys:
 
-##### Remote Plugins
+- `token_url`: `https://`, or `http://` on this machine.
+- `client_id`.
+- `client_secret`: a credential.
+- `scopes`: optional.
 
-A channel with `address` is a plugin you run yourself, on this machine or another one (see
-[Writing a Plugin](writing-a-plugin.md#running-a-plugin-remotely)); Giles never starts, stops, or
-sandboxes it, and the plugin keeps its own state.
+##### Remote plugins
 
-- Giles connects at startup. While the plugin can't be reached (or refuses Giles' token, or the
-  certificate doesn't check out), Giles runs without that channel and tries again after 1 s, then 2
-  s, 4 s, and so on up to every 5 minutes. A lost connection is retried the same way, and so is any
-  other failure, since only you can see when the plugin is fixed. `giles status` shows the instance
-  as `down, retrying at ...` with the last error, or as `running` with no pid.
-- With `https://`, the plugin's certificate must be valid for the host in `address` and issued by a
-  public certificate authority that Giles knows (its built-in copy of the Mozilla list; the system's
-  trust store isn't used). `insecure = true` only allows plain `http://`; it never turns certificate
-  checks off.
-- `auth = { bearer = ... }` sends `Authorization: Bearer <token>` on every call. With `oauth`, Giles
-  asks the token endpoint for an access token before connecting (HTTP Basic with the client id and
-  secret) and sends that instead, getting a new one a minute before it expires (or halfway through
-  its life if it's short). Without `auth`, Giles sends no credentials.
-- When Giles stops, it tells the plugin it's disconnecting and closes the connection; the plugin
-  keeps running, and messages that arrive meanwhile wait in it until Giles connects again.
+A channel with `address` is a plugin
+[you run yourself](writing-a-plugin.md#running-a-plugin-remotely), on this machine or another one.
+Giles never starts, stops, or sandboxes it, and the plugin keeps its own state.
+
+- While Giles can't connect, it runs without that channel and keeps retrying. That includes when the
+  plugin refuses Giles' token or its certificate doesn't check out. `giles status` shows the
+  instance as `down, retrying at ...` with the last error, or once connected, as `running` with no
+  pid.
+- With `https://`, the plugin's certificate must be valid for the host in `address`. It must be
+  issued by a public certificate authority in Giles' built-in copy of the Mozilla list. Giles
+  doesn't use the system's trust store.
+- `insecure = true` only allows plain `http://`. It never turns certificate checks off.
+- `auth = { bearer = ... }` sends `Authorization: Bearer <token>` on every call. Without `auth`,
+  Giles sends no credentials.
+- With `oauth`, Giles gets an access token from `token_url` before connecting, using HTTP Basic auth
+  with the client id and secret. It sends that token, and gets a new one before it expires.
+- When Giles stops, the plugin keeps running. Messages that arrive meanwhile wait in it until Giles
+  connects again.
 
 #### Toolsets
 
@@ -305,44 +278,43 @@ A toolset is an MCP server. It runs one of three ways:
 | `parallel`    | all        | `false`   | The toolset's tools may run in parallel with each other and with read-only core tools, up to 8 at once |
 | `skills`      | all        | `[]`      | Absolute paths of skill directories the toolset offers        |
 
-Toolsets have no `config` table: a stdio server is configured through its `args`. No plugin may
-write to a `skills` directory: Giles refuses a `skills` path inside the plugins' data directories,
-and any `write` or `unix` sandbox grant that overlaps one.
+Toolsets have no `config` table. Configure a stdio server through its `args`.
 
-Giles looks a stdio server's `command` up on its own `$PATH` and runs it in the [sandbox](#sandbox),
-granting it read and execute access to the command's install prefix: the directory above `bin/`
-(`/opt/homebrew` for `/opt/homebrew/bin/mcp-server-filesystem`, or a Python virtual environment),
-else the command's own directory. If the command is a script, its interpreter gets the same,
-including one found through `#!/usr/bin/env node`, and the server's `PATH` is those directories
-followed by `/usr/bin:/bin`. A prefix that is your home directory (or contains it) or would contain
-the data root narrows to the command's directory: `~/bin/server` gets `~/bin`, never `~`.
+No plugin may write to a `skills` directory. Giles refuses a `skills` path inside the plugins' data
+directories, and any `write` or `unix` sandbox grant that overlaps one.
 
-A prefix grants everything under it: all of `/opt/homebrew` (including its `etc` and `var`) for a
-Homebrew command, all of `~/.local` for `~/.local/bin/server`, all of `~/.cargo` (including
-`credentials.toml`) for `~/.cargo/bin/server`. To keep a server away from those, install it in a
-prefix of its own, such as a Python virtual environment or `npm install --prefix`. And don't give
-any toolset a `write` grant on an interpreter's installation (a Node or Python directory): another
-toolset runs that interpreter.
+Giles looks up a stdio server's `command` on its own `$PATH`, and runs it in the
+[sandbox](#sandbox). The server may read and run everything in the command's install prefix. That's
+the directory above `bin/`, such as `/opt/homebrew` or a Python virtual environment, else the
+command's own directory.
+
+If the command is a script, its interpreter gets the same, including one found through
+`#!/usr/bin/env node`. A prefix that is or contains your home directory, or would contain the data
+root, narrows to the command's directory. `~/bin/server` gets `~/bin`, never `~`.
+
+**A prefix grants everything under it.** A Homebrew command gets all of `/opt/homebrew`, including
+its `etc` and `var`. `~/.cargo/bin/server` gets all of `~/.cargo`, including `credentials.toml`.
+
+To keep a server away from those, install it in a prefix of its own, such as a Python virtual
+environment or one made with `npm install --prefix`. Don't give any toolset a `write` grant on an
+interpreter's installation, such as a Node or Python directory, because other toolsets run that
+interpreter.
 
 - Install servers ahead of time. `npx -y` or `uvx` at run time need the network and writable package
   caches, which the sandbox doesn't grant.
 - A server that needs the network needs a grant, such as `sandbox = { network = ["tcp:443"] }`.
-- The server's environment is its `env` plus `LANG` from Giles, `HOME` and `TMPDIR` inside its data
-  directory, the `PATH` above, and `GILES_PLUGIN_DATA` (its data directory); nothing else from
-  Giles' environment reaches it. `env` can't set `HOME`, `TMPDIR`, `PATH`, or `GILES_PLUGIN_DATA`.
+- The server gets only its `env`, plus `LANG`, `HOME` and `TMPDIR` inside its data directory,
+  `GILES_PLUGIN_DATA` (its data directory), and a `PATH` of the directories above followed by
+  `/usr/bin:/bin`. `env` can't set `HOME`, `TMPDIR`, `PATH`, or `GILES_PLUGIN_DATA`.
 
-Giles starts every toolset when it starts, and keeps it running: a stdio server that crashes is
-restarted, and a remote server that can't be reached is retried, both with a growing delay
-([Installing and Running](running.md#running-the-daemon)). It remembers each toolset's list of tools
-in `<data root>/cache/toolsets/`, so a stdio server's tools are offered to the model even while the
-server is stopped (for `idle_stop`, or after a crash) and from the moment Giles starts, before the
-server answers. The remembered list is used only for the same program (by content) and the same
-`[toolset.<name>]` table, and every start of the server lists the tools afresh. A list the server
-changes while it runs reaches conversations that start afterwards.
+Giles starts every toolset when it starts, and [keeps it running](running.md#running-the-daemon). A
+stdio server's tools stay offered while the server is stopped. If a server changes its list of tools
+while it runs, conversations that start afterwards get the new list.
 
-Images, audio, and files a tool returns are kept like attachments (up to 50 MiB each): the model
-sees them if its provider takes that type, and can send them on with `send_attachment`. The other
-way, the model can give an attachment to a stdio toolset's tool: Giles copies it into the server's
+Images, audio, and files a tool returns are kept like attachments, up to 50 MiB each. The model sees
+them if its provider takes that type, and can send them on with `send_attachment`.
+
+The model can also give an attachment to a stdio toolset's tool. Giles copies it into the server's
 `TMPDIR` for the length of the call and passes the file's path. Remote toolsets don't get
 attachments.
 
@@ -361,10 +333,13 @@ deadline = "2m"
 
 ### Sandbox
 
-Every plugin Giles launches (channel plugins and stdio toolsets) runs in a sandbox. By default it
-can read its own binary, system libraries, TLS certificates, and DNS configuration, and read and
-write only its own data directory, `<data root>/data/plugins/<instance>/`. Channel plugins may use
-the network; stdio toolsets may not. `sandbox` grants more:
+Every plugin Giles launches, channel plugins and stdio toolsets, runs in a sandbox. By default it
+can:
+
+- read its own binary, system libraries, TLS certificates, and DNS configuration
+- read and write its own data directory
+
+Channel plugins may use the network, and stdio toolsets may not. `sandbox` grants more:
 
 ```toml
 sandbox = { network = ["tcp:443"], read = ["/opt/homebrew"], write = ["/Users/me/Notes"] }
@@ -378,11 +353,11 @@ sandbox = { network = ["tcp:443"], read = ["/opt/homebrew"], write = ["/Users/me
 | `unix`    | Absolute paths of Unix sockets the plugin may connect to (on Linux before Landlock ABI 9, kernel 7.1, any entry allows connecting to every socket) |
 | `min_abi` | Linux only: refuse to start the plugin unless the kernel's Landlock ABI is at least this (table below) |
 
-On Linux the sandbox is Landlock plus a system call filter, and what Landlock can enforce depends on
-the kernel. Giles uses the newest Landlock ABI the kernel offers and logs it at every launch
-(`sandboxing with Landlock and seccomp landlock_abi=6`), with a warning that lists what's missing
-when the kernel lacks something the plugin's grants rely on. To refuse older kernels instead, set
-`min_abi`; a plugin whose kernel is below it doesn't start (the log says why):
+On Linux, what the sandbox can enforce depends on the kernel's Landlock ABI. Giles logs the ABI at
+every launch, and warns when the kernel lacks something the plugin's grants rely on.
+
+To refuse older kernels, set `min_abi`. A plugin whose kernel is below it doesn't start, and the log
+says why.
 
 | `min_abi` | Kernel | Guarantees                                                                       |
 | --------- | ------ | -------------------------------------------------------------------------------- |
@@ -392,28 +367,26 @@ when the kernel lacks something the plugin's grants rely on. To refuse older ker
 | 6         | 6.12   | The plugin can't signal processes outside its sandbox, Giles included            |
 | 9         | 7.1    | `unix` grants allow exactly the listed sockets (they must exist when the plugin starts) |
 
-On Linux, grants must exist when the plugin starts: Landlock grants files, not names, so a path
-created later isn't covered.
+On Linux, grants must exist when the plugin starts. A path created later isn't covered.
 
-No grant may touch the data root, except the instance's own data directory: a path inside the data
-root, or one containing it (such as your home directory when the data root is `~/.giles`), is an
-error. Otherwise a plugin could read `secrets.toml` or edit `giles.toml`. The same goes for the
-private directory holding Giles' sockets when they live outside the data root. Paths that go through
-a symbolic link are checked where the link leads, as it is when Giles starts; a link created or
-changed later isn't, so don't grant directories that other programs can rewire.
+No grant may touch the data root, except the instance's own data directory. A path inside the data
+root, or one containing it, is an error. That includes your home directory when the data root is
+`~/.giles`.
 
-`write` and `unix` grants also may not touch a directory holding a program Giles runs: the `giles`
-binary itself, and each plugin or toolset command, wherever Giles finds it (`<data root>/plugins/`,
-then `$PATH`). Granting `write = ["/opt/homebrew"]` would let a plugin replace `giles` or another
-plugin. Reading those directories is fine.
+For a path that goes through a symbolic link, Giles checks where the link leads when Giles starts. A
+link created or changed later isn't checked, so don't grant directories that other programs can
+rewire.
 
-A plugin can create symbolic links wherever it may write, so Giles never follows links there: a
-plugin won't start if its data directory is a symbolic link, and a grant inside its data directory
-or a `write` grant means exactly the path written, even if the plugin later puts a link there. Write
-such grants with the real path, in the same upper and lower case as on disk.
+`write` and `unix` grants may not touch a directory holding a program Giles runs. That's the `giles`
+binary itself, and each plugin or toolset command. Granting `write = ["/opt/homebrew"]` would let a
+plugin replace `giles` or another plugin. Reading those directories is fine.
+
+A plugin can create symbolic links wherever it may write, so Giles never follows links there. Write
+`write` grants, and grants inside the plugin's data directory, with the real path, in the same upper
+and lower case as on disk. A plugin won't start if its data directory is a symbolic link.
 
 `unsandboxed = true` turns the sandbox off for one instance, and can't be combined with `sandbox`.
-Built-in components run inside Giles and remote plugins run elsewhere, so neither takes these keys.
+Built-in components and remote plugins don't take these keys.
 
 ### Secrets
 
@@ -425,15 +398,15 @@ anthropic = "sk-ant-..."
 github = "ghp_..."
 ```
 
-Giles refuses to start if group or others have any access to `secrets.toml`; make it private with
-`chmod 600 ~/.giles/secrets.toml`. The file is optional when nothing refers to it.
+Giles refuses to start if group or others have any access to `secrets.toml`. Make it private with
+`chmod 600 ~/.giles/secrets.toml`. You don't need the file if nothing refers to it.
 
-Refer to a secret with `{ secret = "<name>" }`, or take a value from Giles' own environment with
-`{ env = "<VARIABLE>" }`. A reference works:
+Refer to a secret with `{ secret = "<name>" }`. To take a value from Giles' own environment instead,
+use `{ env = "<VARIABLE>" }`. A reference works in these places:
 
-- anywhere in an instance's `config` table, at any depth (a table whose only key is `secret` or
-  `env` is always a reference there);
-- as a credential: `auth.bearer`, `auth.oauth.client_secret`, and the values of a toolset's `env`. A
+- Anywhere in an instance's `config` table, at any depth. There, a table whose only key is `secret`
+  or `env` is always a reference.
+- As a credential: `auth.bearer`, `auth.oauth.client_secret`, and the values of a toolset's `env`. A
   credential may also be a plain string.
 
 ```toml
@@ -445,20 +418,20 @@ url = "https://api.githubcopilot.com/mcp/"
 auth = { bearer = { env = "GITHUB_TOKEN" } }
 ```
 
-Giles resolves references when it starts and fails if a secret is missing or a variable is unset.
-Components receive plain values and never read `secrets.toml` or the environment themselves. Error
-messages and logs name the key and the secret or variable, never the value; where Giles shows an
-instance's `config`, values that came from references read `<redacted>`.
+Giles refuses to start if a secret is missing or a variable is unset. Logs and error messages name
+the secret or variable, never the value. Where Giles shows an instance's `config`, values from
+references read `<redacted>`.
 
 ### Routes
 
-Routes pick the agent for each conversation, and they aren't in `giles.toml`: Giles stores them and
-you manage them in the web UI ([Routes](web.md#routes)), where a change applies to the next message
-with no restart.
+Routes pick the agent for each conversation. You manage them in [the web UI](web.md#routes), not in
+`giles.toml`, and a change applies to the next message without a restart.
 
-Routes are tried in order and the first match wins. A route matches when every key it sets matches.
-Conversation ids match exactly, capitalization included. Messages in a conversation no route matches
-are dropped and logged, including [chat commands](commands.md).
+Giles tries routes in order, and the first match wins. A route matches when every key it sets
+matches. Conversation ids match exactly, capitalization included.
+
+Giles drops and logs messages in a conversation no route matches, including
+[chat commands](commands.md).
 
 | Key            | Meaning                                                            |
 | -------------- | ------------------------------------------------------------------ |
@@ -467,12 +440,12 @@ are dropped and logged, including [chat commands](commands.md).
 | conversation   | Match this conversation id, as the channel reports it, e.g. `#giles` |
 | agent          | Required: the agent, a directory under `agents/`                   |
 
-A route with no keys but the agent matches everything, so it belongs last. The web UI checks a route
-like it checks configuration: the channel instance and the agent must exist, and a route that could
-never be used is refused: one an earlier route already covers, such as a duplicate, or a change that
-would put a route before one it would hide.
+A route that sets only `agent` matches everything, so put it last. The web UI refuses a route whose
+channel instance or agent doesn't exist. It also refuses a route that could never be used, such as a
+duplicate, or a move that would put a route before one it hides.
 
-Earlier versions kept routes in `giles.toml`:
+A fresh install has no routes, so add them in the web UI. Earlier versions kept routes in
+`giles.toml`:
 
 ```toml
 [[routes]]
@@ -484,17 +457,17 @@ agent = "jeeves"
 agent = "jeeves"
 ```
 
-If your `giles.toml` has `[[routes]]` like these, Giles imports them the first time it starts after
-the upgrade, in order, after checking them (a route to a channel instance or agent that doesn't
-exist, or a key the rule doesn't have, stops startup and names the route). It does this once. After
-that it never reads `[[routes]]` again, even if you delete every route in the web UI, and it logs a
-warning at every start while `giles.toml` still has them, and the Routes page says so: remove them
-from the file. A fresh install has no routes: add them in the web UI.
+Giles imports `[[routes]]` like these, in order, the first time it starts after the upgrade. A route
+to a channel instance or agent that doesn't exist, or with a key a route doesn't have, stops startup
+and names the route.
+
+After the import, Giles never reads `[[routes]]` again, even if you delete every route in the web
+UI. It warns at every start while `giles.toml` still has them, so remove them from the file.
 
 ## `agents/<agent>/agent.toml`
 
 Each directory under `agents/` is an agent, named by the directory, and must contain `agent.toml`.
-Files in `agents/` and directories whose names start with `.` are ignored.
+Giles ignores files in `agents/` and directories whose names start with `.`.
 
 | Key                   | Default         | Meaning                                                           |
 | --------------------- | --------------- | ----------------------------------------------------------------- |
@@ -511,46 +484,33 @@ Files in `agents/` and directories whose names start with `.` are ignored.
 | `timezone`            | system          | The agent's time zone, used when `[owner]` sets none              |
 | `idle_reset`          | off             | Start a new session after this long without messages              |
 
-Tool names are `<instance>__<tool>` for toolsets and bare for the core tools (`memory_add`,
-`memory_edit`, `memory_forget`, `memory_recall`, `memory_search`, `load_skill`, `schedule`,
-`send_attachment`). `"memory_*"` allows all five memory tools. A call to a tool the agent isn't
-allowed, or one its toolset no longer offers, fails with `tool unavailable` and nothing runs.
+A toolset's tools are named `<instance>__<tool>`. The core tools have bare names:
 
-`memory_cap` limits the *core* memories, the ones loaded into the agent's prompt, by their total
-characters in each scope: the shared memories, each user's, and each group's. Other memories aren't
-limited, and one memory is at most 1,000 characters whatever the cap. A memory the agent adds or
-edits that would go over the cap is refused, and the agent is shown what is there so it can make
-room. Lowering the cap deletes nothing. See [Skills and Memory](skills-and-memory.md#memory).
+- `memory_add`, `memory_edit`, `memory_forget`, `memory_recall`, and `memory_search`. `"memory_*"`
+  allows all five.
+- `load_skill`
+- `schedule`
+- `send_attachment`
 
-When a turn reaches its iteration limit, the tools the model asked for in that last request don't
-run; Giles makes one more request without tools, so the model tells you where it stopped. `/stop`
-ends a turn with no iteration limit.
+`memory_cap` limits the core memories, the ones in the agent's prompt. See
+[Skills and Memory](skills-and-memory.md#memory).
 
-When a conversation gets long (its next request would fill about 80% of the model's context window),
-Giles first has `compaction_model` summarize the older messages, keeping facts, decisions, and open
-tasks, and the model then sees the summary plus the most recent messages. The full transcript stays
-in the database. A cheaper model works well for this, as long as its own context window is large
-enough to read a good part of the conversation at once. Compaction also refreshes the memory shown
-to the model, so the core memories it saved during the conversation now show in its prompt. Giles
-takes a model's context window from the provider; for OpenAI-compatible servers the `context_window`
-you set in the provider's config ([Providers](providers.md)) applies too, also when the server
-doesn't list the model under that exact id. Without either, Giles assumes 128,000 tokens. If writing
-the summary fails, Giles logs it and goes on without it, and tries again on your next message.
+When a conversation would fill about 80% of the model's context window, `compaction_model`
+summarizes the older messages. The model then sees the summary plus the most recent messages. The
+full transcript stays in the database.
 
-With `busy_mode = "steer"`, a message you send while the agent is running tools reaches it as soon
-as the tools already running finish: tool calls it asked for but hadn't started yet are skipped (the
-model is told "Skipped to read a new message") so it can read your message first. With `"queue"`,
-the agent finishes what it's doing and answers your message in a new turn.
+A cheaper model works well for compaction, if its own context window can hold a good part of the
+conversation. Giles takes a model's context window from the provider. For OpenAI-compatible servers,
+the `context_window` in [the provider's config](providers.md) applies too, also when the server
+doesn't list the model under that exact id. Without either, Giles assumes 128,000 tokens.
 
-`ask` uses the same globs as `tools`: a call to a matching tool waits until you answer the prompt
-Giles sends with `yes <code>`, `yes! <code>` (also allow that tool for the rest of the
-conversation's session), or `no <code>` (see [Chat Commands](commands.md)). Nobody answering within
-`approval_timeout` denies it, and so does any other message from you. The wait doesn't count against
-the toolset's `deadline`.
+A call to a tool matching `ask` waits until you answer with one of the
+[approval commands](commands.md). The call is denied if nobody answers within `approval_timeout`, or
+if you send any other message. The wait doesn't count against the toolset's `deadline`.
 
 ### `[[jobs]]`
 
-Scheduled prompts. Each job's output is sent to the owner's default identity, unless the reply is
+Scheduled prompts. Each job's reply is sent to the owner's default identity, unless the reply is
 exactly `NO_REPLY`.
 
 | Key            | Default      | Meaning                                                             |
@@ -566,32 +526,31 @@ exactly `NO_REPLY`.
 | `model`        | `models`     | A model for this job                                                |
 | `ask_to`       |              | `"deliver_to"`: ask you to approve `ask` tools; otherwise they are denied |
 
-Exactly one of `prompt` and `prompt_file` is required. A `prompt_file` must exist when Giles starts
-and be a relative path inside the agent's directory. Schedules and `active_hours` use the owner's
-time zone, else the agent's, else the system's.
+Exactly one of `prompt` and `prompt_file` is required. A `prompt_file` is a relative path inside the
+agent's directory, and must exist when Giles starts.
 
-How jobs run:
+Schedules and `active_hours` use the owner's time zone, else the agent's, else the system's.
 
-- A reply of exactly `NO_REPLY` sends nothing and leaves nothing behind. Any other reply is sent to
-  your default identity (retried until its channel is up) and added to your DM with the agent on
-  that identity, so you can answer it there.
-- A `"dm"` job runs as its own turn in that DM, after any turn already running there; until you have
-  messaged the agent on that identity it runs like an `isolated` job.
+- A reply of exactly `NO_REPLY` sends nothing and leaves nothing behind. Any other reply goes to
+  your default identity, and is added to your DM with the agent there, so you can answer it.
+- A `"dm"` job runs as its own turn in that DM, after any turn already running there. Until you've
+  messaged the agent on that identity, it runs like an `isolated` job.
 - Times missed while Giles was stopped are made up by one run when it starts. A time outside
   `active_hours` is skipped.
-- With `ask_to`, approval prompts are sent to your default identity; answer them in your DM there.
+- With `ask_to`, approval prompts go to your default identity, and you answer them in your DM there.
   Before you have a DM with the agent, `ask` tools are denied.
 
-The agent can also schedule jobs itself with the `schedule` tool when you ask ("remind me at 5",
-"every weekday at 9, ask me for my stand-up notes"): one-off or on a cron schedule, in your time
-zone. It can list your jobs (and the ones in `agent.toml`, which it can't change) and cancel yours.
-Allow it with `schedule` in `tools`. You can have up to 20 such jobs with each agent, and a
-scheduled job can't schedule more jobs.
+The agent can also schedule jobs with the `schedule` tool when you ask, such as "remind me at 5" or
+"every weekday at 9, ask me for my stand-up notes". Allow it with `schedule` in `tools`. Its jobs
+run once or on a cron schedule, in your time zone.
 
-## Full Example
+The agent can list your jobs, including the ones in `agent.toml`, which it can't change. It can
+cancel the jobs it scheduled. You can have up to 20 such jobs with each agent, and a scheduled job
+can't schedule more jobs.
 
-This configuration, with `GITHUB_TOKEN` set in Giles' environment, is checked by Giles' test suite,
-so it stays valid.
+## Full example
+
+This configuration needs `GITHUB_TOKEN` set in Giles' environment.
 
 ```toml
 # ~/.giles/giles.toml

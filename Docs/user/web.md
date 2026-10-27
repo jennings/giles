@@ -1,8 +1,10 @@
 # Web Chat
 
-The built-in web channel lets you talk to your agents in a browser, on the same web server as the
-rest of Giles ([The Web Interface](running.md#the-web-interface)). Turn it on with an instance table
-in `giles.toml`:
+The built-in web channel lets you talk to your agents in a browser. It runs on
+[the same web server](running.md#the-web-interface) as the rest of Giles.
+
+To turn it on, add a `[channel.web]` table to `giles.toml`. `[owner] identities` must list
+`web:owner`, which is the identity you use in the browser.
 
 ```toml
 [owner]
@@ -11,332 +13,57 @@ identities = ["web:owner"]
 [channel.web]
 ```
 
-The instance can have another name (`[channel.chat]` with `component = "web"`), but there can be
-only one web channel. Its `config` table is optional; its keys are under [Logging In](#logging-in).
-An unknown key is ignored with a warning at startup, except in `proxy`, where it is an error.
-
-Web senders are identities in the `web` namespace. For messages you send from the browser to reach
-an agent, `[owner] identities` must list your web identity, `web:owner`. Messages in a chat started
-with **New chat** are routed like any other channel's ([Routes](#routes)): a route can match the
-channel `web`. A chat started for a particular agent ([Chats](#chats)) always goes to that agent and
-needs no route.
-
-## Chats
-
-The home page lists your chats, most recently active first, each titled with the first line of its
-first message. **New chat** opens an empty chat; it appears in the list once you've sent a message
-in it. Each chat is its own conversation with its own history, the way each WhatsApp chat is (`/new`
-in a chat starts a fresh session in the same chat, shown as "New session").
-
-To talk to a particular agent, pick it under **Chat with** on the chat list and press **Start**. The
-list has every configured agent, including one you've just created ([Agents](#agents)), and that
-chat always goes to the agent you picked, whatever your [routes](#routes) say. The chat list and the
-chat page show which agent such a chat is with. If that agent is later removed
-([Removing an agent](#removing-an-agent)), its chats can't be opened any more, though they stay in
-the chat list.
-
-A chat page shows the conversation so far (the last 200 messages) and a box to write in. Replies
-appear as the agent writes them, without reloading. Formatting is Markdown. Links open other sites;
-images show only if Giles stores them (attachments), never from other sites, so a reply can't make
-your browser fetch a remote address. Tool calls and the model's reasoning aren't shown.
-
-Messages you send are kept until Giles has stored them. If too many are waiting (Giles isn't taking
-them), sending fails with "too many messages are waiting"; try again shortly. A message longer than
-32 KiB is refused.
-
-If the page lost its connection for a while (or Giles restarted), it says "Some messages may be
-missing"; reload to see them. Notices such as "Interrupted by a restart" are shown live but aren't
-part of the stored conversation, so they're gone after a reload.
-
-## Approvals
-
-When an agent asks before running a tool, the web chat shows the request with three buttons:
-**Allow**, **Allow for this session** (the same tool needs no more approval in this session), and
-**Deny**. A button sends `yes <code>`, `yes! <code>`, or `no <code>` for you, exactly as if you'd
-typed it ([Chat Commands](commands.md)); typing the reply works too. The prompt then shows what you
-sent ("Sent: yes"), and once Giles has acted on the approval, how it ended (allowed, denied, or
-expired).
-
-## Attachments
-
-Attachments are served at `/blobs/<id>`, only to you while logged in. Images (PNG, JPEG, GIF, WebP,
-AVIF) show inline; any other file downloads instead of opening in the browser.
-
-## Admin Pages
-
-**Status** on the chat list opens the admin pages, the browser version of `giles status`
-([Command Line](cli.md)). Only the owner can open them.
-
-- `/admin` shows the version, when Giles started, whether this machine can sandbox plugins, every
-  channel with its last status (connected, an error, or waiting to be linked), and a summary of the
-  plugins.
-- `/admin/plugins` shows each plugin in detail: its state (running, retrying, failed), restarts,
-  last error, channel status, binary or URL, version, and sandbox. **Restart** restarts a plugin
-  now, even one that failed for good or is waiting out its retry delay. Toolsets have no button yet:
-  Giles doesn't track their state on these pages.
-
-### Linking a Channel
-
-A channel that needs linking or a login (such as WhatsApp before you've linked it, or after it was
-logged out) shows what it needs on the status page:
-
-- A QR code: scan it with the app (WhatsApp: **Linked devices**, **Link a device**).
-- A pair code: enter it in the app.
-- An address to open (a link only if it's `http` or `https`). Discord shows the Developer Portal's
-  address this way when it rejects the bot token ([Discord](discord.md#status)).
-
-While any channel waits to be linked, the page reloads itself every 5 seconds, so it always shows
-the channel's newest code (WhatsApp replaces its QR code every 20 seconds or so). Once the channel
-reports that it's connected, the code disappears and the reloading stops.
-
-## Agents
-
-**Agents** in the admin pages' menu (`/admin/agents`) lists every agent with its models, a link to
-its page, **Chat** to start a chat with it, **Edit**, and **Remove**. Only the owner can open these
-pages; an agent's page also has **Memory** ([below](#memory)).
-
-An agent's page shows its models, tools, and time zone, then every file in `agents/<agent>/`:
-`agent.toml`, `SOUL.md`, its jobs' prompt files, its skills, its memory database `memory.db` (shown
-with its size, not its contents; the memories have [their own page](#memory)), and anything else
-there. Contents are shown as plain text. For now you see every file. Limits keep the page small:
-
-- At most 200 files are listed, at most 8 directories deep; names starting with `.` are skipped.
-- Each file shows at most its first 64 KiB, and the page at most 1 MiB of contents in all.
-- A file that isn't text (an image, say) is listed with its size, not shown.
-- A symbolic link is listed but never followed, so a link can't show a file from outside the agent's
-  directory.
-
-**New agent** opens a form that creates one:
-
-- **Name**: the display name. Optional if you give an id.
-- **Id**: the directory name, letters, digits, and `-`. It is always a plain, editable field. As you
-  type the name, the id fills in from it: lowercase, each space turned into `-`, and everything else
-  (punctuation, symbols, other whitespace, and letters outside `a`-`z`, so `é` too) removed: "The
-  Butler!" becomes `the-butler`, "Café" becomes `caf`. Once you edit the id yourself it stays as you
-  typed it; clear it and it follows the name again. If the id is empty when you create the agent
-  (the page's script didn't run, say), Giles makes it from the name the same way. An id that's taken
-  (ignoring case) or `new`, and an id that comes out empty, is refused.
-- **Models**: `<provider>/<model>`, several separated by commas. The field suggests the models your
-  providers list; you can type any other.
-- **Tools** and **Ask first**: optional tool names or globs, separated by commas or spaces.
-- **Time zone**: optional, such as `Europe/London`.
-- **SOUL.md**: who the agent is, at most 64 KiB. The form starts with "This is your information.
-  Update it as you learn new things about yourself." and "You are a helpful personal assistant." as
-  two paragraphs; change it freely, or empty it for an empty file.
-
-Giles checks the agent exactly as it checks a hand-written `agent.toml` at startup (every model must
-name a configured provider, tool globs can't be empty, and so on). If something is wrong, the form
-comes back with the problem and nothing is written. Otherwise Giles writes `agents/<id>/agent.toml`
-and `SOUL.md`, and the agent can be used at once, without a restart: chat with it from its page or
-the chat list. It runs with the defaults for everything the form doesn't ask (see
-[Configuration](configuration.md)); edit `agent.toml` by hand for the rest, which, like any other
-configuration change, takes effect at the next restart.
-
-### Editing an agent
-
-**Edit**, on the list and on an agent's page, opens the same form filled in from the agent's files
-(`agent.toml` and `SOUL.md`) as they are on disk now. The **Id** is shown but can't be changed: it
-is the agent's directory name, `agents/<id>/`. To use another id, create a new agent and remove the
-old one.
-
-Giles checks the edit as it checks a new agent or a hand-written `agent.toml` at startup. If
-something is wrong, the form comes back with the problem and what you typed, and the files are left
-as they were. Otherwise it saves, and the agent changed without a restart:
-
-- A chat you start afterwards uses the new models, tools, ask list, time zone, and `SOUL.md`, and so
-  does the next run of the agent's [jobs](configuration.md#jobs) (they're read when they run). A
-  chat already going keeps the tools and instructions it started with; use `/new` to start a fresh
-  one, or let it be (`SOUL.md` is read again when a long chat is compacted).
-- Giles changes only what the form manages: `name`, `models`, `tools`, `ask`, `timezone`, and
-  `SOUL.md`. Everything else in `agent.toml` stays as you wrote it: comments, `[[jobs]]`,
-  `compaction_model`, `busy_mode`, `memory_cap`, the iteration limits, `idle_reset`, and any setting
-  added later. A setting you leave as it was isn't rewritten at all, and one you empty (name, tools,
-  ask first, time zone) is removed from the file. A comment right above a removed setting goes with
-  it, except the comments at the very top of the file and any set off by a blank line.
-- Both files are written, or neither: Giles writes each to a temporary file and moves them into
-  place, and puts the first back if the second fails.
-- If you edit `agent.toml` or `SOUL.md` by hand while the form is open, saving the form is refused
-  ("changed on disk") rather than overwriting your change. The form stays as you typed it, with a
-  link to reload the current values.
-- A file Giles won't write through is left to you, and the form says so: an `agent.toml` that isn't
-  valid TOML, a file bigger than 1 MiB, one that isn't UTF-8, and a `SOUL.md` or `agent.toml` that
-  is a symbolic link.
-- Changing `[[jobs]]` or other settings by hand still needs a restart to take effect (unless you
-  then save this form, which loads the whole file).
-
-### Removing an agent
-
-**Remove**, on the list and on an agent's page, opens a page that says what removing the agent does,
-with a **Remove agent** button. Nothing happens until you press it.
-
-- **The files are moved, not deleted.** `agents/<id>/` (`agent.toml`, `SOUL.md`, the memory database
-  `memory.db` with the memories of the agent, its users and groups, job prompt files, skills) is
-  renamed to `trash/agents/<id>-<date and time in UTC>/` in the data directory, for example
-  `trash/agents/jeeves-20261024T120000Z/`. To bring the agent back, move that directory to
-  `agents/<id>/` and restart Giles; its memories come back with it. Giles never reads, empties, or
-  backs up `trash/` ([Backups](backups.md)); delete what you don't want, whenever you like.
-- **Its memory database goes with it.** Giles closes the agent's `memory.db` first, so the trashed
-  directory holds one complete `memory.db` file with nothing left in `memory.db-wal` or
-  `memory.db-shm`.
-- **The agent is out of Giles at once**, without a restart: it disappears from the agent list and
-  the **Chat with** chooser, a chat can't be started with it, and its existing chats can't be opened
-  or continued.
-- **Its jobs stop.** The `[[jobs]]` in its `agent.toml` stop running (they stay in the moved file),
-  and the jobs it scheduled itself with the `schedule` tool are deleted. The page counts both.
-- **Its history stays** in the database, out of sight: chats, messages, and usage. They are not
-  deleted. If you later create an agent with the same id, those old chats belong to the new agent
-  again (it answers them with its own settings and `SOUL.md`). To start clean, pick another id.
-- **The id is free right away**: you can create a new agent with the same id, and removing that one
-  too gives it another directory in `trash/` (`-1`, `-2` after the time if two removals fall in the
-  same second).
-
-Giles refuses to remove an agent in two cases, and the page says which:
-
-- **Routes still name it.** The page lists them, each linking to the [routes page](#routes). Point
-  each at another agent, or remove it, then come back. Giles doesn't change your routes for you.
-- **It is working right now**: a chat turn is running or messages are waiting for one, or one of its
-  jobs is running (a scheduled job's run counts from the moment its time comes). Stop the chat with
-  `/stop` or wait, then try again.
-
-Giles takes the agent out of use and checks for work once more before it moves any files, so a chat
-message or job that starts just as you press the button either is seen (the removal is refused and
-the agent stays as it was) or finds the agent already gone and does nothing. If the files can't be
-moved, the agent is put back as it was. A job whose time comes in that very instant doesn't run that
-time; it stops for good until Giles restarts.
-
-### Memory
-
-**Memory**, on an agent's page, opens `/admin/agents/<agent>/memory`: the agent's memories, the ones
-you can see, which you can search, add to, change, and forget. What the agent remembers and how
-([Skills and Memory](skills-and-memory.md#memory)) is explained there; this is the page for it.
-
-- **What you see.** Your own private memories and the shared ones, newest change first, each with
-  its id, whether it is `core`, `shared`, or `private`, its text, and when it was added and last
-  changed. Other users' private memories are never shown, not even to the owner. At most the newest
-  200 are listed; the page says when there are more, and search finds the rest. Above the list, the
-  size of your core memories and of the shared core memories is shown against the agent's
-  `memory_cap`, like the prompt does (`[67% — 1,474/2,200]`).
-- **Search.** The box finds words in the memories you can see, best matches first, the same search
-  as the agent's `memory_recall` tool: words are matched as plain text (quotes and `*` in the box
-  are ordinary characters) and English word endings are ignored (`teas` finds `tea`). At most 50
-  matches are shown.
-- **Add** a memory with a text and the **Core** box (core memories are loaded into every prompt that
-  can see them; the rest are only found by search). Only the owner sees **Shared**, which makes the
-  memory visible to every user and group of the agent.
-- **Edit** a memory's text and flags with its **Edit** form, or **Forget** it (no confirmation).
-- **Rules.** They are the same as for the agent's tools. A memory is at most 1,000 characters. Core
-  memories of one kind (your private ones, or the shared ones) together fit in the agent's
-  `memory_cap`, 2,200 characters unless `agent.toml` says otherwise. If a change would go over,
-  nothing is saved: the page says by how much and lists that scope's core memories, so you can
-  shorten or forget some, or untick **Core**. Only the owner can create, change, share, or forget
-  shared memories; to anyone else a shared memory is read-only.
-- **A stale edit is refused.** The edit form remembers the memory as it was when the page loaded. If
-  the memory changed since (the agent edited it, or you changed it in another tab), Giles refuses
-  your edit instead of overwriting the change: nothing is saved, and the page shows what you typed
-  and what the memory says now, so you can redo it. Reload the page to get a fresh form.
-- **Running sessions keep the core memories they started with.** The page says so too: a change
-  reaches a session after it compacts, or in a session that starts anew (a new chat, or the next run
-  of a job). A running chat can still find the change at once with `memory_recall`.
-- **Groups.** Only the owner sees them: below your own memories the page has one section for each
-  group conversation that has private memories (`<instance> / <conversation>`), with the same
-  controls, and with the owner's right to share. The group's participants have no page of their own,
-  and nobody but the owner can see or change a group's memories.
-
-The page creates an empty `memory.db` for an agent that has none, the first time you open it.
-
-## Routes
-
-**Routes** in the admin pages' menu (`/admin/routes`) is where you decide which agent answers each
-conversation, on every channel. Only the owner can open these pages. Routes are tried from the top
-and the first one that matches wins, so the order matters: put a specific route (one conversation)
-before a broader one (a whole channel, or everything). A chat started for a particular agent
-([Chats](#chats)) skips the routes. A message in a conversation no route matches is dropped, so a
-fresh Giles has no routes and answers nobody until you add one.
-
-The list shows each route's position, channel, kind, conversation, and agent (a link to the agent's
-page), with these buttons:
-
-- **Edit** opens the route's form, filled in.
-- **Up** and **Down** move the route one place. The first route has no Up and the last no Down.
-- **Remove** deletes the route.
-
-**New route** opens a form:
-
-- **Channel**: one of your channel instances, or any channel.
-- **Kind**: direct, group, or any (Giles ignores group conversations for now).
-- **Conversation**: the conversation id as the channel reports it, such as `#giles` on IRC or a
-  phone number's chat on WhatsApp; empty for any. It must match exactly, capitals included.
-- **Agent**: required, one of your agents.
-- **Position**: at the end, or before a route you pick.
-
-A route that sets nothing but the agent matches every conversation; keep it last.
-
-Giles checks a route like it checks configuration. The channel instance and the agent must exist. It
-also refuses a route that nothing could ever reach, and says why: an earlier route already matches
-everything it matches (a duplicate is the plainest case), or the change would put a route in front
-of one it hides. Adding, editing, and moving all follow this rule, so to put a broad route first you
-move the specific ones above it. The form comes back with the problem and nothing is changed. A
-route that has stopped working anyway (its agent's directory was removed by hand, or its channel
-instance dropped from `giles.toml` before a restart) stays in the list with a warning under it, as
-does one that an earlier route hides, which can happen to routes imported from an old `giles.toml`.
-
-A change applies to the next message Giles receives, with no restart.
-
-Routes used to be `[[routes]]` in `giles.toml`. Giles imports them once, at the first start with
-this version, and then never reads them again; the Routes page tells you if the file still has them,
-and you can delete them. See [Configuration](configuration.md#routes).
+You can give the instance another name, such as `[channel.chat]` with `component = "web"`, but you
+can have only one web channel.
 
 ## Logging In
 
-Every page needs a login. There are two ways to log in.
+Every page needs a login. You log in with a one-time link, or through a trusted reverse proxy.
 
 ### Login Links
 
-`giles admin login-link --user owner` prints a one-time URL. Opening it shows a **Log in** button;
-pressing it logs that browser in for 30 days. A link works once and only for 10 minutes, and a
-restart of Giles cancels any unused ones. (Opening the link doesn't use it up, so a chat app that
-fetches a link to preview it can't spend it.) **Log out** on the chat list ends the login. See
-[Command Line](cli.md).
+Run this to get a login link:
 
-`[owner] identities` must list `web:owner`: messages you send after logging in with a link come from
-that identity. If you remove it later, existing logins stop working.
+```sh
+giles admin login-link --user owner
+```
 
-The link starts with the address Giles listens on (`core.http_listen` as bound, so port `0` shows
-the port it picked, with `0.0.0.0` shown as `127.0.0.1`). If people reach Giles at another address,
-such as through a reverse proxy, set it:
+Open the link and press **Log in** to log that browser in for 30 days. The link works once, and only
+for 10 minutes. **Log out** on the chat list ends the login. See [Command Line](cli.md).
+
+The link starts with the address Giles listens on. If you reach Giles at another address, such as
+through a reverse proxy, set `public_url`:
 
 ```toml
 [channel.web.config]
 public_url = "https://giles.example.com"
 ```
 
-`public_url` is just the scheme, host, and optional port; Giles is always served at the root. With
-an `https` URL the login cookie is marked `Secure`, so the browser only sends it over HTTPS.
-
-The login is a cookie (`HttpOnly`, `SameSite=Lax`). Every form also carries a token tied to the
-login, so another site can't post messages or approvals as you.
+Give only the scheme, host, and optional port. Giles is always served at the root of that address.
 
 ### A Trusted Reverse Proxy
 
-If a reverse proxy already authenticates people (Tailscale Serve, oauth2-proxy, Authelia), Giles can
-take the user's identity from a header the proxy sets. Giles believes that header only on a separate
-listener meant for the proxy, never on `core.http_listen`: any program on the machine, plugins
-included, can connect to that one.
+If a reverse proxy already authenticates people, such as Tailscale Serve, oauth2-proxy, or Authelia,
+Giles can take your identity from a header the proxy sets:
 
 ```toml
 [channel.web.config.proxy]
 identity_header = "Tailscale-User-Login"
 ```
 
-This creates the Unix socket `run/proxy.sock` (mode 0600: only the user Giles runs as can connect,
-so run the proxy as that user). Point the proxy at it. If the data root's path is too long for a
-socket, the socket is in a private directory under `$TMPDIR` instead; `giles serve` logs where
-("trusted-proxy listener open"). The header's value is your identity in the `web` namespace, so list
-it in `[owner] identities`, e.g. `"web:alice@example.com"`. A request through the proxy without the
-header falls back to the login cookie; one naming someone not listed is refused.
+Giles reads that header only on a separate listener for the proxy. It ignores the header on
+`core.http_listen`, because any program on the machine can connect there, plugins included.
 
-If the proxy can't use a Unix socket, give the proxy listener a TCP address and a shared secret that
-the proxy sends in a header with every request:
+By default the proxy listener is the Unix socket `run/proxy.sock` in the data root. Only the user
+Giles runs as can connect to it, so run the proxy as that user and point it at the socket. If the
+data root's path is too long for a socket, Giles puts it under `$TMPDIR` instead and logs where, in
+the line `trusted-proxy listener open`.
+
+The header's value is your identity in the `web` namespace. List it in `[owner] identities`, such as
+`"web:alice@example.com"`.
+
+If the proxy can't use a Unix socket, give the listener a TCP address and a shared secret. The proxy
+must send the secret in a header with every request:
 
 ```toml
 [channel.web.config.proxy]
@@ -346,6 +73,183 @@ secret = "a long random string"    # at least 16 bytes
 secret_header = "X-Giles-Proxy-Secret"  # the default
 ```
 
-Requests to that address without the secret are refused. Through the proxy listener, an
-`X-Forwarded-Proto: https` header also marks the login cookie `Secure`. There's no logout for a
-proxy login: the proxy decides who you are on every request.
+There's no logout for a proxy login. The proxy decides who you are on every request.
+
+## Chats
+
+The home page lists your chats. Each chat is a separate conversation with its own history.
+
+Messages in a chat you open with **New chat** go to the agent your [routes](#routes) pick. To talk
+to a particular agent instead, pick it under **Chat with** and press **Start**. That chat always
+goes to the agent you picked, and needs no route.
+
+Replies appear as the agent writes them. Tool calls and the model's reasoning aren't shown. Image
+attachments show inline, and other attachments download. Images from other sites aren't loaded.
+
+If something goes wrong:
+
+- If sending fails with "too many messages are waiting", try again shortly.
+- A message longer than 32 KiB is refused.
+- If the page says "Some messages may be missing", reload it.
+
+## Approvals
+
+When an agent asks before running a tool, the chat shows the request with three buttons:
+
+- **Allow**
+- **Allow for this session**, so the same tool needs no more approval in this session
+- **Deny**
+
+The buttons send [the same replies](commands.md) you could type, and typing them works too.
+
+## Admin Pages
+
+**Status** on the chat list opens the admin pages. Only the owner can open them.
+
+`/admin` shows what [`giles status`](cli.md) shows, including each channel's last status.
+
+`/admin/plugins` shows each plugin in detail, including its state, restarts, and last error.
+**Restart** restarts a plugin now, even one that failed for good or is waiting to retry.
+
+### Linking a Channel
+
+A channel that needs linking or a login, such as WhatsApp before you've linked it, shows what it
+needs on the status page:
+
+- A QR code: scan it with the app (WhatsApp: **Linked devices**, **Link a device**).
+- A pair code: enter it in the app.
+- An address to open. [Discord](discord.md#status) shows the Developer Portal's address this way
+  when it rejects the bot token.
+
+The page reloads itself until the channel connects, so it always shows the newest code.
+
+## Agents
+
+**Agents** in the admin menu lists every agent, with buttons to chat with it, edit it, or remove it.
+An agent's page shows its models, tools, and time zone, and the files in `agents/<agent>/` as plain
+text.
+
+**New agent** opens a form that creates one:
+
+- **Name**: the display name. Optional if you give an id.
+- **Id**: the agent's directory name, made of letters, digits, and `-`. It fills in from the name as
+  you type, and you can edit it. You can't change it once the agent exists.
+- **Models**: `<provider>/<model>`, several separated by commas.
+- **Tools** and **Ask first**: optional tool names or globs, separated by commas or spaces.
+- **Time zone**: optional, such as `Europe/London`.
+- **SOUL.md**: who the agent is.
+
+Giles checks the agent as it checks a hand-written `agent.toml`. If something is wrong, such as a
+model naming a provider you haven't configured, the form shows the problem and nothing is written.
+
+Otherwise Giles writes `agents/<id>/agent.toml` and `SOUL.md`. You can chat with the agent at once,
+without a restart.
+
+For settings the form doesn't have, edit [`agent.toml`](configuration.md) by hand. Like any other
+configuration change, that takes effect at the next restart.
+
+### Editing an agent
+
+**Edit** opens the same form, filled in from the agent's files. The **Id** can't be changed. To use
+another id, create a new agent and remove the old one.
+
+Saving takes effect without a restart:
+
+- New chats and the next run of the agent's [jobs](configuration.md#jobs) use the new settings. A
+  chat already going keeps the settings it started with. Use `/new` to start a fresh one.
+- Giles changes only what the form has: `name`, `models`, `tools`, `ask`, `timezone`, and `SOUL.md`.
+  The rest of `agent.toml`, comments included, stays as you wrote it.
+- If you edit `agent.toml` or `SOUL.md` by hand while the form is open, saving is refused with
+  "changed on disk". Use the form's link to reload the current values.
+
+Changes you make to `agent.toml` by hand, such as to `[[jobs]]`, take effect at the next restart, or
+when you next save this form.
+
+### Removing an agent
+
+**Remove** opens a page that says what removing the agent does. Nothing happens until you press
+**Remove agent**.
+
+Removing an agent:
+
+- Moves `agents/<id>/`, memories included, to `trash/agents/<id>-<time>/` in the data root, such as
+  `trash/agents/jeeves-20261024T120000Z/`.
+- Takes the agent out of use at once. You can't start a chat with it, and its existing chats can't
+  be opened.
+- Stops its `[[jobs]]`, and deletes the jobs it scheduled itself with the `schedule` tool.
+- Keeps its chats, messages, and usage in the database, out of sight.
+
+To bring the agent back, move its directory back to `agents/<id>/` and restart Giles. Giles never
+empties or backs up `trash/`, so delete what you don't want yourself.
+
+You can reuse the id at once. A new agent with the same id takes over the old agent's chats and
+answers them with its own settings. To start clean, pick another id.
+
+Giles refuses to remove an agent in two cases:
+
+- **Routes still name it.** The page lists them. Point each at another agent or remove it, then try
+  again.
+- **It is working right now.** A chat turn or one of its jobs is running, or messages are waiting.
+  Stop the chat with `/stop` or wait, then try again.
+
+### Memory
+
+**Memory** on an agent's page lets you search, add, edit, and forget the agent's memories.
+[How memory works](skills-and-memory.md#memory) is explained on its own page.
+
+You see your own private memories and the shared ones, newest change first. Other users' private
+memories are never shown, not even to the owner. The page lists the newest 200, and search finds the
+rest. Search works like the agent's `memory_recall` tool.
+
+- **Add** a memory with its text. Tick **Core** to load it into every prompt that can see it. Other
+  memories are only found by search.
+- **Shared** makes a memory visible to every user and group of the agent. Only the owner sees this
+  box, and only the owner can change or forget a shared memory.
+- **Edit** changes a memory's text and flags.
+- **Forget** deletes a memory, without asking first.
+
+A memory is at most 1,000 characters. Your private core memories together, and the shared core
+memories together, must fit in the agent's `memory_cap`. If a change would go over, nothing is
+saved. The page says by how much, so you can shorten or forget some, or untick **Core**.
+
+If a memory changed after the page loaded, for example because the agent edited it, your edit is
+refused. The page shows what you typed and what the memory says now, so you can redo it.
+
+A change to a core memory reaches a running chat after it compacts, or in a new chat or job run.
+`memory_recall` finds the change at once.
+
+Below your own memories, the owner sees a section for each group conversation that has private
+memories. Nobody else can see or change a group's memories.
+
+## Routes
+
+**Routes** in the admin menu decides which agent answers each conversation, on every channel. A
+message in a conversation that no route matches is dropped. A fresh Giles has no routes, and answers
+nobody until you add one.
+
+Routes are tried from the top, and the first match wins. Put a route for one conversation before a
+broader one for a whole channel or everything.
+
+**New route** opens a form:
+
+- **Channel**: one of your channel instances, or any.
+- **Kind**: direct, group, or any. Giles ignores group conversations for now.
+- **Conversation**: the conversation id as the channel reports it, such as `#giles` on IRC, or empty
+  for any. It must match exactly, capitals included.
+- **Agent**: required.
+- **Position**: at the end, or before a route you pick.
+
+A route that sets nothing but the agent matches every conversation, so keep it last.
+
+Each route in the list has **Edit**, **Up**, **Down**, and **Remove** buttons. A change applies to
+the next message, without a restart.
+
+Giles refuses a change that would leave a route unreachable, such as a duplicate, or a broad route
+moved above a specific one. The form says what is wrong. To move a broad route up, move the specific
+routes it would hide above it instead.
+
+A route that stopped working, for example because its agent was removed by hand, stays in the list
+with a warning under it.
+
+Giles imports `[[routes]]` from an older `giles.toml` once. After that you can delete them from the
+file. See [Configuration](configuration.md#routes).

@@ -1,16 +1,23 @@
 # User Guide
 
-This part of the book is for the person running Giles: what it does, how to install and configure
-it, and how to talk to its agents.
+This part of the book is for the person running Giles. It covers installing and configuring Giles,
+and talking to its agents.
 
-Giles v1 serves one person, the owner. The owner's identities on each channel are declared in
-`giles.toml`; messages from anyone else are dropped and logged. Each agent has its own files
-(`SOUL.md`, skills), memories, model, tools, and scheduled jobs. Every conversation (a WhatsApp
-chat, an email thread, an IRC query, a web chat) is its own session with its own history.
+Giles serves one person, the owner. You list your identities on each channel in
+[`giles.toml`](configuration.md#owner). Giles drops messages from anyone else.
 
-All of Giles' state lives under one data directory, `GILES_HOME` (default `~/.giles`): the config
-files, agent directories, the SQLite database, and blobs.
+Each agent has its own:
 
-Giles can be installed and started ([Installing and Running](running.md)) and reads its
-[Configuration](configuration.md), but it does nothing else yet. Chapters on operating it are added
-here as those features are built; until then, [Idea](../IDEA.md) describes the intended behavior.
+- files (`SOUL.md`, skills)
+- memories
+- model
+- tools
+- scheduled jobs
+
+Every conversation is its own session with its own history. A WhatsApp chat, an email thread, an IRC
+query, and a web chat are each a separate conversation.
+
+All of Giles' state lives in one data directory, `~/.giles` by default. It holds the config files,
+the agent directories, the database, and blobs.
+
+Start with [Installing and Running](running.md), then [Configuration](configuration.md).
