@@ -17,15 +17,10 @@
 //! the same conversation, with its attachments, event id `echo-<n>`), and `unavailable` (recipients
 //! whose sends fail with `UNAVAILABLE`). Unknown keys are refused.
 //!
-//! Run as a remote plugin (PLAN section 7.6), an example of `ChannelPlugin::serve_remote`:
-//!
-//! ```text
-//! giles-channel-echo --listen <address> --data <dir> [--tls-cert <pem> --tls-key <pem>]
-//! ```
-//!
-//! It accepts calls with `authorization: Bearer $GILES_ECHO_TOKEN` (any call if that isn't set),
-//! prints `listening on <address>` to stdout once it listens (useful with port 0), and runs until
-//! `SIGINT` or `SIGTERM`. `<dir>` is its data directory.
+//! Run as a remote plugin (PLAN section 7.6) with the SDK's `serve` subcommand, e.g.
+//! `giles-channel-echo serve --listen 127.0.0.1:0 --data <dir> --no-auth`. It prints
+//! `listening on <address>` to stdout once it listens (useful with port 0). Giles launches it with
+//! `socket`.
 
 use std::collections::VecDeque;
 use std::io;
@@ -39,7 +34,7 @@ use giles_plugin_sdk::giles_types::{
     Channel, ChannelEvent, ChannelInfo, ConversationId, ConversationKind, ConversationRef, Error,
     EventId, InboundMessage, MessageId, NativeId, OutboundMessage, OutputMode, Result, SendTarget,
 };
-use giles_plugin_sdk::{Blobs, ChannelPlugin, Configure, RemoteAuth, RemoteServer, async_trait};
+use giles_plugin_sdk::{Blobs, ChannelPlugin, Configure, async_trait};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::Notify;
@@ -63,70 +58,11 @@ async fn main() -> ExitCode {
             EnvFilter::try_from_env("GILES_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
-    let plugin = ChannelPlugin::new("echo", env!("CARGO_PKG_VERSION"))
+    ChannelPlugin::new("echo", env!("CARGO_PKG_VERSION"))
         .output(OutputMode::Blocks)
-        .can_initiate(true);
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.is_empty() {
-        return plugin.serve(Echo::configure).await;
-    }
-    match serve_remote(plugin, &args).await {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("giles-channel-echo: {e}");
-            ExitCode::from(2)
-        }
-    }
-}
-
-/// Remote mode: `--listen <address> --data <dir> [--tls-cert <pem> --tls-key <pem>]`.
-async fn serve_remote(plugin: ChannelPlugin, args: &[String]) -> io::Result<()> {
-    let usage = || {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "usage: giles-channel-echo --listen <address> --data <dir> \
-             [--tls-cert <pem> --tls-key <pem>]",
-        )
-    };
-    let (mut listen, mut data, mut cert, mut key) = (None, None, None, None);
-    let mut args = args.iter();
-    while let Some(flag) = args.next() {
-        let slot = match flag.as_str() {
-            "--listen" => &mut listen,
-            "--data" => &mut data,
-            "--tls-cert" => &mut cert,
-            "--tls-key" => &mut key,
-            _ => return Err(usage()),
-        };
-        *slot = Some(args.next().ok_or_else(usage)?.clone());
-    }
-    let (Some(listen), Some(data)) = (listen, data) else {
-        return Err(usage());
-    };
-    let auth = match std::env::var("GILES_ECHO_TOKEN") {
-        Ok(token) => RemoteAuth::Bearer(token),
-        Err(_) => RemoteAuth::None,
-    };
-    let listener = tokio::net::TcpListener::bind(&listen).await?;
-    let mut server = RemoteServer::new(listener, data, auth);
-    match (cert, key) {
-        (Some(cert), Some(key)) => {
-            let config = giles_plugin_sdk::tls::server_config(
-                &tokio::fs::read(cert).await?,
-                &tokio::fs::read(key).await?,
-            )?;
-            server = server.tls(config);
-        }
-        (None, None) => {}
-        _ => return Err(usage()),
-    }
-    {
-        use std::io::Write as _;
-        let mut stdout = io::stdout().lock();
-        writeln!(stdout, "listening on {}", server.local_addr()?)?;
-        stdout.flush()?;
-    }
-    plugin.serve_remote(server, Echo::configure).await
+        .can_initiate(true)
+        .run(Echo::configure)
+        .await
 }
 
 #[derive(Debug, Deserialize)]

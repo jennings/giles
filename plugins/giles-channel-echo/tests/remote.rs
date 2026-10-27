@@ -1,5 +1,5 @@
 //! The echo plugin as a remote plugin (PLAN section 7.6) of a running core: the binary runs on
-//! its own (`--listen 127.0.0.1:...`), and the core connects to it with a bearer token, OAuth
+//! its own (`serve --listen 127.0.0.1:...`), and the core connects to it with a bearer token, OAuth
 //! client credentials from a fake token endpoint, or TLS with a test certificate authority. A
 //! wrong token, a refused token request, or an untrusted certificate leaves it backing off; an
 //! unreachable plugin is retried until it comes up, and again after it goes away; stopping the
@@ -34,16 +34,17 @@ impl Remote {
     async fn start(listen: &str, data: &Path, token: Option<&str>, tls: Option<&Pki>) -> Self {
         let mut command = Command::new(ECHO);
         command
-            .args(["--listen", listen, "--data"])
+            .args(["serve", "--listen", listen, "--data"])
             .arg(data)
-            .env_remove("GILES_ECHO_TOKEN")
+            .env_remove("GILES_CHANNEL_ECHO_TOKEN")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
-        if let Some(token) = token {
-            command.env("GILES_ECHO_TOKEN", token);
-        }
+        match token {
+            Some(token) => command.env("GILES_CHANNEL_ECHO_TOKEN", token),
+            None => command.arg("--no-auth"),
+        };
         if let Some(pki) = tls {
             command
                 .arg("--tls-cert")

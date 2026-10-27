@@ -43,7 +43,9 @@ use std::time::{Duration, Instant};
 use giles_plugin_sdk::convert::output_mode_from_proto;
 use giles_plugin_sdk::tls::rustls::RootCertStore;
 use giles_proto::channel::v1::channel_service_server::SERVICE_NAME as CHANNEL_SERVICE;
-use giles_proto::handshake::{EXIT_NO_SHARED_PROTOCOL, HandshakeError, HandshakeLine};
+use giles_proto::handshake::{
+    EXIT_NO_SHARED_PROTOCOL, HandshakeError, HandshakeLine, SOCKET_COMMAND,
+};
 use giles_proto::plugin::v1::{
     ConfigureRequest, DescribeRequest, DescribeResponse, PluginKind, SandboxGrants,
     ShutdownRequest, describe_response,
@@ -443,6 +445,7 @@ impl Launcher {
                 spec_file.clone().into(),
                 "--".into(),
                 binary.clone().into(),
+                SOCKET_COMMAND.into(),
             ];
             (self.trampoline.as_path(), args, None)
         } else {
@@ -453,7 +456,7 @@ impl Launcher {
             let env = sandbox::scrubbed_env(&spec, &|name| std::env::var_os(name));
             (
                 binary.as_path(),
-                Vec::new(),
+                vec![OsString::from(SOCKET_COMMAND)],
                 Some((env, data_dir.as_path())),
             )
         };
