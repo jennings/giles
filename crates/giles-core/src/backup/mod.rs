@@ -4,7 +4,9 @@
 //!
 //! - `<stem>.db`: the database, written with `VACUUM INTO`, which is consistent while the core
 //!   runs, in any journal mode (copying the file isn't);
-//! - `<stem>.tar`: a tar of the files people write and the blobs (see [`write_archive`]).
+//! - `<stem>.tar`: a tar of the files people write and the blobs (see [`write_archive`]), with
+//!   each agent's memory database (`agents/<agent>/memory.db`) as a `VACUUM INTO` snapshot taken
+//!   the same way ([`MemorySnapshots`]).
 //!
 //! `giles backup <dir>` (the admin service's `Backup`) writes one to a directory the operator
 //! names ([`create`]). The core also writes one to `backups/` before it applies schema migrations
@@ -12,13 +14,15 @@
 //! the old binary; only the newest [`KEEP_PRE_MIGRATION`] of those are kept. See
 //! `Docs/technical/backups.md`.
 
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-use giles_store::{BlobStore, MigrationPlan, Store};
+use giles_store::{BlobStore, MemoryStore, MigrationPlan, Store};
 use giles_types::Timestamp;
+use tempfile::TempDir;
 use tracing::{info, warn};
 
 use crate::paths::DataRoot;
@@ -40,6 +44,16 @@ const BLOB_TMP: &str = "sha256/tmp";
 /// The part of a pre-migration stem after the timestamp: `-pre-migration-v<schema version>`.
 const PRE_MIGRATION_MARK: &str = "-pre-migration-v";
 
+/// The name of an agent's memory database, in its directory.
+const MEMORY_DB: &str = "memory.db";
+
+/// The files SQLite keeps beside a memory database. The archive never carries them: a copy of a
+/// live database's WAL or journal is not a consistent state, and the snapshot has neither.
+const MEMORY_SIDECARS: [&str; 3] = ["memory.db-wal", "memory.db-shm", "memory.db-journal"];
+
+/// Prefix of the private directory under `cache/` the memory snapshots are staged in.
+const MEMORY_STAGE_PREFIX: &str = ".memory-backup-";
+
 /// Why a backup failed.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -60,6 +74,15 @@ pub enum BackupError {
     /// The database snapshot failed.
     #[error("cannot snapshot the database: {0}")]
     Database(#[from] giles_store::Error),
+    /// An agent's memory database couldn't be opened or snapshotted.
+    #[error("cannot snapshot the memory database {}: {source}", .path.display())]
+    MemoryDatabase {
+        /// The live `memory.db`.
+        path: PathBuf,
+        /// What went wrong.
+        #[source]
+        source: giles_store::Error,
+    },
     /// A background task died.
     #[error("the backup task failed: {0}")]
     Task(#[from] tokio::task::JoinError),
@@ -110,13 +133,23 @@ impl Snapshot {
         }
     }
 
-    /// Fills the archive with the files of `root`. See [`write_archive`].
+    /// Fills the archive with the files of `root` and the `memory` snapshots. See
+    /// [`write_archive`].
     ///
     /// # Errors
     ///
     /// [`BackupError::Io`].
-    pub fn write_archive(&self, root: &DataRoot) -> Result<(), BackupError> {
-        write_archive(root, &self.archive, &[&self.database, &self.archive])
+    pub fn write_archive(
+        &self,
+        root: &DataRoot,
+        memory: &MemorySnapshots,
+    ) -> Result<(), BackupError> {
+        write_archive(
+            root,
+            &self.archive,
+            &[&self.database, &self.archive],
+            memory,
+        )
     }
 }
 
@@ -133,6 +166,130 @@ fn create_private(path: &Path) -> Result<(), BackupError> {
         }
         Err(err) => Err(io_error(path)(err)),
     }
+}
+
+/// Snapshots of the agents' memory databases (`agents/<agent>/memory.db`), staged in a private
+/// directory until [`write_archive`] puts them in the tar under the live databases' names.
+///
+/// Each database is opened by path, in the journal mode it is already in (so the daemon's choice
+/// stands, and a running core or another process can have it open), and written with
+/// `VACUUM INTO`, which is consistent while the database is written to. Copying the file isn't:
+/// in WAL mode the main file is behind the WAL. The staged files are removed when this value is
+/// dropped, whether or not the backup succeeded.
+///
+/// Only a regular `memory.db` in a real directory under `agents/` is snapshotted. Symbolic links
+/// are skipped, and [`write_archive`] logs the warning for them.
+#[derive(Debug, Default)]
+pub struct MemorySnapshots {
+    /// Keeps the staged files; removing it deletes them.
+    _stage: Option<TempDir>,
+    /// Each live database's path, and the staged snapshot to archive under that name.
+    files: BTreeMap<PathBuf, PathBuf>,
+}
+
+impl MemorySnapshots {
+    /// Snapshots every `agents/<agent>/memory.db` of `root`, in name order, one after the other.
+    ///
+    /// # Errors
+    ///
+    /// [`BackupError::MemoryDatabase`] for the first database that can't be opened or written,
+    /// [`BackupError::Io`] for the staging directory or the agents listing. Nothing is left
+    /// staged.
+    pub async fn take(root: &DataRoot) -> Result<Self, BackupError> {
+        let listing = root.clone();
+        let (databases, stage) = tokio::task::spawn_blocking(move || {
+            let databases = memory_databases(&listing)?;
+            let stage = if databases.is_empty() {
+                None
+            } else {
+                Some(stage_dir(&listing)?)
+            };
+            Ok::<_, BackupError>((databases, stage))
+        })
+        .await??;
+        let Some(stage) = stage else {
+            return Ok(Self::default());
+        };
+        let mut files = BTreeMap::new();
+        for (i, live) in databases.into_iter().enumerate() {
+            let staged = stage.path().join(format!("{i}.db"));
+            create_private(&staged)?;
+            let source = |source| BackupError::MemoryDatabase {
+                path: live.clone(),
+                source,
+            };
+            let options = giles_store::OpenOptions::new()
+                .keep_journal_mode()
+                .readers(1);
+            let store = MemoryStore::open(&live, options).await.map_err(source)?;
+            store.vacuum_into(staged.clone()).await.map_err(source)?;
+            files.insert(live, staged);
+        }
+        Ok(Self {
+            _stage: Some(stage),
+            files,
+        })
+    }
+}
+
+/// The `memory.db` of each agent directory under `agents/`, in name order. Links and other
+/// non-regular files are left for the archive walk to report; a directory whose name isn't valid
+/// UTF-8 can't be an agent and is reported here, since the walk leaves its database out too.
+fn memory_databases(root: &DataRoot) -> Result<Vec<PathBuf>, BackupError> {
+    let agents = root.agents_dir();
+    let entries = match fs::read_dir(&agents) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(io_error(&agents)(err)),
+    };
+    let mut dirs = entries
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<io::Result<Vec<_>>>()
+        .map_err(io_error(&agents))?;
+    dirs.sort();
+    let mut databases = Vec::new();
+    for dir in dirs {
+        let is_dir = match fs::symlink_metadata(&dir) {
+            Ok(meta) => meta.file_type().is_dir(),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(io_error(&dir)(err)),
+        };
+        if !is_dir {
+            continue;
+        }
+        let database = match dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| root.agent_memory_db(name))
+        {
+            Some(Ok(database)) => database,
+            _ => {
+                warn!(
+                    path = %dir.display(),
+                    "left an agent directory with an unusable name out of the memory backup",
+                );
+                continue;
+            }
+        };
+        match fs::symlink_metadata(&database) {
+            Ok(meta) if meta.file_type().is_file() => databases.push(database),
+            Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(io_error(&database)(err)),
+        }
+    }
+    Ok(databases)
+}
+
+/// A private directory for the memory snapshots, under `cache/` where no archive walk goes (so
+/// a staged file is never archived as itself, wherever the backup directory is).
+fn stage_dir(root: &DataRoot) -> Result<TempDir, BackupError> {
+    let cache = root.cache_dir();
+    fs::create_dir_all(&cache).map_err(io_error(&cache))?;
+    tempfile::Builder::new()
+        .prefix(MEMORY_STAGE_PREFIX)
+        .tempdir_in(&cache)
+        .map_err(io_error(&cache))
 }
 
 /// The name stem of a snapshot made by `giles backup` at `now`: `giles-20261023T140312Z`. The
@@ -204,9 +361,10 @@ async fn create_with(
     let snapshot = Snapshot::reserve(dir, &manual_stem(now))?;
     let written = async {
         store.vacuum_into(snapshot.database.clone()).await?;
+        let memory = MemorySnapshots::take(root).await?;
         between.await;
         let (root, snapshot) = (root.clone(), snapshot.clone());
-        tokio::task::spawn_blocking(move || snapshot.write_archive(&root)).await?
+        tokio::task::spawn_blocking(move || snapshot.write_archive(&root, &memory)).await?
     }
     .await;
     match written {
@@ -222,8 +380,13 @@ async fn create_with(
 /// migrations run, and only then: not for a new database and not when the schema is current.
 ///
 /// The hook runs before any migration, so the snapshot is the old schema; restoring it needs the
-/// binary that wrote it. If the snapshot can't be written the open fails and the database is not
+/// binary that wrote it. The archive carries the memory databases ([`MemorySnapshots`]), which
+/// that binary may not have written: opening one for its snapshot migrates it to the memory
+/// schema this binary has. If the snapshot can't be written the open fails and the database is not
 /// migrated: an upgrade that can't be undone doesn't start.
+///
+/// The hook runs on a thread of Tokio's blocking pool, as the store calls it from there, and
+/// waits for the memory snapshots on the runtime that thread belongs to.
 pub fn open_options(root: &DataRoot) -> giles_store::OpenOptions {
     let root = root.clone();
     giles_store::OpenOptions::new().before_migrate(move |plan| {
@@ -243,9 +406,16 @@ pub fn open_options(root: &DataRoot) -> giles_store::OpenOptions {
 /// [`KEEP_PRE_MIGRATION`] pre-migration snapshots (a failure to delete one is logged, not an
 /// error).
 ///
+/// Must be called from a thread of a Tokio runtime's blocking pool (as the store's
+/// `before_migrate` hook is), not from async code: it blocks on the memory snapshots.
+///
 /// # Errors
 ///
 /// [`BackupError`] if the snapshot couldn't be written; nothing is left behind.
+///
+/// # Panics
+///
+/// Outside a Tokio runtime, or inside an async task.
 pub fn write_before_migration(
     root: &DataRoot,
     now: Timestamp,
@@ -256,7 +426,8 @@ pub fn write_before_migration(
     let written = plan
         .vacuum_into(&snapshot.database)
         .map_err(BackupError::from)
-        .and_then(|()| snapshot.write_archive(root));
+        .and_then(|()| tokio::runtime::Handle::current().block_on(MemorySnapshots::take(root)))
+        .and_then(|memory| snapshot.write_archive(root, &memory));
     if let Err(err) = written {
         snapshot.discard();
         return Err(err);
@@ -328,14 +499,22 @@ fn pre_migration_stem_of(name: &str) -> Option<&str> {
 ///
 /// - `giles.toml`;
 /// - everything under `agents/`, `users/`, and `skills/`: the TOML and Markdown files people and
-///   the memory tools write, and whatever else is in those trees (a skill's scripts);
+///   the memory tools write, and whatever else is in those trees (a skill's scripts), except the
+///   memory databases (below);
 /// - everything under `data/blobs/`, except the blob store's `sha256/tmp/` (puts in progress).
+///
+/// An agent's memory database is archived only as its `memory` snapshot, under the live
+/// database's name (`agents/<agent>/memory.db`), in the place the walk reaches it. The live
+/// `memory.db`, `memory.db-wal`, `memory.db-shm`, and `memory.db-journal` are never copied: a
+/// copy of a live database can miss its WAL. So a `memory.db` with no snapshot in `memory` (one
+/// created after [`MemorySnapshots::take`] listed the agents) is left out.
 ///
 /// Left out: `secrets.toml` (credentials stay where the operator keeps them, so a backup copied
 /// elsewhere never carries them), the database (the `.db` file), `plugins/` (binaries, installed
 /// again), `data/plugins/` (state that belongs to plugins, which the core doesn't read),
 /// `backups/`, `trash/` (agents removed in the web UI: the operator put them there to be rid of
-/// them, and keeps them on this machine only), `run/`, and `cache/` (rebuilt). Symbolic links
+/// them, and keeps them on this machine only), `run/`, and `cache/` (rebuilt; the memory
+/// snapshots are staged there). Symbolic links
 /// (with a warning for each, since memory files can be links) and other non-regular files are
 /// skipped, never followed. Files that vanish while the
 /// archive is written (a blob swept, a file edited by replacement) are skipped. A file that
@@ -350,7 +529,12 @@ fn pre_migration_stem_of(name: &str) -> Option<&str> {
 /// # Errors
 ///
 /// [`BackupError::Io`].
-pub fn write_archive(root: &DataRoot, archive: &Path, skip: &[&Path]) -> Result<(), BackupError> {
+pub fn write_archive(
+    root: &DataRoot,
+    archive: &Path,
+    skip: &[&Path],
+    memory: &MemorySnapshots,
+) -> Result<(), BackupError> {
     let skip_ids = skip
         .iter()
         .map(|path| {
@@ -369,6 +553,8 @@ pub fn write_archive(root: &DataRoot, archive: &Path, skip: &[&Path]) -> Result<
         root: root.root(),
         skip: skip_ids,
         skip_dir: root.blobs_dir().join(BLOB_TMP),
+        agents: root.agents_dir(),
+        memory: &memory.files,
     };
     let result = (|| {
         for path in [
@@ -417,6 +603,10 @@ struct Walk<'a> {
     /// The snapshot's own files.
     skip: Vec<FileId>,
     skip_dir: PathBuf,
+    /// `agents/`, whose sub-directories hold the memory databases.
+    agents: PathBuf,
+    /// The live memory databases and the snapshots archived in their place.
+    memory: &'a BTreeMap<PathBuf, PathBuf>,
 }
 
 impl Walk<'_> {
@@ -448,24 +638,47 @@ impl Walk<'_> {
         }
     }
 
-    /// Adds one regular file, unless it is one of the snapshot's own.
+    /// Adds one regular file, unless it is one of the snapshot's own. A memory database is added
+    /// as its snapshot, and the files beside it are left out.
     fn file(&self, builder: &mut Builder, path: &Path) -> Result<(), BackupError> {
-        let file = match File::open(path) {
+        if let Some(snapshot) = self.memory.get(path) {
+            return self.append(builder, snapshot, path);
+        }
+        if self.is_memory_file(path) {
+            return Ok(());
+        }
+        self.append(builder, path, path)
+    }
+
+    /// Whether `path` is a memory database or one of the files SQLite keeps beside it:
+    /// `agents/<agent>/memory.db*`.
+    fn is_memory_file(&self, path: &Path) -> bool {
+        let in_agent_dir = path.parent().and_then(Path::parent) == Some(self.agents.as_path());
+        in_agent_dir
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == MEMORY_DB || MEMORY_SIDECARS.contains(&name))
+    }
+
+    /// Adds the regular file `source` to the archive under the name of `path`.
+    fn append(&self, builder: &mut Builder, source: &Path, path: &Path) -> Result<(), BackupError> {
+        let file = match File::open(source) {
             Ok(file) => file,
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(err) => return Err(io_error(path)(err)),
+            Err(err) => return Err(io_error(source)(err)),
         };
         // The opened file, not the path: it can't change identity or size under us.
-        let meta = file.metadata().map_err(io_error(path))?;
+        let meta = file.metadata().map_err(io_error(source))?;
         if !meta.is_file() || self.skip.contains(&FileId::of(&meta)) {
             return Ok(());
         }
         let mut header = tar::Header::new_gnu();
         header.set_metadata_in_mode(&meta, tar::HeaderMode::Complete);
-        let reader = ExactReader::new(file, meta.len(), path);
+        let reader = ExactReader::new(file, meta.len(), source);
         builder
             .append_data(&mut header, self.name(path), reader)
-            .map_err(io_error(path))
+            .map_err(io_error(source))
     }
 
     /// Adds a directory and everything below it, in name order; a missing directory is skipped.

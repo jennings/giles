@@ -4,8 +4,10 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::os::unix::fs::{PermissionsExt, symlink};
 
-use giles_store::{BlobStore, JobKey, JournalMode, Store};
-use giles_types::AgentId;
+use giles_store::{
+    BlobStore, JobKey, JournalMode, Memory, MemoryOwner, MemoryViewer, NewMemory, Store,
+};
+use giles_types::{AgentId, ConversationId, UserId};
 use tempfile::TempDir;
 
 use super::*;
@@ -582,7 +584,9 @@ fn symlinks_are_left_out_with_a_warning_each() {
         .with_writer(logs.clone())
         .with_ansi(false)
         .finish();
-    tracing::subscriber::with_default(subscriber, || snapshot.write_archive(&root)).unwrap();
+    let memory = MemorySnapshots::default();
+    tracing::subscriber::with_default(subscriber, || snapshot.write_archive(&root, &memory))
+        .unwrap();
 
     let entries = read_archive(&snapshot.archive);
     let names: Vec<&str> = entries.keys().map(String::as_str).collect();
@@ -853,4 +857,344 @@ async fn the_pre_migration_backup_is_consistent_in_a_rollback_journal_mode() {
             "{names:?}"
         );
     }
+}
+
+const CORE_CAP: usize = 2200;
+
+fn owner_viewer() -> MemoryViewer {
+    MemoryViewer::new(MemoryOwner::User(UserId::new("owner").unwrap()), true)
+}
+
+fn family_viewer() -> MemoryViewer {
+    MemoryViewer::new(
+        MemoryOwner::Group {
+            instance: "telegram".to_owned(),
+            conversation: ConversationId::new("family").unwrap(),
+        },
+        false,
+    )
+}
+
+/// Opens an agent's memory database as the core will: by its path in the data root, in WAL mode.
+async fn open_memory(root: &DataRoot, agent: &str) -> MemoryStore {
+    MemoryStore::open(
+        root.agent_memory_db(agent).unwrap(),
+        giles_store::OpenOptions::new(),
+    )
+    .await
+    .unwrap()
+}
+
+async fn remember(
+    store: &MemoryStore,
+    viewer: &MemoryViewer,
+    content: &str,
+    shared: bool,
+) -> Memory {
+    let new = NewMemory {
+        content: content.to_owned(),
+        core: false,
+        shared,
+        source_session: None,
+    };
+    store.add(viewer, new, CORE_CAP, at(1)).await.unwrap()
+}
+
+/// Unpacks `archive` over a fresh data root, as the restore instructions do.
+fn restore(archive: &Path) -> (TempDir, DataRoot) {
+    let (dir, fresh) = data_root();
+    tar::Archive::new(fs::File::open(archive).unwrap())
+        .unpack(fresh.root())
+        .unwrap();
+    (dir, fresh)
+}
+
+/// The names under the data root's `cache/` (where the memory snapshots are staged).
+fn cache_names(root: &DataRoot) -> Vec<String> {
+    fs::read_dir(root.cache_dir())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_backup_and_restore_keep_every_agents_memories() {
+    let (_dir, root) = data_root();
+    populate(&root);
+    // The running core's databases, with their latest writes still in the WAL.
+    let main = open_memory(&root, "main").await;
+    let helper = open_memory(&root, "helper").await;
+    let main_user = remember(&main, &owner_viewer(), "likes tea", false).await;
+    let main_shared = remember(&main, &owner_viewer(), "lives in Leeds", true).await;
+    let main_group = remember(
+        &main,
+        &family_viewer(),
+        "the family picnic is on Sunday",
+        false,
+    )
+    .await;
+    let helper_user = remember(&helper, &owner_viewer(), "prefers short answers", false).await;
+    let helper_group = remember(&helper, &family_viewer(), "grandma is vegetarian", false).await;
+    for agent in ["main", "helper"] {
+        let db = root.agent_memory_db(agent).unwrap();
+        assert!(db.with_file_name("memory.db-wal").exists(), "{agent}");
+    }
+    // An agent without a memory database, and a removed agent's, which is in the trash.
+    put(
+        &root.agent_dir("plain").unwrap().join("agent.toml"),
+        "model = \"x\"\n",
+    );
+    put(
+        &root
+            .trash_dir()
+            .join("agents/jeeves-20261024T120000Z/memory.db"),
+        "a removed agent's memories",
+    );
+    let (store, blobs) = open_stores(&root).await;
+
+    let out = tempfile::tempdir().unwrap();
+    let snapshot = create(&root, &store, &blobs, out.path(), at(0))
+        .await
+        .unwrap();
+    // The core carries on: it writes after the backup, and its WAL is still there.
+    let later = remember(&main, &owner_viewer(), "written after the backup", false).await;
+    for agent in ["main", "helper"] {
+        let db = root.agent_memory_db(agent).unwrap();
+        assert!(db.with_file_name("memory.db-wal").exists(), "{agent}");
+    }
+
+    // One snapshot of each database, at its place, a database and not the live file; none of the
+    // files SQLite keeps beside it, and nothing from the trash.
+    let entries = read_archive(&snapshot.archive);
+    let names: Vec<&str> = entries.keys().map(String::as_str).collect();
+    let databases: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|name| name.contains("memory.db"))
+        .collect();
+    assert_eq!(
+        databases,
+        ["agents/helper/memory.db", "agents/main/memory.db"],
+        "{names:?}"
+    );
+    assert!(
+        names.iter().all(|name| !name.starts_with("trash")),
+        "{names:?}"
+    );
+    assert!(names.contains(&"agents/plain/agent.toml"));
+    for name in databases {
+        assert!(
+            entries[name].0.starts_with("SQLite format 3"),
+            "{name} is not a database file"
+        );
+        assert_eq!(entries[name].1 & 0o777, 0o600, "{name}");
+    }
+    // Nothing is left staged, and the live databases are the daemon's, as they were.
+    assert!(
+        cache_names(&root)
+            .iter()
+            .all(|name| !name.starts_with(MEMORY_STAGE_PREFIX)),
+        "{:?}",
+        cache_names(&root)
+    );
+
+    // Restoring is unpacking the archive: every database opens with what it held.
+    let (_fresh_dir, fresh) = restore(&snapshot.archive);
+    let main_restored = open_memory(&fresh, "main").await;
+    let helper_restored = open_memory(&fresh, "helper").await;
+    for memory in [&main_user, &main_shared, &main_group] {
+        let viewer = if memory.owner == family_viewer().owner {
+            family_viewer()
+        } else {
+            owner_viewer()
+        };
+        assert_eq!(
+            &main_restored.get(&viewer, memory.id).await.unwrap(),
+            memory
+        );
+    }
+    for memory in [&helper_user, &helper_group] {
+        let viewer = if memory.owner == family_viewer().owner {
+            family_viewer()
+        } else {
+            owner_viewer()
+        };
+        assert_eq!(
+            &helper_restored.get(&viewer, memory.id).await.unwrap(),
+            memory
+        );
+    }
+    // The group memory is still the group's, and not visible to the owner's direct sessions.
+    assert!(
+        main_restored
+            .get(&owner_viewer(), main_group.id)
+            .await
+            .is_err()
+    );
+    // Writes after the snapshot stay out of it, and the restored database is a working one.
+    assert!(main_restored.get(&owner_viewer(), later.id).await.is_err());
+    remember(
+        &main_restored,
+        &owner_viewer(),
+        "new after the restore",
+        false,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn memory_databases_in_a_rollback_journal_mode_are_backed_up_too() {
+    for mode in ROLLBACK_MODES {
+        let (_dir, root) = data_root();
+        let main = MemoryStore::open(
+            root.agent_memory_db("main").unwrap(),
+            giles_store::OpenOptions::new().journal_mode(mode),
+        )
+        .await
+        .unwrap();
+        let memory = remember(&main, &owner_viewer(), "likes tea", false).await;
+        let (store, blobs) = open_stores(&root).await;
+
+        let out = tempfile::tempdir().unwrap();
+        let snapshot = create(&root, &store, &blobs, out.path(), at(0))
+            .await
+            .unwrap();
+        // The live store still works after the backup.
+        remember(&main, &owner_viewer(), "and coffee", false).await;
+
+        let entries = read_archive(&snapshot.archive);
+        let databases: Vec<&String> = entries.keys().filter(|n| n.contains("memory.db")).collect();
+        assert_eq!(databases, ["agents/main/memory.db"], "{mode}");
+        let (_fresh_dir, fresh) = restore(&snapshot.archive);
+        let restored = open_memory(&fresh, "main").await;
+        assert_eq!(
+            restored.get(&owner_viewer(), memory.id).await.unwrap(),
+            memory,
+            "{mode}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_memory_database_that_cannot_be_snapshotted_fails_the_backup_and_leaves_nothing() {
+    let (_dir, root) = data_root();
+    populate(&root);
+    let good = open_memory(&root, "alpha").await;
+    remember(&good, &owner_viewer(), "likes tea", false).await;
+    // Not a database at all.
+    put(
+        &root.agent_memory_db("beta").unwrap(),
+        &"this is not a database, just text".repeat(100),
+    );
+    let (store, blobs) = open_stores(&root).await;
+
+    let out = tempfile::tempdir().unwrap();
+    let err = create(&root, &store, &blobs, out.path(), at(0))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, BackupError::MemoryDatabase { path, .. }
+            if *path == root.agent_memory_db("beta").unwrap()),
+        "{err}"
+    );
+    assert!(err.to_string().contains("memory.db"), "{err}");
+    // The partial snapshot is discarded, with the database taken before the failure, and the
+    // first agent's snapshot is not left staged.
+    assert_eq!(fs::read_dir(out.path()).unwrap().count(), 0);
+    assert!(
+        cache_names(&root)
+            .iter()
+            .all(|name| !name.starts_with(MEMORY_STAGE_PREFIX)),
+        "{:?}",
+        cache_names(&root)
+    );
+    // The file that wasn't a database is untouched.
+    assert!(
+        fs::read_to_string(root.agent_memory_db("beta").unwrap())
+            .unwrap()
+            .starts_with("this is not a database")
+    );
+}
+
+#[tokio::test]
+async fn the_pre_migration_backup_carries_the_memory_databases() {
+    let (_dir, root) = data_root();
+    let main = open_memory(&root, "main").await;
+    let memory = remember(&main, &owner_viewer(), "likes tea", false).await;
+    drop(Store::open(root.database_file()).await.unwrap());
+    downgrade_to_v1(&root.database_file());
+
+    // The memory database is open with its writes in the WAL while the core migrates.
+    let store = Store::open_with(root.database_file(), open_options(&root))
+        .await
+        .unwrap();
+    drop(store);
+    let names = backups(&root);
+    assert_eq!(names.len(), 2, "{names:?}");
+    let archive = root.backups_dir().join(&names[1]);
+    let entries = read_archive(&archive);
+    let databases: Vec<&String> = entries.keys().filter(|n| n.contains("memory.db")).collect();
+    assert_eq!(databases, ["agents/main/memory.db"]);
+
+    let (_fresh_dir, fresh) = restore(&archive);
+    let restored = open_memory(&fresh, "main").await;
+    assert_eq!(
+        restored.get(&owner_viewer(), memory.id).await.unwrap(),
+        memory
+    );
+    assert!(
+        cache_names(&root)
+            .iter()
+            .all(|name| !name.starts_with(MEMORY_STAGE_PREFIX))
+    );
+}
+
+#[tokio::test]
+async fn a_symlinked_memory_database_is_left_out_with_a_warning() {
+    let (_dir, root) = data_root();
+    populate(&root);
+    let main = open_memory(&root, "main").await;
+    remember(&main, &owner_viewer(), "likes tea", false).await;
+    // A dotfiles manager's memory database for another agent, and a linked agent directory.
+    let elsewhere = tempfile::tempdir().unwrap();
+    let linked_db = MemoryStore::open(
+        elsewhere.path().join("memory.db"),
+        giles_store::OpenOptions::new(),
+    )
+    .await
+    .unwrap();
+    remember(&linked_db, &owner_viewer(), "elsewhere", false).await;
+    let linked = root.agent_dir("linked").unwrap();
+    fs::create_dir_all(&linked).unwrap();
+    symlink(
+        elsewhere.path().join("memory.db"),
+        root.agent_memory_db("linked").unwrap(),
+    )
+    .unwrap();
+    let linked_dir = root.agent_dir("linked-dir").unwrap();
+    symlink(elsewhere.path(), &linked_dir).unwrap();
+
+    let out = tempfile::tempdir().unwrap();
+    let snapshot = Snapshot::reserve(out.path(), "giles-test").unwrap();
+    let memory = MemorySnapshots::take(&root).await.unwrap();
+    let logs = Logs::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(logs.clone())
+        .with_ansi(false)
+        .finish();
+    tracing::subscriber::with_default(subscriber, || snapshot.write_archive(&root, &memory))
+        .unwrap();
+
+    let entries = read_archive(&snapshot.archive);
+    let databases: Vec<&String> = entries.keys().filter(|n| n.contains("memory.db")).collect();
+    assert_eq!(databases, ["agents/main/memory.db"]);
+    let logged = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+    for link in [root.agent_memory_db("linked").unwrap(), linked_dir] {
+        assert!(
+            logged.contains("WARN") && logged.contains(&link.display().to_string()),
+            "no warning for {}:\n{logged}",
+            link.display()
+        );
+    }
+    assert_eq!(logged.matches("WARN").count(), 2, "{logged}");
 }
