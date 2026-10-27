@@ -7,6 +7,7 @@
 //! shown as escaped text in `<pre>`, within the caps of [`list_files`]; `agent.toml` holds no
 //! secrets (they live in `secrets.toml`, which no page shows).
 
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use askama::Template;
@@ -27,15 +28,36 @@ use super::pages::{WebApp, agent_label, error_page, no_store};
 use crate::agents::{
     AgentEdit, AgentFile, AgentForm, AgentManager, Content, CreateError, DEFAULT_SOUL, EditError,
     MAX_FILE_BYTES, MAX_FILES, MAX_TOTAL_BYTES, NewAgent, RemovalPreview, RemoveError, Removed,
-    agent_id_from_name, list_files, split_list,
+    ToolPicker, agent_id_from_name, list_files, split_list, tool_picker,
 };
-use crate::config::AgentConfig;
+use crate::config::{AgentConfig, Config};
 use crate::http::{self, RouterBuilder};
 
 /// The agent pages' state (shared with the memory page, `memory.rs`).
 #[derive(Clone)]
 pub(super) struct AgentPages {
     pub(super) manager: Arc<AgentManager>,
+}
+
+/// A tool checkbox's name in a posted form is this, then the entry it stands for
+/// (`tool:memory_add`). Browsers send only the ticked boxes.
+const CHECK_PREFIX: &str = "tool:";
+
+/// The entries of the tool checkboxes a post ticked.
+fn picked(checks: &HashMap<String, String>) -> BTreeSet<String> {
+    checks
+        .keys()
+        .filter_map(|name| name.strip_prefix(CHECK_PREFIX))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The posted fields of ticked tool checkboxes for `picked`, for a form shown from the files.
+fn checks_of(picked: &BTreeSet<String>) -> HashMap<String, String> {
+    picked
+        .iter()
+        .map(|entry| (format!("{CHECK_PREFIX}{entry}"), "on".to_owned()))
+        .collect()
 }
 
 impl WebApp {
@@ -260,7 +282,11 @@ struct CreateForm {
     id: String,
     name: String,
     models: String,
+    /// The "Other tools" text: the entries that have no checkbox.
     tools: String,
+    /// The tool checkboxes that were ticked ([`CHECK_PREFIX`]).
+    #[serde(flatten)]
+    checks: HashMap<String, String>,
     ask: String,
     timezone: String,
     soul: String,
@@ -274,6 +300,7 @@ impl Default for CreateForm {
             name: String::new(),
             models: String::new(),
             tools: String::new(),
+            checks: HashMap::new(),
             ask: String::new(),
             timezone: String::new(),
             soul: DEFAULT_SOUL.to_owned(),
@@ -285,6 +312,7 @@ impl Default for CreateForm {
 #[template(path = "web/admin_agent_new.html")]
 struct NewAgentPage<'a> {
     csrf: &'a str,
+    picker: ToolPicker,
     form: &'a CreateForm,
     error: Option<String>,
     /// `<provider>/<model>` the providers list, offered as suggestions.
@@ -297,8 +325,10 @@ async fn render_form(
     form: &CreateForm,
     error: Option<String>,
 ) -> Response {
+    let config = pages.manager.config().get();
     http::render(&NewAgentPage {
         csrf: &user.csrf,
+        picker: ToolPicker::new(&config, &picked(&form.checks), &split_list(&form.tools)),
         form,
         error,
         known_models: pages.manager.known_models().await,
@@ -332,11 +362,12 @@ async fn create(
     if form.id.is_empty() {
         form.id = agent_id_from_name(&form.name);
     }
+    let config = pages.manager.config().get();
     let agent = NewAgent {
         id: form.id.clone(),
         name: form.name.clone(),
         models: split_list(&form.models),
-        tools: split_list(&form.tools),
+        tools: tool_picker::compose(&config, &picked(&form.checks), &split_list(&form.tools)),
         ask: split_list(&form.ask),
         timezone: form.timezone.clone(),
         // Browsers submit a textarea's line breaks as CRLF; the file keeps plain LF.
@@ -374,7 +405,11 @@ struct EditForm {
     csrf: Option<String>,
     name: String,
     models: String,
+    /// The "Other tools" text: the entries that have no checkbox.
     tools: String,
+    /// The tool checkboxes that were ticked ([`CHECK_PREFIX`]).
+    #[serde(flatten)]
+    checks: HashMap<String, String>,
     ask: String,
     timezone: String,
     soul: String,
@@ -383,13 +418,16 @@ struct EditForm {
 }
 
 impl EditForm {
-    /// The form for an agent as its files have it.
-    fn of(agent: AgentForm) -> Self {
+    /// The form for an agent as its files have it: the tools that have a checkbox ticked, the
+    /// rest in the text box.
+    fn of(agent: AgentForm, config: &Config) -> Self {
         let list = |items: &[String]| items.join(", ");
+        let (tools, other) = tool_picker::split(config, &agent.tools);
         Self {
             csrf: None,
             models: list(&agent.models),
-            tools: list(&agent.tools),
+            tools: list(&other),
+            checks: checks_of(&tools),
             ask: list(&agent.ask),
             name: agent.name,
             timezone: agent.timezone,
@@ -405,6 +443,7 @@ struct EditAgentPage<'a> {
     csrf: &'a str,
     id: &'a str,
     label: String,
+    picker: ToolPicker,
     form: &'a EditForm,
     error: Option<String>,
     /// The files changed since the form was opened: offer a reload.
@@ -429,6 +468,7 @@ async fn render_edit_form(
         csrf: &user.csrf,
         id,
         label,
+        picker: ToolPicker::new(&config, &picked(&form.checks), &split_list(&form.tools)),
         form,
         error,
         stale,
@@ -470,7 +510,11 @@ async fn edit_page(
         return forbidden();
     }
     match pages.manager.edit_form(&agent).await {
-        Ok(form) => render_edit_form(&pages, &user, &agent, &EditForm::of(form), None, false).await,
+        Ok(form) => {
+            let config = pages.manager.config().get();
+            let form = EditForm::of(form, &config);
+            render_edit_form(&pages, &user, &agent, &form, None, false).await
+        }
         Err(err) => edit_failed(&err, &agent),
     }
 }
@@ -491,11 +535,12 @@ async fn edit(
     if let Err(rejected) = check_csrf(&user, &headers, form.csrf.as_deref()) {
         return rejected.into_response();
     }
+    let config = pages.manager.config().get();
     let change = AgentEdit {
         id: agent.clone(),
         name: form.name.clone(),
         models: split_list(&form.models),
-        tools: split_list(&form.tools),
+        tools: tool_picker::compose(&config, &picked(&form.checks), &split_list(&form.tools)),
         ask: split_list(&form.ask),
         timezone: form.timezone.clone(),
         // Browsers submit a textarea's line breaks as CRLF; the file keeps plain LF.

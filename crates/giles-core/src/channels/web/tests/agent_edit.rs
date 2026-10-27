@@ -162,7 +162,8 @@ async fn the_form_shows_the_agent_as_its_files_have_it_and_says_the_id_is_fixed(
         "<h1>Edit Jeeves (jeeves)</h1>",
         r#"name="name" value="Jeeves""#,
         r#"name="models" value="fake/test-model""#,
-        r#"name="tools" value="memory_add""#,
+        r#"name="tool:memory_add" checked>"#,
+        r#"name="tools" value="""#,
         r#"name="ask" value="""#,
         "You are Jeeves.\nBe brief.\n</textarea>",
         r#"action="/admin/agents/jeeves/edit""#,
@@ -201,6 +202,47 @@ async fn the_form_shows_the_agent_as_its_files_have_it_and_says_the_id_is_fixed(
 }
 
 #[tokio::test]
+async fn tools_the_boxes_cant_show_stay_in_the_text_and_a_covering_entry_disables_its_boxes() {
+    let env = env().await;
+    env.hand_write_jeeves();
+    let path = env.jeeves_dir().join("agent.toml");
+    let toml = JEEVES.replace(
+        r#"tools = ["memory_add"]"#,
+        r#"tools = ["memory_re*", "github__create_*", "schedule", "files__*"]"#,
+    );
+    std::fs::write(&path, toml).unwrap();
+    let manager = env.manager().await;
+    let (_, html) = env.edit_page(&manager, "jeeves").await;
+    for expected in [
+        r#"name="tool:schedule" checked>"#,
+        r#"name="tool:memory_recall" checked disabled>"#,
+        "Allowed by <code>memory_re*</code> in Other tools.",
+        r#"name="tools" value="memory_re*, github__create_*""#,
+    ] {
+        assert!(html.contains(expected), "{expected}\n{html}");
+    }
+    assert!(html.contains(r#"name="tool:load_skill">"#), "{html}");
+    assert!(html.contains(r#"name="tool:files__*" checked>"#), "{html}");
+
+    // Ticking another box adds it. The disabled box isn't posted, and the entry covering it stays.
+    let fields = jeeves_fields(
+        &version_of(&html),
+        "Jeeves",
+        "fake%2Ftest-model",
+        "&tool%3Aschedule=on&tool%3Aload_skill=on&tool%3Afiles__*=on&tools=memory_re*+github__create_*",
+    );
+    let (status, _, _) = env.edit_post(&manager, "jeeves", &fields).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert!(
+        env.read_jeeves("agent.toml").contains(
+            r#"tools = ["load_skill", "schedule", "files__*", "memory_re*", "github__create_*"]"#
+        ),
+        "{}",
+        env.read_jeeves("agent.toml")
+    );
+}
+
+#[tokio::test]
 async fn an_edit_changes_only_what_the_form_manages_and_applies_to_new_chats_at_once() {
     let env = env().await;
     env.hand_write_jeeves();
@@ -214,7 +256,7 @@ async fn an_edit_changes_only_what_the_form_manages_and_applies_to_new_chats_at_
         "Jeeves%20II",
         "fake%2Ftest-model%2C+fake%2Fother",
         &format!(
-            "&tools=memory_add%2C+memory_search&ask=memory_search&timezone=Europe%2FLondon&soul={}",
+            "&tool%3Amemory_add=on&tool%3Amemory_search=on&ask=memory_search&timezone=Europe%2FLondon&soul={}",
             soul.replace(' ', "+").replace("\r\n", "%0D%0A")
         ),
     );

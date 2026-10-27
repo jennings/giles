@@ -262,6 +262,11 @@ button,
   margin-top: 0.6rem;
 }
 
+.agent-form label.tool {
+  font-weight: normal;
+  margin-top: 0;
+}
+
 .agent-form .detail {
   margin: 0;
 }

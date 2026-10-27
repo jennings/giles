@@ -135,7 +135,13 @@ text.
 - **Id**: the agent's directory name, made of letters, digits, and `-`. It fills in from the name as
   you type, and you can edit it. You can't change it once the agent exists.
 - **Models**: `<provider>/<model>`, several separated by commas.
-- **Tools** and **Ask first**: optional tool names or globs, separated by commas or spaces.
+- **Tools**: tick the tools the agent may use. An agent can't use a tool you leave unticked, so a
+  new agent has none until you tick some. Each toolset from `giles.toml` is one box that allows all
+  of its tools.
+- **Other tools**: optional names or globs the boxes can't show, such as `github__create_*`,
+  separated by commas or spaces. A box that one of these already allows is ticked and greyed out.
+- **Ask first**: optional tool names or globs that need your approval before each call, separated
+  by commas or spaces.
 - **Time zone**: optional, such as `Europe/London`.
 - **SOUL.md**: who the agent is.
 

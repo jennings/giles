@@ -113,7 +113,8 @@ fn load_config(dir: &std::path::Path, identities: &[&str]) -> crate::config::Con
             "[owner]\nidentities = [{identities}]\ndefault = {default}\n\
              [provider.fake]\ncomponent = \"openai\"\n\
              config = {{ base_url = \"http://127.0.0.1:9/v1\" }}\n\
-             [channel.web]\n"
+             [channel.web]\n\
+             [toolset.files]\ncommand = \"/x\"\n"
         ),
     )
     .unwrap();

@@ -8,6 +8,7 @@ pub mod edit;
 pub mod files;
 mod manager;
 pub mod remove;
+pub mod tool_picker;
 
 pub use create::{
     CreateError, DEFAULT_SOUL, MAX_SOUL_BYTES, NewAgent, RESERVED_AGENT_IDS, agent_id_from_name,
@@ -20,3 +21,4 @@ pub use files::{
 };
 pub use manager::{AgentManager, AgentManagerOptions};
 pub use remove::{AgentActivity, DaemonActivity, RemovalPreview, RemoveError, Removed, RouteRef};
+pub use tool_picker::{ToolChoice, ToolPicker, ToolState};
