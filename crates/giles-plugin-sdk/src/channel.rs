@@ -1,6 +1,7 @@
 //! Serving a [`Channel`] as `giles.channel.v1.ChannelService` (PLAN section 8.5).
 
 use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -17,6 +18,7 @@ use giles_proto::channel::v1::channel_service_server::{
 use giles_proto::channel::v1::{
     ChannelCapabilities, EventsRequest, EventsResponse, SendRequest, SendResponse, events_request,
 };
+use giles_proto::handshake::MAGIC_COOKIE_ENV;
 use giles_proto::plugin::v1::{DescribeResponse, PluginKind, describe_response};
 use giles_types::{Channel, ChannelEvent, MediaId, OutputMode, Result, SendTarget};
 use serde::de::DeserializeOwned;
@@ -29,6 +31,7 @@ use tonic_health::server::HealthReporter;
 
 use crate::base::{Grants, Kind, internal};
 use crate::blobs::Blobs;
+use crate::cli;
 use crate::convert::{
     event_to_proto, outbound_from_proto, output_mode_to_proto, status_from_error,
 };
@@ -38,8 +41,9 @@ use crate::spool::Spool;
 
 /// A channel plugin: what it reports in `Describe`, and how it builds its [`Channel`].
 ///
-/// Call [`serve`](ChannelPlugin::serve) from `main`; it does everything a launched plugin must do
-/// and returns when the plugin should exit.
+/// Call [`run`](ChannelPlugin::run) from `main`. It parses the plugin's command line: `socket` does
+/// everything a launched plugin must do and returns when the plugin should exit, and `serve` runs
+/// the plugin for its operator as a remote plugin.
 ///
 /// ```no_run
 /// use std::process::ExitCode;
@@ -81,7 +85,7 @@ use crate::spool::Spool;
 /// async fn main() -> ExitCode {
 ///     ChannelPlugin::new("example", env!("CARGO_PKG_VERSION"))
 ///         .output(OutputMode::Blocks)
-///         .serve(|ctx: Configure| async move {
+///         .run(|ctx: Configure| async move {
 ///             let config: Config = ctx.parse_config()?;
 ///             Ok(Example {
 ///                 info: ChannelInfo {
@@ -205,6 +209,123 @@ impl ChannelPlugin {
             }),
         )
         .await
+    }
+
+    /// Runs the plugin as its command line says, and returns its exit status: return it from
+    /// `main`. This is what a shipped plugin's `main` calls instead of [`serve`](Self::serve) or
+    /// [`serve_remote`](Self::serve_remote).
+    ///
+    /// - `socket` is how Giles launches the plugin: [`serve`](Self::serve). Run by hand, it
+    ///   explains that it's a Giles plugin.
+    /// - `serve [options]` is a plugin its operator runs, for a core whose instance has an
+    ///   `address`: [`serve_remote`](Self::serve_remote) on a TCP listener, with TLS if the
+    ///   options give a certificate, and checking a static bearer token. The options are
+    ///   `--listen`, `--data`, `--tls-cert`, `--tls-key`, `--token-file`, and `--no-auth`, or the
+    ///   same as keys of a TOML file named by `--config` (a flag wins). The token is the
+    ///   `GILES_CHANNEL_<NAME>_TOKEN` environment variable (`<NAME>` is the plugin's name in
+    ///   capitals, with `_` for anything but letters and digits) or `--token-file`, a file only
+    ///   its owner can access; without either, `serve` refuses to start unless `--no-auth` says
+    ///   to accept any caller. It prints `listening on <address>` to stdout once it listens.
+    /// - Anything else prints the usage, to stdout for `--help` and to stderr for a mistake (and
+    ///   exits with status 2).
+    ///
+    /// These options are transport only. The plugin's own settings reach `configure` in both
+    /// modes, from the instance's `config` in the core's `giles.toml`; `serve` has no file of its
+    /// own for them.
+    ///
+    /// As with [`serve`](Self::serve), call it first thing in `main`, with tokio's runtime
+    /// enabling I/O and timers.
+    pub async fn run<F, Fut, C>(self, configure: F) -> ExitCode
+    where
+        F: Fn(Configure) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<C>> + Send + 'static,
+        C: Channel + 'static,
+    {
+        let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+        self.run_with(&args, &|name| std::env::var_os(name), configure)
+            .await
+    }
+
+    async fn run_with<F, Fut, C>(
+        self,
+        args: &[OsString],
+        env: &dyn Fn(&str) -> Option<OsString>,
+        configure: F,
+    ) -> ExitCode
+    where
+        F: Fn(Configure) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<C>> + Send + 'static,
+        C: Channel + 'static,
+    {
+        let binary = format!("giles-channel-{}", self.name);
+        match cli::parse(args) {
+            Ok(cli::Command::Socket) => self.serve(configure).await,
+            Ok(cli::Command::Serve(serve)) => {
+                let result = match serve.resolve(&self.name, env) {
+                    Ok(settings) => self.serve_settings(settings, configure).await,
+                    Err(e) => Err(e.into()),
+                };
+                match result {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("{binary}: {e}");
+                        ExitCode::from(e.exit_code())
+                    }
+                }
+            }
+            Ok(cli::Command::Help) => {
+                print!("{}", cli::usage(&binary, &self.name));
+                ExitCode::SUCCESS
+            }
+            // A core from before the subcommands starts a plugin with no arguments.
+            Err(cli::CliError::NoCommand) if env(MAGIC_COOKIE_ENV).is_some() => {
+                eprintln!(
+                    "{binary}: Giles launched it without the `socket` argument, so the Giles \
+                     that started it is older than this plugin; upgrade Giles"
+                );
+                ExitCode::from(1)
+            }
+            Err(cli::CliError::NoCommand) => {
+                eprint!("{}", cli::usage(&binary, &self.name));
+                ExitCode::from(2)
+            }
+            Err(e) => {
+                eprintln!("{binary}: {e}\nRun `{binary} --help` for usage.");
+                ExitCode::from(2)
+            }
+        }
+    }
+
+    /// The `serve` subcommand once its settings are known.
+    async fn serve_settings<F, Fut, C>(
+        self,
+        settings: cli::Settings,
+        configure: F,
+    ) -> Result<(), cli::RunError>
+    where
+        F: Fn(Configure) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<C>> + Send + 'static,
+        C: Channel + 'static,
+    {
+        let listener = tokio::net::TcpListener::bind(&settings.listen)
+            .await
+            .map_err(|source| cli::RunError::Listen {
+                address: settings.listen.clone(),
+                source,
+            })?;
+        let server = RemoteServer::new(listener, settings.data, settings.auth);
+        #[cfg(feature = "tls")]
+        let server = match settings.tls {
+            Some((cert, key)) => server.tls(cli::tls_config(&cert, &key)?),
+            None => server,
+        };
+        {
+            use std::io::Write as _;
+            let mut stdout = io::stdout().lock();
+            writeln!(stdout, "listening on {}", server.local_addr()?)?;
+            stdout.flush()?;
+        }
+        Ok(self.serve_remote(server, configure).await?)
     }
 
     fn services(

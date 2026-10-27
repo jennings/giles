@@ -2,8 +2,9 @@
 //! plugin.
 //!
 //! A Giles channel plugin is a binary named `giles-channel-<name>` whose `main` hands a
-//! [`giles_types::Channel`] implementation to [`ChannelPlugin::serve`]. The SDK does the plugin
-//! side of the protocol (PLAN sections 7.4 and 8):
+//! [`giles_types::Channel`] implementation to [`ChannelPlugin::run`]. The binary then has two
+//! subcommands: `socket`, which is how Giles launches it, and `serve`, which runs it as a remote
+//! plugin for an operator. The SDK does the plugin side of the protocol (PLAN sections 7.4 and 8):
 //!
 //! - the launch handshake: the magic cookie, the protocol choice, gRPC on the socket inherited as
 //!   fd 3, the per-launch token from stdin checked on every call, and the handshake line;
@@ -16,8 +17,10 @@
 //! - exiting when the core goes away (stdin closes) or asks it to (`Shutdown`).
 //!
 //! The same channel can instead run as a remote plugin (PLAN section 7.6) that its operator starts
-//! and the core connects to over TCP: [`ChannelPlugin::serve_remote`] with a [`RemoteServer`]
-//! (optionally TLS, and a [`RemoteAuth`] check of the core's token).
+//! and the core connects to over TCP: the `serve` subcommand of [`ChannelPlugin::run`], or, for a
+//! plugin with its own command line, [`ChannelPlugin::serve_remote`] with a [`RemoteServer`]
+//! (optionally TLS, and a [`RemoteAuth`] check of the core's token). [`ChannelPlugin::serve`] is
+//! the launched half alone.
 //!
 //! With the `tls` feature (on by default), the `tls` module gives the plugin's own connections
 //! `rustls` with the bundled Mozilla roots, and a remote plugin its TLS server config. The
@@ -33,6 +36,7 @@ mod auth;
 mod base;
 mod blobs;
 mod channel;
+mod cli;
 pub mod config;
 pub mod convert;
 mod dirs;
