@@ -42,6 +42,7 @@ mod admin;
 mod agent_edit;
 mod agent_remove;
 mod agents;
+mod memory;
 mod routes;
 
 const INSTANCE: &str = "web";

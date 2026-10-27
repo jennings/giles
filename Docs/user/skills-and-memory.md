@@ -196,8 +196,8 @@ Memories are in `agents/<agent>/memory.db`, one SQLite database for each agent, 
 time the agent needs it. It's included in `giles backup` ([Backups](backups.md)) and moves with
 the agent's directory when you remove the agent in the web UI ([Web UI](web.md#removing-an-agent)).
 Don't open or copy it while Giles runs, for the reasons that apply to `giles.db`. The web UI's
-agent page lists it with its size, not its contents. Viewing and editing memories in the web UI
-is planned but not built yet.
+agent page lists it with its size, not its contents; to read and change the memories, use the
+agent's memory page ([Memory](web.md#memory)).
 
 ### Older MEMORY.md Files
 

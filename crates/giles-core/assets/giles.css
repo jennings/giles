@@ -271,6 +271,18 @@ button,
   margin-top: 1rem;
 }
 
+/* The memory page: a memory's text, and the forms under it. */
+.memory-item pre,
+.memory-problem pre {
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.memory-item details {
+  display: inline-block;
+  margin-right: 1rem;
+}
+
 /* The route pages: the buttons in a row's cells, and a route that never matches. */
 .inline-form {
   display: inline;

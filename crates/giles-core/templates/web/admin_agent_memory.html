@@ -1,0 +1,131 @@
+{% extends "layout.html" %}
+
+{% block title %}Memory - {{ agent }} - Agents - Giles{% endblock %}
+
+{% block content %}
+{%- if admin %}
+{% include "web/admin_nav.html" %}
+{%- else %}
+<nav class="admin-nav"><a href="/">Chats</a></nav>
+{%- endif %}
+<div class="page-head">
+<h1>Memory of {{ label }}</h1>
+{%- if admin %}
+<div class="actions">
+<a class="button" href="/admin/agents/{{ agent }}">Back to the agent</a>
+</div>
+{%- endif %}
+</div>
+{%- if let Some(notice) = notice %}
+<p class="notice" role="status">{{ notice }}</p>
+{%- endif %}
+{%- if let Some(problem) = problem %}
+<div class="error memory-problem" role="alert">
+<p>{{ problem.message }}</p>
+{%- if let Some(typed) = problem.typed %}
+<p class="detail">What you typed, so you can try again:</p>
+<pre>{{ typed }}</pre>
+{%- endif %}
+{%- if let Some(current) = problem.current %}
+<p class="detail">The memory now reads:</p>
+<pre>{{ current }}</pre>
+{%- endif %}
+{%- if let Some(core_title) = problem.core_title %}
+<p class="detail">{{ core_title }}</p>
+<ul>
+{%- for line in problem.core %}
+<li>#{{ line.id }}, {{ line.chars }} characters: {{ line.content }}</li>
+{%- endfor %}
+{%- if problem.core.is_empty() %}
+<li>none</li>
+{%- endif %}
+</ul>
+{%- endif %}
+</div>
+{%- endif %}
+<p class="detail">Running sessions keep the core memories they started with. A change made here reaches a session after it compacts, or when a new session starts.</p>
+<form class="inline-form" method="get" action="/admin/agents/{{ agent }}/memory" role="search">
+<label for="q">Search</label>
+<input id="q" type="search" name="q" value="{{ query }}">
+<button type="submit">Search</button>
+{%- if !query.is_empty() %}
+<a href="/admin/agents/{{ agent }}/memory">Show all</a>
+{%- endif %}
+</form>
+<p class="detail">Search finds words in the memories you can see here, best matches first, like the agent's <code>memory_recall</code>.</p>
+{%- for section in sections %}
+<section class="memory-section">
+<h2>{{ section.title }}</h2>
+{%- if section.group.is_some() %}
+<p class="detail">The private memories of this group conversation, which only you, the owner, can see here. Its participants have no page.</p>
+{%- endif %}
+{%- for usage in section.usages %}
+<p class="detail">{{ usage.title }}: <code>{{ usage.header }}</code></p>
+{%- endfor %}
+{%- if section.own %}
+<h3>Add a memory</h3>
+<form class="agent-form" method="post" action="/admin/agents/{{ agent }}/memory">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="new-content">Memory</label>
+<textarea id="new-content" name="content" rows="3" required>
+{{ add.content }}</textarea>
+<label><input type="checkbox" name="core"{% if add.core %} checked{% endif %}> Core: loaded into every prompt that can see it</label>
+{%- if section.can_share %}
+<label><input type="checkbox" name="shared"{% if add.shared %} checked{% endif %}> Shared: every user and group of this agent sees it</label>
+{%- endif %}
+<p class="detail">At most {{ max_chars }} characters. Core memories of one scope share {{ cap }} characters.</p>
+<button type="submit">Add</button>
+</form>
+{%- endif %}
+{%- if section.memories.is_empty() %}
+<p>{% if section.searching %}No memory matches that search.{% else %}There are no memories here yet.{% endif %}</p>
+{%- endif %}
+{%- if section.truncated %}
+<p class="notice">{% if section.searching %}Only the best {{ section.limit }} matches are shown. Search for more specific words.{% else %}Only the newest {{ section.limit }} memories are shown.{% endif %}</p>
+{%- endif %}
+{%- for memory in section.memories %}
+<div class="admin-item memory-item" id="memory-{{ memory.id }}">
+<h3>#{{ memory.id }} <span class="detail">{{ memory.flags }}</span></h3>
+<pre>{{ memory.content }}</pre>
+<p class="detail">{{ memory.chars }} characters. Added <time datetime="{{ memory.created_iso }}">{{ memory.created }}</time>, changed <time datetime="{{ memory.updated_iso }}">{{ memory.updated }}</time>.</p>
+{%- if memory.writable %}
+<details>
+<summary>Edit</summary>
+<form class="agent-form" method="post" action="/admin/agents/{{ agent }}/memory/edit">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="id" value="{{ memory.id }}">
+<input type="hidden" name="updated" value="{{ memory.updated_ms }}">
+{%- if let Some(group) = section.group %}
+<input type="hidden" name="group_instance" value="{{ group.instance }}">
+<input type="hidden" name="group_conversation" value="{{ group.conversation }}">
+{%- endif %}
+<label for="content-{{ memory.id }}">Memory</label>
+<textarea id="content-{{ memory.id }}" name="content" rows="3" required>
+{{ memory.content }}</textarea>
+<label><input type="checkbox" name="core"{% if memory.core %} checked{% endif %}> Core</label>
+{%- if section.can_share %}
+<label><input type="checkbox" name="shared"{% if memory.shared %} checked{% endif %}> Shared</label>
+{%- endif %}
+<button type="submit">Save</button>
+</form>
+</details>
+<form class="inline-form" method="post" action="/admin/agents/{{ agent }}/memory/forget">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="id" value="{{ memory.id }}">
+{%- if let Some(group) = section.group %}
+<input type="hidden" name="group_instance" value="{{ group.instance }}">
+<input type="hidden" name="group_conversation" value="{{ group.conversation }}">
+{%- endif %}
+<button type="submit">Forget</button>
+</form>
+{%- else %}
+<p class="detail">Only the owner can change shared memories.</p>
+{%- endif %}
+</div>
+{%- endfor %}
+</section>
+{%- endfor %}
+{%- if more_groups > 0 %}
+<p class="notice">{{ more_groups }} more group conversation{% if more_groups != 1 %}s have{% else %} has{% endif %} memories that are not listed here.</p>
+{%- endif %}
+{% endblock %}

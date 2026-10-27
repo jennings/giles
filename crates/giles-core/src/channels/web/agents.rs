@@ -15,13 +15,14 @@ use axum::extract::{Form, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{from_fn_with_state, map_response};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use giles_types::AgentId;
 use serde::Deserialize;
 use tracing::error;
 
 use super::admin::{forbidden, may_administer};
 use super::auth::{WebUser, check_csrf};
+use super::memory;
 use super::pages::{WebApp, agent_label, error_page, no_store};
 use crate::agents::{
     AgentEdit, AgentFile, AgentForm, AgentManager, Content, CreateError, DEFAULT_SOUL, EditError,
@@ -31,10 +32,10 @@ use crate::agents::{
 use crate::config::AgentConfig;
 use crate::http::{self, RouterBuilder};
 
-/// The agent pages' state.
+/// The agent pages' state (shared with the memory page, `memory.rs`).
 #[derive(Clone)]
-struct AgentPages {
-    manager: Arc<AgentManager>,
+pub(super) struct AgentPages {
+    pub(super) manager: Arc<AgentManager>,
 }
 
 impl WebApp {
@@ -58,6 +59,12 @@ impl WebApp {
                     "/admin/agents/{agent}/remove",
                     get(remove_page).post(remove),
                 )
+                .route(
+                    "/admin/agents/{agent}/memory",
+                    get(memory::page).post(memory::add),
+                )
+                .route("/admin/agents/{agent}/memory/edit", post(memory::edit))
+                .route("/admin/agents/{agent}/memory/forget", post(memory::forget))
                 .with_state(AgentPages { manager })
                 .route_layer(auth)
                 .route_layer(map_response(async |response: Response| no_store(response))),

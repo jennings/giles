@@ -1013,7 +1013,8 @@ fn input_is_parsed_strictly() {
             MemoryEdit {
                 content: Some("x".to_owned()),
                 core: None,
-                shared: None
+                shared: None,
+                expected_updated_at: None,
             }
         ))
     );
@@ -1024,7 +1025,8 @@ fn input_is_parsed_strictly() {
             MemoryEdit {
                 content: None,
                 core: Some(false),
-                shared: Some(true)
+                shared: Some(true),
+                expected_updated_at: None,
             }
         ))
     );

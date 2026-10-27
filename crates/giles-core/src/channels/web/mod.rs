@@ -15,6 +15,7 @@ mod config;
 mod hub;
 mod links;
 mod login;
+mod memory;
 mod pages;
 mod proxy;
 mod qr;

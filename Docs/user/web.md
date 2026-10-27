@@ -94,11 +94,11 @@ reports that it's connected, the code disappears and the reloading stops.
 
 **Agents** in the admin pages' menu (`/admin/agents`) lists every agent with its models, a link to
 its page, **Chat** to start a chat with it, **Edit**, and **Remove**. Only the owner can open these
-pages.
+pages; an agent's page also has **Memory** ([below](#memory)).
 
 An agent's page shows its models, tools, and time zone, then every file in `agents/<agent>/`:
 `agent.toml`, `SOUL.md`, its jobs' prompt files, its skills, its memory database `memory.db`
-(shown with its size, not its contents: see [Skills and Memory](skills-and-memory.md#memory)), and
+(shown with its size, not its contents; the memories have [their own page](#memory)), and
 anything else there. Contents are shown as plain text. For now you see every file. Limits keep the
 page small:
 
@@ -207,6 +207,48 @@ chat message or job that starts just as you press the button either is seen (the
 refused and the agent stays as it was) or finds the agent already gone and does nothing. If the
 files can't be moved, the agent is put back as it was. A job whose time comes in that very instant
 doesn't run that time; it stops for good until Giles restarts.
+
+### Memory
+
+**Memory**, on an agent's page, opens `/admin/agents/<agent>/memory`: the agent's memories, the
+ones you can see, which you can search, add to, change, and forget. What the agent remembers and
+how ([Skills and Memory](skills-and-memory.md#memory)) is explained there; this is the page for
+it.
+
+- **What you see.** Your own private memories and the shared ones, newest change first, each with
+  its id, whether it is `core`, `shared`, or `private`, its text, and when it was added and last
+  changed. Other users' private memories are never shown, not even to the owner. At most the
+  newest 200 are listed; the page says when there are more, and search finds the rest. Above the
+  list, the size of your core memories and of the shared core memories is shown against the
+  agent's `memory_cap`, like the prompt does (`[67% — 1,474/2,200]`).
+- **Search.** The box finds words in the memories you can see, best matches first, the same
+  search as the agent's `memory_recall` tool: words are matched as plain text (quotes and `*` in
+  the box are ordinary characters) and English word endings are ignored (`teas` finds `tea`). At
+  most 50 matches are shown.
+- **Add** a memory with a text and the **Core** box (core memories are loaded into every prompt
+  that can see them; the rest are only found by search). Only the owner sees **Shared**, which
+  makes the memory visible to every user and group of the agent.
+- **Edit** a memory's text and flags with its **Edit** form, or **Forget** it (no confirmation).
+- **Rules.** They are the same as for the agent's tools. A memory is at most 1,000 characters.
+  Core memories of one kind (your private ones, or the shared ones) together fit in the agent's
+  `memory_cap`, 2,200 characters unless `agent.toml` says otherwise. If a change would go over,
+  nothing is saved: the page says by how much and lists that scope's core memories, so you can
+  shorten or forget some, or untick **Core**. Only the owner can create, change, share, or forget
+  shared memories; to anyone else a shared memory is read-only.
+- **A stale edit is refused.** The edit form remembers the memory as it was when the page
+  loaded. If the memory changed since (the agent edited it, or you changed it in another tab),
+  Giles refuses your edit instead of overwriting the change: nothing is saved, and the page shows
+  what you typed and what the memory says now, so you can redo it. Reload the page to get a
+  fresh form.
+- **Running sessions keep the core memories they started with.** The page says so too: a change
+  reaches a session after it compacts, or in a session that starts anew (a new chat, or the next
+  run of a job). A running chat can still find the change at once with `memory_recall`.
+- **Groups.** Only the owner sees them: below your own memories the page has one section for each
+  group conversation that has private memories (`<instance> / <conversation>`), with the same
+  controls, and with the owner's right to share. The group's participants have no page of their
+  own, and nobody but the owner can see or change a group's memories.
+
+The page creates an empty `memory.db` for an agent that has none, the first time you open it.
 
 ## Routes
 

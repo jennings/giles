@@ -46,6 +46,10 @@ Neither half touches the agent loop: posted messages go through the normal inbou
 | `POST /admin/agents/<agent>/edit` | Saves the edit (CSRF-checked), 303 to the agent's page.       |
 | `GET /admin/agents/<agent>/remove` | What removing the agent would do, and the button.            |
 | `POST /admin/agents/<agent>/remove` | Removes the agent (CSRF-checked); 200 with what happened, or the page again with why not (409). |
+| `GET /admin/agents/<agent>/memory` | The agent's memories the user can see, and a search (`q`) ([Memory Page](#memory-page)). |
+| `POST /admin/agents/<agent>/memory` | Adds a memory (CSRF-checked), 303 back. |
+| `POST /admin/agents/<agent>/memory/edit` | Changes a memory's content and flags (CSRF-checked), 303 back; 409 if it changed since the form. |
+| `POST /admin/agents/<agent>/memory/forget` | Forgets a memory (CSRF-checked), 303 back. |
 | `GET /admin/routes`            | Every route in order ([Route Pages](#route-pages)).              |
 | `GET /admin/routes/new`        | The form that adds a route.                                      |
 | `POST /admin/routes`           | Adds the route (CSRF-checked), 303 to the list.                  |
@@ -405,7 +409,8 @@ In `agents.rs`: `web.install_agents(builder, Arc<agents::AgentManager>)`,
 which `serve` calls after `install_admin` with a manager over the runtime's registry (so the chat
 list, reading the same `LiveConfig`, offers a new agent at once). Like the admin pages: the same
 authentication middleware, `may_administer` (the owner only; a guest gets 403, no login 401) on
-every route including the POST, `no-store` on every answer, and `check_csrf` on the POST. Unlike
+every route including the POST (except the memory page's, see [Memory Page](#memory-page)),
+`no-store` on every answer, and `check_csrf` on the POST. Unlike
 them, they call the core directly (`giles_core::agents`) rather than the admin service: there are no
 agent RPCs yet (PLAN section 8.7).
 
@@ -422,8 +427,8 @@ agent RPCs yet (PLAN section 8.7).
   entries, `MAX_DEPTH` (8), the first
   `MAX_FILE_BYTES` (64 KiB) of each file, `MAX_TOTAL_BYTES` (1 MiB) of contents per page. Text is
   UTF-8 without NUL (a character split by the cut is dropped); anything else is listed with its
-  size (so `memory.db` is listed by its size and its contents are never shown; the memory web page,
-  #8, is a separate feature). Contents are shown escaped in `<pre>`. Each entry has a `FileKind`
+  size (so `memory.db` is listed by its size and its contents are never shown; the memories have
+  their own page, [Memory Page](#memory-page)). Contents are shown escaped in `<pre>`. Each entry has a `FileKind`
   (`Config`, `Soul`, `JobPrompt` from the agent's `prompt_file`s, `Skill`, `Other`) that orders and
   labels it.
 - Who sees which file is one hook, `FileKind::visible_to(viewer)`, applied before a file is read
@@ -596,6 +601,73 @@ configuration: the agent loop and core tools through `Registry::config()`, the s
 `AgentPolicies` and the router through the shared `LiveConfig`. Config jobs follow the live
 configuration too (a created, edited, or removed agent's jobs start, change, or stop); general
 reload stays deferred (D28).
+
+### Memory Page
+
+In `memory.rs`, routed by `install_agents` (its `AgentPages` state, `agents.rs`) under the agent
+pages' middleware (authentication, `no-store`). Unlike the other agent pages it is **not**
+`may_administer`-gated: it shows each signed-in user what they could ask the agent to recall
+anyway. Every web login is the owner in v1 (`WebUser::user`), so the owner is what you meet in
+practice; the handlers don't assume it, and a test signs in as another user.
+
+- **The viewer** is the store's `MemoryViewer`, built by `user_viewer(&WebUser)`:
+  `MemoryViewer::new(MemoryOwner::User(user.user), user.user == identity::owner())`, the same
+  rule as `memory::viewer` for a tool call: own private memories plus shared ones, writing shared
+  ones only for the owner. The store enforces everything (visibility, the shared-write rule, the
+  1,000-character limit, the core cap); the forms only leave out what it would refuse (no *shared*
+  box for a non-owner, no edit or forget buttons on a shared memory they can't write), and a
+  crafted post gets the store's refusal. The cap is the agent's `memory_cap`.
+- **The store** comes from `AgentManager::memory_dbs().get(&agent_id)` for each request and is
+  dropped with it ([Removing](#removing) needs no handle left open). An agent that isn't
+  configured, or whose id isn't a valid name, is a 404 before anything is opened, so such a
+  request creates no file. A `GET` for a configured agent that has no `memory.db` yet creates an
+  empty one (that is what `get` does) and shows an empty page.
+- **The list** is `MemoryStore::list(viewer, PAGE_SIZE + 1)`, `PAGE_SIZE` (200), newest first; the
+  extra row says it was cut short. With a non-blank `q` it is `MemoryStore::recall(viewer, q,
+  SEARCH_LIMIT + 1)` (50) instead, the same full-text search as `memory_recall`: ranked by bm25,
+  words quoted and OR-ed so FTS syntax in the box is text, English stemming. Above them the page
+  shows the usage of each core scope (`memory::usage_header` with `memory_cap`, from
+  `MemoryStore::core_memories`: the shared scope and the user's own).
+- **Group sections** are for the owner only (`may_administer`). `MemoryStore::group_owners()` lists
+  the groups that own private memories (at most `MAX_GROUPS`, 20, are shown, and the page says if
+  there are more); each gets a section from `list(group viewer, GROUP_FETCH)` filtered to the
+  group's own private memories (the store also returns the shared ones to a group viewer, which
+  the owner's own list already shows), under
+  `MemoryViewer::new(MemoryOwner::Group { instance, conversation }, true)`: the owner's right to
+  write shared memories. Every form in a group section carries `group_instance` and
+  `group_conversation` hidden fields; `MemoryForm::viewer` builds the group viewer from them only
+  after `may_administer` (a non-owner gets 403 for any group field, existing group or not, so
+  group ids can't be probed) and a well-formed group (400 otherwise, and for a half-named one).
+  Both fields empty means the user's own scope. A memory is therefore reachable only through its
+  own group: through the owner's scope or another group it is `UnknownMemory`, a 404.
+- **Writes** are three plain `POST` forms (`add`, `edit`, `forget`) with the CSRF token in a
+  hidden field (`check_csrf`, header or field, checked first, before the agent is looked up).
+  `source_session` is `None` for a memory made here. The text's CRLF becomes LF. An edit always
+  sends content, `core`, and `shared` (an unticked box is `Some(false)`), so un-ticking *shared*
+  on a shared memory makes it the editing user's private one, as `memory_edit` does. Success is a
+  303 to `/admin/agents/<agent>/memory?done=added|saved|forgotten[#memory-<id>]`; the page maps
+  the fixed `done` codes to a notice and ignores any other value, so a link can't put text on the
+  page.
+- **Refusals** re-render the page (nothing was written) with a status and a message, mapped from
+  `giles_store::Error`: `UnknownMemory` 404 (the same for an id that is invisible or gone),
+  `SharedWriteForbidden` 403, `MemoryTooLong` and `InvalidRequest` 400, `StaleMemory` and
+  `CoreCapExceeded` 409; any other error is a logged 500. An add keeps what was typed in the
+  form; an edit shows what was typed in a `<pre>`. `CoreCapExceeded` says how far over the cap the
+  scope would be and lists the scope's core memories (from `CoreOverflow::memories`) so the user
+  can trim. A form without a parseable id (or, for an edit, `updated`) is a 400.
+- **Lost updates.** Each edit form carries the memory's `updated_at` in Unix milliseconds
+  (`updated`) from when the page was rendered, and the handler sends it as
+  `MemoryEdit::expected_updated_at`. The store compares it with the stored value in the same
+  transaction as the write (after the visibility check, before the shared-write rule), so a change
+  by the agent or by another tab between render and post is refused as `StaleMemory`; the page
+  then shows the current content next to what was typed. The check works on the store's
+  millisecond resolution. Forget has no guard: it is deliberate and the user sees what they forget.
+- **Running sessions** keep the core memories their prompt was built with; the page says that a
+  change reaches a session after it compacts or when a new session starts
+  ([Agent Loop](agent-loop.md)). Nothing here notifies a session.
+- **Escaping.** Content, flags, the search words, and group ids are template values, so Askama
+  escapes them; the `done` code is never echoed. Memory text is shown in `<pre>` and in the
+  `<textarea>` of its edit form.
 
 ## Route Pages
 

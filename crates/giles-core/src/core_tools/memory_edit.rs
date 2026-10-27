@@ -72,6 +72,7 @@ pub fn parse_input(input: Value) -> Result<(MemoryId, MemoryEdit), String> {
         content: input.content,
         core: input.core,
         shared: input.shared,
+        expected_updated_at: None,
     };
     Ok((MemoryId::new(input.id), edit))
 }

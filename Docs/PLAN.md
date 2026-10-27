@@ -1212,8 +1212,10 @@ configuration before its files move and checked again, and put back if work appe
 fails. Its sessions, messages, and usage stay in the database, inert; creating an agent
 with the same id again reattaches them. Web chats can be started with a chosen agent, which routes
 them to it ahead of the stored routes. Who sees which agent file is one per-viewer check: the owner
-sees all of them, and `memory.db` is listed by size, not contents. Viewing and editing memories in
-the web UI is planned (issue #8), under the visibility rules of section 6.7.
+sees all of them, and `memory.db` is listed by size, not contents. Memories have their own page per
+agent (`/admin/agents/<agent>/memory`), under the visibility rules of section 6.7: each signed-in
+user sees and edits their own private memories and the shared ones (writing shared ones only as
+the owner), and the owner also sees and edits each group conversation's memories there.
 
 The route pages (list, add, edit, remove, and reorder the routes of section 6.1) are owner-only
 admin pages too, also without RPCs: they call the core's route management in-process, and a change
