@@ -42,9 +42,9 @@ flowchart TD
   discord[giles-channel-discord] --> sdk
 ```
 
-`giles-types` is the contract shared by the core and plugins, so it depends on no other Giles
-crate. Plugins depend on `giles-plugin-sdk` (and through it `giles-types` and `giles-proto`), never
-on `giles-core` or `giles-store`. The core depends on `giles-plugin-sdk` (default features off, so
+`giles-types` is the contract shared by the core and plugins, so it depends on no other Giles crate.
+Plugins depend on `giles-plugin-sdk` (and through it `giles-types` and `giles-proto`), never on
+`giles-core` or `giles-store`. The core depends on `giles-plugin-sdk` (default features off, so
 without its `tls` module) for `convert`, the proto-to-domain conversions its `RemoteChannel` and
 admin service share with plugins, and for `render`, which the web channel uses.
 
@@ -90,15 +90,15 @@ Consequences for code:
   `[workspace.dependencies]`, and each crate opts in with `<dep>.workspace = true`, adding the
   features it needs. The shared stack: `anyhow`, `async-trait`, `bytes`, `futures`, `jiff` (only
   `std`; crates add `serde` or time zone database features), `libc`, `prost`, `prost-types`,
-  `reqwest` (rustls, `http2`, `stream`; no default features), `serde` (with `derive`),
-  `serde_json`, `sha2`, `thiserror`, `tokio` (no features enabled), `toml`, `tonic`,
-  `tonic-health`, `tracing`, `tracing-subscriber`, `webpki-root-certs` (the Mozilla roots every
-  Giles TLS client trusts).
+  `reqwest` (rustls, `http2`, `stream`; no default features), `serde` (with `derive`), `serde_json`,
+  `sha2`, `thiserror`, `tokio` (no features enabled), `toml`, `tonic`, `tonic-health`, `tracing`,
+  `tracing-subscriber`, `webpki-root-certs` (the Mozilla roots every Giles TLS client trusts).
   Shared test-only dependencies: `hyper-util` and `tower` (a one-shot connector to a plugin over a
   socket pair) and `tempfile`.
 - A dependency used by a single crate goes in that crate's own manifest.
 - Internal crates are also listed in `[workspace.dependencies]` with both `path` and `version`, so
-  the publishable crates resolve on crates.io. `giles-core` is listed with `default-features =
-  false`: its built-in components are Cargo features (`provider-anthropic` and `provider-openai`,
-  on by default) that the `giles` crate forwards under the same names and turns on by default.
+  the publishable crates resolve on crates.io. `giles-core` is listed with
+  `default-features = false`: its built-in components are Cargo features (`provider-anthropic` and
+  `provider-openai`, on by default) that the `giles` crate forwards under the same names and turns
+  on by default.
 - Libraries use `thiserror` for errors; `anyhow` is for the binary.

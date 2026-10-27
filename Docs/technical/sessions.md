@@ -1,7 +1,7 @@
 # Sessions and Turns
 
-`giles_core::sessions` takes every channel event from the stream to a turn ([Plan](../PLAN.md)
-§4.5, §6.2, §6.3, §8.5): classify, store, ack, then act. It owns the per-session turn queue, `/new`,
+`giles_core::sessions` takes every channel event from the stream to a turn ([Plan](../PLAN.md) §4.5,
+§6.2, §6.3, §8.5): classify, store, ack, then act. It owns the per-session turn queue, `/new`,
 `/stop`, `idle_reset`, startup recovery, dedupe-key pruning, and the latest status of each channel.
 The agent loop plugs in as a `TurnRunner`; the decision before anything is stored is
 [Identity and Routing](identity-and-routing.md); the tables are in [Storage](storage.md).
@@ -71,24 +71,24 @@ Commands act after their ack, so a crash between the two loses the command but n
 - `/stop` cancels `Turn::cancel` of the turn running for the key, in whichever session it runs. With
   nothing running it's logged and ignored. Making the cancellation reach toolsets, and filling
   unanswered tool calls with `cancelled`, is the agent loop's job.
-- An approval reply goes to `Approvals::answer`. `classify` only returns one while `is_pending`
-  says it's an approval reply, so with nothing waiting `yes` and `no` stay ordinary messages.
+- An approval reply goes to `Approvals::answer`. `classify` only returns one while `is_pending` says
+  it's an approval reply, so with nothing waiting `yes` and `no` stay ordinary messages.
 
 ## Sessions and idle reset
 
-A message's session is the open session for its key (agent, channel instance, conversation),
-created on demand as a `direct` session owned by the sender. Before that, if the agent sets
-`idle_reset`, the open session is ended when it has been quiet for at least that long: `now -
-(last_message_at or started_at) >= idle_reset`. A session with a running turn or queued messages is
-never reset, however long the turn takes. `last_message_at` comes from the `messages` table, which
-the agent loop writes.
+A message's session is the open session for its key (agent, channel instance, conversation), created
+on demand as a `direct` session owned by the sender. Before that, if the agent sets `idle_reset`,
+the open session is ended when it has been quiet for at least that long:
+`now - (last_message_at or started_at) >= idle_reset`. A session with a running turn or queued
+messages is never reset, however long the turn takes. `last_message_at` comes from the `messages`
+table, which the agent loop writes.
 
 ## Turns
 
 At most one turn runs per session. Waking a session that isn't live spawns a driver task that loops:
 
-1. Read the session's `queued` rows. If there are none, retire, unless a wake arrived since the
-   read (the `dirty` flag), in which case read again. No wake is lost.
+1. Read the session's `queued` rows. If there are none, retire, unless a wake arrived since the read
+   (the `dirty` flag), in which case read again. No wake is lost.
 2. Pick the batch: the sender of the oldest queued row is the requester, and the batch is every
    queued row from that sender, in order. Others' rows never join it; they start a later turn
    (§6.3).
@@ -105,11 +105,11 @@ their messages. The agent loop decides when to take, from `Turn::busy_mode`:
 - `queue`: never, except while an approval is pending: then a requester message denies it and the
   model sees it (§6.4), which holds in `steer` mode too.
 
-A message the turn doesn't take stays queued and starts the next turn. A message that arrives
-after the driver read the queue but before the turn is installed wakes `changed` when it is; a
-wake-up only says `take` may have something. After a turn ends, `take` on its `Steering` returns
-nothing: the driver closes it under the same lock `take` holds, so no row is started after the
-turn's rows are finished.
+A message the turn doesn't take stays queued and starts the next turn. A message that arrives after
+the driver read the queue but before the turn is installed wakes `changed` when it is; a wake-up
+only says `take` may have something. After a turn ends, `take` on its `Steering` returns nothing:
+the driver closes it under the same lock `take` holds, so no row is started after the turn's rows
+are finished.
 
 `Turn::reply` sends into the session's conversation through whatever channel is registered for the
 instance at that moment; `Reply::channel()` exposes its `info().output` for streaming decisions.
@@ -121,8 +121,8 @@ returns once every runner has returned.
 
 ## Holds
 
-The scheduler runs a `dm` job as its own turn in the user's DM session, and appends a job's reply
-to the DM between turns (§6.11). It does so through a hold:
+The scheduler runs a `dm` job as its own turn in the user's DM session, and appends a job's reply to
+the DM between turns (§6.11). It does so through a hold:
 
 - `Sessions::hold(session)` queues the caller in the session's driver (starting one if needed) with
   the time it asked. Before each turn the driver compares the oldest holder with the oldest queued
@@ -148,10 +148,10 @@ to the DM between turns (§6.11). It does so through a hold:
 2. `inbox_interrupt()`: rows still `started` become `unknown`. Nothing is replayed, so a tool with
    side effects never runs twice.
 3. For each session with such rows, once, send "Interrupted by a restart; resend if needed." into
-   its conversation (each send waits at most 10 s). Plugin channels aren't registered this early,
-   so a notice for an instance with no channel, or one whose send fails, is kept in memory by
-   instance and sent when that instance is attached (`attach_channel`); one refused again waits
-   for the next attach.
+   its conversation (each send waits at most 10 s). Plugin channels aren't registered this early, so
+   a notice for an instance with no channel, or one whose send fails, is kept in memory by instance
+   and sent when that instance is attached (`attach_channel`); one refused again waits for the next
+   attach.
 4. `inbox_sessions_with_queued()`: wake each session that still has queued rows, oldest first.
 
 ## Pruning
@@ -168,8 +168,8 @@ The latest `ChannelEvent::Status` of each instance is kept in memory with the ti
 
 ## Time and Tests
 
-Every timestamp comes from the `Clock` in `SessionsOptions` (`SystemClock` in the daemon). The
-tests in `sessions/tests.rs` run on paused Tokio time with a clock derived from it, a fake channel
-that snapshots the inbox at each ack, and a fake runner whose turns the test ends. Store calls run
-on the blocking pool, which holds paused time, so waiting a millisecond means every task has run as
-far as it can.
+Every timestamp comes from the `Clock` in `SessionsOptions` (`SystemClock` in the daemon). The tests
+in `sessions/tests.rs` run on paused Tokio time with a clock derived from it, a fake channel that
+snapshots the inbox at each ack, and a fake runner whose turns the test ends. Store calls run on the
+blocking pool, which holds paused time, so waiting a millisecond means every task has run as far as
+it can.

@@ -20,10 +20,10 @@ while it says an approval is pending ([Identity and Routing](identity-and-routin
 
 ## Wiring
 
-`giles serve` builds one `ApprovalBoard::new(ChannelPresenter::new(registry))` and passes it to
-both `AgentLoop::from_runtime(&runtime, board)` and `Runtime::start_sessions(runner, board,
-shutdown)`, so the replies the session manager receives reach the approvals the agent loop waits
-on. Each turn gets a `TurnApprovals::for_turn(board, agent, turn)`: the agent's `ask` globs and
+`giles serve` builds one `ApprovalBoard::new(ChannelPresenter::new(registry))` and passes it to both
+`AgentLoop::from_runtime(&runtime, board)` and `Runtime::start_sessions(runner, board, shutdown)`,
+so the replies the session manager receives reach the approvals the agent loop waits on. Each turn
+gets a `TurnApprovals::for_turn(board, agent, turn)`: the agent's `ask` globs and
 `approval_timeout`, answered by the turn's requester in the session's conversation.
 
 ## What Waits
@@ -31,16 +31,16 @@ on. Each turn gets a `TurnApprovals::for_turn(board, agent, turn)`: the agent's 
 When a call starts, after the dispatcher's call-time checks (an unavailable tool is reported as
 such, not asked about), `approve_call(tool, input)`:
 
-- runs it at once unless `tool` matches an `ask` glob (the same globs as `tools`), or `yes!`
-  allowed that tool earlier in this session;
-- denies it with `denied (unattended)` if nobody attends the turn: a job run without `ask_to`, a
-  job session's turn, or one without a requester or conversation;
+- runs it at once unless `tool` matches an `ask` glob (the same globs as `tools`), or `yes!` allowed
+  that tool earlier in this session;
+- denies it with `denied (unattended)` if nobody attends the turn: a job run without `ask_to`, a job
+  session's turn, or one without a requester or conversation;
 - otherwise registers a pending approval, shows the prompt, and waits for the answer.
 
 The wait sits before the call's deadline (`tokio::time::timeout`), so it doesn't use the deadline
-up; once approved, the call-time checks run again (the tool may have gone meanwhile) and the
-call starts. A barrier call waiting for approval holds up the calls after it, as it would while
-running. A denial is the call's error result:
+up; once approved, the call-time checks run again (the tool may have gone meanwhile) and the call
+starts. A barrier call waiting for approval holds up the calls after it, as it would while running.
+A denial is the call's error result:
 
 | How it ended                            | Result                                                   |
 | --------------------------------------- | -------------------------------------------------------- |
@@ -52,14 +52,14 @@ running. A denial is the call's error result:
 | The prompt couldn't be sent             | `denied (the approval request could not be sent: <error>)` |
 | `/stop`, shutdown                       | The wait is dropped; the slot gets `cancelled`           |
 
-A restart forgets every pending approval: nothing is stored, and startup recovery fills the
-call's slot with `interrupted`.
+A restart forgets every pending approval: nothing is stored, and startup recovery fills the call's
+slot with `interrupted`.
 
 Jobs (§6.11): a job run (`Turn::job`) is answered only by the target the scheduler puts in its
-`JobTurn::approvals`, in a job session or a DM alike; without one every `ask` is `denied
-(unattended)`. With `ask_to = "deliver_to"` the target is the delivery user in their DM (session
-key and `Reply` of that conversation), with a `PromptOutbox`: the prompt is queued through it for
-the user's default identity instead of being sent into a conversation, expiring after
+`JobTurn::approvals`, in a job session or a DM alike; without one every `ask` is
+`denied (unattended)`. With `ask_to = "deliver_to"` the target is the delivery user in their DM
+(session key and `Reply` of that conversation), with a `PromptOutbox`: the prompt is queued through
+it for the user's default identity instead of being sent into a conversation, expiring after
 `approval_timeout`, and when the approval ends (answered, expired, denied, cancelled) the board
 calls `withdraw` instead of telling the presenter, so a prompt still waiting in the outbox is
 removed. Replies come through the normal path, from the DM. v1 has no roles, so the delivery user
@@ -85,29 +85,29 @@ nothing in them may change what the prompt says (`shown`):
 - **Escaped** (`escape`): `\n`, `\r`, and `\t` as those two characters; every other control
   character (C0, DEL, C1), U+2028 and U+2029, the bidirectional formatting characters (U+061C,
   U+200E, U+200F, U+202A–U+202E, U+2066–U+2069), and the invisible ones (soft hyphen U+00AD,
-  U+200B–U+200D, U+2060–U+2064, U+FEFF, tag characters U+E0000–U+E007F) as `\uXXXX`
-  (`\u{XXXXX}` beyond U+FFFF). The text is therefore one line that displays in its own order,
-  and nothing in it is invisible. Other Unicode is shown as itself.
-- **Cut**: at most 200 characters of the escaped text (an escape or character is never split).
-  A cut text is followed by its full size and the first 12 hex digits of its SHA-256: `` `…` …
-  (10,000 bytes, SHA-256 0123456789ab)``, so two long inputs with the same start can be told
-  apart.
-- **One code span** (`code_span`): delimited by one more backtick than the text's longest
-  backtick run, so no run inside can close it, and padded with a space on each side when the
-  text starts or ends with a backtick or a space (CommonMark strips exactly one such space, so
-  the text shows unchanged). An empty text shows as `(empty)`. Inside a code span nothing is
-  Markdown, HTML, or a link, on any channel's renderer.
+  U+200B–U+200D, U+2060–U+2064, U+FEFF, tag characters U+E0000–U+E007F) as `\uXXXX` (`\u{XXXXX}`
+  beyond U+FFFF). The text is therefore one line that displays in its own order, and nothing in it
+  is invisible. Other Unicode is shown as itself.
+- **Cut**: at most 200 characters of the escaped text (an escape or character is never split). A cut
+  text is followed by its full size and the first 12 hex digits of its SHA-256:
+  `` `…` … (10,000 bytes, SHA-256 0123456789ab)``, so two long inputs with the same start can be
+  told apart.
+- **One code span** (`code_span`): delimited by one more backtick than the text's longest backtick
+  run, so no run inside can close it, and padded with a space on each side when the text starts or
+  ends with a backtick or a space (CommonMark strips exactly one such space, so the text shows
+  unchanged). An empty text shows as `(empty)`. Inside a code span nothing is Markdown, HTML, or a
+  link, on any channel's renderer.
 
 The prompt goes out through the board's `ApprovalPresenter` (below, Web Buttons); the whole wait,
 the send included, is bounded by `approval_timeout`.
 
 ## Codes
 
-Each pending approval gets a short numeric code, random (`getrandom`), four digits, unique among
-the pending approvals and the closed ones still remembered (six digits once half the four-digit
-codes are taken). A closed approval (answered, expired, cancelled, or denied by a message) keeps
-its code for 24 hours (`CLOSED_RETENTION`), so a late reply is told what became of it and the code
-isn't handed out again meanwhile.
+Each pending approval gets a short numeric code, random (`getrandom`), four digits, unique among the
+pending approvals and the closed ones still remembered (six digits once half the four-digit codes
+are taken). A closed approval (answered, expired, cancelled, or denied by a message) keeps its code
+for 24 hours (`CLOSED_RETENTION`), so a late reply is told what became of it and the code isn't
+handed out again meanwhile.
 
 ## Replies
 
@@ -135,39 +135,39 @@ A message from the requester while one of the turn's approvals waits denies it (
 part of the turn. The session code wakes `Turn::steering` for each requester message. In its
 tool-batch loop the agent loop only looks at the queued messages (`Steering::peek`; the rows stay
 `queued`). It remembers the newest row it has seen, starting with what was queued when the batch
-began; a wake-up that finds newer rows while `TurnApprovals::has_pending` says an approval of
-this turn waits passes their text to `deny_pending(said)`, which denies every approval of this
-turn with `not_approved(said)` (a question is declined). A message that was already queued
-before, or that arrived while nothing waited, denies nothing. At the batch boundary the queued
-requester messages are taken into the turn (`Steering::take`, every one, in order) and stored
-after the tool results, so the model sees both; with `busy_mode = "queue"` this happens only
-when a message denied an approval. A turn that `/stop` ends first takes nothing, so the message
-starts the next turn. In `steer` mode the batch's unstarted calls are also skipped
-([Agent Loop](agent-loop.md), Turn Control).
+began; a wake-up that finds newer rows while `TurnApprovals::has_pending` says an approval of this
+turn waits passes their text to `deny_pending(said)`, which denies every approval of this turn with
+`not_approved(said)` (a question is declined). A message that was already queued before, or that
+arrived while nothing waited, denies nothing. At the batch boundary the queued requester messages
+are taken into the turn (`Steering::take`, every one, in order) and stored after the tool results,
+so the model sees both; with `busy_mode = "queue"` this happens only when a message denied an
+approval. A turn that `/stop` ends first takes nothing, so the message starts the next turn. In
+`steer` mode the batch's unstarted calls are also skipped ([Agent Loop](agent-loop.md), Turn
+Control).
 
 ## Questions (Elicitation)
 
 A running call's `ToolCallEvent::ApprovalRequest { id, message, schema }` goes to
-`answer_question(tool, message)` through the same board: same codes, prompts, replies, expiry,
-and denial by a new message. `yes` (and `yes!`, which allows nothing further for a question)
-answers `ApprovalDecision::Approve { content: None }` on the handle's `answers`; anything else
-`Deny`. v1 answers only yes or no, without content: an MCP server gets `accept` with an empty
-object for `yes` and `decline` for anything else, and a question whose schema requires a field
-never reaches the board, the MCP client declines it at once
-([MCP Client](mcp.md#mapping-mcp-to-the-toolset-trait)). The wait is part of the running call,
-so its deadline keeps running; an unattended turn declines at once.
+`answer_question(tool, message)` through the same board: same codes, prompts, replies, expiry, and
+denial by a new message. `yes` (and `yes!`, which allows nothing further for a question) answers
+`ApprovalDecision::Approve { content: None }` on the handle's `answers`; anything else `Deny`. v1
+answers only yes or no, without content: an MCP server gets `accept` with an empty object for `yes`
+and `decline` for anything else, and a question whose schema requires a field never reaches the
+board, the MCP client declines it at once ([MCP Client](mcp.md#mapping-mcp-to-the-toolset-trait)).
+The wait is part of the running call, so its deadline keeps running; an unattended turn declines at
+once.
 
 ## Web Buttons
 
 `ChannelPresenter` shows a prompt for a conversation on the web channel's instance
 (`registry.web_channel()` whose `instance()` is `reply.instance()`) with
-`WebChannel::send_approval(chat, code, markdown)`: the prompt with Allow / Allow for this session
-/ Deny buttons ([Web Channel](web-channel.md)). Every outcome (an answer, a typed reply, expiry, a
-new message, `/stop`) retires it with `WebChannel::resolve_approval(chat, code, outcome)`, so the
-page shows how it ended. A button posts `yes <code>`, `yes! <code>`, or `no <code>` as the user,
-which reaches the board like a typed reply. On every other channel the prompt is the text, sent
-with `Reply::send` (`TextPresenter`), and the outcome isn't shown. `ApprovalOutcome` is defined
-here and re-exported by the web channel. `resolved` must not block.
+`WebChannel::send_approval(chat, code, markdown)`: the prompt with Allow / Allow for this session /
+Deny buttons ([Web Channel](web-channel.md)). Every outcome (an answer, a typed reply, expiry, a new
+message, `/stop`) retires it with `WebChannel::resolve_approval(chat, code, outcome)`, so the page
+shows how it ended. A button posts `yes <code>`, `yes! <code>`, or `no <code>` as the user, which
+reaches the board like a typed reply. On every other channel the prompt is the text, sent with
+`Reply::send` (`TextPresenter`), and the outcome isn't shown. `ApprovalOutcome` is defined here and
+re-exported by the web channel. `resolved` must not block.
 
 ## Tests
 
@@ -175,7 +175,6 @@ here and re-exported by the web channel. `resolved` must not block.
 bidirectional characters, long input). `approvals/tests.rs` tests the board and `TurnApprovals` on
 paused time with a fake channel and a recording presenter, and `ChannelPresenter` with a real web
 channel. `crates/giles-core/tests/approvals.rs` runs the whole path through
-`Runtime::start_sessions` and the agent loop: `yes`, `no`, `yes!` (and for the other waiting
-calls), a bare `yes` with two waiting, expiry and a late reply, denial by a new message in both
-busy modes, a question answered both ways, `/stop` while waiting, and the deadline not counting
-the wait.
+`Runtime::start_sessions` and the agent loop: `yes`, `no`, `yes!` (and for the other waiting calls),
+a bare `yes` with two waiting, expiry and a late reply, denial by a new message in both busy modes,
+a question answered both ways, `/stop` while waiting, and the deadline not counting the wait.

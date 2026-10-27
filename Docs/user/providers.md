@@ -28,11 +28,11 @@ keeps its default); a known key with an invalid value stops startup.
 
 Notes:
 
-- Prompt caching is always on. The system prompt and the conversation are cached for 1 hour in
-  chats and 5 minutes in scheduled jobs. Cache reads and writes are recorded in usage.
-- Images (JPEG, PNG, GIF, WebP) and PDFs are sent to the model. When the model id is one the
-  Models API lists (not an alias such as `claude-sonnet-4-5`), Giles also leaves out the types it
-  says the model can't take. Other attachments reach it only as a text reference.
+- Prompt caching is always on. The system prompt and the conversation are cached for 1 hour in chats
+  and 5 minutes in scheduled jobs. Cache reads and writes are recorded in usage.
+- Images (JPEG, PNG, GIF, WebP) and PDFs are sent to the model. When the model id is one the Models
+  API lists (not an alias such as `claude-sonnet-4-5`), Giles also leaves out the types it says the
+  model can't take. Other attachments reach it only as a text reference.
 - A `temperature` is sent only to Claude 4.6 and 4.5 models, and only with an `anthropic_version`
   before `2026-10-21`: newer models and API versions reject it, so Giles leaves it out there and the
   model uses its default.
@@ -89,23 +89,23 @@ Notes:
   otherwise. Set it when a proxy sits in front of OpenAI or OpenRouter.
 - Media: `media_types` may list image types (`image/png`, ...), `audio/wav`, `audio/mpeg`, and
   `application/pdf`. Without it, OpenAI and OpenRouter models get JPEG, PNG, GIF, and WebP images,
-  and other servers get no attachments, since vision support varies by local model and a model
-  that can't take an image fails every later request in the conversation. Attachments a model
-  doesn't take reach it only as a text reference. OpenRouter's model list also says which models
-  take images, PDFs, or audio, which narrows the instance's list.
+  and other servers get no attachments, since vision support varies by local model and a model that
+  can't take an image fails every later request in the conversation. Attachments a model doesn't
+  take reach it only as a text reference. OpenRouter's model list also says which models take
+  images, PDFs, or audio, which narrows the instance's list.
 - Images returned by tools are shown to the model in a message right after the tool results, since
   the API can't carry images in a tool result.
-- Reasoning: on OpenAI and other servers, a reasoning budget is sent as `reasoning_effort`
-  (`low` up to 2048 tokens, `medium` up to 8192, `high` above) only to models with
-  `reasoning = true`; servers reject it for other models. OpenRouter gets the budget itself
-  (`reasoning.max_tokens`) for every model and ignores it where it doesn't apply. Without a budget
-  nothing is sent and the model reasons as it does by default. On OpenAI, models with
-  `reasoning = true` get no `temperature`, which they reject.
-- Reasoning text that a server streams (OpenRouter, Ollama, DeepSeek) is kept and sent back to it
-  in later requests, which DeepSeek requires during tool use.
+- Reasoning: on OpenAI and other servers, a reasoning budget is sent as `reasoning_effort` (`low` up
+  to 2048 tokens, `medium` up to 8192, `high` above) only to models with `reasoning = true`; servers
+  reject it for other models. OpenRouter gets the budget itself (`reasoning.max_tokens`) for every
+  model and ignores it where it doesn't apply. Without a budget nothing is sent and the model
+  reasons as it does by default. On OpenAI, models with `reasoning = true` get no `temperature`,
+  which they reject.
+- Reasoning text that a server streams (OpenRouter, Ollama, DeepSeek) is kept and sent back to it in
+  later requests, which DeepSeek requires during tool use.
 - Prompt caching: OpenAI, DeepSeek, Gemini, and most servers cache on their own; cached tokens are
   recorded in usage where the server reports them. On OpenRouter, Giles also asks for Anthropic's
   automatic caching (1 hour in chats, 5 minutes in scheduled jobs).
-- `list_models` asks the server for its model ids. OpenAI and Ollama report nothing else, so
-  context windows and capabilities come from this config; OpenRouter reports context windows,
-  output limits, and capabilities.
+- `list_models` asks the server for its model ids. OpenAI and Ollama report nothing else, so context
+  windows and capabilities come from this config; OpenRouter reports context windows, output limits,
+  and capabilities.

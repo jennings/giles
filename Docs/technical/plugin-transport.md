@@ -4,9 +4,9 @@ A gRPC plugin and the core talk over the two ends of one Unix socket pair (PLAN 
 plugin is the gRPC server on its end, inherited as fd 3; the core is the client on the other. No
 socket is ever bound or listened on, and there is exactly one HTTP/2 connection per plugin launch.
 
-This page records how that works with `tonic`, as established by the transport spike. The
-regression test `crates/giles-core/tests/grpc_socketpair.rs` pins every behavior described here; if
-an upgrade changes one, that test fails and this page needs updating.
+This page records how that works with `tonic`, as established by the transport spike. The regression
+test `crates/giles-core/tests/grpc_socketpair.rs` pins every behavior described here; if an upgrade
+changes one, that test fails and this page needs updating.
 
 Versions verified: `tonic` 0.14.6 (with `tonic-health` and `tonic-prost` 0.14.6), `hyper` 1,
 `hyper-util` 0.1.21, `tokio` 1.54, on macOS arm64 and Linux arm64 (kernel 6.12).
@@ -52,8 +52,8 @@ Server::builder()
 - `tonic` implements its `Connected` trait for `tokio::net::UnixStream`, so the stream goes to
   `serve_with_incoming*` as is; no wrapper type is needed. The connect info is `UdsConnectInfo`
   (peer address and credentials).
-- Adopting fd 3 is the only `unsafe` part. Do it first thing in `main`, before any other code
-  could open or close descriptors:
+- Adopting fd 3 is the only `unsafe` part. Do it first thing in `main`, before any other code could
+  open or close descriptors:
   - `F_GETFD` before `from_raw_fd` proves fd 3 is open, which `from_raw_fd` requires.
   - `FD_CLOEXEC` right after: fd 3 had to be inheritable to survive the exec, and neither `OwnedFd`,
     `std`, nor `tokio` sets the flag. Without it, any child the plugin spawns inherits the gRPC
@@ -121,8 +121,8 @@ let mut health = HealthClient::with_interceptor(channel, AddBearer(token))
   for the server's `SETTINGS`. So it fails if the plugin's end is already closed, but succeeding
   doesn't mean the plugin is serving. Readiness is the handshake line on stdout, then `Describe`
   (section 7.4).
-- A `Channel` is a cheap clone; every client made from it shares the one connection. Calls,
-  server streams, and large messages all run concurrently over it.
+- A `Channel` is a cheap clone; every client made from it shares the one connection. Calls, server
+  streams, and large messages all run concurrently over it.
 
 ### No reconnect
 
@@ -176,7 +176,7 @@ message of exactly 16 MiB passes in both directions, and one byte more is refuse
 | Response          | Server encoder | `OutOfRange`, "Error, encoded message length too large: ..."      |
 | Response          | Client decoder | `OutOfRange`, "Error, decoded message length too large: ..."      |
 
-None of them breaks the connection. The first row is a `tonic` 0.14 wart: the encoder's
-`OutOfRange` is lost because the failed request body makes `hyper` reset the stream, and the client
-reports only the reset. A caller that wants a clear error (the `Remote*` adapter with an oversized
+None of them breaks the connection. The first row is a `tonic` 0.14 wart: the encoder's `OutOfRange`
+is lost because the failed request body makes `hyper` reset the stream, and the client reports only
+the reset. A caller that wants a clear error (the `Remote*` adapter with an oversized
 `CompleteRequest`, say) has to compare `prost::Message::encoded_len` with the limit before sending.

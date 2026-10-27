@@ -10,13 +10,13 @@ subcommand, each carrying its own `clap::Args` struct (`Serve(ServeArgs)`,
 `SandboxExec(SandboxExecArgs)`, ...). `status`, `usage`, `backup`, and `admin login-link` call the
 running daemon's admin service ([Admin Service](admin.md)) through `admin_client::call`, which
 builds a current-thread Tokio runtime and words connection and token errors for the operator.
-`instance rename` is the opposite: it works on the data root with the core stopped, taking the
-same single-instance lock `serve` takes ([Instance Rename](instance-rename.md)). Later subcommands
+`instance rename` is the opposite: it works on the data root with the core stopped, taking the same
+single-instance lock `serve` takes ([Instance Rename](instance-rename.md)). Later subcommands
 (`pair`) are added as variants with their own argument structs and modules, dispatched from `main`.
 
 `giles sandbox-exec <SPEC> -- <COMMAND>...` is the internal plugin sandbox trampoline (see
-[Plugin Sandbox](sandbox.md)); `--home` is accepted there but unused. Its failures exit 125 to
-127 like `env(1)` instead of 1 (see [Exit Status](sandbox.md#exit-status)).
+[Plugin Sandbox](sandbox.md)); `--home` is accepted there but unused. Its failures exit 125 to 127
+like `env(1)` instead of 1 (see [Exit Status](sandbox.md#exit-status)).
 
 `--home <DIR>` is global, so it is accepted before or after the subcommand. It is not tied to
 `GILES_HOME` through `clap`; `giles_core::paths::resolve_root` applies the precedence (flag, then
@@ -52,13 +52,13 @@ to stderr, with ANSI colors only when stderr is a terminal. The filter is `GILES
    [Plugin Sandbox](sandbox.md#host-check)) and log the result; a failure is a warning, and the
    plugin host refuses sandboxed instances with it. Find the `giles` binary itself, the sandbox
    trampoline (`std::env::current_exe`).
-6. Start the core runtime (`giles_core::runtime::Runtime::start`, [Registry](registry.md)): open
-   the database, check that no unused instance name still has data while a configured instance has
-   none ([Instance Rename](instance-rename.md#startup-check)), then open the blob store and build
-   the registry from the configuration. Any error ends
-   the process. Then register every toolset (`ToolsetHost::start`, [Toolsets](toolsets.md)), each
-   offering its cached tools, with its first start running in the background, and log what is
-   registered (`registry ready`) and each instance still pending.
+6. Start the core runtime (`giles_core::runtime::Runtime::start`, [Registry](registry.md)): open the
+   database, check that no unused instance name still has data while a configured instance has none
+   ([Instance Rename](instance-rename.md#startup-check)), then open the blob store and build the
+   registry from the configuration. Any error ends the process. Then register every toolset
+   (`ToolsetHost::start`, [Toolsets](toolsets.md)), each offering its cached tools, with its first
+   start running in the background, and log what is registered (`registry ready`) and each instance
+   still pending.
 7. Bind the HTTP listener on `core.http_listen` (a busy address fails startup here). Then write a
    fresh admin token and bind the admin socket (`AdminListener::bind`, removing one a crash left).
 8. Start the outbox's sender (`Runtime::start_outbox`, [Outbox](outbox.md)): drop the approval
@@ -89,13 +89,13 @@ to stderr, with ANSI colors only when stderr is a terminal. The filter is `GILES
 10. Wait until the shutdown token is cancelled, then await the HTTP server (it drains open requests
     for up to 5 s), the sessions (`Sessions::closed`: running turns are cancelled, channel pumps
     stop between events), the outbox's sender (`Outbox::closed`), and the blob sweep
-    (`BlobSweep::closed`; a sweep that is running finishes first), then stop the plugins and
-    their supervision (`PluginHost::stop_all`: `Shutdown`, then `SIGTERM`, then `SIGKILL` to each
-    plugin's process group) and the toolsets (`ToolsetHost::stop`: stdio servers' process groups
-    killed, remote connections closed), await the admin server (it drains for up to 5 s and removes
-    its socket and token file), log `giles stopped`, release the lock, and exit with status 0. If
-    the HTTP server stops on its own first, cancel the token, stop the plugins, the toolsets, and
-    the admin server, and exit with an error.
+    (`BlobSweep::closed`; a sweep that is running finishes first), then stop the plugins and their
+    supervision (`PluginHost::stop_all`: `Shutdown`, then `SIGTERM`, then `SIGKILL` to each plugin's
+    process group) and the toolsets (`ToolsetHost::stop`: stdio servers' process groups killed,
+    remote connections closed), await the admin server (it drains for up to 5 s and removes its
+    socket and token file), log `giles stopped`, release the lock, and exit with status 0. If the
+    HTTP server stops on its own first, cancel the token, stop the plugins, the toolsets, and the
+    admin server, and exit with an error.
 
 The shutdown signal is a `tokio_util::sync::CancellationToken`. The first SIGINT or SIGTERM cancels
 it. Subsystems added later take a clone (or a `child_token()`), stop when it is cancelled, and are

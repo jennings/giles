@@ -15,13 +15,13 @@ This doc lists the features and explains roughly how each one works. The detaile
 
 - Small core. The core handles orchestration: identity, routing, sessions, the agent loop,
   scheduling, policy, storage, and supervising plugins. Work that needs isolation, a long-lived
-  connection, or a heavy protocol library runs in a separate plugin process. Plain HTTP clients
-  (the v1 providers), the web channel, and the core tools are built in.
+  connection, or a heavy protocol library runs in a separate plugin process. Plain HTTP clients (the
+  v1 providers), the web channel, and the core tools are built in.
 - One trait per component kind. The core talks to a provider, channel, or toolset only through its
   trait, so it can't tell a built-in from a plugin. New features fit in later as plugins without
   changes to the core.
-- One source of truth. A plugin describes itself at runtime. There is no manifest to keep in sync
-  by hand.
+- One source of truth. A plugin describes itself at runtime. There is no manifest to keep in sync by
+  hand.
 - Don't trust plugins by default. The core sandboxes every plugin it launches.
 - Settings belong in the web UI, not in config files. `giles.toml` holds only what Giles needs to
   start: the address the web interface listens on, the default time zone for users who don't set
@@ -31,8 +31,8 @@ This doc lists the features and explains roughly how each one works. The detaile
   `SOUL.md`, per-user memories), routes from channel identities to users and agents, and, once
   designed, provider, channel, and toolset instances. Whether each kind of data lives in SQLite or
   in Markdown, JSONL, or other text files is decided as it's built. Routes are already managed in
-  the web UI; v1 still reads the owner and instances from `giles.toml`, and they move
-  out as their web UI lands (`PLAN.md` section 11.2).
+  the web UI; v1 still reads the owner and instances from `giles.toml`, and they move out as their
+  web UI lands (`PLAN.md` section 11.2).
 
 ## v1 Scope
 
@@ -85,8 +85,8 @@ Providers are how the system calls an LLM.
 - Two built-in clients: one for the OpenAI-compatible API, which covers OpenAI, OpenRouter, Ollama,
   and most others, and a native Anthropic client.
 - Local models run out of process, for example through Ollama, never inside the core.
-- Giles has its own message model, patterned on Anthropic's content blocks. Each provider
-  translates to and from its wire format.
+- Giles has its own message model, patterned on Anthropic's content blocks. Each provider translates
+  to and from its wire format.
 - Provider plugins are deferred. The `Provider` trait stays, so they can be added later.
 
 ## Feature: Agents
@@ -111,8 +111,8 @@ managed by Giles and meant to be edited in the web UI.
 
 ## Feature: Sessions (v1)
 
-- Every conversation is its own session with its own history: each WhatsApp chat, email thread,
-  IRC query, and web chat.
+- Every conversation is its own session with its own history: each WhatsApp chat, email thread, IRC
+  query, and web chat.
 - Knowledge crosses channels through memory, not history. Core memories are loaded into every
   session that may see them, the agent can recall its other memories by search, and it can search
   past transcripts on all channels.

@@ -63,15 +63,16 @@ parse is logged and skipped.
    (`Sessions::wait_idle`). Then `active_hours` is checked again: a run whose wait ended outside
    them is skipped and not recorded.
 3. Records the run's start in `job_runs`, then reads the prompt (`prompt_file` at each run).
-4. **Approvals.** Without `ask_to`, `ask` tools are denied as unattended. With `ask_to =
-   "deliver_to"` and a DM, the target is the user in that DM, with prompts queued through
+4. **Approvals.** Without `ask_to`, `ask` tools are denied as unattended. With
+   `ask_to = "deliver_to"` and a DM, the target is the user in that DM, with prompts queued through
    `JobDelivery` as `ApprovalPrompt` (prefixed `Scheduled job <label>:`, expiring after
    `approval_timeout`) and removed when the approval resolves first; replies come from the DM
    ([Approvals](approvals.md)). Without a DM there is nobody to answer, so they're denied.
 5. **The turn**, a `Turn` with `job: Some(JobTurn)` ([Agent Loop](agent-loop.md)). Its prompt is a
-   user message: the time prefix, `Scheduled job <label>. Your reply is sent to the user; reply
-   exactly NO_REPLY to send nothing.`, for `dm_excerpt = N` the text of the DM's last N messages
-   (`**User:**`/`**You:**`, tool blocks left out), then the prompt.
+   user message: the time prefix,
+   `Scheduled job <label>. Your reply is sent to the user; reply exactly NO_REPLY to send nothing.`,
+   for `dm_excerpt = N` the text of the DM's last N messages (`**User:**`/`**You:**`, tool blocks
+   left out), then the prompt.
    - `isolated`: a fresh job session owned by the user (their core memories are in its prompt),
      ended after the run. A config job's turn has no requester, so its memory tools see and write
      shared memories only ([Skills and Memory](skills-and-memory.md#who-sees-what)); a runtime job
@@ -99,17 +100,17 @@ action refuses the keys of the others): `action` = `create` | `list` | `cancel`.
   future match is refused. It stores a `RuntimeSpec` with the requester as creator, calls
   `JobChanges::notify()`, and answers e.g. "Scheduled job #2: every `0 9 * * 1-5`, next Fri
   2026-10-23 09:00 BST."
-- `list`: the requester's jobs with this agent (number, schedule and next run, session, prompt
-  cut to 100 characters), then the agent's config jobs as read-only.
+- `list`: the requester's jobs with this agent (number, schedule and next run, session, prompt cut
+  to 100 characters), then the agent's config jobs as read-only.
 - `cancel`: `id`; deletes the job only if it's this agent's and the requester created it, then
   notifies the scheduler, whose task for it stops: a run waiting for the DM is dropped, but a run
   whose turn has started (the job cancelling itself) finishes and delivers its reply.
 
-Limits: a turn without a requester (a config job's run) can only list. A job run (the
-`TurnContext` has `job` set) can list and cancel but not create, so no job can spawn more jobs.
-A user has at most `MAX_RUNTIME_JOBS_PER_USER` (20) runtime jobs with one agent; `create` beyond
-that answers "too many scheduled jobs (at most 20); cancel one first". Times are shown in the same
-zone messages use (the owner's, else the agent's, else the system's).
+Limits: a turn without a requester (a config job's run) can only list. A job run (the `TurnContext`
+has `job` set) can list and cancel but not create, so no job can spawn more jobs. A user has at most
+`MAX_RUNTIME_JOBS_PER_USER` (20) runtime jobs with one agent; `create` beyond that answers "too many
+scheduled jobs (at most 20); cancel one first". Times are shown in the same zone messages use (the
+owner's, else the agent's, else the system's).
 
 ## Tests
 

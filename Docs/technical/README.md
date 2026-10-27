@@ -1,8 +1,8 @@
 # Technical Overview
 
 This part of the book describes how Giles is implemented: the significant design decisions, the
-architecture, the wire protocols, and the major subsystems. It records what was built; the design
-it started from is in [Plan](../PLAN.md).
+architecture, the wire protocols, and the major subsystems. It records what was built; the design it
+started from is in [Plan](../PLAN.md).
 
 The shape of the system, in brief:
 

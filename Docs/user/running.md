@@ -24,8 +24,8 @@ giles serve
 
 `giles serve` runs in the foreground and logs to standard error. On first start it creates the data
 root (below). It then reads `giles.toml` and every `agents/<agent>/agent.toml`
-([Configuration](configuration.md)) and refuses to start if they're missing or invalid; the
-smallest valid `giles.toml` declares the owner:
+([Configuration](configuration.md)) and refuses to start if they're missing or invalid; the smallest
+valid `giles.toml` declares the owner:
 
 ```toml
 [owner]
@@ -38,9 +38,9 @@ naming the file, line, and key. Channel plugins start next ([Plugins](#plugins))
 
 Then it starts every toolset ([Configuration](configuration.md#toolsets)) and logs `giles started`
 once each has started or failed. A toolset that fails doesn't stop Giles: it's logged
-(`cannot start the toolset; retrying`, with the reason) and retried after 1 second, then 2, 4,
-and so on up to every 5 minutes, while everything else works. A stdio server that crashes later
-is restarted the same way. A remote server's tools are offered only while it's reachable; a stdio
+(`cannot start the toolset; retrying`, with the reason) and retried after 1 second, then 2, 4, and
+so on up to every 5 minutes, while everything else works. A stdio server that crashes later is
+restarted the same way. A remote server's tools are offered only while it's reachable; a stdio
 server's tools stay offered while it restarts, and calls to them fail until it's back. A failure
 that retrying can't fix, such as rejected credentials, a host that can't sandbox, or the sandbox
 refusing to start the server (its configuration or grants), is logged once and not retried until
@@ -56,8 +56,8 @@ second its own data root.
 
 Messages are saved as they arrive, so stopping Giles loses none. If it stops while an agent is
 answering, that answer is not resumed: at the next start Giles says "Interrupted by a restart;
-resend if needed." in the conversation, as soon as that channel is up. Messages still waiting for
-an answer are answered after the restart.
+resend if needed." in the conversation, as soon as that channel is up. Messages still waiting for an
+answer are answered after the restart.
 
 ## The Web Interface
 
@@ -70,8 +70,8 @@ log line shows the address, for example `http=http://127.0.0.1:8080/`. Set `http
 http_listen = "127.0.0.1:9090"
 ```
 
-The default only accepts connections from the same machine. If the address is in use (another
-Giles, or any other server on that port), `giles serve` fails at startup with
+The default only accepts connections from the same machine. If the address is in use (another Giles,
+or any other server on that port), `giles serve` fails at startup with
 `cannot listen for HTTP on <address>`. Port `0` picks any free port, which the log line then shows.
 
 Giles speaks plain HTTP. To reach it from another machine, put a reverse proxy that terminates TLS
@@ -132,8 +132,9 @@ mention them. About a minute after it starts and every six hours after that, Gil
 stored attachments that are no longer used: those that no conversation message, summary, queued
 incoming event, pending outgoing message, or scheduled job refers to, and that were last stored more
 than 48 hours ago. Attachments in your conversations are never removed this way. When a sweep
-deletes something, the log says how many attachments and bytes (`blob sweep removed unreferenced
-blobs`). A sweep that hits an error deletes nothing and says so in the log.
+deletes something, the log says how many attachments and bytes
+(`blob sweep removed unreferenced blobs`). A sweep that hits an error deletes nothing and says so in
+the log.
 
 ## Logging
 
@@ -154,10 +155,10 @@ An invalid filter is an error at startup.
 `giles serve` launches every channel plugin at startup and keeps it running:
 
 - Every 30 seconds it checks that each plugin still answers. A plugin that exits or fails the check
-  is stopped (with its child processes) and started again after a delay: 1 second, then 2, 4, and
-  so on up to 5 minutes. A plugin that then runs for 10 minutes starts over at 1 second.
-- A plugin that fails in a way restarting won't fix, such as no sandbox on this machine, a
-  plugin built for another protocol version, or a `config` the plugin rejects, is logged as
+  is stopped (with its child processes) and started again after a delay: 1 second, then 2, 4, and so
+  on up to 5 minutes. A plugin that then runs for 10 minutes starts over at 1 second.
+- A plugin that fails in a way restarting won't fix, such as no sandbox on this machine, a plugin
+  built for another protocol version, or a `config` the plugin rejects, is logged as
   `cannot launch the plugin; not retrying until its binary changes` and left alone until its binary
   changes (Giles checks once a minute) or Giles restarts.
 - A message a plugin received but Giles hadn't stored yet when the plugin went down is delivered
@@ -168,15 +169,15 @@ requested sandbox grants) in `cache/`, so it can show them even while the plugin
 
 ## Plugin Sandbox Check
 
-Giles runs the plugins it launches in a sandbox, and a plugin that can't be sandboxed doesn't
-start. At startup, `giles serve` checks that this machine can sandbox at all and logs the result:
+Giles runs the plugins it launches in a sandbox, and a plugin that can't be sandboxed doesn't start.
+At startup, `giles serve` checks that this machine can sandbox at all and logs the result:
 
 - Linux: Landlock must be enabled (kernel 5.13 or later, with `landlock` in the kernel's `lsm=`
   list) and seccomp must be available. In a container, it's the host kernel that matters. The log
   line names the Landlock ABI; newer kernels enforce more (see
   [`min_abi`](configuration.md#sandbox)).
-- macOS: `/usr/bin/sandbox-exec` must be present and able to apply a sandbox profile. It can't
-  when Giles itself runs inside another sandbox that forbids it.
+- macOS: `/usr/bin/sandbox-exec` must be present and able to apply a sandbox profile. It can't when
+  Giles itself runs inside another sandbox that forbids it.
 
 If the check fails, Giles logs one warning naming the cause, for example:
 

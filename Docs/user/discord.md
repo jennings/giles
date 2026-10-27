@@ -35,40 +35,40 @@ settings ([Settings](#settings)).
 ## Creating the Bot
 
 1. Open the [Discord Developer Portal](https://discord.com/developers/applications), log in, and
-   choose **New Application**. The application's name is only a label; the bot's name is
-   what you see in Discord and can be changed on the **Bot** page.
-2. Open the application's **Bot** page. A bot is created with the application. If the portal
-   offers a **Public Bot** switch, turn it off, so nobody else can add your bot to their servers.
+   choose **New Application**. The application's name is only a label; the bot's name is what you
+   see in Discord and can be changed on the **Bot** page.
+2. Open the application's **Bot** page. A bot is created with the application. If the portal offers
+   a **Public Bot** switch, turn it off, so nobody else can add your bot to their servers.
 3. On the **Bot** page, choose **Reset Token** and copy the token it shows. Discord shows it once;
    if you lose it, reset it again. The token is the bot's password ([The Token](#the-token)).
 
 You don't need to turn on any **Privileged Gateway Intents** (Presence, Server Members, Message
-Content). The plugin asks Discord for one standard intent, `DIRECT_MESSAGES`, and says nothing
-about privileged ones. A bot receives the content of direct messages sent to it without the Message
+Content). The plugin asks Discord for one standard intent, `DIRECT_MESSAGES`, and says nothing about
+privileged ones. A bot receives the content of direct messages sent to it without the Message
 Content intent: Discord's Gateway documentation lists "Content in DMs with the app" among the
 exceptions, and its guide to privileged intents lists "Direct Messages sent to your app". That is
-what the design rests on, and it comes from Discord's documentation, **not yet verified with a real
-bot** ([issue #20](https://github.com/jennings/giles/issues/20)). If it turns out wrong, the
-status says so ([Status](#status)). The Developer Portal's labels change from time to time, so the
-names above may differ a little from what you see.
+what the design rests on, and it comes from Discord's documentation,
+**not yet verified with a real bot** ([issue #20](https://github.com/jennings/giles/issues/20)). If
+it turns out wrong, the status says so ([Status](#status)). The Developer Portal's labels change
+from time to time, so the names above may differ a little from what you see.
 
 ## Inviting the Bot
 
 A bot can only message a person it has a way to reach, and Discord opens that way through a server
-the two of you share. This is how Discord's apps behave, but the API documentation doesn't state
-it, so treat it as what is expected and not as a guarantee (issue #20 checks it):
+the two of you share. This is how Discord's apps behave, but the API documentation doesn't state it,
+so treat it as what is expected and not as a guarantee (issue #20 checks it):
 
 - You can send a direct message to the bot only if you share a server with it. Without one,
   Discord's app has no way to start the conversation.
 - The bot can send a direct message to you only if you share a server with it **and** your privacy
-  settings for that server allow direct messages from server members. If they don't, Discord
-  refuses the bot's messages ([Status](#status), the 50007 error).
+  settings for that server allow direct messages from server members. If they don't, Discord refuses
+  the bot's messages ([Status](#status), the 50007 error).
 
 So make a server for it, or use one you own, and invite the bot:
 
-1. In the Developer Portal, open the application's **OAuth2** page and the **URL Generator**
-   (the portal's older and newer layouts name these differently; what you need is an invite link
-   for the application with the `bot` scope).
+1. In the Developer Portal, open the application's **OAuth2** page and the **URL Generator** (the
+   portal's older and newer layouts name these differently; what you need is an invite link for the
+   application with the `bot` scope).
 2. Tick the scope `bot`. Leave every permission unticked: the bot needs none to receive and send
    direct messages.
 3. Open the generated link, pick the server, and choose **Authorize**.
@@ -76,15 +76,15 @@ So make a server for it, or use one you own, and invite the bot:
 A small private server that only you and the bot belong to is enough, and keeps the bot out of
 conversations that are none of its business. The bot shows as online while Giles runs.
 
-The bot only needs the server as a meeting place. Messages written *in* a server are never
-delivered to Giles ([Conversations](#conversations)).
+The bot only needs the server as a meeting place. Messages written *in* a server are never delivered
+to Giles ([Conversations](#conversations)).
 
 ## Your User ID
 
 Giles knows who sent a message by the sender's Discord *user id*, a number such as
-`82198898841029460`, not by the name. In the Discord app, open **User Settings**, then
-**Advanced**, and turn on **Developer Mode**. Then right-click (or long-press) your own name or
-avatar anywhere in the app and choose **Copy User ID**. Put it into `[owner] identities`:
+`82198898841029460`, not by the name. In the Discord app, open **User Settings**, then **Advanced**,
+and turn on **Developer Mode**. Then right-click (or long-press) your own name or avatar anywhere in
+the app and choose **Copy User ID**. Put it into `[owner] identities`:
 
 ```toml
 [owner]
@@ -96,15 +96,15 @@ one entry covers every Discord instance you run. A message from an id that isn't
 and logged (`dropped inbound message`) with the sender in exactly the form to list.
 
 Every message the plugin delivers counts as verified: the sender's id is set by Discord, on a
-connection the bot authenticated with its token, so a message can't claim another person's id.
-That holds as long as the token stays secret ([The Token](#the-token)).
+connection the bot authenticated with its token, so a message can't claim another person's id. That
+holds as long as the token stays secret ([The Token](#the-token)).
 
 ## Settings
 
 The `config` table of the instance. Only `token` is required. An unknown key is an error, and an
-invalid value stops the instance from starting with a message naming the key, e.g. `invalid
-config: token: required: the bot token from the Bot page of the application in the Discord
-Developer Portal` in the log and in `giles status`.
+invalid value stops the instance from starting with a message naming the key, e.g. "invalid config:
+token: required: the bot token from the Bot page of the application in the Discord Developer Portal"
+in the log and in `giles status`.
 
 | Key                | Default    | Meaning                                                                |
 | ------------------ | ---------- | ---------------------------------------------------------------------- |
@@ -159,11 +159,11 @@ restarting just the plugin on the admin page keeps the old token.
 
 ## Conversations
 
-- A DM between you and the bot is a **direct** conversation. Its id is the DM *channel* id, a
-  number Discord assigns to the pair, not your user id. A person has one conversation however many
-  times they write.
-- Messages in **servers** are ignored. The plugin never subscribes to them, so they never arrive
-  at Giles, however the bot is mentioned. Giles v1 doesn't answer group conversations anyway.
+- A DM between you and the bot is a **direct** conversation. Its id is the DM *channel* id, a number
+  Discord assigns to the pair, not your user id. A person has one conversation however many times
+  they write.
+- Messages in **servers** are ignored. The plugin never subscribes to them, so they never arrive at
+  Giles, however the bot is mentioned. Giles v1 doesn't answer group conversations anyway.
 - Only messages from people count. Messages from bots (including the plugin's own, which Discord
   sends back) and webhooks, and system messages such as "started a call" or a pin notice, are
   dropped.
@@ -171,8 +171,8 @@ restarting just the plugin on the admin page keeps the old token.
   dropped. A sticker arrives as a line `[sticker: <name>]` after the text. Embeds are ignored (the
   links in your own message are in its text). A reply to an earlier message arrives with the id of
   the message it replies to.
-- Editing or deleting a message after it was delivered changes nothing: the agent was already
-  asked. A message edited while Giles was down arrives with its edited text.
+- Editing or deleting a message after it was delivered changes nothing: the agent was already asked.
+  A message edited while Giles was down arrives with its edited text.
 
 Pick the agent for the conversation on the **Routes** page ([Routes](web.md#routes), at
 `/admin/routes`): channel `discord` (the instance's name), kind `direct`, and optionally the
@@ -196,8 +196,8 @@ See [Rendering Model Output](../technical/rendering.md#discord) for the rules. T
 Discord's documentation; nobody has looked at its output in the Discord app yet (issue #20).
 
 **Mentions never ping.** A reply can contain `@everyone`, `@here`, `<@123456>` or a role mention
-written by the model, and none of them notifies anybody: the text is altered so that Discord
-doesn't read it as a mention, and every message is sent with mentions switched off besides.
+written by the model, and none of them notifies anybody: the text is altered so that Discord doesn't
+read it as a mention, and every message is sent with mentions switched off besides.
 
 A reply longer than 2,000 characters, Discord's limit, is sent as several messages, in order: split
 at a paragraph break if it can, else at a line or a space. A code block cut in the middle is closed
@@ -210,10 +210,10 @@ whole when the agent has finished it, not word by word as it is written.
 
 ## Attachments
 
-Files you send arrive as attachments of the message, with its text. Giles downloads each one as
-soon as the message arrives, because Discord's download links stop working after a while, and only
-from Discord's own file servers. A file may be up to `max_blob` (50 MiB by default) and a message
-may carry up to 10 files.
+Files you send arrive as attachments of the message, with its text. Giles downloads each one as soon
+as the message arrives, because Discord's download links stop working after a while, and only from
+Discord's own file servers. A file may be up to `max_blob` (50 MiB by default) and a message may
+carry up to 10 files.
 
 A file Giles can't take doesn't stop the message. The message still arrives, with a line after its
 text (and after its stickers) for each such file, so the agent can tell you:
@@ -229,14 +229,14 @@ The reason in the line is one of: `is over the limit of ...` (the limit is `max_
 later, since the link expires and the message is delivered once.
 
 Replies can carry attachments. A file larger than 20 MiB, the most Discord takes from a bot in a
-direct message, or larger than `max_blob` if that's less, refuses the whole reply with an error
-that names the file and its size, and nothing is sent. Giles doesn't shrink or split files. Files
-go ten to a message and only as many as fit Discord's 25 MiB limit on one message's upload; the
-rest follow in further messages. The reply's text goes with the first files if it fits in one
-message (2,000 characters). A longer text is sent first, in messages of its own, and the files
-follow without text. The number of files Discord accepts in one message isn't stated in its
-documentation (10 is what its own apps use), and the 20 MiB figure comes from the documentation
-too; both are checked in [issue #20](https://github.com/jennings/giles/issues/20). Details:
+direct message, or larger than `max_blob` if that's less, refuses the whole reply with an error that
+names the file and its size, and nothing is sent. Giles doesn't shrink or split files. Files go ten
+to a message and only as many as fit Discord's 25 MiB limit on one message's upload; the rest follow
+in further messages. The reply's text goes with the first files if it fits in one message (2,000
+characters). A longer text is sent first, in messages of its own, and the files follow without text.
+The number of files Discord accepts in one message isn't stated in its documentation (10 is what its
+own apps use), and the 20 MiB figure comes from the documentation too; both are checked in
+[issue #20](https://github.com/jennings/giles/issues/20). Details:
 [Attachments](../technical/discord.md#attachments).
 
 ## After Downtime
@@ -247,13 +247,13 @@ message you sent while Giles restarted still gets an answer.
 
 - A short drop in the connection is repaired by Discord replaying the gap, with nothing to ask for.
 - After every start, and after a long outage, the plugin fetches each known conversation's messages
-  newer than the last one it handled, as far back as `catch_up_max_age` (24 hours by default).
-  A message older than that is skipped, with a count in the log. Giles remembers the last handled
+  newer than the last one it handled, as far back as `catch_up_max_age` (24 hours by default). A
+  message older than that is skipped, with a count in the log. Giles remembers the last handled
   message of each conversation in `discord-state.json` in the instance's data directory
   (`data/plugins/<instance>/`), which is part of [backups](backups.md). The file also lists the
   conversations Giles knows. If you lose it, nothing is lost for good, but Giles has to find each
-  conversation again: it catches one up (as far back as `catch_up_max_age`, dropping what it
-  already has) when that person next writes, or when Giles next messages them.
+  conversation again: it catches one up (as far back as `catch_up_max_age`, dropping what it already
+  has) when that person next writes, or when Giles next messages them.
 - Messages Giles already handled aren't answered twice.
 
 What isn't recovered:
@@ -264,8 +264,8 @@ What isn't recovered:
   messages you first (a job's result, say), it records the conversation then, and fetches what you
   wrote at its next restart or reconnect (a new Gateway session), not at once. Either way,
   everything since `catch_up_max_age` arrives.
-- Messages older than `catch_up_max_age`, and more than 10,000 in one conversation (a limit on
-  one catch-up).
+- Messages older than `catch_up_max_age`, and more than 10,000 in one conversation (a limit on one
+  catch-up).
 - Messages deleted before Giles fetched them.
 - Edits made after a message was delivered.
 
@@ -299,8 +299,8 @@ reply carry the reason, in words rather than numbers:
   opens many new DM channels at once.
 - Discord is rate limiting the bot: Giles waits as Discord asks, up to a minute for a message.
 
-After Discord rejects the token, Giles makes no more requests to it, so no reply goes out until
-the plugin has a good token. Fix the token and restart Giles.
+After Discord rejects the token, Giles makes no more requests to it, so no reply goes out until the
+plugin has a good token. Fix the token and restart Giles.
 
 ## Connection
 
@@ -310,16 +310,6 @@ instance. When the plugin stops, it closes the connection properly, so the bot s
 once.
 
 Channel plugins may use the network by default. The plugin needs outbound HTTPS (`tcp:443`) only:
-Discord's REST API, its Gateway (a secure WebSocket), and the CDN that serves attachments. To
-allow just that, grant `sandbox = { network = ["tcp:443"] }`
+Discord's REST API, its Gateway (a secure WebSocket), and the CDN that serves attachments. To allow
+just that, grant `sandbox = { network = ["tcp:443"] }`
 ([Sandbox](configuration.md#sandbox)).
-
-## Licensing
-
-The plugin is `MIT OR Apache-2.0` like the rest of the repository, and so is everything it depends
-on: its Discord library, `twilight`, is ISC, and the rest of its dependencies are MIT, Apache-2.0,
-ISC, BSD-3-Clause, CDLA-Permissive-2.0, or similar permissive licences. Nothing is copyleft (checked
-on 2026-10-26; [Licence Check](../technical/discord.md#licence-check)). This is different from the
-[WhatsApp plugin](whatsapp.md#licensing): adding Discord changes nothing about Giles' licensing,
-the container image's license label, or the notices that ship with it. This is a description of
-how the code is licensed, not legal advice.

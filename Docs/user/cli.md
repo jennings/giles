@@ -13,8 +13,8 @@ time the daemon starts, so run these commands as that user.
 ## `giles status`
 
 What the daemon is doing: its version and start time, whether this host can sandbox plugins, every
-channel with its last reported status, and every plugin (channel plugins and MCP toolsets). The
-web chat's [admin pages](web.md#admin-pages) show the same, with QR codes drawn as images.
+channel with its last reported status, and every plugin (channel plugins and MCP toolsets). The web
+chat's [admin pages](web.md#admin-pages) show the same, with QR codes drawn as images.
 
 ```text
 giles 0.1.0, running since 2026-10-23 09:12:04 PDT
@@ -64,8 +64,8 @@ jeeves       212          3  41210   30544     1902330        98120      93.3%
 ...
 ```
 
-`--since` limits the report to requests from a duration ago (`7d`, `12h`, `1h30m`), from midnight
-of a date (`2026-10-01`, in your time zone), or from a time (`2026-10-01T09:00:00Z`). Without it the
+`--since` limits the report to requests from a duration ago (`7d`, `12h`, `1h30m`), from midnight of
+a date (`2026-10-01`, in your time zone), or from a time (`2026-10-01T09:00:00Z`). Without it the
 report covers all requests.
 
 ## `giles admin login-link --user <user>`
@@ -99,9 +99,9 @@ and start a new, empty instance. This command renames everything together:
 - the `[<kind>.<old>]` table in `giles.toml`, with its comments, formatting, and sub-tables, and the
   `[[routes]]` that name a renamed channel (Giles imports those once and then ignores them, so this
   only matters before its first start with routes in the database, or to keep a leftover block
-  consistent). An instance without a `component` key runs the
-  component named like the instance (`[channel.web]` is the built-in web channel), so the command
-  adds `component = "<old>"` to keep it running the same thing,
+  consistent). An instance without a `component` key runs the component named like the instance
+  (`[channel.web]` is the built-in web channel), so the command adds `component = "<old>"` to keep
+  it running the same thing,
 - in each agent's `agent.toml`: for a renamed provider, the `models`, `compaction_model`, and job
   `model` values that start with `<old>/`; for a renamed toolset, the `tools` and `ask` globs that
   start with `<old>__`.
@@ -118,9 +118,9 @@ Start giles again to use the new name.
 ```
 
 Unlike the other commands on this page, this one needs the daemon stopped: it takes the same lock
-`giles serve` does, and fails with `giles is already running ... stop it first` otherwise. Names
-use only letters, digits, and `-`, and `<new>` must not differ from another instance's name only
-in case. It refuses, changing nothing, if:
+`giles serve` does, and fails with `giles is already running ... stop it first` otherwise. Names use
+only letters, digits, and `-`, and `<new>` must not differ from another instance's name only in
+case. It refuses, changing nothing, if:
 
 - `<old>` isn't configured and has no data,
 - `<new>` is also configured, or already has data (database rows or directories): renaming never
@@ -132,12 +132,12 @@ in case. It refuses, changing nothing, if:
   and run the command again. Globs such as `*`, `memory*` and `*__create_issue` are fine.
 
 The rename is all or nothing as far as Giles can tell. The database changes happen in one
-transaction and the file changes inside it, ending with each agent's memory database (which is
-its own file, so the command renames the owners back in the ones it already did if a later step
-fails), and if any step fails, the earlier ones are undone and the error says what failed. If the
-process is killed in the middle (a power loss), run the same command again: it finishes what was
-left, treating directories that already moved as done and memory databases that already have the
-new name as done. If undoing a failed rename also fails, the error lists what to fix by hand.
+transaction and the file changes inside it, ending with each agent's memory database (which is its
+own file, so the command renames the owners back in the ones it already did if a later step fails),
+and if any step fails, the earlier ones are undone and the error says what failed. If the process is
+killed in the middle (a power loss), run the same command again: it finishes what was left, treating
+directories that already moved as done and memory databases that already have the new name as done.
+If undoing a failed rename also fails, the error lists what to fix by hand.
 
 What the command leaves alone:
 
@@ -146,14 +146,14 @@ What the command leaves alone:
   agents, and keeps the old instance name inside its `memory.db`; if you restore that agent later,
   the groups of the renamed instance won't see those memories, because they are still filed under
   the old name. An agent without a `memory.db` is skipped, and the command never creates one.
-- Your identities: `irc:libera:account:me` is named after the network the channel reports, not
-  after the instance, so `[owner] identities` stay as they are.
+- Your identities: `irc:libera:account:me` is named after the network the channel reports, not after
+  the instance, so `[owner] identities` stay as they are.
 
 ### If you renamed the table by hand
 
 Renaming `[channel.libera]` to `[channel.libera-chat]` in `giles.toml` without this command leaves
-the old name's data orphaned. Giles notices at startup: if the configuration has an instance with
-no data of its own while some other name that is no longer configured still has data, `giles serve`
+the old name's data orphaned. Giles notices at startup: if the configuration has an instance with no
+data of its own while some other name that is no longer configured still has data, `giles serve`
 refuses to start and says so:
 
 ```text
@@ -163,9 +163,9 @@ has data. That looks like a rename done in giles.toml alone ...
 If it was a rename, stop giles and run `giles instance rename libera libera-chat` ...
 ```
 
-Run the command it suggests. It accepts the table already being renamed and moves the data to
-match. The check compares names of the same kind (database rows of a channel, say, can only be a
-renamed channel), so adding an instance or removing one doesn't trigger it on its own.
+Run the command it suggests. It accepts the table already being renamed and moves the data to match.
+The check compares names of the same kind (database rows of a channel, say, can only be a renamed
+channel), so adding an instance or removing one doesn't trigger it on its own.
 
 If you removed an instance on purpose, and added an unrelated one that the check mistakes for a
 rename, tell it the old name is retired, and its data stays where it is:
@@ -175,5 +175,5 @@ rename, tell it the old name is retired, and its data stays where it is:
 retired_instances = ["old-irc"]
 ```
 
-The list is also the way out if an instance you have never used (a provider, say, with no usage
-yet) shows up next to a removed one. Giles never deletes the data of a retired or removed name.
+The list is also the way out if an instance you have never used (a provider, say, with no usage yet)
+shows up next to a removed one. Giles never deletes the data of a retired or removed name.

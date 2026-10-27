@@ -1,9 +1,9 @@
 # Running in a Container
 
 Giles can run as a Linux container. The image holds `giles` and the first-party channel plugins,
-[IRC](irc.md), [Email](email.md), [WhatsApp](whatsapp.md), and [Discord](discord.md), so
-configured instances of them start without installing anything. The built-in web channel and model
-providers are part of `giles` itself.
+[IRC](irc.md), [Email](email.md), [WhatsApp](whatsapp.md), and [Discord](discord.md), so configured
+instances of them start without installing anything. The built-in web channel and model providers
+are part of `giles` itself.
 
 ## Getting the Image
 
@@ -23,8 +23,8 @@ Docker (BuildKit, the default builder):
 docker build -t ghcr.io/jennings/giles:latest .
 ```
 
-The build compiles everything inside the container, so nothing but Docker is needed on the host.
-The first build takes several minutes; later ones reuse the compiled dependencies.
+The build compiles everything inside the container, so nothing but Docker is needed on the host. The
+first build takes several minutes; later ones reuse the compiled dependencies.
 
 ## The Data Root
 
@@ -88,9 +88,8 @@ with `docker run --env ANTHROPIC_API_KEY=...` (or `--env-file`).
 
 ### Time Zone
 
-The image includes the time zone database and runs in UTC. Set the owner's time zone in
-`giles.toml` ([`[owner]`](configuration.md#owner)), or the container's with
-`--env TZ=America/Los_Angeles`.
+The image includes the time zone database and runs in UTC. Set the owner's time zone in `giles.toml`
+([`[owner]`](configuration.md#owner)), or the container's with `--env TZ=America/Los_Angeles`.
 
 ## Plugins
 
@@ -102,23 +101,23 @@ The image contains the WhatsApp plugin, which is licensed `AGPL-3.0-only`; the r
 `/usr/share/doc/giles/` has the license texts and `THIRD-PARTY`, which says where the plugin's
 source is ([Licensing](whatsapp.md#licensing)).
 
-A plugin only runs when `giles.toml` has an instance of it, so the WhatsApp plugin does nothing,
-and never contacts WhatsApp, until you add one. Its session (the credential that makes Giles a
-linked device) is kept in `/data/data/plugins/<instance>/`, so it survives the container being
-replaced as long as `/data` does. To link it, publish the web port as above and open the admin
-page ([Linking a Channel](web.md#linking-a-channel)) for the QR code, or set `link = "pair_code"`
+A plugin only runs when `giles.toml` has an instance of it, so the WhatsApp plugin does nothing, and
+never contacts WhatsApp, until you add one. Its session (the credential that makes Giles a linked
+device) is kept in `/data/data/plugins/<instance>/`, so it survives the container being replaced as
+long as `/data` does. To link it, publish the web port as above and open the admin page
+([Linking a Channel](web.md#linking-a-channel)) for the QR code, or set `link = "pair_code"`
 ([WhatsApp](whatsapp.md#linking)).
 
 The Discord plugin is just as inert until `giles.toml` has an instance of it, and it needs no
 linking: put the bot token in `secrets.toml` or the container's environment
 ([Discord](discord.md#the-token)). It reaches Discord over outbound HTTPS, so no port needs
-publishing for it, and it keeps its catch-up state in `/data/data/plugins/<instance>/` with the
-rest of `/data`. It adds nothing to the licensing above: it is `MIT OR Apache-2.0` like the rest.
+publishing for it, and it keeps its catch-up state in `/data/data/plugins/<instance>/` with the rest
+of `/data`. It adds nothing to the licensing above: it is `MIT OR Apache-2.0` like the rest.
 
-The plugin sandbox works in the container with Docker's default security settings; no
-`--privileged` or extra capabilities are needed. It does need Landlock in the host's kernel, since a
-container shares the host's kernel ([Plugin Sandbox Check](running.md#plugin-sandbox-check)). Check
-the second line of `docker exec giles giles status`:
+The plugin sandbox works in the container with Docker's default security settings; no `--privileged`
+or extra capabilities are needed. It does need Landlock in the host's kernel, since a container
+shares the host's kernel ([Plugin Sandbox Check](running.md#plugin-sandbox-check)). Check the second
+line of `docker exec giles giles status`:
 
 ```text
 Plugin sandbox: Landlock ABI 6 and seccomp filters

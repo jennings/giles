@@ -2,9 +2,9 @@
 
 GitHub Actions runs two workflows on every push to `main` and on every pull request:
 `.github/workflows/ci.yml` checks the code, and `.github/workflows/docs.yml` checks the
-documentation and publishes the book. In both, a newer push to the same pull request cancels the
-run in progress, and each push to `main` runs in its own concurrency group, so every `main` commit
-gets a finished run.
+documentation and publishes the book. In both, a newer push to the same pull request cancels the run
+in progress, and each push to `main` runs in its own concurrency group, so every `main` commit gets
+a finished run.
 
 ## CI jobs
 
@@ -19,17 +19,17 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
 
-`--locked` fails the build if `Cargo.lock` is out of date instead of silently updating it, and `-D
-warnings` turns the workspace lints (see [Cargo Workspace](workspace.md)) into errors.
+`--locked` fails the build if `Cargo.lock` is out of date instead of silently updating it, and
+`-D warnings` turns the workspace lints (see [Cargo Workspace](workspace.md)) into errors.
 
 On Ubuntu the tests run with `GILES_REQUIRE_LANDLOCK=1`: the Linux sandbox tests skip on kernels
-without Landlock (like the Apple `container` kernel used locally), and this makes them fail
-instead, so CI always runs them (see [Plugin Sandbox](sandbox.md#testing-without-landlock)). A step
-before the tests runs `host_probes_run` with `--nocapture`, so the log shows the Landlock ABI the
-runner's kernel offers (`host check: Ok(Linux { landlock_abi: N })`), which decides which
-ABI-dependent branches the sandbox tests exercise. The end-to-end suite ([End-to-End
-Tests](e2e-tests.md)) runs inside `cargo test --workspace` and launches its echo plugin in the
-sandbox wherever the host has one.
+without Landlock (like the Apple `container` kernel used locally), and this makes them fail instead,
+so CI always runs them (see [Plugin Sandbox](sandbox.md#testing-without-landlock)). A step before
+the tests runs `host_probes_run` with `--nocapture`, so the log shows the Landlock ABI the runner's
+kernel offers (`host check: Ok(Linux { landlock_abi: N })`), which decides which ABI-dependent
+branches the sandbox tests exercise. The end-to-end suite ([End-to-End Tests](e2e-tests.md)) runs
+inside `cargo test --workspace` and launches its echo plugin in the sandbox wherever the host has
+one.
 
 **Protobuf** runs on `ubuntu-latest`. It installs a pinned `buf` (`BUF_VERSION`, set in the
 workflow's `env` block, with the `bufbuild/buf-action` action in setup-only mode) and runs, from the
@@ -51,9 +51,9 @@ See [gRPC Protocols](protocols.md) for the rules.
 image the `Dockerfile` builds ([Container Image](container-image.md)) to the GitHub Container
 Registry as `ghcr.io/jennings/giles` (`ghcr.io/` plus the repository name, lowercased by
 `docker/metadata-action`). It is the only job with `packages: write`. Each push is tagged `latest`
-and `sha-<short commit>`, so a deployment can pin a commit. The job's own concurrency group runs
-one publish at a time, in push order, so `latest` ends at the newest commit; a push that arrives
-while another is waiting replaces it, and the skipped commit gets no `sha-` tag.
+and `sha-<short commit>`, so a deployment can pin a commit. The job's own concurrency group runs one
+publish at a time, in push order, so `latest` ends at the newest commit; a push that arrives while
+another is waiting replaces it, and the skipped commit gets no `sha-` tag.
 
 The job sets up Buildx (`docker/setup-buildx-action`), builds the image for `linux/amd64` with
 `docker/build-push-action`, loads it into the runner's Docker as `giles:test`, and smoke-tests it
@@ -64,19 +64,19 @@ before anything is pushed:
 - `giles serve` starts with the default entrypoint, a fresh named volume at `/data` holding a
   `giles.toml` with only `http_listen = "0.0.0.0:8080"` and the owner, and the port published.
 - `giles status`, run in the container until the admin socket answers (up to 30 seconds), must
-  report `Plugin sandbox: Landlock ABI ...`: the startup sandbox check passes under Docker's
-  default seccomp profile on the runner's kernel. The status and the container log are printed.
+  report `Plugin sandbox: Landlock ABI ...`: the startup sandbox check passes under Docker's default
+  seccomp profile on the runner's kernel. The status and the container log are printed.
 - The web server answers `GET /` with a success status through the published port.
 - `docker stop` (SIGTERM) leaves exit status 0, a clean shutdown.
 
-If that passes, it logs in to `ghcr.io` with the workflow's `GITHUB_TOKEN`
-(`docker/login-action`) and runs `docker/build-push-action` again with `push: true` and the tags
-and labels from `docker/metadata-action`. The second build takes every step from the builder's
-cache, so it pushes the layers that were tested. Both builds read the GitHub Actions cache
-(`type=gha`) and the first writes it with `mode=max`, which keeps the build stage's layers too, so a
-push that changes nothing in the build context (docs or CI only, see `.dockerignore`) doesn't
-compile anything. BuildKit's cache mounts (the Cargo registry and `target/`) aren't saved between
-runs, so a source change rebuilds the workspace from scratch.
+If that passes, it logs in to `ghcr.io` with the workflow's `GITHUB_TOKEN` (`docker/login-action`)
+and runs `docker/build-push-action` again with `push: true` and the tags and labels from
+`docker/metadata-action`. The second build takes every step from the builder's cache, so it pushes
+the layers that were tested. Both builds read the GitHub Actions cache (`type=gha`) and the first
+writes it with `mode=max`, which keeps the build stage's layers too, so a push that changes nothing
+in the build context (docs or CI only, see `.dockerignore`) doesn't compile anything. BuildKit's
+cache mounts (the Cargo registry and `target/`) aren't saved between runs, so a source change
+rebuilds the workspace from scratch.
 
 The image is `linux/amd64` only: an arm64 build under QEMU emulation would take too long. Adding
 `linux/arm64` needs an arm64 runner (`ubuntu-24.04-arm`) building natively, with the two digests
@@ -106,8 +106,8 @@ pull requests stop after the build.
 **Deploy** runs only on pushes to `main`, after Build. It publishes the artifact with
 `actions/deploy-pages` to the `github-pages` environment; it is the only job with the `pages: write`
 and `id-token: write` permissions (the rest of both workflows get `contents: read`). Deployments
-share the `pages` concurrency group without cancelling, so they run one at a time in push order.
-The repository's Pages source must be set to "GitHub Actions". The site is served at
+share the `pages` concurrency group without cancelling, so they run one at a time in push order. The
+repository's Pages source must be set to "GitHub Actions". The site is served at
 <http://jennings.io/giles/>, so `Docs/book.toml` sets `site-url = "/giles/"`, the base path mdBook
 needs for its 404 page.
 

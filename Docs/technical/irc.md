@@ -52,9 +52,9 @@ task, which sends `QUIT`.
 
 ## Configuration
 
-`Settings::new` checks what serde can't, naming the key in the SDK's format (`invalid config: <key>:
-<reason>`) and never echoing a value: secrets (`password`, `sasl.password`, `client_cert`,
-`client_key`) are wrapped in `Secret`, whose `Debug` is `<redacted>`.
+`Settings::new` checks what serde can't, naming the key in the SDK's format
+(`invalid config: <key>: <reason>`) and never echoing a value: secrets (`password`, `sasl.password`,
+`client_cert`, `client_key`) are wrapped in `Secret`, whose `Debug` is `<redacted>`.
 
 - `server` is `host`, `host:port`, `[v6]`, `[v6]:port`, or a bare IPv6 address; a port in both
   `server` and `port` is an error. The host must be a valid TLS server name (`ServerName`).
@@ -71,14 +71,13 @@ task, which sends `QUIT`.
 ## Connection
 
 `conn::run` loops: connect (TCP, then TLS; `Timing::connect_timeout`), run a session, report the
-error, wait, double the delay (`reconnect_min` 1 s up to `reconnect_max` 5 min; reset to the
-minimum when the session had been registered for `stable_after`, 1 min). While waiting, send
-requests are refused with `Unavailable`. The `registered` watch is false outside a registered
-session.
+error, wait, double the delay (`reconnect_min` 1 s up to `reconnect_max` 5 min; reset to the minimum
+when the session had been registered for `stable_after`, 1 min). While waiting, send requests are
+refused with `Unavailable`. The `registered` watch is false outside a registered session.
 
-A session writes `CAP LS 302`, `PASS` (if set), `NICK`, `USER`, then serves lines, requests, and
-one timer (the earliest of: the throttle's next slot, the registration deadline, keepalive, the
-`WHOIS` deadline):
+A session writes `CAP LS 302`, `PASS` (if set), `NICK`, `USER`, then serves lines, requests, and one
+timer (the earliest of: the throttle's next slot, the registration deadline, keepalive, the `WHOIS`
+deadline):
 
 - **Capabilities**: from the full `LS` (multi-line replies collected until the last), it requests
   `account-notify`, `account-tag`, `echo-message`, `extended-join`, `message-tags`, and
@@ -89,15 +88,15 @@ one timer (the earliest of: the throttle's next slot, the registration deadline,
 - **SASL**: `AUTHENTICATE <mechanism>`, then on `AUTHENTICATE +` the payload: PLAIN is base64 of
   `user\0user\0password` in 400-byte chunks (a `+` after a final full chunk); EXTERNAL is `+`.
   `903`/`907` lead to `CAP END`; `902`/`904`/`905`/`906` end the session with the server's text.
-- **Registration**: `001` sets our nick from its first parameter, queues `JOIN`s, sets
-  `registered`, and reports `Connected`. `005` sets `CASEMAPPING`, `CHANTYPES`, `STATUSMSG`.
-  `433`/`437` before registration try `nick_`, `nick__`, `nick___`; `432`, `464`, `465` end the
-  session. Registration must finish within `register_timeout` (60 s).
+- **Registration**: `001` sets our nick from its first parameter, queues `JOIN`s, sets `registered`,
+  and reports `Connected`. `005` sets `CASEMAPPING`, `CHANTYPES`, `STATUSMSG`. `433`/`437` before
+  registration try `nick_`, `nick__`, `nick___`; `432`, `464`, `465` end the session. Registration
+  must finish within `register_timeout` (60 s).
 - **Keepalive**: any line resets the quiet clock; after `ping_after` (2 min) quiet the plugin sends
   `PING :giles`, and after `ping_timeout` (1 min) more it gives up. Server `PING`s are answered at
   once.
-- **Framing**: lines end in LF (CR optional); invalid UTF-8 is decoded lossily (a stray Latin-1
-  byte in a channel mustn't drop the connection); a line over 8703 bytes (8191 of tags plus 512) is
+- **Framing**: lines end in LF (CR optional); invalid UTF-8 is decoded lossily (a stray Latin-1 byte
+  in a channel mustn't drop the connection); a line over 8703 bytes (8191 of tags plus 512) is
   skipped. Writes have a `write_timeout` (30 s) so a server that stops reading can't wedge the
   session. Outgoing lines are never logged (they may carry passwords).
 
@@ -116,13 +115,13 @@ registration, `Error { message }` on every failure with a new message.
   equal to our nick is `Direct` with the folded sender nick as id (PLAN section 10) and the nick as
   title.
 - **Identity**: with the `account-tag` capability on and an `account` tag (not `*`), the sender is
-  `account:<folded account>`, authenticated, with `mask:<folded nick>!<user>@<lowercase host>` as
-  an alias when `mask_identities` is on. Otherwise the sender is the mask, authenticated only with
+  `account:<folded account>`, authenticated, with `mask:<folded nick>!<user>@<lowercase host>` as an
+  alias when `mask_identities` is on. Otherwise the sender is the mask, authenticated only with
   `mask_identities` and a complete source (user and host present). An `account` tag without the
   capability is ignored: only a server that negotiated it vouches for it.
-- **Text**: `ACTION` becomes `/me ...`; bold, italics, underline, strikethrough, monospace,
-  reverse, reset, and colors (`\x03` with up to two digits per color, `\x04` with up to six hex
-  digits) are removed; tabs become spaces; other control characters go.
+- **Text**: `ACTION` becomes `/me ...`; bold, italics, underline, strikethrough, monospace, reverse,
+  reset, and colors (`\x03` with up to two digits per color, `\x04` with up to six hex digits) are
+  removed; tabs become spaces; other control characters go.
 - **Ids**: the event id is `msgid:<msgid>` when the server sends a `msgid` tag (`message-tags`),
   stable across replays. Otherwise it's `sha256:` and the hex SHA-256 of the `time` tag (or, without
   one, the receive time and a counter), source, target, and text: a bouncer's replay with
@@ -165,9 +164,9 @@ Candidates for `account:<name>` are the tracked nick for the account, then the a
 a valid nick; for a mask, its nick. For each, the plugin writes `WHOIS <nick>` only once no message
 lines are queued and the throttle has a slot, so the confirmed nick's first line follows the reply
 within one interval instead of after everything queued before it (time in which the nick could
-change hands); `lookup_timeout` (10 s) starts when the `WHOIS` is written. It collects `311`
-(nick, user, host) and `330` (account) for that nick until `318` or `401`. An account recipient
-matches only if `330` names the account (folded); a mask matches only if nick, user, and host
+change hands); `lookup_timeout` (10 s) starts when the `WHOIS` is written. It collects `311` (nick,
+user, host) and `330` (account) for that nick until `318` or `401`. An account recipient matches
+only if `330` names the account (folded); a mask matches only if nick, user, and host
 (case-insensitive) all match. A match queues the message to the nick as the server spells it; no
 match tries the next candidate; none left is `Unavailable("account <name> is not online")`; a
 timeout is `Unavailable` too. Each `WHOIS` result also corrects the account tracking.
@@ -188,12 +187,11 @@ from that nick moments earlier, as on any IRC client.
   channel, echo and noise dropping, splitting within 512 bytes and the rate limit's timing,
   `max_lines`/`max_line_bytes`, attachments, recipient resolution (`WHOIS`, tracked nick first, nick
   changes, stale nick never messaged, mask matching, `WHOIS` timeout, `WHOIS` deferred until queued
-  lines are out), bad recipients, sends while
-  disconnected, a reply waiting for the connection, reconnecting after `ERROR` and a plain close,
-  keepalive, a taken nick, `QUIT` on drop, TLS with a client certificate and SASL EXTERNAL, and a
-  server certificate the bundled roots don't trust. TLS fixtures (`tests/fixtures/`: a test CA,
-  server and client certificates valid for 100 years) and the commands that made them are described
-  in `tests/support/mod.rs`.
+  lines are out), bad recipients, sends while disconnected, a reply waiting for the connection,
+  reconnecting after `ERROR` and a plain close, keepalive, a taken nick, `QUIT` on drop, TLS with a
+  client certificate and SASL EXTERNAL, and a server certificate the bundled roots don't trust. TLS
+  fixtures (`tests/fixtures/`: a test CA, server and client certificates valid for 100 years) and
+  the commands that made them are described in `tests/support/mod.rs`.
 - `tests/docs.rs` checks that the `irc` instance configs in the user guide (this channel's page and
   [Configuration](../user/configuration.md)) are valid.
 - `tests/host.rs` launches the binary through the core's plugin host (unsandboxed) with a runtime

@@ -1,13 +1,13 @@
 # Backups
 
-Everything Giles knows is in its data root: your configuration, the agents' memory and skills,
-the conversation database, and attachments. `giles backup` writes a consistent copy of all of it
-while the daemon keeps running.
+Everything Giles knows is in its data root: your configuration, the agents' memory and skills, the
+conversation database, and attachments. `giles backup` writes a consistent copy of all of it while
+the daemon keeps running.
 
-Don't copy `data/giles.db` yourself, or an agent's `memory.db`. These databases are written to
-while Giles runs (in WAL mode by default, see [`journal_mode`](configuration.md#journal_mode)),
-so a plain file copy can miss recent writes or capture a half-written state. `giles backup` asks
-the running daemon for a snapshot it can trust.
+Don't copy `data/giles.db` yourself, or an agent's `memory.db`. These databases are written to while
+Giles runs (in WAL mode by default, see [`journal_mode`](configuration.md#journal_mode)), so a plain
+file copy can miss recent writes or capture a half-written state. `giles backup` asks the running
+daemon for a snapshot it can trust.
 
 ## Making a Backup
 
@@ -43,27 +43,27 @@ running.
 
 The archive leaves out:
 
-- `secrets.toml`. A backup is meant to be copied elsewhere, and your credentials stay where you
-  keep them. Keep your own copy of that file.
+- `secrets.toml`. A backup is meant to be copied elsewhere, and your credentials stay where you keep
+  them. Keep your own copy of that file.
 - `plugins/`, the plugin binaries. Install them again.
 - `data/plugins/`, the state plugins keep for themselves, such as a WhatsApp session. A plugin that
   loses it asks you to link or log in again.
-- `trash/`, where agents you remove in the web UI are kept ([Removing an
-  agent](web.md#removing-an-agent)). It stays on that machine; copy it yourself if you want it kept
-  elsewhere. A backup holds the agents you have, not the ones you removed.
+- `trash/`, where agents you remove in the web UI are kept
+  ([Removing an agent](web.md#removing-an-agent)). It stays on that machine; copy it yourself if you
+  want it kept elsewhere. A backup holds the agents you have, not the ones you removed.
 - `backups/`, `run/`, and `cache/`. Giles recreates them.
-- Symbolic links, which are never followed. If `giles.toml` or an agent's
-  `memory.db` is a link (a dotfiles manager does that), the link and its target are both missing
-  from the backup and `giles backup` logs a warning for each; back those files up yourself.
+- Symbolic links, which are never followed. If `giles.toml` or an agent's `memory.db` is a link (a
+  dotfiles manager does that), the link and its target are both missing from the backup and
+  `giles backup` logs a warning for each; back those files up yourself.
 
 Backups are not encrypted or compressed. Put them somewhere that is as private as the data root, or
 encrypt them yourself.
 
 ## Restoring
 
-Restore into the data root of a stopped Giles, with the same or a newer version of the binary.
-The first command is only needed on a new machine; it creates the data root and its `data`
-directory readable only by you, as Giles does:
+Restore into the data root of a stopped Giles, with the same or a newer version of the binary. The
+first command is only needed on a new machine; it creates the data root and its `data` directory
+readable only by you, as Giles does:
 
 ```sh
 # 1. Stop `giles serve`.
@@ -84,8 +84,8 @@ tar -xf /mnt/backups/giles/giles-20261023T140312Z.tar
 giles serve
 ```
 
-On a new machine, add `secrets.toml` (mode 0600) and the plugin binaries before step 6. If the
-data root isn't `~/.giles`, use its path in steps 2 to 4, or set `GILES_HOME` for `giles serve`.
+On a new machine, add `secrets.toml` (mode 0600) and the plugin binaries before step 6. If the data
+root isn't `~/.giles`, use its path in steps 2 to 4, or set `GILES_HOME` for `giles serve`.
 
 The snapshot doesn't depend on the journal mode it was taken in. Giles switches the restored
 databases (`giles.db` and each `memory.db`) to the `journal_mode` in `giles.toml` when it starts.
@@ -105,12 +105,12 @@ A new version of Giles can change the database's schema. Before it changes an ex
 
 `v1` is the schema version the database had, which is the one the snapshot holds. It is written only
 when there is something to migrate: not on first start, and not when the database is already
-current. If the backup can't be written (a full disk, say), Giles doesn't start and the database
-is untouched. The tar holds the agents' memory databases too, as they are when Giles starts.
+current. If the backup can't be written (a full disk, say), Giles doesn't start and the database is
+untouched. The tar holds the agents' memory databases too, as they are when Giles starts.
 
 Giles keeps the five newest pre-migration backups and deletes older ones. Backups you make with
 `giles backup` are never deleted, even in `backups/`.
 
-To go back after a bad upgrade, stop Giles, install the older version, and [restore](#restoring)
-the pre-migration backup. The older version can't open the migrated database, and it refuses to
-start with a message saying so; that is why the snapshot is taken first.
+To go back after a bad upgrade, stop Giles, install the older version, and [restore](#restoring) the
+pre-migration backup. The older version can't open the migrated database, and it refuses to start
+with a message saying so; that is why the snapshot is taken first.

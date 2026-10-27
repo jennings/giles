@@ -3,11 +3,12 @@
 The built-in web channel (PLAN sections 9 and 10) is `giles_core::channels::web`, behind the Cargo
 feature `channel-web` (default on, forwarded by the `giles` crate). It has two halves:
 
-- `WebChannel` implements `giles_types::Channel` with `ChannelInfo { identity_namespace: "web",
-  output: Deltas, can_initiate: false }`. It's built by the registry's built-in channel builder
-  (`WebChannel::from_instance`, see [Registry and Startup](registry.md)), registered like any
-  channel, and attached to the session manager by `Runtime::start_sessions` with the other
-  registered channels. At most one instance may use the component.
+- `WebChannel` implements `giles_types::Channel` with
+  `ChannelInfo { identity_namespace: "web", output: Deltas, can_initiate: false }`. It's built by
+  the registry's built-in channel builder (`WebChannel::from_instance`, see
+  [Registry and Startup](registry.md)), registered like any channel, and attached to the session
+  manager by `Runtime::start_sessions` with the other registered channels. At most one instance may
+  use the component.
 - `WebApp` is its HTTP side on the core's server ([HTTP Server](http.md)): `giles serve` builds it
   with `WebApp::from_runtime(&runtime, shutdown)` (from `Registry::web_channel()`, the typed handle;
   it also spawns the hourly expired-session cleanup) and `web.install(RouterBuilder::new())`, which
@@ -17,9 +18,9 @@ feature `channel-web` (default on, forwarded by the `giles` crate). It has two h
   `web.bind_proxy(&root)` before startup completes and serves `web.proxy_app(app)` on it
   ([Login](#login)).
 
-Neither half touches the agent loop: posted messages go through the normal inbound pipeline
-(router, inbox, turns; [Sessions and Turns](sessions.md)), and replies come back through
-`Channel::send` or the live-output hook.
+Neither half touches the agent loop: posted messages go through the normal inbound pipeline (router,
+inbox, turns; [Sessions and Turns](sessions.md)), and replies come back through `Channel::send` or
+the live-output hook.
 
 ## Routes
 
@@ -61,10 +62,10 @@ Neither half touches the agent loop: posted messages go through the normal inbou
 Every route except the two login routes needs a `WebUser` (below); without one it's a 401 page
 saying how to log in. A chat id is 128 random bits as 32 lowercase hex digits (`new_chat_id`), or
 `<agent>.<32 hex digits>` for a chat started with a chosen agent (`new_agent_chat_id`); either is
-the conversation id (PLAN section 10): web chats are created by the user. `is_chat_id` accepts
-both, and any other id in a path is a 404. A chat is `ConversationKind::Direct`; v1 has one user,
-so every chat is the owner's. The chat id helpers are in `channels::chat_ids`, outside the
-feature, because the router reads them.
+the conversation id (PLAN section 10): web chats are created by the user. `is_chat_id` accepts both,
+and any other id in a path is a 404. A chat is `ConversationKind::Direct`; v1 has one user, so every
+chat is the owner's. The chat id helpers are in `channels::chat_ids`, outside the feature, because
+the router reads them.
 
 ### Choosing an Agent
 
@@ -81,37 +82,37 @@ POSTs answer 404 "No such agent" (and the router would drop the message anyway).
 
 ## Who Is Asking
 
-`channels::web::WebUser { user: UserId, sender: NativeId, csrf: String, .. }` is an axum
-extractor (`FromRequestParts` for any state) that reads a `WebUser` from the request's extensions,
-or rejects with the login page. The authentication middleware (`login::authenticate`, applied by
-`install`) inserts it; the extractor is the seam, so the admin pages use the same one (their
-router must be wrapped in the same middleware: `from_fn_with_state(web_app, authenticate)`, or
-merged through `WebApp`). `sender` is the native id in the `web` namespace that posted messages
-carry (`InboundMessage::sender`, with `sender_authenticated: true`); the router matches it against
+`channels::web::WebUser { user: UserId, sender: NativeId, csrf: String, .. }` is an axum extractor
+(`FromRequestParts` for any state) that reads a `WebUser` from the request's extensions, or rejects
+with the login page. The authentication middleware (`login::authenticate`, applied by `install`)
+inserts it; the extractor is the seam, so the admin pages use the same one (their router must be
+wrapped in the same middleware: `from_fn_with_state(web_app, authenticate)`, or merged through
+`WebApp`). `sender` is the native id in the `web` namespace that posted messages carry
+(`InboundMessage::sender`, with `sender_authenticated: true`); the router matches it against
 `[owner] identities` as `web:<sender>`, like any channel's sender. `can_log_out()` is true for a
 cookie login.
 
 CSRF: `check_csrf(&user, &headers, form_field) -> Result<(), CsrfRejected>` accepts the token from
-the `X-CSRF-Token` header (htmx: the chat page sets `hx-headers` with it, inherited by every form
-on the page, including those that arrive over the event stream) or the `csrf` form field (plain
-form posts without JavaScript), compared as SHA-256 digests. A mismatch is a 403 page. Every POST
-that needs a login checks it before acting. The token is per login and needs no storage:
+the `X-CSRF-Token` header (htmx: the chat page sets `hx-headers` with it, inherited by every form on
+the page, including those that arrive over the event stream) or the `csrf` form field (plain form
+posts without JavaScript), compared as SHA-256 digests. A mismatch is a 403 page. Every POST that
+needs a login checks it before acting. The token is per login and needs no storage:
 
-- Cookie login: SHA-256 of a fixed label and the session token. Only the browser has the token
-  (the cookie is `HttpOnly`, and the store keeps only its hash), so another site can't compute it,
-  and it survives restarts.
-- Proxy login: SHA-256 of a random per-run key (`WebChannel::proxy_key`) and the identity, since
-  the identity itself is no secret. A restart changes it; open pages then get a 403 on their next
-  post and a reload fixes them.
+- Cookie login: SHA-256 of a fixed label and the session token. Only the browser has the token (the
+  cookie is `HttpOnly`, and the store keeps only its hash), so another site can't compute it, and it
+  survives restarts.
+- Proxy login: SHA-256 of a random per-run key (`WebChannel::proxy_key`) and the identity, since the
+  identity itself is no secret. A restart changes it; open pages then get a 403 on their next post
+  and a reload fixes them.
 
 On top of the token, the cookie is `SameSite=Lax`, so cross-site POSTs don't carry it at all.
 
 ## Login
 
-PLAN section 3.4; v1 scope (section 1.1) is the login link and the trusted-proxy header. The
-login *code* flow (a code sent to the user's default channel) needs the outbox and isn't
-built. Code: `login.rs` (middleware and routes), `links.rs`, `proxy.rs`, the cookie helpers in
-`auth.rs`, and the keys in `config.rs`.
+PLAN section 3.4; v1 scope (section 1.1) is the login link and the trusted-proxy header. The login
+*code* flow (a code sent to the user's default channel) needs the outbox and isn't built. Code:
+`login.rs` (middleware and routes), `links.rs`, `proxy.rs`, the cookie helpers in `auth.rs`, and the
+keys in `config.rs`.
 
 ### Configuration
 
@@ -134,53 +135,53 @@ are scrubbed of secrets):
 
 ### Login Links
 
-`WebChannel::create_login_link(&UserId, now) -> Result<LoginLink { url, expires_at },
-LoginLinkError>` is what `giles admin login-link --user` calls over the admin service (2.24; the
-registry's `web_channel()` gives the typed channel). It refuses anyone but the owner
-(`UnknownUser`) and an owner without a `web:<user>` identity (`NoWebIdentity`: the router would drop
-their messages). The link is `<link base>/login/<token>`, 256 random bits as 64 hex digits, valid
-for `LOGIN_LINK_TTL` (10 minutes). Pending links live in memory only, by the SHA-256 of the token
-(`links::LoginLinks`): nothing on disk can be replayed, and a restart invalidates them. Expired
-links are dropped whenever one is created or redeemed.
+`WebChannel::create_login_link(&UserId, now) -> Result<LoginLink { url, expires_at }, LoginLinkError>`
+is what `giles admin login-link --user` calls over the admin service (2.24; the registry's
+`web_channel()` gives the typed channel). It refuses anyone but the owner (`UnknownUser`) and an
+owner without a `web:<user>` identity (`NoWebIdentity`: the router would drop their messages). The
+link is `<link base>/login/<token>`, 256 random bits as 64 hex digits, valid for `LOGIN_LINK_TTL`
+(10 minutes). Pending links live in memory only, by the SHA-256 of the token (`links::LoginLinks`):
+nothing on disk can be replayed, and a restart invalidates them. Expired links are dropped whenever
+one is created or redeemed.
 
 `GET /login/<token>` doesn't use the link: it shows a page with a form that posts the token to
-`POST /login`, so link previews (chat apps and mail clients fetch URLs) can't spend it. `POST
-/login` redeems it (removed under the lock: single use, even with concurrent posts), creates a
+`POST /login`, so link previews (chat apps and mail clients fetch URLs) can't spend it.
+`POST /login` redeems it (removed under the lock: single use, even with concurrent posts), creates a
 session token (256 random bits) with `Store::web_session_create(token, user, now, now + 30 days)`,
 deletes the browser's previous cookie session if it had one, and answers 303 to `/` with
 `Set-Cookie: giles_session=<token>; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax` (`; Secure`
-over HTTPS). A link that doesn't exist, was used, or expired gets the same 410 page either way.
-Both answers are `Cache-Control: no-store`. The `Referrer-Policy: no-referrer` security header
-keeps the token out of `Referer`.
+over HTTPS). A link that doesn't exist, was used, or expired gets the same 410 page either way. Both
+answers are `Cache-Control: no-store`. The `Referrer-Policy: no-referrer` security header keeps the
+token out of `Referer`.
 
-No login CSRF check on `POST /login`: v1 has one user, so a forged login would log the victim in
-as the owner, which needs a valid link anyway.
+No login CSRF check on `POST /login`: v1 has one user, so a forged login would log the victim in as
+the owner, which needs a valid link anyway.
 
 ### The Session Cookie
 
 The middleware reads `giles_session` (`WEB_SESSION_TTL`, 30 days), looks the token up with
 `Store::web_session(token, now)` (expired rows don't count), and builds the `WebUser`: `user` and
 `sender` are the session's user id, so a link login posts as `web:owner`. If the owner's identities
-no longer include `web:<user>`, the session logs nobody in. A cookie that names no live session
-gets a deleting `Set-Cookie` on the response. A store error is a 500. `WebApp::expire_sessions`
-deletes expired rows now and every hour (`Store::web_sessions_expire`) until shutdown.
+no longer include `web:<user>`, the session logs nobody in. A cookie that names no live session gets
+a deleting `Set-Cookie` on the response. A store error is a 500. `WebApp::expire_sessions` deletes
+expired rows now and every hour (`Store::web_sessions_expire`) until shutdown.
 
 `POST /logout` (CSRF-checked) deletes the session and the cookie. A proxy login has nothing to end,
 so the chat list shows no logout button for it.
 
 ### The Trusted-Proxy Listener
 
-The identity header is honored only on a request marked `TrustedProxy`, a request extension only
-the proxy listener's layer adds, and a client can't forge an extension. The main listener never
-reads the header, so any local process (network-enabled plugins included) gets nothing by sending
-it there.
+The identity header is honored only on a request marked `TrustedProxy`, a request extension only the
+proxy listener's layer adds, and a client can't forge an extension. The main listener never reads
+the header, so any local process (network-enabled plugins included) gets nothing by sending it
+there.
 
 - `WebApp::bind_proxy(&DataRoot) -> Result<Option<ProxyListener>, ProxyError>`: for the Unix socket,
   `check_socket_dir`, then `DataRoot::proxy_socket()` (`run/proxy.sock` or the `$TMPDIR` fallback).
   An existing socket that accepts a connection is `InUse` (another Giles); a stale one is removed;
   anything that isn't a socket is `NotASocket` and left alone. The new socket is chmod 0600 (the
-  directory is 0700 already). For TCP, a plain bind. `giles serve` binds it before
-  `start_sessions`, so a failure stops startup, and logs `trusted-proxy listener open at=<where>`.
+  directory is 0700 already). For TCP, a plain bind. `giles serve` binds it before `start_sessions`,
+  so a failure stops startup, and logs `trusted-proxy listener open at=<where>`.
 - `WebApp::proxy_app(app)` wraps the main listener's whole application: the Unix socket marks every
   request; TCP first compares the SHA-256 of the secret header with the configured secret's and
   answers a bare 403 (logged) on a mismatch. `ProxyListener::serve(app, shutdown)` serves it like
@@ -194,16 +195,16 @@ it there.
 
 ### Rate Limits
 
-PLAN section 3.4 rate-limits the login *code* flow per user name and per client address, because
-an 8-character code can be guessed. Link and session tokens carry 256 random bits, so guessing is
+PLAN section 3.4 rate-limits the login *code* flow per user name and per client address, because an
+8-character code can be guessed. Link and session tokens carry 256 random bits, so guessing is
 hopeless at any rate, and a limit on redemption would only let a local process lock the owner out.
 So there's no limiter yet; it comes with the code flow.
 
 ## Inbound: Events and Acks
 
-`WebChannel::post(user, chat, text, now)` builds a `ChannelEvent::Message` (event id `web-` plus
-128 random bits, also used as the `message_id`), queues it, and shows the message on the chat's
-open pages. The queue is in memory:
+`WebChannel::post(user, chat, text, now)` builds a `ChannelEvent::Message` (event id `web-` plus 128
+random bits, also used as the `message_id`), queues it, and shows the message on the chat's open
+pages. The queue is in memory:
 
 - An event stays pending until `ack`ed. `events()` returns a new stream that yields every pending
   event first, then new ones; opening a stream ends the previous one (its sender is dropped). So
@@ -227,8 +228,8 @@ HTML fragment for the page's message list. Fragments that change an element alre
 carry `hx-swap-oob="true"` (`render::out_of_band`), so htmx replaces the element with the same id
 instead of appending.
 
-Hubs are made on first use and dropped when idle: making a new hub first drops every hub that has
-no open event stream, no live message, no unanswered prompt, no `Arc` held elsewhere, and no use
+Hubs are made on first use and dropped when idle: making a new hub first drops every hub that has no
+open event stream, no live message, no unanswered prompt, no `Arc` held elsewhere, and no use
 (publish, snapshot, subscription, lookup) for `HUB_IDLE` (10 minutes). So memory follows the chats
 in use, not every chat since the start.
 
@@ -237,11 +238,11 @@ in use, not every chat since the start.
   then the attachments (raster images inline from `/blobs/<id>`, anything else as a link).
   `SendTarget::Recipient` is `InvalidRequest`: the channel can't start conversations.
 - `Channel::deltas()` returns the channel itself as a `DeltaSink` (the contract is in
-  [Message Model and Traits](message-model.md#channel)). `start(conversation)` appends an empty
-  live message ("Writing…"); `push` re-renders the whole text so far and replaces the element, at
-  most every `LIVE_UPDATE_INTERVAL` (50 ms; pushes in between are coalesced, and the final text is
-  always sent); `finish` replaces it with the final rendering. A writer dropped unfinished leaves
-  its text, marked "Stopped before the end."
+  [Message Model and Traits](message-model.md#channel)). `start(conversation)` appends an empty live
+  message ("Writing…"); `push` re-renders the whole text so far and replaces the element, at most
+  every `LIVE_UPDATE_INTERVAL` (50 ms; pushes in between are coalesced, and the final text is always
+  sent); `finish` replaces it with the final rendering. A writer dropped unfinished leaves its text,
+  marked "Stopped before the end."
 
 The agent loop's output delivery (`agent_loop::output`, see [Agent Loop](agent-loop.md)) streams
 every assistant text block of a turn in a web chat through this hook: `start` at the block's first
@@ -281,36 +282,35 @@ waiting; see [Storage](storage.md#conversations)). `render::history` shows text 
 blank lines) and media of user and assistant messages, and drops tool results, empty slots, tool
 calls, reasoning, and provider data (PLAN section 6.9); a message left with nothing to show is
 skipped. A user message's time prefix (`[Thu 2026-10-22 14:03 PDT] `, which the agent loop stores
-for the model) is cut with `agent_loop::history::strip_time_prefix`, here and in chat titles, and
-a media reference stored right before its media (`[media:<id> <name> <type>]`) is left out, since
-the media itself is shown. A `send_attachment` call whose result isn't an error shows as an
-assistant message with its caption and the media it sent (looked up by id among the media of the
-loaded rows). A "New session" marker separates sessions (`/new`, idle reset). Messages sent with
-`send` that the agent loop doesn't store (notices) are only on pages that were open at the time.
-The chat list is
+for the model) is cut with `agent_loop::history::strip_time_prefix`, here and in chat titles, and a
+media reference stored right before its media (`[media:<id> <name> <type>]`) is left out, since the
+media itself is shown. A `send_attachment` call whose result isn't an error shows as an assistant
+message with its caption and the media it sent (looked up by id among the media of the loaded rows).
+A "New session" marker separates sessions (`/new`, idle reset). Messages sent with `send` that the
+agent loop doesn't store (notices) are only on pages that were open at the time. The chat list is
 `Store::channel_conversations(instance, user, 200)`, titled with the first line of the first user
 message (80 characters at most).
 
 The page is assembled so that a message is shown once, whatever happens while it loads:
 
-1. The hub snapshot (cursor, live messages, prompts). Everything published later is replayed by
-   the stream.
+1. The hub snapshot (cursor, live messages, prompts). Everything published later is replayed by the
+   stream.
 2. The posts the core hasn't acked (`WebChannel::unacked`).
-3. The transcript and the waiting inbox rows, in one read transaction. A post acked after step 2
-   was inserted into the inbox before its ack, so it's in this read.
+3. The transcript and the waiting inbox rows, in one read transaction. A post acked after step 2 was
+   inserted into the inbox before its ack, so it's in this read.
 4. The user's messages not in the transcript yet (`render::waiting`): waiting rows, then unacked
    posts, without the posts the stream will replay (`Hub::posted_after(cursor)`), and without any
-   the transcript already has. A started row is in the transcript if a user row has its receive
-   time and its text (without the prefix); an unacked post if one has its text and was stored at
-   or after it was sent. They're rendered exactly as the post showed them live (`m-<event id>`).
+   the transcript already has. A started row is in the transcript if a user row has its receive time
+   and its text (without the prefix); an unacked post if one has its text and was stored at or after
+   it was sent. They're rendered exactly as the post showed them live (`m-<event id>`).
 5. Live messages, except one the transcript already has (`render::is_stored`: an assistant row
    stored after the live message started contains its text so far): it ended and was stored after
    the snapshot, and the stream's replay of its end finds no element and changes nothing.
 6. Prompts: unanswered ones with their buttons (and a `csrf` field), answered ones with what was
    sent.
 
-A post the router drops (no route) isn't in the inbox, so after a reload it's gone, like any
-dropped message.
+A post the router drops (no route) isn't in the inbox, so after a reload it's gone, like any dropped
+message.
 
 ## Approval Prompts (Hook for 2.7)
 
@@ -318,19 +318,19 @@ dropped message.
 buttons in `/chats/<id>/approvals` forms: Allow (`yes`), Allow for this session (`yes!`), Deny
 (`no`), each with the code in a hidden field. The prompt Markdown is rendered like any message. The
 code must be 1 to 32 ASCII letters and digits (what `commands::parse` accepts), else
-`InvalidRequest`. The prompt stays in the hub, so page loads show it, until it's resolved; a
-restart forgets it, as it does the approval.
+`InvalidRequest`. The prompt stays in the hub, so page loads show it, until it's resolved; a restart
+forgets it, as it does the approval.
 
 The POST checks CSRF, the answer (`yes`, `yes!`, `no`), and the code, then
 `answer_approval(user, chat, code, answer, now)` posts `<answer> <code>` as an ordinary message from
 the user (so the core's command parsing and pending-approval check decide what it means) and
-replaces the prompt's buttons with what was sent ("Sent: yes!"), not an outcome: the prompt may
-have expired. htmx gets 204; plain posts a 303.
+replaces the prompt's buttons with what was sent ("Sent: yes!"), not an outcome: the prompt may have
+expired. htmx gets 204; plain posts a 303.
 
 `WebChannel::resolve_approval(chat, code, ApprovalOutcome) -> bool` retires a prompt however it
 ended: every open page replaces it with the outcome (`Allowed`, `AllowedForSession`, `Denied`,
-`Expired`), and page loads no longer show it. `false` if the chat doesn't show it (resolved
-already, or forgotten by a restart or with an idle hub); it never makes a hub.
+`Expired`), and page loads no longer show it. `false` if the chat doesn't show it (resolved already,
+or forgotten by a restart or with an idle hub); it never makes a hub.
 
 How the approvals code uses it: `approvals::ChannelPresenter` sends prompts for a conversation on
 the web instance (`registry.web_channel()` whose `instance()` is `reply.instance()`) with
@@ -341,27 +341,27 @@ timeout, `/stop`, or denial by a new message, PLAN section 6.4). `ApprovalOutcom
 
 ## Blobs
 
-`GET /blobs/<sha256>` (PLAN section 9, 1.7's contract): the id must be 64 lowercase hex digits;
-the user must be allowed to see blobs (v1: the owner, who owns every blob; per-blob checks come
-with multi-user support); then the blob is streamed from the blob store (hash verified at the end;
-a mismatch aborts the response). Headers: the stored media type (or `application/octet-stream` if
-it isn't a valid header value), `Content-Length`, `Content-Security-Policy: sandbox` (next to the
-base policy), `nosniff` (from the security headers), `Content-Disposition: inline` for raster
-images (PNG, JPEG, GIF, WebP, AVIF, the set the renderer keeps) and `attachment;
-filename*=UTF-8''<name>` for anything else, and `Cache-Control: private, max-age=31536000,
-immutable` (the URL is the content hash). An HTML or SVG blob therefore downloads, and even opened
-directly it runs in a sandboxed opaque origin.
+`GET /blobs/<sha256>` (PLAN section 9, 1.7's contract): the id must be 64 lowercase hex digits; the
+user must be allowed to see blobs (v1: the owner, who owns every blob; per-blob checks come with
+multi-user support); then the blob is streamed from the blob store (hash verified at the end; a
+mismatch aborts the response). Headers: the stored media type (or `application/octet-stream` if it
+isn't a valid header value), `Content-Length`, `Content-Security-Policy: sandbox` (next to the base
+policy), `nosniff` (from the security headers), `Content-Disposition: inline` for raster images
+(PNG, JPEG, GIF, WebP, AVIF, the set the renderer keeps) and `attachment; filename*=UTF-8''<name>`
+for anything else, and `Cache-Control: private, max-age=31536000, immutable` (the URL is the content
+hash). An HTML or SVG blob therefore downloads, and even opened directly it runs in a sandboxed
+opaque origin.
 
 ## Admin Pages
 
 PLAN sections 8.7 and 10; code in `admin.rs` (pages) and `qr.rs` (QR codes). The admin pages are a
 client of the admin service ([Admin Service](admin.md)), like `giles status`, but in-process:
-`WebApp::install_admin(builder, admin: Arc<dyn AdminService>)` takes the generated
-`giles.admin.v1` server trait, and `giles serve` passes the same `Arc<AdminService>` it serves on
-the admin socket (`AdminListener::serve` takes the `Arc`). So the pages show exactly what the CLI
-shows, and there's no token to handle: the socket's token keeps local processes (plugins included)
-out of the service, and these routes are guarded by the web login instead. Tests pass a fake
-implementation of the trait.
+`WebApp::install_admin(builder, admin: Arc<dyn AdminService>)` takes the generated `giles.admin.v1`
+server trait, and `giles serve` passes the same `Arc<AdminService>` it serves on the admin socket
+(`AdminListener::serve` takes the `Arc`). So the pages show exactly what the CLI shows, and there's
+no token to handle: the socket's token keeps local processes (plugins included) out of the service,
+and these routes are guarded by the web login instead. Tests pass a fake implementation of the
+trait.
 
 - Who: the routes sit behind the same authentication middleware as the chat pages, so no login is
   the 401 login page; then the `WebUser` must be the owner (`identity::owner()`), else a 403 page.
@@ -375,9 +375,8 @@ implementation of the trait.
   it) has a **Restart** form; toolsets, which don't report to the admin service yet, have none.
 - `POST /admin/plugins/<instance>/restart` checks the owner, then CSRF (`check_csrf`: the `csrf`
   field or the `X-CSRF-Token` header), then calls `RestartPlugin` and answers 303 to
-  `/admin/plugins`. Errors show the service's message: `NOT_FOUND` as 404,
-  `FAILED_PRECONDITION` as 409, `UNAVAILABLE` as 503, `INVALID_ARGUMENT` as 400; anything else is
-  logged and a generic 500.
+  `/admin/plugins`. Errors show the service's message: `NOT_FOUND` as 404, `FAILED_PRECONDITION` as
+  409, `UNAVAILABLE` as 503, `INVALID_ARGUMENT` as 400; anything else is logged and a generic 500.
 - Every answer on the admin routes (pages, error pages, the 401 login page, redirects) is
   `Cache-Control: no-store`: a `map_response` route layer outside the authentication middleware
   applies `pages::no_store`, the helper the login routes use too. Times are UTC (`<time datetime>`
@@ -386,14 +385,14 @@ implementation of the trait.
 A channel whose status is `NeedsAuth` gets a linking box under it: a QR code, a pair code, or a URL
 (an `<a>` only for `http`/`https`, with `rel="noreferrer noopener"`; anything else, such as
 `javascript:`, is shown as code), and the challenge's expiry. While any channel needs auth the page
-carries `<meta http-equiv="refresh" content="5">` (`ADMIN_REFRESH_SECS`; `layout.html` has a
-`head` block for it), so it follows the plugin's newest code without JavaScript; once every channel
-is past `NeedsAuth` the page stops reloading.
+carries `<meta http-equiv="refresh" content="5">` (`ADMIN_REFRESH_SECS`; `layout.html` has a `head`
+block for it), so it follows the plugin's newest code without JavaScript; once every channel is past
+`NeedsAuth` the page stops reloading.
 
-`qr::svg(payload)` encodes the payload with the `qrcode` crate (error correction level M, no
-default features: no image crate) and draws the modules itself as one `<path>` of rectangles, one
-per horizontal run of dark modules, on a white square with the four-module quiet zone, so it scans
-on a dark page too. The `<svg>` is inlined in the page (not an `<img>`: it's the code the page was
+`qr::svg(payload)` encodes the payload with the `qrcode` crate (error correction level M, no default
+features: no image crate) and draws the modules itself as one `<path>` of rectangles, one per
+horizontal run of dark modules, on a white square with the four-module quiet zone, so it scans on a
+dark page too. The `<svg>` is inlined in the page (not an `<img>`: it's the code the page was
 rendered with), and uses presentation attributes only, which the CSP allows. The payload never
 appears in the markup; a payload too long for a QR code shows a note pointing at `giles status`,
 which prints it.
@@ -405,33 +404,33 @@ aren't part of `Status`, and remote URLs can't carry credentials (config validat
 
 ## Agent Pages
 
-In `agents.rs`: `web.install_agents(builder, Arc<agents::AgentManager>)`,
-which `serve` calls after `install_admin` with a manager over the runtime's registry (so the chat
-list, reading the same `LiveConfig`, offers a new agent at once). Like the admin pages: the same
-authentication middleware, `may_administer` (the owner only; a guest gets 403, no login 401) on
-every route including the POST (except the memory page's, see [Memory Page](#memory-page)),
-`no-store` on every answer, and `check_csrf` on the POST. Unlike
-them, they call the core directly (`giles_core::agents`) rather than the admin service: there are no
-agent RPCs yet (PLAN section 8.7).
+In `agents.rs`: `web.install_agents(builder, Arc<agents::AgentManager>)`, which `serve` calls after
+`install_admin` with a manager over the runtime's registry (so the chat list, reading the same
+`LiveConfig`, offers a new agent at once). Like the admin pages: the same authentication middleware,
+`may_administer` (the owner only; a guest gets 403, no login 401) on every route including the POST
+(except the memory page's, see [Memory Page](#memory-page)), `no-store` on every answer, and
+`check_csrf` on the POST. Unlike them, they call the core directly (`giles_core::agents`) rather
+than the admin service: there are no agent RPCs yet (PLAN section 8.7).
 
-- The list reads the running configuration: id, label (`Name (id)`), models, and links to the
-  page and to `/chats/new?agent=<id>` ([Choosing an Agent](#choosing-an-agent)).
+- The list reads the running configuration: id, label (`Name (id)`), models, and links to the page
+  and to `/chats/new?agent=<id>` ([Choosing an Agent](#choosing-an-agent)).
 - An agent's page looks the id up in the running configuration (anything else, `..` included, is a
   404) and lists its directory with `agents::list_files(&agent, &viewer)` on a blocking thread. The
-  walk never follows a link: entries come from `read_dir` with `file_type()` (a link is listed as
-  one), files are opened with `O_NOFOLLOW | O_NONBLOCK`, and the descriptor's path (`F_GETPATH` on
-  macOS, `/proc/self/fd` on Linux, the helper `load_skill` uses) must be inside the canonical agent
-  directory. A directory swapped for a link mid-walk can still be listed (the names and sizes below
-  it, since `read_dir` follows it), but no contents from elsewhere are shown. The walk stops once it
-  has `MAX_FILES` entries. Dot names are skipped. Caps: `MAX_FILES` (200) entries, `MAX_DEPTH` (8),
-  the first `MAX_FILE_BYTES` (64 KiB) of each file, `MAX_TOTAL_BYTES` (1 MiB) of contents per page.
-  Text is UTF-8 without NUL (a character split by the cut is dropped); anything else is listed with
-  its size (so `memory.db` is listed by its size and its contents are never shown; the memories have
-  their own page, [Memory Page](#memory-page)). Contents are shown escaped in `<pre>`. Each entry
-  has a `FileKind` (`Config`, `Soul`, `JobPrompt` from the agent's `prompt_file`s, `Skill`, `Other`)
+  walk never follows a link: entries come from `read_dir` with `file_type()` (a link is listed
+  as one), files are opened with `O_NOFOLLOW | O_NONBLOCK`, and the descriptor's path
+  (`F_GETPATH` on macOS, `/proc/self/fd` on Linux, the helper `load_skill` uses) must be inside
+  the canonical agent directory. A directory swapped for a link mid-walk can still be listed
+  (the names and sizes below it, since `read_dir` follows it), but no contents from elsewhere
+  are shown. The walk stops once it has `MAX_FILES` entries. Dot names are skipped. Caps:
+  `MAX_FILES` (200) entries, `MAX_DEPTH` (8), the first `MAX_FILE_BYTES` (64 KiB) of each file,
+  `MAX_TOTAL_BYTES` (1 MiB) of contents per page. Text is UTF-8 without NUL (a character split
+  by the cut is dropped); anything else is listed with its size (so `memory.db` is listed by
+  its size and its contents are never shown; the memories have their own page,
+  [Memory Page](#memory-page)). Contents are shown escaped in `<pre>`. Each entry has a
+  `FileKind` (`Config`, `Soul`, `JobPrompt` from the agent's `prompt_file`s, `Skill`, `Other`)
   that orders and labels it.
-- Who sees which file is one hook, `FileKind::visible_to(viewer)`, applied before a file is read
-  or counted. It allows everything now: v1's only user is the owner, the only one who can open the
+- Who sees which file is one hook, `FileKind::visible_to(viewer)`, applied before a file is read or
+  counted. It allows everything now: v1's only user is the owner, the only one who can open the
   pages. With several users it is where a user is limited to the files that are their own.
 - The form offers `AgentManager::known_models()` as a `<datalist>`: every registered provider's
   `list_models()`, 5 s each, failures logged at `debug` with secrets scrubbed; any
@@ -439,67 +438,67 @@ agent RPCs yet (PLAN section 8.7).
   (`agents::split_list`).
 - The form asks for the name before the id. The id is derived from the name by
   `agents::agent_id_from_name`, a pure function: lowercase (`str::to_lowercase`), each space to `-`,
-  every other character outside `a-z`, `0-9`, `-` removed. Nothing is trimmed or collapsed, ids
-  are ASCII so `Café` gives `caf`, and whitespace other than a plain space is removed like a
-  symbol. The result can be empty or `new`; creation refuses both as before. The Id input stays a
-  visible, editable field and isn't `required`: `POST /admin/agents` with an empty (or blank) id
-  derives it from the name, so a form posted without scripts, or by `curl`, works, and an invalid
-  form comes back showing the id that was used.
+  every other character outside `a-z`, `0-9`, `-` removed. Nothing is trimmed or collapsed, ids are
+  ASCII so `Café` gives `caf`, and whitespace other than a plain space is removed like a symbol. The
+  result can be empty or `new`; creation refuses both as before. The Id input stays a visible,
+  editable field and isn't `required`: `POST /admin/agents` with an empty (or blank) id derives it
+  from the name, so a form posted without scripts, or by `curl`, works, and an invalid form comes
+  back showing the id that was used.
 - Live in the browser, `assets/agent-form.js` (embedded like the stylesheet, at
-  `/static/agent-form-<hash>.js`, loaded `defer` through the layout's `head` block because the
-  CSP is `script-src 'self'`) writes the same derivation into the Id as the owner types in the
-  Name: `text.toLowerCase().replace(/ /g, '-').replace(/[^a-z0-9-]/g, '')`. It follows while the Id
-  is empty or equals what the name derives (also on a form shown again after an error); typing in
-  the Id stops it, and emptying the Id resumes it. The expression is the Rust function written
-  in JavaScript (`to_lowercase` and `toLowerCase` agree on every character the filter keeps,
-  U+212A KELVIN SIGN and U+0130 included); a unit test pins the expression in the file. After
-  changing either, run the table in `agents/create.rs`'s tests through the script (for example
-  with `bun` or `node`) by hand: this isn't automated.
+  `/static/agent-form-<hash>.js`, loaded `defer` through the layout's `head` block because the CSP
+  is `script-src 'self'`) writes the same derivation into the Id as the owner types in the Name:
+  `text.toLowerCase().replace(/ /g, '-').replace(/[^a-z0-9-]/g, '')`. It follows while the Id is
+  empty or equals what the name derives (also on a form shown again after an error); typing in the
+  Id stops it, and emptying the Id resumes it. The expression is the Rust function written in
+  JavaScript (`to_lowercase` and `toLowerCase` agree on every character the filter keeps, U+212A
+  KELVIN SIGN and U+0130 included); a unit test pins the expression in the file. After changing
+  either, run the table in `agents/create.rs`'s tests through the script (for example with `bun` or
+  `node`) by hand: this isn't automated.
 - `CreateForm` (`agents.rs`) starts `soul` as `agents::DEFAULT_SOUL`, so the first `GET` shows it
-  and a post with no `soul` field gets it; a `soul` that was posted empty stays empty, also when
-  the form is shown again after an error.
-- `AgentManager::create` (one at a time, under a lock): builds `agent.toml` with the TOML
-  serializer (`agents::agent_toml`, unset values left out), validates it with
-  `Config::validate_agent` (the startup checks), refuses `RESERVED_AGENT_IDS` (`new`, the form's
-  address) and an id taken ignoring ASCII case, then writes the files into a staging directory,
-  `agents/.<id>.creating/` (created exclusively, mode 0700; config loading skips dot names, and
-  it's a sibling, so no agent's page lists it): `SOUL.md` then `agent.toml`, each as a 0600
-  temporary file that is fsynced and renamed. It fsyncs the staging directory, renames it to
-  `agents/<id>/` (refused if that exists and isn't empty), and fsyncs `agents/`, so the agent's
-  directory appears whole or not at all; on any failure the staging directory is removed. Then
-  `LiveConfig::add_agent`; if that refuses (another creator took the id, ignoring case, meanwhile)
-  the new directory is removed. A staging directory left by a crash breaks nothing (startup skips
-  it) and is removed when `serve` builds its `AgentManager` at the next start. Of two creations
-  with the same id one wins; the other is told the id is taken, as is one whose directory exists
-  on disk. An invalid form comes back with `CreateError::form_message` (key and reason, never a
-  file path): 409 for a taken id, else 400. Write failures are logged and answered 500.
-  The handler stores `SOUL.md` with `\n` line breaks: browsers submit a textarea's as `\r\n`.
+  and a post with no `soul` field gets it; a `soul` that was posted empty stays empty, also when the
+  form is shown again after an error.
+- `AgentManager::create` (one at a time, under a lock): builds `agent.toml` with the TOML serializer
+  (`agents::agent_toml`, unset values left out), validates it with `Config::validate_agent` (the
+  startup checks), refuses `RESERVED_AGENT_IDS` (`new`, the form's address) and an id taken ignoring
+  ASCII case, then writes the files into a staging directory, `agents/.<id>.creating/` (created
+  exclusively, mode 0700; config loading skips dot names, and it's a sibling, so no agent's page
+  lists it): `SOUL.md` then `agent.toml`, each as a 0600 temporary file that is fsynced and renamed.
+  It fsyncs the staging directory, renames it to `agents/<id>/` (refused if that exists and isn't
+  empty), and fsyncs `agents/`, so the agent's directory appears whole or not at all; on any failure
+  the staging directory is removed. Then `LiveConfig::add_agent`; if that refuses (another creator
+  took the id, ignoring case, meanwhile) the new directory is removed. A staging directory left by a
+  crash breaks nothing (startup skips it) and is removed when `serve` builds its `AgentManager` at
+  the next start. Of two creations with the same id one wins; the other is told the id is taken, as
+  is one whose directory exists on disk. An invalid form comes back with `CreateError::form_message`
+  (key and reason, never a file path): 409 for a taken id, else 400. Write failures are logged and
+  answered 500. The handler stores `SOUL.md` with `\n` line breaks: browsers submit a textarea's as
+  `\r\n`.
 
 ### Editing
 
-`AgentManager::edit_form(id)` and `AgentManager::edit(&AgentEdit)` (`agents/edit.rs`), behind
-`GET` and `POST /admin/agents/<agent>/edit` (`EditForm`, `edit_page`, `edit` in `agents.rs`). The
-id in the path must be a configured agent, exactly (anything else, `..` included, is a 404); the
-form has no id field.
+`AgentManager::edit_form(id)` and `AgentManager::edit(&AgentEdit)` (`agents/edit.rs`), behind `GET`
+and `POST /admin/agents/<agent>/edit` (`EditForm`, `edit_page`, `edit` in `agents.rs`). The id in
+the path must be a configured agent, exactly (anything else, `..` included, is a 404); the form has
+no id field.
 
 - **What the form is rendered from.** The files on disk, not the running configuration: `agent.toml`
   is read with `toml_edit` for `name`, `models`, `tools`, `ask`, `timezone` (a key that isn't a
   string or list of strings shows empty), and `SOUL.md` (CRLF shown as LF). `AgentForm::version` is
   the SHA-256 of both files (name, whether it exists, length, and bytes of each), carried in a
   hidden field. `read_text` refuses what the form must not write through: a symbolic link (the
-  rename would replace the link), anything but a regular file, more than `MAX_EDIT_FILE_BYTES`
-  (1 MiB), text that isn't UTF-8, and TOML that doesn't parse (`EditError::Unsupported`, a 409
-  page on `GET`).
-- **`edited_toml`.** A pure function from the text and the edit to the new text, with `toml_edit`.
-  A managed key whose value already equals the field is not touched (so an unchanged form gives
-  the file back byte for byte, and the text is returned as is rather than re-serialized when
-  nothing changed); a changed one gets a new value that copies the decor of the old one (the space
-  and the comment after it), keeping its place; a missing one is appended to the top-level
-  table (`toml_edit` prints key-values before sub-tables, so never inside `[[jobs]]`); an empty
-  one (`name`, `tools`, `ask`, `timezone`) is removed. `models` is always written, even empty, so
-  validation says "at least one model". Removing a key takes its leading comment with it, except
-  at the first key of the file (a header: kept) and up to the last blank line above the key
-  (standalone notes: kept); what is kept moves to the next key's decor.
+  rename would replace the link), anything but a regular file, more than `MAX_EDIT_FILE_BYTES` (1
+  MiB), text that isn't UTF-8, and TOML that doesn't parse (`EditError::Unsupported`, a 409 page on
+  `GET`).
+- **`edited_toml`.** A pure function from the text and the edit to the new text, with `toml_edit`. A
+  managed key whose value already equals the field is not touched (so an unchanged form gives the
+  file back byte for byte, and the text is returned as is rather than re-serialized when nothing
+  changed); a changed one gets a new value that copies the decor of the old one (the space and the
+  comment after it), keeping its place; a missing one is appended to the top-level table
+  (`toml_edit` prints key-values before sub-tables, so never inside `[[jobs]]`); an empty one
+  (`name`, `tools`, `ask`, `timezone`) is removed. `models` is always written, even empty, so
+  validation says "at least one model". Removing a key takes its leading comment with it, except at
+  the first key of the file (a header: kept) and up to the last blank line above the key (standalone
+  notes: kept); what is kept moves to the next key's decor.
 - **Line ends.** `toml_edit` reads every `\r\n` as `\n`, so `edited_toml` edits a file with CRLF
   line ends as LF and writes the result back with CRLF; the rest of the file keeps its line ends.
 - **`edit`** (under the manager's one lock, shared with creation and removal): reads the files and
@@ -509,13 +508,13 @@ form has no id field.
   through `commit`: each to `.<name>.edit.tmp` in the agent's directory (fsynced, the mode of the
   file it replaces), then reads both files again and compares with what it started from (`Stale`
   again, narrowing the window for a hand edit to the renames), then renames `SOUL.md` and
-  `agent.toml` into place and fsyncs the directory. A failed second rename puts the first file
-  back from the contents read earlier (`restore`); temporary files are removed on every path.
-  Then `LiveConfig::replace_agent`. The form's `\r\n` become `\n` before the comparison, so a
-  `SOUL.md` the owner didn't touch isn't rewritten.
-- **Failures** come back as the form with the input and the same `version` (400 for invalid
-  values, 409 for `Stale` and `Unsupported`; `Stale` adds a reload link), or as error pages
-  (404, 500 for `Io` and `Task`, which are logged).
+  `agent.toml` into place and fsyncs the directory. A failed second rename puts the first file back
+  from the contents read earlier (`restore`); temporary files are removed on every path. Then
+  `LiveConfig::replace_agent`. The form's `\r\n` become `\n` before the comparison, so a `SOUL.md`
+  the owner didn't touch isn't rewritten.
+- **Failures** come back as the form with the input and the same `version` (400 for invalid values,
+  409 for `Stale` and `Unsupported`; `Stale` adds a reload link), or as error pages (404, 500 for
+  `Io` and `Task`, which are logged).
 - **Taking effect.** `replace_agent` swaps in the validated `AgentConfig` and bumps
   `LiveConfig::subscribe`'s counter but keeps the agent's incarnation. New sessions read the new
   agent (the session prompt is assembled at a session's first turn); the agent loop's cached prompt
@@ -546,46 +545,45 @@ the module docs; in short, under the manager's lock:
    reads the agent's configuration, until it ends. Busy is `RemoveError::Busy` (a 409 page).
 2. `Routes::hold_unrouted(agent)` takes the routes' change lock, reads the stored routes, and
    returns the guard only if none names the agent (`HoldError::Routed` otherwise, which the page
-   lists with links `/admin/routes#route-<id>`). `Routes::add` and `update` now validate (the
-   agent exists) *after* taking the same lock, so no route can be made for an agent between the
-   check and its removal, and none for a removed agent afterwards.
+   lists with links `/admin/routes#route-<id>`). `Routes::add` and `update` now validate (the agent
+   exists) *after* taking the same lock, so no route can be made for an agent between the check and
+   its removal, and none for a removed agent afterwards.
 3. `LiveConfig::remove_agent`, then `is_busy` again. From the take-out on no turn or job run can
    start (a turn reads the agent when it starts; a job run reads it after it has been counted), so
-   what this second look sees is all there is. Work seen: the agent is put back with `add_agent`
-   (a new incarnation; its config job tasks restart) and the removal is refused. A scheduled job
-   whose time came between the take-out and its count finds no agent and its task ends for good
-   (a runtime job's too, until a restart); config job tasks of a put-back agent are started again by
-   the scheduler's reconcile.
-4. `MemoryDbs::close(agent)`: drops the registry's handle to `agents/<agent>/memory.db`, so the
-   last handle to go closes the database and, in WAL mode, the writer checkpoints and deletes
-   `-wal` and `-shm`; `memory.db` then moves as one complete file. Nothing can reopen it before
-   the move (opening is lazy, by `MemoryDbs::get` per use, and no turn can start for an agent
-   that is out of the configuration). A caller that kept a `MemoryStore` clone would keep the
-   file open: handles are fetched per use. A database that was never opened stays absent
-   (`close` does nothing for it and creates no file). If the move below fails nothing needs
-   reopening: the next `get` does it.
+   what this second look sees is all there is. Work seen: the agent is put back with `add_agent` (a
+   new incarnation; its config job tasks restart) and the removal is refused. A scheduled job whose
+   time came between the take-out and its count finds no agent and its task ends for good (a runtime
+   job's too, until a restart); config job tasks of a put-back agent are started again by the
+   scheduler's reconcile.
+4. `MemoryDbs::close(agent)`: drops the registry's handle to `agents/<agent>/memory.db`, so the last
+   handle to go closes the database and, in WAL mode, the writer checkpoints and deletes `-wal` and
+   `-shm`; `memory.db` then moves as one complete file. Nothing can reopen it before the move
+   (opening is lazy, by `MemoryDbs::get` per use, and no turn can start for an agent that is out of
+   the configuration). A caller that kept a `MemoryStore` clone would keep the file open: handles
+   are fetched per use. A database that was never opened stays absent (`close` does nothing for it
+   and creates no file). If the move below fails nothing needs reopening: the next `get` does it.
 5. `move_aside`: creates `trash/agents/` (mode 0700; `DataRoot::trash_dir`), picks
    `<agent>-<YYYYMMDDTHHMMSSZ>` (`-1`, `-2` while the name exists), renames `agents/<agent>/` to it
-   (one atomic rename inside the data root; `EXDEV` for a symlinked `agents/` on another file
-   system is an `Io` error), and fsyncs both parents (a failure there is logged, since the move
-   happened). `memory.db` is in the directory, so it moves with the agent: restoring
+   (one atomic rename inside the data root; `EXDEV` for a symlinked `agents/` on another file system
+   is an `Io` error), and fsyncs both parents (a failure there is logged, since the move happened).
+   `memory.db` is in the directory, so it moves with the agent: restoring
    `trash/agents/<id>-<time>/` by moving it back to `agents/<id>/` brings the memories back. If the
    move fails the agent is put back and the answer is a 500 page (logged) saying nothing changed.
    Then the route guard is dropped.
 6. `Store::agent_jobs_delete` deletes the agent's runtime jobs and every `job_runs` row of the
-   agent, in one transaction; `JobChanges::notify` makes the scheduler stop the runtime jobs'
-   tasks. The scheduler stops the agent's config job tasks by itself, because it follows
-   `LiveConfig` ([Scheduler](scheduler.md#timing)). A database failure here is reported inside
+   agent, in one transaction; `JobChanges::notify` makes the scheduler stop the runtime jobs' tasks.
+   The scheduler stops the agent's config job tasks by itself, because it follows `LiveConfig`
+   ([Scheduler](scheduler.md#timing)). A database failure here is reported inside
    `Removed::jobs_error` (the agent is already gone) and logged; the jobs can't run, since
    `job_task` stops for an agent that isn't configured.
 
-Everything that looks agents up reads the running configuration, so the agent leaves the list,
-the chat chooser, `/chats/new?agent=`, the pages (404), the router (`AgentPolicies::policy` is
-`None`, so a chat started with that agent is dropped as `UnknownAgent`), the core tools, and the
-agent loop together. A chat of the removed agent stays in the chat list (labelled by the id) and
-its page is a 404. Sessions, messages, summaries, usage, and inbox rows are not touched; the id
-is free (creation checks the live configuration and the directory, neither of which has it), and
-creating it again gives it a new incarnation, so the old sessions' cached prompts are not reused
+Everything that looks agents up reads the running configuration, so the agent leaves the list, the
+chat chooser, `/chats/new?agent=`, the pages (404), the router (`AgentPolicies::policy` is `None`,
+so a chat started with that agent is dropped as `UnknownAgent`), the core tools, and the agent loop
+together. A chat of the removed agent stays in the chat list (labelled by the id) and its page is a
+404. Sessions, messages, summaries, usage, and inbox rows are not touched; the id is free (creation
+checks the live configuration and the directory, neither of which has it), and creating it again
+gives it a new incarnation, so the old sessions' cached prompts are not reused
 ([Agent Loop](agent-loop.md)). Whether to refuse creating an id that has history was decided
 against: reattaching the old chats is what the owner who recreates an agent most likely wants, and
 the page says so.
@@ -605,62 +603,61 @@ reload stays deferred (D28).
 
 In `memory.rs`, routed by `install_agents` (its `AgentPages` state, `agents.rs`) under the agent
 pages' middleware (authentication, `no-store`). Unlike the other agent pages it is **not**
-`may_administer`-gated: it shows each signed-in user what they could ask the agent to recall
-anyway. Every web login is the owner in v1 (`WebUser::user`), so the owner is what you meet in
-practice; the handlers don't assume it, and a test signs in as another user.
+`may_administer`-gated: it shows each signed-in user what they could ask the agent to recall anyway.
+Every web login is the owner in v1 (`WebUser::user`), so the owner is what you meet in practice; the
+handlers don't assume it, and a test signs in as another user.
 
 - **The viewer** is the store's `MemoryViewer`, built by `user_viewer(&WebUser)`:
-  `MemoryViewer::new(MemoryOwner::User(user.user), user.user == identity::owner())`, the same
-  rule as `memory::viewer` for a tool call: own private memories plus shared ones, writing shared
-  ones only for the owner. The store enforces everything (visibility, the shared-write rule, the
+  `MemoryViewer::new(MemoryOwner::User(user.user), user.user == identity::owner())`, the same rule
+  as `memory::viewer` for a tool call: own private memories plus shared ones, writing shared ones
+  only for the owner. The store enforces everything (visibility, the shared-write rule, the
   1,000-character limit, the core cap); the forms only leave out what it would refuse (no *shared*
-  box for a non-owner, no edit or forget buttons on a shared memory they can't write), and a
-  crafted post gets the store's refusal. The cap is the agent's `memory_cap`.
+  box for a non-owner, no edit or forget buttons on a shared memory they can't write), and a crafted
+  post gets the store's refusal. The cap is the agent's `memory_cap`.
 - **The store** comes from `AgentManager::memory_dbs().get(&agent_id)` for each request and is
-  dropped with it ([Removing](#removing) needs no handle left open). An agent that isn't
-  configured, or whose id isn't a valid name, is a 404 before anything is opened, so such a
-  request creates no file. A `GET` for a configured agent that has no `memory.db` yet creates an
-  empty one (that is what `get` does) and shows an empty page.
+  dropped with it ([Removing](#removing) needs no handle left open). An agent that isn't configured,
+  or whose id isn't a valid name, is a 404 before anything is opened, so such a request creates no
+  file. A `GET` for a configured agent that has no `memory.db` yet creates an empty one (that is
+  what `get` does) and shows an empty page.
 - **The list** is `MemoryStore::list(viewer, PAGE_SIZE + 1)`, `PAGE_SIZE` (200), newest first; the
-  extra row says it was cut short. With a non-blank `q` it is `MemoryStore::recall(viewer, q,
-  SEARCH_LIMIT + 1)` (50) instead, the same full-text search as `memory_recall`: ranked by bm25,
-  words quoted and OR-ed so FTS syntax in the box is text, English stemming. Above them the page
-  shows the usage of each core scope (`memory::usage_header` with `memory_cap`, from
-  `MemoryStore::core_memories`: the shared scope and the user's own).
+  extra row says it was cut short. With a non-blank `q` it is
+  `MemoryStore::recall(viewer, q, SEARCH_LIMIT + 1)` (50) instead, the same full-text search as
+  `memory_recall`: ranked by bm25, words quoted and OR-ed so FTS syntax in the box is text, English
+  stemming. Above them the page shows the usage of each core scope (`memory::usage_header` with
+  `memory_cap`, from `MemoryStore::core_memories`: the shared scope and the user's own).
 - **Group sections** are for the owner only (`may_administer`). `MemoryStore::group_owners()` lists
   the groups that own private memories (at most `MAX_GROUPS`, 20, are shown, and the page says if
   there are more); each gets a section from `list(group viewer, GROUP_FETCH)` filtered to the
-  group's own private memories (the store also returns the shared ones to a group viewer, which
-  the owner's own list already shows), under
+  group's own private memories (the store also returns the shared ones to a group viewer, which the
+  owner's own list already shows), under
   `MemoryViewer::new(MemoryOwner::Group { instance, conversation }, true)`: the owner's right to
   write shared memories. Every form in a group section carries `group_instance` and
   `group_conversation` hidden fields; `MemoryForm::viewer` builds the group viewer from them only
-  after `may_administer` (a non-owner gets 403 for any group field, existing group or not, so
-  group ids can't be probed) and a well-formed group (400 otherwise, and for a half-named one).
-  Both fields empty means the user's own scope. A memory is therefore reachable only through its
-  own group: through the owner's scope or another group it is `UnknownMemory`, a 404.
-- **Writes** are three plain `POST` forms (`add`, `edit`, `forget`) with the CSRF token in a
-  hidden field (`check_csrf`, header or field, checked first, before the agent is looked up).
+  after `may_administer` (a non-owner gets 403 for any group field, existing group or not, so group
+  ids can't be probed) and a well-formed group (400 otherwise, and for a half-named one). Both
+  fields empty means the user's own scope. A memory is therefore reachable only through its own
+  group: through the owner's scope or another group it is `UnknownMemory`, a 404.
+- **Writes** are three plain `POST` forms (`add`, `edit`, `forget`) with the CSRF token in a hidden
+  field (`check_csrf`, header or field, checked first, before the agent is looked up).
   `source_session` is `None` for a memory made here. The text's CRLF becomes LF. An edit always
-  sends content, `core`, and `shared` (an unticked box is `Some(false)`), so un-ticking *shared*
-  on a shared memory makes it the editing user's private one, as `memory_edit` does. Success is a
-  303 to `/admin/agents/<agent>/memory?done=added|saved|forgotten[#memory-<id>]`; the page maps
-  the fixed `done` codes to a notice and ignores any other value, so a link can't put text on the
-  page.
+  sends content, `core`, and `shared` (an unticked box is `Some(false)`), so un-ticking *shared* on
+  a shared memory makes it the editing user's private one, as `memory_edit` does. Success is a 303
+  to `/admin/agents/<agent>/memory?done=added|saved|forgotten[#memory-<id>]`; the page maps the
+  fixed `done` codes to a notice and ignores any other value, so a link can't put text on the page.
 - **Refusals** re-render the page (nothing was written) with a status and a message, mapped from
   `giles_store::Error`: `UnknownMemory` 404 (the same for an id that is invisible or gone),
   `SharedWriteForbidden` 403, `MemoryTooLong` and `InvalidRequest` 400, `StaleMemory` and
-  `CoreCapExceeded` 409; any other error is a logged 500. An add keeps what was typed in the
-  form; an edit shows what was typed in a `<pre>`. `CoreCapExceeded` says how far over the cap the
-  scope would be and lists the scope's core memories (from `CoreOverflow::memories`) so the user
-  can trim. A form without a parseable id (or, for an edit, `updated`) is a 400.
+  `CoreCapExceeded` 409; any other error is a logged 500. An add keeps what was typed in the form;
+  an edit shows what was typed in a `<pre>`. `CoreCapExceeded` says how far over the cap the scope
+  would be and lists the scope's core memories (from `CoreOverflow::memories`) so the user can trim.
+  A form without a parseable id (or, for an edit, `updated`) is a 400.
 - **Lost updates.** Each edit form carries the memory's `updated_at` in Unix milliseconds
   (`updated`) from when the page was rendered, and the handler sends it as
   `MemoryEdit::expected_updated_at`. The store compares it with the stored value in the same
   transaction as the write (after the visibility check, before the shared-write rule), so a change
-  by the agent or by another tab between render and post is refused as `StaleMemory`; the page
-  then shows the current content next to what was typed. The check works on the store's
-  millisecond resolution. Forget has no guard: it is deliberate and the user sees what they forget.
+  by the agent or by another tab between render and post is refused as `StaleMemory`; the page then
+  shows the current content next to what was typed. The check works on the store's millisecond
+  resolution. Forget has no guard: it is deliberate and the user sees what they forget.
 - **Running sessions** keep the core memories their prompt was built with; the page says that a
   change reaches a session after it compacts or when a new session starts
   ([Agent Loop](agent-loop.md)). Nothing here notifies a session.
@@ -670,24 +667,24 @@ practice; the handlers don't assume it, and a test signs in as another user.
 
 ## Route Pages
 
-In `routes.rs`: `web.install_routes(builder, Arc<routes::Routes>)`, which `serve`
-calls last, with the runtime's `Routes` (the object whose `RouteList` the router reads). Like the
-agent pages: the same authentication middleware, `may_administer` on every route including the
-POSTs, `no-store` on every answer, and `check_csrf` (header or field) on every POST. Every change
-is one `Routes` call, which validates, writes, and gives the router the new list before it
-returns ([Identity and Routing](identity-and-routing.md#stored-routes)), so the next inbound
-message uses it.
+In `routes.rs`: `web.install_routes(builder, Arc<routes::Routes>)`, which `serve` calls last, with
+the runtime's `Routes` (the object whose `RouteList` the router reads). Like the agent pages: the
+same authentication middleware, `may_administer` on every route including the POSTs, `no-store` on
+every answer, and `check_csrf` (header or field) on every POST. Every change is one `Routes` call,
+which validates, writes, and gives the router the new list before it returns
+([Identity and Routing](identity-and-routing.md#stored-routes)), so the next inbound message uses
+it.
 
 - The list shows each route's position, channel, kind, conversation, and agent (a link to the
-  agent's page, or plain text if it's gone), with Edit, Up, Down, and Remove. Up is left out for
-  the first route and Down for the last. A route with a problem (`RouteView::problems`: never
-  used, channel instance or agent not configured) has a warning row under it. A notice says how
-  many `[[routes]]` `giles.toml` still has (`Config::legacy_routes`).
+  agent's page, or plain text if it's gone), with Edit, Up, Down, and Remove. Up is left out for the
+  first route and Down for the last. A route with a problem (`RouteView::problems`: never used,
+  channel instance or agent not configured) has a warning row under it. A notice says how many
+  `[[routes]]` `giles.toml` still has (`Config::legacy_routes`).
 - Buttons are plain `POST` forms with the CSRF token in a hidden field, so the pages work without
   scripts and removing is never a link. Routes in paths and forms are the store's stable ids
-  (`RouteId`), never positions: a page opened before another change can't act on a different
-  route; one for a route that's gone answers 404 "No such route". An id that isn't a number is the
-  same 404.
+  (`RouteId`), never positions: a page opened before another change can't act on a different route;
+  one for a route that's gone answers 404 "No such route". An id that isn't a number is the same
+  404.
 - The add and edit forms are one template. Channel, kind, and agent are `<select>`s of what exists
   now (the running configuration), plus the route's current value when it's no longer there, so
   editing a route to a vanished agent shows it. The add form also has Position: "At the end" or
@@ -714,9 +711,9 @@ The compose form replaces itself (`hx-target="this"`, `hx-swap="outerHTML"`); ap
 ## Tests
 
 `crates/giles-core/src/channels/web/tests.rs` (router-level with `tower::ServiceExt::oneshot`, a
-temporary store; the chat tests inject a `WebUser`, the login tests go through the real
-middleware), plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`,
-`links.rs`, `proxy.rs`, `admin.rs`, `qr.rs`:
+temporary store; the chat tests inject a `WebUser`, the login tests go through the real middleware),
+plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`, `links.rs`,
+`proxy.rs`, `admin.rs`, `qr.rs`:
 
 - Every route without a user is a 401 login page; malformed chat and blob ids are 404s.
 - The chat list: only this instance's chats, newest first, escaped titles. A chat page: transcript
@@ -731,29 +728,29 @@ middleware), plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `c
 - Live output: start, coalesced and out-of-band updates, the snapshot on page load, finish, and the
   cut-off marker on drop (paused Tokio time); a live message already stored is shown once.
 - Approvals: prompt fragment and page form, CSRF and validation, `yes! <code>` posted, the "Sent"
-  replacement, `resolve_approval` outcomes (and `false` for unknown prompts and chats),
-  plain-post redirect.
+  replacement, `resolve_approval` outcomes (and `false` for unknown prompts and chats), plain-post
+  redirect.
 - History: the time prefix is cut from user messages and chat titles; a post shows once on reload
   while unacked, queued, started, and stored (`render::waiting` unit tests cover replayed and
   already-stored posts).
 - Blobs: media type, `nosniff`, `sandbox`, inline vs. attachment, 404s, non-owner refused.
-- End to end: a real `Sessions` with the web channel attached and a fake turn runner that stores
-  the messages and replies through `Reply::send`: a post becomes a turn, the reply reaches the open
+- End to end: a real `Sessions` with the web channel attached and a fake turn runner that stores the
+  messages and replies through `Reply::send`: a post becomes a turn, the reply reaches the open
   page, the events are acked, and a reload shows both from the transcript.
 - Live output end to end: the daemon's wiring (`Runtime`, `AgentLoop`, sessions, `WebApp`) with a
   fake provider that streams slowly: a post becomes a turn whose text reaches the open page as a
   live message with out-of-band updates, then its final rendering, and a reload shows the stored
   reply once.
-- Login: a link shows its button without being used, logs in once with the right cookie flags and
-  a 30-day `web_sessions` row, then is 410; expired, unknown, and malformed links; link creation
+- Login: a link shows its button without being used, logs in once with the right cookie flags and a
+  30-day `web_sessions` row, then is 410; expired, unknown, and malformed links; link creation
   refusals; expired, unknown, and orphaned sessions logged out with the cookie deleted; the hourly
   cleanup; logout with CSRF; a cookie login's CSRF token; `public_url` and `X-Forwarded-Proto`
   making cookies `Secure` (the latter only through the proxy).
 - Proxy: the identity header ignored on the main listener and honored on the proxy app, unknown
   identities refused, posts carry the header's identity and need its CSRF token; a TCP listener
-  needs the exact secret; binding (socket mode 0600, `InUse`, stale socket replaced, non-socket
-  left alone). `crates/giles/tests/serve.rs` runs the daemon with a proxy socket and checks it
-  over real connections, and that the socket is gone after exit.
+  needs the exact secret; binding (socket mode 0600, `InUse`, stale socket replaced, non-socket left
+  alone). `crates/giles/tests/serve.rs` runs the daemon with a proxy socket and checks it over real
+  connections, and that the socket is gone after exit.
 - Admin pages (`tests/admin.rs`, over a fake admin service): anonymous requests get 401 and a
   non-owner 403 on every admin route, with nothing restarted; the status page shows the fake state
   with plugin strings escaped and no reload; a `NeedsAuth` QR channel gets an `<svg>` (a new
@@ -765,13 +762,13 @@ middleware), plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `c
   oversized payload is an error. `crates/giles/tests/serve.rs` checks that the daemon serves
   `/admin` from its own admin service, behind the login.
 - Route pages (`tests/routes.rs`, over the test configuration): anonymous requests get 401 and a
-  non-owner 403 on every route including the POSTs, with nothing changed; every POST needs the
-  CSRF token (a wrong or missing one is 403, the header works as well as the field); the list is
-  in order with escaped values, the agent links, no Up on the first route and no Down on the last,
-  warnings for a route that never matches or points at a gone instance or agent, and the notice
-  for `[[routes]]` still in `giles.toml`; adding stores the route and the router's `RouteList`
-  picks it for the next message, at the end or before a chosen route; an invalid form (unknown
-  instance or agent, bad kind, control characters) is shown again with the problem, its values
-  and nothing stored; a duplicate, a shadowed route, and a route that would hide another are 409;
-  edit, remove (not by `GET`), and move change which route wins in the router's list; a move that
-  would hide a route is refused; ids that aren't numbers or routes are 404.
+  non-owner 403 on every route including the POSTs, with nothing changed; every POST needs the CSRF
+  token (a wrong or missing one is 403, the header works as well as the field); the list is in order
+  with escaped values, the agent links, no Up on the first route and no Down on the last, warnings
+  for a route that never matches or points at a gone instance or agent, and the notice for
+  `[[routes]]` still in `giles.toml`; adding stores the route and the router's `RouteList` picks it
+  for the next message, at the end or before a chosen route; an invalid form (unknown instance or
+  agent, bad kind, control characters) is shown again with the problem, its values and nothing
+  stored; a duplicate, a shadowed route, and a route that would hide another are 409; edit, remove
+  (not by `GET`), and move change which route wins in the router's list; a move that would hide a
+  route is refused; ids that aren't numbers or routes are 404.

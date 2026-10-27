@@ -1,14 +1,13 @@
 # gRPC Protocols
 
-The core talks to provider and channel plugins over gRPC, and serves an admin service to the CLI
-and the web admin pages (PLAN section 8). Toolsets speak MCP instead and have no `.proto` contract.
-The contracts are Protobuf files under `proto/`, checked with `buf` and compiled into the
-`giles-proto` crate.
+The core talks to provider and channel plugins over gRPC, and serves an admin service to the CLI and
+the web admin pages (PLAN section 8). Toolsets speak MCP instead and have no `.proto` contract. The
+contracts are Protobuf files under `proto/`, checked with `buf` and compiled into the `giles-proto`
+crate.
 
 ## Packages
 
-Each package lives in `proto/giles/<package>/v1/<package>.proto`; the `buf` module root is
-`proto/`.
+Each package lives in `proto/giles/<package>/v1/<package>.proto`; the `buf` module root is `proto/`.
 
 | Package             | Contents                                                              | Rust module                   |
 | ------------------- | --------------------------------------------------------------------- | ----------------------------- |
@@ -40,20 +39,20 @@ is described in [Admin Service](admin.md).
     `CacheRetention`, whose unspecified value means the default, `SHORT`.
 - `optional` scalars stand exactly where `giles-types` has an `Option`, so `prost` generates the
   same `Option` and set-but-empty stays distinct from unset. Message-typed fields are always
-  optional in proto3; the ones the domain requires say "Always set" in their comment, and a
-  missing one is `INVALID_ARGUMENT`.
+  optional in proto3; the ones the domain requires say "Always set" in their comment, and a missing
+  one is `INVALID_ARGUMENT`.
 - Ids are plain strings on the wire. The receiver validates them when converting to `giles-types`
   (non-empty, or SHA-256 hex for media).
 - JSON values are JSON text in `string` fields named `*_json`: tool input, tool input schemas,
   `Opaque` data, instance config. `google.protobuf.Struct` would not do: it holds only objects and
   turns every number into a double, and `Opaque` data has to round-trip exactly.
 - Times are `google.protobuf.Timestamp`.
-- Attachments travel as `giles.types.v1.BlobRef`, never as bytes inside messages. On the wire the
-  id is a plugin-local handle; the `Remote*` adapter moves the bytes with `GetBlob` and `PutBlob`
-  and swaps the handle for the core's SHA-256 `MediaId` (PLAN section 8.3). A `BlobChunk` carries
-  at most 1 MiB of data.
-- Messages are limited to 16 MiB instead of `tonic`'s 4 MiB default. Clients and servers set it
-  from `giles_proto::MAX_MESSAGE_SIZE`.
+- Attachments travel as `giles.types.v1.BlobRef`, never as bytes inside messages. On the wire the id
+  is a plugin-local handle; the `Remote*` adapter moves the bytes with `GetBlob` and `PutBlob` and
+  swaps the handle for the core's SHA-256 `MediaId` (PLAN section 8.3). A `BlobChunk` carries at
+  most 1 MiB of data.
+- Messages are limited to 16 MiB instead of `tonic`'s 4 MiB default. Clients and servers set it from
+  `giles_proto::MAX_MESSAGE_SIZE`.
 
 ## Launch handshake
 
@@ -130,17 +129,16 @@ only, and `buf breaking` enforces it:
 
 - Add fields, messages, enum values, `oneof` variants, and RPCs. Never renumber, rename, retype, or
   remove one, and never move a field into or out of a `oneof`.
-- A removed field's number (and name) is `reserved`. Numbers that the design set aside are
-  reserved already, e.g. `DescribeResponse` 4 (config schema) and 12 (toolsets).
+- A removed field's number (and name) is `reserved`. Numbers that the design set aside are reserved
+  already, e.g. `DescribeResponse` 4 (config schema) and 12 (toolsets).
 - Receivers ignore unknown fields. An unknown `oneof` variant decodes as no variant set: the core
   acks such a `ChannelEvent` by id and ignores it, so the plugin doesn't resend it forever.
 - More generally, a `ChannelEvent` that fails conversion on the `Events` stream (an unknown nested
   variant or enum value, a missing "Always set" message, an empty id) is logged, acked by
   `event_id`, and dropped. A stream item can't be answered with `INVALID_ARGUMENT`, and leaving it
   unacked would make the plugin resend it forever.
-- New optional behavior is announced, not assumed: plugins report typed capabilities in
-  `Describe`, and the core sends its protocol minor version and feature names in
-  `DescribeRequest`.
+- New optional behavior is announced, not assumed: plugins report typed capabilities in `Describe`,
+  and the core sends its protocol minor version and feature names in `DescribeRequest`.
 - A breaking change is a new package, `giles.<package>.v2`, in its own directory, served next to
   `v1` for as long as the core supports both.
 
@@ -151,13 +149,13 @@ only, and `buf breaking` enforces it:
 code uses `tonic-prost`'s codec at run time.
 
 - `protoc` comes from `PROTOC` if set, else from the `protoc-bin-vendored` crate, which bundles
-  Google's binaries for Linux and macOS on x86-64 and ARM64. Building needs no system `protoc`.
-  The well-known types (`google/protobuf/timestamp.proto`) come from the vendored include
-  directory either way.
-- Messages, and a client and a server for every service, are generated into `OUT_DIR` and
-  included in one module per package, `giles_proto::<package>::v1`, marked
-  `#[allow(missing_docs, clippy::all, clippy::pedantic)]`. Comments in the `.proto` files become
-  the Rust docs. Well-known types map to `prost-types`.
+  Google's binaries for Linux and macOS on x86-64 and ARM64. Building needs no system `protoc`. The
+  well-known types (`google/protobuf/timestamp.proto`) come from the vendored include directory
+  either way.
+- Messages, and a client and a server for every service, are generated into `OUT_DIR` and included
+  in one module per package, `giles_proto::<package>::v1`, marked
+  `#[allow(missing_docs, clippy::all, clippy::pedantic)]`. Comments in the `.proto` files become the
+  Rust docs. Well-known types map to `prost-types`.
 - `giles_proto::FILE_DESCRIPTOR_SET` is the encoded descriptor set of every package, with its
   imports, for gRPC server reflection.
 - `crates/giles-proto/proto` is a symlink to the repository's `proto/`. Cargo follows it when
@@ -165,9 +163,9 @@ code uses `tonic-prost`'s codec at run time.
 
 ## Checks
 
-`buf.yaml` at the repository root declares the module (`proto/`), the `STANDARD` lint rules, and
-the `FILE` breaking rules, the strictest set, which also catches changes that only break generated
-code, such as a renamed field. From the repository root:
+`buf.yaml` at the repository root declares the module (`proto/`), the `STANDARD` lint rules, and the
+`FILE` breaking rules, the strictest set, which also catches changes that only break generated code,
+such as a renamed field. From the repository root:
 
 ```sh
 buf lint
@@ -175,21 +173,21 @@ buf format --diff --exit-code   # `buf format -w` fixes it
 buf breaking --against '<base>' # e.g. a directory or '.git#ref=<commit>'
 ```
 
-CI runs all three in the Protobuf job, comparing each pull request against its base and each push
-to `main` against the previous tip of `main` (see [Continuous Integration](ci.md)).
+CI runs all three in the Protobuf job, comparing each pull request against its base and each push to
+`main` against the previous tip of `main` (see [Continuous Integration](ci.md)).
 
 ## Deviations from the PLAN snippets
 
 The PLAN's Protobuf snippets (sections 8.2 to 8.7) were written before `buf` lint; they're updated
 to match these files. The changes:
 
-- Service names end in `Service`: `Plugin` became `PluginService`, `Admin` became
-  `AdminService`.
-- Streaming RPCs have their own request and response messages: `PutBlob(stream PutBlobRequest)
-  returns (PutBlobResponse)`, `GetBlob(GetBlobRequest) returns (stream GetBlobResponse)`, both
-  carrying a `BlobChunk`, and `Events(stream EventsRequest) returns (stream EventsResponse)`, with
-  the `EventAck` in `EventsRequest`'s `oneof request` and the `ChannelEvent` in `EventsResponse`.
-  Besides satisfying the lint, each stream direction can now gain fields independently.
+- Service names end in `Service`: `Plugin` became `PluginService`, `Admin` became `AdminService`.
+- Streaming RPCs have their own request and response messages:
+  `PutBlob(stream PutBlobRequest) returns (PutBlobResponse)`,
+  `GetBlob(GetBlobRequest) returns (stream GetBlobResponse)`, both carrying a `BlobChunk`, and
+  `Events(stream EventsRequest) returns (stream EventsResponse)`, with the `EventAck` in
+  `EventsRequest`'s `oneof request` and the `ChannelEvent` in `EventsResponse`. Besides satisfying
+  the lint, each stream direction can now gain fields independently.
 - `InboundMessage.conversation` is a `giles.types.v1.ConversationRef`, which the admin service's
   sessions use too.
 - Fields that are `Option`s in `giles-types` are `optional`: `BlobRef.name`,

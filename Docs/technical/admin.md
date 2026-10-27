@@ -40,8 +40,8 @@ is outside every plugin's grants (config validation rejects grants overlapping t
 directions use 16 MiB message limits.
 
 `admin::connect(&root)` is the client side: `check_socket_dir`, connect to the socket, then read the
-token (after the socket answers, so it's the running core's). A missing socket, a refused
-connection (a socket a dead core left), or a fallback socket directory that doesn't exist is
+token (after the socket answers, so it's the running core's). A missing socket, a refused connection
+(a socket a dead core left), or a fallback socket directory that doesn't exist is
 `ConnectError::NotRunning`. The returned `AdminClient` adds the token to every call.
 
 ## RPCs
@@ -76,8 +76,8 @@ Each `PluginInstance` combines three sources:
 
 ## Seams for Later Subsystems
 
-`AdminOptions` takes trait objects, so the service is tested with fakes and later subsystems plug
-in without changing it:
+`AdminOptions` takes trait objects, so the service is tested with fakes and later subsystems plug in
+without changing it:
 
 ```rust
 pub trait ChannelStatuses: Send + Sync {
@@ -111,6 +111,6 @@ The built-in web channel implements `LoginLinks` (its `UnknownUser` becomes `Unk
 `[channel.web]` instance `CreateLoginLink` answers `UNAVAILABLE`. The plugin host implements
 `PluginControl` ([Plugin Host](plugin-host.md#status)): `plugins()` maps each `PluginStatus` field
 for field (a remote plugin runs with no pid, and the version and `requested_grants` come from the
-live or cached `Describe` answer), and `restart` is `PluginHost::restart`. `serve` passes
-it as `plugins`. Toolsets are supervised by the toolset host ([Toolsets](toolsets.md#lifecycle)),
-which doesn't report to the admin service yet, so their lifecycle fields stay unset.
+live or cached `Describe` answer), and `restart` is `PluginHost::restart`. `serve` passes it as
+`plugins`. Toolsets are supervised by the toolset host ([Toolsets](toolsets.md#lifecycle)), which
+doesn't report to the admin service yet, so their lifecycle fields stay unset.

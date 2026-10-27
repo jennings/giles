@@ -32,8 +32,8 @@ Three BuildKit cache mounts keep rebuilds incremental: the Cargo registry and gi
 directory. A cache mount isn't part of the layer, so the step copies the binaries out to `/out`,
 which the runtime stage copies from.
 
-`whatsapp-rust`, the library under the WhatsApp plugin, is the one dependency that doesn't come
-from crates.io: it's a git dependency pinned to a commit by `Cargo.toml` and `Cargo.lock`
+`whatsapp-rust`, the library under the WhatsApp plugin, is the one dependency that doesn't come from
+crates.io: it's a git dependency pinned to a commit by `Cargo.toml` and `Cargo.lock`
 ([WhatsApp Channel](whatsapp.md#the-library-and-why-its-a-git-dependency)). `--locked` still
 applies, and Cargo fetches it from GitHub with its built-in git support, so the build stage needs
 network access to `github.com` and no `git` binary. The git cache mount keeps the checkout between
@@ -54,8 +54,8 @@ The runtime stage is `debian:bookworm-slim` with three packages:
   zone database. (Giles' own TLS clients trust the bundled Mozilla roots, and `jiff` falls back to a
   built-in copy of the time zone database.)
 - `tini`, which runs as PID 1. Plugins and MCP servers run in their own process groups, and Giles
-  kills a whole group when it stops one; descendants it didn't spawn itself are reparented to
-  PID 1, and `giles` as PID 1 wouldn't reap them, so they would stay zombies. `tini` reaps them and
+  kills a whole group when it stops one; descendants it didn't spawn itself are reparented to PID 1,
+  and `giles` as PID 1 wouldn't reap them, so they would stay zombies. `tini` reaps them and
   forwards signals, so `docker stop`'s SIGTERM still reaches `giles`.
 
 The binaries go in `/usr/local/bin/`, where plugin discovery finds them on `$PATH`
@@ -70,21 +70,18 @@ and it is also the working directory. A fresh named volume copies that ownership
 The WhatsApp plugin is in the image but inert until an instance of component `whatsapp` is
 configured: the core launches a plugin only for a configured instance, so the smoke test (which
 configures none) never starts it, never opens a connection to WhatsApp, and only checks that the
-binary is there. A configured instance keeps its session in `/data/data/plugins/<instance>/`, on
-the volume, and needs outbound HTTPS only.
+binary is there. A configured instance keeps its session in `/data/data/plugins/<instance>/`, on the
+volume, and needs outbound HTTPS only.
 
 The Discord plugin is the same: in the image, inert until an instance of component `discord` is
 configured, so the smoke test only checks that the binary is there and never connects to Discord. A
 configured instance keeps its catch-up state (`discord-state.json`) in
 `/data/data/plugins/<instance>/` and needs outbound TCP 443 only (REST, the Gateway, and the CDN).
-Its dependency tree has no new licence and no git dependency: everything in it is MIT, Apache-2.0,
-ISC, BSD-3-Clause, or CDLA-Permissive-2.0 ([Licence Check](discord.md#licence-check)), so the
-image's license label, `/usr/share/doc/giles/`, and the build's network needs are unchanged by it.
 
 `EXPOSE 8080` documents the web port; `giles.toml` must still set `http_listen = "0.0.0.0:8080"`,
 since the default listens on loopback only. The entrypoint is `tini -- giles` with `serve` as the
-default command, so the container runs `giles serve`, and arguments after the image name replace
-the subcommand (`docker run --rm <image> --version`).
+default command, so the container runs `giles serve`, and arguments after the image name replace the
+subcommand (`docker run --rm <image> --version`).
 
 The OCI labels name the source repository (which links a GitHub Container Registry package to it),
 the title, a description, and the license: `(MIT OR Apache-2.0) AND AGPL-3.0-only`. The repository
@@ -97,19 +94,19 @@ would otherwise replace it.
 (`LICENSE-AGPL-3.0`), and `THIRD-PARTY`, which names the AGPL component of the WhatsApp plugin and
 is the source offer for its binary: the repository at the image's commit (the
 `org.opencontainers.image.revision` label, set by the CI metadata step) and the pinned
-`whatsapp-rust` revision. The files come from the repository (`plugins/giles-channel-whatsapp/`
-for the last two), and the smoke test checks that they're in the image.
+`whatsapp-rust` revision. The files come from the repository (`plugins/giles-channel-whatsapp/` for
+the last two), and the smoke test checks that they're in the image.
 
 ## The Sandbox in a Container
 
 The plugin sandbox needs no extra privileges: Docker's default seccomp profile allows the
 `landlock_*` syscalls and installing seccomp filters, and Landlock needs no capabilities. Landlock
-comes from the host's kernel, which the startup check reports ([Plugin Sandbox](sandbox.md)). The
-CI image job checks it on GitHub's Ubuntu runners ([Continuous Integration](ci.md)); Apple's
+comes from the host's kernel, which the startup check reports ([Plugin Sandbox](sandbox.md)). The CI
+image job checks it on GitHub's Ubuntu runners ([Continuous Integration](ci.md)); Apple's
 `container` VMs, used for local Linux checks, have no Landlock, and the check reports that.
 
 ## Not Yet
 
-- `linux/arm64` images. The build is portable (it builds natively on arm64), but CI publishes
-  only `linux/amd64`, since building under QEMU emulation is too slow; an arm64 runner can add it.
+- `linux/arm64` images. The build is portable (it builds natively on arm64), but CI publishes only
+  `linux/amd64`, since building under QEMU emulation is too slow; an arm64 runner can add it.
 - A `minimal` image with `giles` alone, as a second final stage.

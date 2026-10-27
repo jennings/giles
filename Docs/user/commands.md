@@ -27,10 +27,10 @@ you, and it changes to show how the request ended.
 You can leave out the code (`yes`) when only one request is waiting; otherwise include it (Giles
 says so and decides nothing). `yes` and `no` count as approval replies only while a request is
 waiting for you in that conversation, or when their code names one that ended in the last day;
-otherwise they're ordinary messages to the agent. A reply to a request that already ended tells
-you how it ended: unanswered requests are denied after the agent's `approval_timeout` (10 minutes
-by default, see [Configuration](configuration.md)), and `/stop` cancels them; ask the agent again
-if you still want it. Any other message while a request waits denies it, and the agent sees your
+otherwise they're ordinary messages to the agent. A reply to a request that already ended tells you
+how it ended: unanswered requests are denied after the agent's `approval_timeout` (10 minutes by
+default, see [Configuration](configuration.md)), and `/stop` cancels them; ask the agent again if
+you still want it. Any other message while a request waits denies it, and the agent sees your
 message. Waiting requests don't survive a restart of Giles.
 
 In scheduled jobs nobody is there to answer, so tools that need approval are denied unless the job

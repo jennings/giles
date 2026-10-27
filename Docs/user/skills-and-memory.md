@@ -12,9 +12,9 @@ When a conversation starts, Giles gives the model, in this order:
    It's optional; write it in plain Markdown.
 2. The name and description of each skill the agent can use (below), if its `tools` allow
    `load_skill`, the tool it reads a skill with.
-3. Its core memories ([Memory](#memory)): the shared ones, then the ones for this conversation,
-   and, in your direct conversations, your profile `users/owner/USER.md`. Each scope the agent can
-   write is shown with how full it is.
+3. Its core memories ([Memory](#memory)): the shared ones, then the ones for this conversation, and,
+   in your direct conversations, your profile `users/owner/USER.md`. Each scope the agent can write
+   is shown with how full it is.
 
 This stays the same for the whole conversation, which lets the model provider cache it and makes
 replies faster and cheaper. So edits to `SOUL.md` or `USER.md` and new memories show up in
@@ -26,9 +26,9 @@ reaches the agent with the time you sent it, in your `[owner] timezone`, for exa
 ## Skills
 
 A skill is a directory holding a `SKILL.md` file and any resource files it refers to, in the
-[Agent Skills format](https://agentskills.io/specification), so skills written for other agents
-work unchanged. Each skill's name and description are shown to the agent in every conversation; the
-agent reads the rest of `SKILL.md` only when it decides the skill is relevant.
+[Agent Skills format](https://agentskills.io/specification), so skills written for other agents work
+unchanged. Each skill's name and description are shown to the agent in every conversation; the agent
+reads the rest of `SKILL.md` only when it decides the skill is relevant.
 
 Put skills in either place:
 
@@ -51,8 +51,8 @@ description: Prepare the weekly review. Use when asked for a weekly summary or r
 2. ...
 ```
 
-- `name` is required: lowercase letters, digits, and hyphens, at most 64 characters, not starting
-  or ending with a hyphen and without two hyphens in a row. It must be the same as the directory's
+- `name` is required: lowercase letters, digits, and hyphens, at most 64 characters, not starting or
+  ending with a hyphen and without two hyphens in a row. It must be the same as the directory's
   name.
 - `description` is required, at most 1,024 characters. Say what the skill does and when to use it:
   this is all the agent sees until it loads the skill.
@@ -64,9 +64,9 @@ agent's other skills keep working. Skills are read when a conversation starts, s
 restart. Giles never runs scripts that a skill contains.
 
 When the agent loads a skill it also sees the list of the skill's other files (hidden files left
-out) and can read any of them. A file it reads is shown to it and stored like an attachment, so
-it can hand the file to a tool or send it to you (`send_attachment`). Only files inside the
-skill's directory can be read: `..` and links that lead elsewhere are refused.
+out) and can read any of them. A file it reads is shown to it and stored like an attachment, so it
+can hand the file to a tool or send it to you (`send_attachment`). Only files inside the skill's
+directory can be read: `..` and links that lead elsewhere are refused.
 
 ## Memory
 
@@ -88,11 +88,11 @@ version is kept.
 
 ### Core and Other Memories
 
-A memory is either *core* or not, which the agent decides when it adds it and can change later
-with `memory_edit`:
+A memory is either *core* or not, which the agent decides when it adds it and can change later with
+`memory_edit`:
 
-- Core memories are loaded into the agent's prompt, so it knows them from the first message of
-  every conversation that can see them. Make a memory core only if the agent should always know it.
+- Core memories are loaded into the agent's prompt, so it knows them from the first message of every
+  conversation that can see them. Make a memory core only if the agent should always know it.
 - Other memories stay out of the prompt. The agent finds them with `memory_recall`, which searches
   every memory the conversation can see, core ones included. It matches any of the words you give,
   ranks the memories with more (and rarer) matching words first and the most recently changed first
@@ -115,27 +115,27 @@ Each memory is also private or shared:
 - A **shared** memory is visible in every conversation the agent has: yours, other people's, and
   groups'.
 
-Because a shared memory reaches every conversation, only you can create one: the agent may create
-a shared memory, mark one as shared, or change or forget one only in your conversations (a direct
+Because a shared memory reaches every conversation, only you can create one: the agent may create a
+shared memory, mark one as shared, or change or forget one only in your conversations (a direct
 conversation, or you writing in a group) and in jobs. These are both the jobs in `agent.toml` and
-the ones the agent schedules for you. Someone else's message in a group can't, though the agent
-can still keep private memories about that group. If the agent tries anyway, the tool says that
-shared memories can be written only in the owner's turns and in jobs.
+the ones the agent schedules for you. Someone else's message in a group can't, though the agent can
+still keep private memories about that group. If the agent tries anyway, the tool says that shared
+memories can be written only in the owner's turns and in jobs.
 
 A memory the conversation can't see is reported as "no memory #N", the same as an id that doesn't
 exist, so one conversation can't learn about another's memories.
 
 A job from `agent.toml` has no user, so it sees only the shared memories, and what it remembers is
-shared too. (Its prompt may still list your private core memories, because Giles builds the
-prompt per session and can't tell such a job from one you scheduled through the agent; the job's
-memory tools can't read or change them, and `memory_recall` finds shared memories only.)
+shared too. (Its prompt may still list your private core memories, because Giles builds the prompt
+per session and can't tell such a job from one you scheduled through the agent; the job's memory
+tools can't read or change them, and `memory_recall` finds shared memories only.)
 
 ### What the Agent Sees in Its Prompt
 
 In the prompt, memory comes after `SOUL.md` and the skills, under `# Memory`, in this order:
 
-1. `Shared memory`: the core memories that are shared, if there are any or if this conversation
-   may write them (yours do).
+1. `Shared memory`: the core memories that are shared, if there are any or if this conversation may
+   write them (yours do).
 2. `User memory` in your direct conversations and jobs, or `Group memory` in a group: the core
    memories private to that user or group.
 3. `User profile`, in your direct conversations only: your `users/<user>/USER.md`, which you write
@@ -152,24 +152,23 @@ What you remember in general, shared by all your conversations.
 #2 (core, shared): Backups run at 02:00.
 ```
 
-The bracketed usage header after a section's title says how full that scope's core memories are,
-in characters against `memory_cap`: here 49 of 1,000, rounded down to 4%. A section the agent
-can't write has no header. A section with no memories says `(empty)`. If the agent's `tools` allow
-`memory_recall`, the prompt also tells it that memories that aren't core are found with that
-tool.
+The bracketed usage header after a section's title says how full that scope's core memories are, in
+characters against `memory_cap`: here 49 of 1,000, rounded down to 4%. A section the agent can't
+write has no header. A section with no memories says `(empty)`. If the agent's `tools` allow
+`memory_recall`, the prompt also tells it that memories that aren't core are found with that tool.
 
 As with `SOUL.md`, the prompt is a snapshot: Giles takes it when a conversation starts and again
-when the conversation is compacted ([Configuration](configuration.md#agentsagentagenttoml)), so
-it stays the same in between and the model provider can cache it. A memory the agent adds during
-a conversation doesn't show in the prompt until then; the agent sees what it changed in the
-tool's result, which shows the memory with its id and, for core memories, the scope's usage. A
-memory added today is in the prompt of conversations that start afterward: after `/new`, an idle
-reset, or a restart of Giles.
+when the conversation is compacted ([Configuration](configuration.md#agentsagentagenttoml)), so it
+stays the same in between and the model provider can cache it. A memory the agent adds during a
+conversation doesn't show in the prompt until then; the agent sees what it changed in the tool's
+result, which shows the memory with its id and, for core memories, the scope's usage. A memory added
+today is in the prompt of conversations that start afterward: after `/new`, an idle reset, or a
+restart of Giles.
 
 ### Limits
 
-- **One memory** holds at most 1,000 characters. A longer text is refused and the agent is told
-  the limit.
+- **One memory** holds at most 1,000 characters. A longer text is refused and the agent is told the
+  limit.
 - **`memory_cap`** (default 2,200, set per agent in `agent.toml`) caps the total characters of the
   *core* memories in each scope: the shared ones, each user's, and each group's. Memories that
   aren't core don't count against it, and there is no limit on how many of them an agent keeps.
@@ -186,18 +185,17 @@ The agent gets the tools its `tools` list allows, like any other tool
 ([Configuration](configuration.md#agentsagentagenttoml)). `tools = ["memory_*"]` turns on all four
 memory tools, and `memory_search`, described below; list the names you want to give less, such as
 `["memory_recall"]` for an agent that may look things up but not change what it knows. A tool in
-`ask` needs your approval before each call (`ask = ["memory_forget"]`, for example). With no
-memory tools allowed the agent still sees its core memories in the prompt; it just can't change
-them.
+`ask` needs your approval before each call (`ask = ["memory_forget"]`, for example). With no memory
+tools allowed the agent still sees its core memories in the prompt; it just can't change them.
 
 ### Where Memories Are Stored
 
 Memories are in `agents/<agent>/memory.db`, one SQLite database for each agent, created the first
-time the agent needs it. It's included in `giles backup` ([Backups](backups.md)) and moves with
-the agent's directory when you remove the agent in the web UI ([Web UI](web.md#removing-an-agent)).
-Don't open or copy it while Giles runs, for the reasons that apply to `giles.db`. The web UI's
-agent page lists it with its size, not its contents; to read and change the memories, use the
-agent's memory page ([Memory](web.md#memory)).
+time the agent needs it. It's included in `giles backup` ([Backups](backups.md)) and moves with the
+agent's directory when you remove the agent in the web UI ([Web UI](web.md#removing-an-agent)).
+Don't open or copy it while Giles runs, for the reasons that apply to `giles.db`. The web UI's agent
+page lists it with its size, not its contents; to read and change the memories, use the agent's
+memory page ([Memory](web.md#memory)).
 
 ### Older MEMORY.md Files
 
@@ -210,10 +208,10 @@ with no memories. To keep something from them, tell the agent to remember it, or
 ## Searching Past Conversations
 
 The `memory_search` tool lets the agent look up something said before that it didn't keep as a
-memory. It searches the text of your direct conversations with that agent, on every channel (not
-job runs, not other agents' conversations, not memories; `memory_recall` searches those), and
-returns short excerpts, best matches first, with when each message was sent. Matching ignores word
-endings (`running` finds `run`), case, and accents.
+memory. It searches the text of your direct conversations with that agent, on every channel (not job
+runs, not other agents' conversations, not memories; `memory_recall` searches those), and returns
+short excerpts, best matches first, with when each message was sent. Matching ignores word endings
+(`running` finds `run`), case, and accents.
 
 Like the memory tools, it's offered only if the agent's `tools` allow it, for example
 `tools = ["memory_*"]`.

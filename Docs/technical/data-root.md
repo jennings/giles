@@ -54,11 +54,11 @@ Building a `DataRoot` does no I/O, so a CLI client computes the same paths, incl
 paths, as the daemon serving that root.
 
 Accessors that take an agent, user, or instance name return `PathsError::InvalidName` unless the
-name is a single normal path component (`is_valid_name`: non-empty, no `/` or NUL, not `.` or
-`..`), so a name can never escape its parent directory. This is a path-safety backstop, not the name
-grammar: config validation applies the stricter `[a-zA-Z0-9-]+`, but names also arrive at
-runtime (e.g. a user created through the admin service), and those must not be able to traverse
-paths either. It matters most for `data/plugins/<instance>/`, the only directory a plugin can write.
+name is a single normal path component (`is_valid_name`: non-empty, no `/` or NUL, not `.` or `..`),
+so a name can never escape its parent directory. This is a path-safety backstop, not the name
+grammar: config validation applies the stricter `[a-zA-Z0-9-]+`, but names also arrive at runtime
+(e.g. a user created through the admin service), and those must not be able to traverse paths
+either. It matters most for `data/plugins/<instance>/`, the only directory a plugin can write.
 
 ## Creating the Layout
 
@@ -88,8 +88,7 @@ $TMPDIR/giles-<16 hex digits>/proxy.sock
 - The name is the 64-bit FNV-1a hash of the absolute, normalized root path. It is a fixed algorithm
   (unlike Rust's `DefaultHasher`), so the daemon and any `giles` CLI, even from another release,
   derive the same directory from the same `GILES_HOME` without coordinating.
-- Only the sockets move. `run/admin.token`, `run/giles.lock`, and `run/pids/` stay in the data
-  root.
+- Only the sockets move. `run/admin.token`, `run/giles.lock`, and `run/pids/` stay in the data root.
 - The temporary directory may be shared with other users (`/tmp`), and the name is predictable, so
   `create_layout` creates the directory with mode 0700 and, if it already exists, accepts it only if
   it is a real directory (not a symlink) owned by the owner of `run/`. It then resets its mode to

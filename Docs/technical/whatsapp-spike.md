@@ -1,17 +1,17 @@
 # WhatsApp Spike
 
-This spike decides which library the WhatsApp channel plugin is built on: `whatsapp-rust`
-(PLAN section 10) or the `whatsmeow` fallback. The spike is a small CLI on `whatsapp-rust` in
-`spikes/whatsapp/`. It links as a companion device, prints incoming messages, sends a DM, and
-reuses its saved session after a restart. Everything that needs no phone has been verified. The
-live run, which links a real account, is the owner's: follow the [test plan](#owner-test-plan) and
-fill in [Results](#results). [Issue #1](https://github.com/jennings/giles/issues/1) (verify the
-WhatsApp plugin and library on a real account) stays open until then.
+This spike decides which library the WhatsApp channel plugin is built on: `whatsapp-rust` (PLAN
+section 10) or the `whatsmeow` fallback. The spike is a small CLI on `whatsapp-rust` in
+`spikes/whatsapp/`. It links as a companion device, prints incoming messages, sends a DM, and reuses
+its saved session after a restart. Everything that needs no phone has been verified. The live run,
+which links a real account, is the owner's: follow the [test plan](#owner-test-plan) and fill in
+[Results](#results). [Issue #1](https://github.com/jennings/giles/issues/1) (verify the WhatsApp
+plugin and library on a real account) stays open until then.
 
-**The owner chose not to wait.** The WhatsApp channel plugin ([WhatsApp
-Channel](whatsapp.md)) is built on `whatsapp-rust` on the assumption that it works, so the live
-run has not happened and the plugin's behavior with a real account is unverified. Issue #1 stays
-open, and the test plan below is the way to verify both the spike and the plugin later.
+**The owner chose not to wait.** The WhatsApp channel plugin ([WhatsApp Channel](whatsapp.md)) is
+built on `whatsapp-rust` on the assumption that it works, so the live run has not happened and the
+plugin's behavior with a real account is unverified. Issue #1 stays open, and the test plan below is
+the way to verify both the spike and the plugin later.
 
 **Recommendation:** build the plugin on `whatsapp-rust`, unless the live run fails one of the
 [decision criteria](#decision-criteria). It is actively maintained, covers everything Giles needs,
@@ -63,11 +63,11 @@ From reading the 0.7.0 sources, building the spike, and one unscanned `link --qr
   git dependency and is a workspace member
   ([why and how](whatsapp.md#the-library-and-why-its-a-git-dependency)).
 - **Fixes not released yet.** On `main` since 0.7.0: DM sends silently skipping devices without a
-  session ([#1361]) and WhatsApp Business phones failing to pair ([#1439]). If the live run hits
-  one of these, retest on `main` (see [Testing `main`](#testing-main)) before counting it against
-  the library.
-- **Messages are acked before the app stores them.** By default an inbound message is
-  acknowledged to the server whether or not the app persisted it (at most once). The
+  session ([#1361]) and WhatsApp Business phones failing to pair ([#1439]). If the live run hits one
+  of these, retest on `main` (see [Testing `main`](#testing-main)) before counting it against the
+  library.
+- **Messages are acked before the app stores them.** By default an inbound message is acknowledged
+  to the server whether or not the app persisted it (at most once). The
   [inbound durability hook][wr-dur] (`BotBuilder::with_inbound_durability_hook`, in 0.7.0) defers
   the ack until the hook returns `Ok`. That is the hook the plugin should use to write unacked
   events to its data directory (PLAN section 8.5) before the server considers them delivered.
@@ -82,10 +82,10 @@ From reading the 0.7.0 sources, building the spike, and one unscanned `link --qr
   would come from the plugin config. After the 6th QR code expires, the client shuts itself down
   (`PairingQrCodesExhausted { disconnected: true }`) and a new `Client` on the same store must be
   built for more codes; the plugin should only do that on demand, not in a tight loop.
-- **Session store.** One SQLite file (`SqliteStore::new(path)`), which goes in
-  `GILES_PLUGIN_DATA`. The device identity (`Device::pn`, `Device::lid`) is readable before
-  connecting, which tells the plugin whether it is linked. Two processes must never share a store:
-  both would connect as the same device. The spike holds an exclusive `flock` on `<data>/lock`.
+- **Session store.** One SQLite file (`SqliteStore::new(path)`), which goes in `GILES_PLUGIN_DATA`.
+  The device identity (`Device::pn`, `Device::lid`) is readable before connecting, which tells the
+  plugin whether it is linked. Two processes must never share a store: both would connect as the
+  same device. The spike holds an exclusive `flock` on `<data>/lock`.
 - **Identities.** A message has `sender`, `sender_alt` (the other form of the sender's address, when
   the server sends it), and `addressing_mode`. The LID-to-phone map learned from traffic is
   persisted and queryable (`Client::get_lid_pn_entry`). The spike reports the phone number as
@@ -163,8 +163,8 @@ of its devices). `offline=true` marks a message queued on the server while the s
   in both polarities, data directory mode and exclusive lock) on macOS arm64. Built and tested in
   the Linux container (arm64 Debian bookworm) as well.
 - `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` are clean.
-- `--help` for every command; clap rejects `link` without a mode and `--qr` with `--pair-code`;
-  bad phone numbers fail before any network access; `listen` and `send` refuse an unlinked data
+- `--help` for every command; clap rejects `link` without a mode and `--qr` with `--pair-code`; bad
+  phone numbers fail before any network access; `listen` and `send` refuse an unlinked data
   directory.
 - One `link --qr` run, stopped with Ctrl-C after 15 s without scanning: the client connected,
   received pairing refs, printed a QR code valid for 60 s, and shut down cleanly (exit 0). Nothing
@@ -215,9 +215,9 @@ public).
     DM from B. Expect it to arrive and no `logged out` or `undecryptable` lines in the log.
 11. **Logout.** With `listen` running, remove the device on A's phone (Linked devices > the device >
     Log out). Expect `listen` to stop with `logged out: ...`.
-12. **Pair code link.** `rm -rf $D`, then `$S --data $D link --pair-code $A`. Expect `pair code:
-    XXXXXXXX`. On the phone: Linked devices > Link a device > Link with phone number instead, and
-    enter the code. Expect `paired: ...` as in step 1, then repeat step 2.
+12. **Pair code link.** `rm -rf $D`, then `$S --data $D link --pair-code $A`. Expect
+    `pair code: XXXXXXXX`. On the phone: Linked devices > Link a device > Link with phone number
+    instead, and enter the code. Expect `paired: ...` as in step 1, then repeat step 2.
 13. **Clean up.** Remove the device on the phone and `rm -rf $D`.
 
 If a step fails, rerun it with `RUST_LOG=info` (or `debug`) and keep the stderr log.
@@ -283,26 +283,26 @@ config rewrites `https://github.com/` to SSH, which Cargo's built-in git can't u
 
 ### Verifying the plugin
 
-The plugin uses the same library at the commit under [Testing `main`](#testing-main), so the
-plan above checks it too, with the plugin's own surfaces in place of the spike's output. Link with
+The plugin uses the same library at the commit under [Testing `main`](#testing-main), so the plan
+above checks it too, with the plugin's own surfaces in place of the spike's output. Link with
 `giles-channel-whatsapp` instead of `spikes/whatsapp`, on a throwaway `GILES_HOME` (never
 `~/.giles`), with a `[channel.whatsapp]` instance and the web chat's admin page open:
 
-- Steps 1 and 12 (QR and pair code): the admin page shows the QR code or the pair code (`link =
-  "pair_code"` with `phone_number`), the status turns to `connected`, and a restart reuses the
-  session (step 2) without a new code.
+- Steps 1 and 12 (QR and pair code): the admin page shows the QR code or the pair code
+  (`link = "pair_code"` with `phone_number`), the status turns to `connected`, and a restart reuses
+  the session (step 2) without a new code.
 - Steps 3 to 5 and 9 (DMs, echo, send, media): a DM from the second account reaches an agent routed
   to `whatsapp`, the reply arrives with its markup, attachments arrive as attachments, and nothing
-  the linked account itself sends starts a turn. Note whether the sender is the phone number or
-  only the LID (`dropped inbound message` in the log shows the identity to list).
-- Step 6 (offline delivery): stop Giles, send two DMs, start it: both arrive once, in order. This
-  is the durability hook; also kill Giles (`kill -9`) right after a message arrives and check the
+  the linked account itself sends starts a turn. Note whether the sender is the phone number or only
+  the LID (`dropped inbound message` in the log shows the identity to list).
+- Step 6 (offline delivery): stop Giles, send two DMs, start it: both arrive once, in order. This is
+  the durability hook; also kill Giles (`kill -9`) right after a message arrives and check the
   message is in its conversation exactly once after the restart.
-- Step 7 (reconnect): the status reports the outage only if it outlasts 10 seconds, then
-  `connected` again.
+- Step 7 (reconnect): the status reports the outage only if it outlasts 10 seconds, then `connected`
+  again.
 - Step 8 (groups): the group's messages are reported as `group` and dropped by the core.
-- Step 11 (logout): the status says it was logged out; **Restart** on the admin page links a
-  new device.
+- Step 11 (logout): the status says it was logged out; **Restart** on the admin page links a new
+  device.
 
 [#1361]: https://github.com/oxidezap/whatsapp-rust/issues/1361
 [#1439]: https://github.com/oxidezap/whatsapp-rust/issues/1439

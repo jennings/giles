@@ -1,7 +1,15 @@
+[global]
+exclude = [
+    "target",
+    ".git",
+    ".jj",
+]
+
 [MD013]
 line-length = 100
 code-blocks = false
 reflow = true
+reflow-mode = "normalize"
 
 # mdBook part titles in SUMMARY.md are level-1 headings.
 [per-file-ignores]
