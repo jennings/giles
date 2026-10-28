@@ -11,7 +11,7 @@ use giles_proto::plugin::v1::SandboxGrants;
 use giles_types::Timestamp;
 
 use crate::config::{
-    ChannelRuntime, Config, InstanceName, NetworkGrant, Program, Sandbox, ToolsetTransport,
+    ChannelRuntime, Config, InstanceName, NetworkGrant, Sandbox, ToolsetTransport,
 };
 use crate::sandbox::HostReport;
 use crate::sessions::ChannelStatusRecord;
@@ -114,6 +114,7 @@ pub enum PluginRunState {
 pub(super) struct Configured<'a> {
     pub(super) instance: &'a InstanceName,
     pub(super) kind: pb::InstanceKind,
+    /// The channel's component; empty for a toolset, which has none.
     pub(super) component: &'a str,
     /// The program as configured, or the URL.
     pub(super) location: String,
@@ -139,19 +140,14 @@ pub(super) fn configured(config: &Config) -> Vec<Configured<'_>> {
         })
     });
     let toolsets = config.toolsets.values().map(|t| {
-        let (component, location, sandbox) = match &t.transport {
-            ToolsetTransport::Stdio(stdio) => match &stdio.program {
-                Program::Command(command) => ("", command.clone(), Some(&stdio.sandbox)),
-                Program::Plugin { component, binary } => {
-                    (component.as_str(), binary.clone(), Some(&stdio.sandbox))
-                }
-            },
-            ToolsetTransport::Http(remote) => ("", remote.url.to_string(), None),
+        let (location, sandbox) = match &t.transport {
+            ToolsetTransport::Stdio(stdio) => (stdio.command.clone(), Some(&stdio.sandbox)),
+            ToolsetTransport::Http(remote) => (remote.url.to_string(), None),
         };
         Configured {
             instance: &t.name,
             kind: pb::InstanceKind::Toolset,
-            component,
+            component: "",
             location,
             sandbox,
         }

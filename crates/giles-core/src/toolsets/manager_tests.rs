@@ -329,7 +329,6 @@ async fn a_stored_toolset_is_a_remote_server_with_its_token_in_secrets_toml() {
     // So is anything only a stdio server has.
     for (stdio_key, value) in [
         ("command", r#""/nonexistent/files""#),
-        ("component", r#""files""#),
         ("args", r#"["--verbose"]"#),
         ("env", r#"{ "TOKEN": { "secret": "files-token" } }"#),
         ("idle_stop", r#""5m""#),

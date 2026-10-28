@@ -167,17 +167,17 @@ go into the prompt, and the model loads the full skill on demand.
 - Transports: stdio and streamable HTTP. The deprecated HTTP+SSE transport is not supported; current
   `rmcp` releases don't provide it either.
 - MCP elicitation becomes a mid-call question or approval, asked through the channel.
-- A first-party toolset is an MCP server written with `rmcp`.
+- A first-party toolset is a stdio MCP server, configured with `command` like any other.
 
 ## Feature: plugins
 
 Plugins come in three kinds with little overlap. One plugin never mixes kinds.
 
-| Kind     | What it is                       | Protocol |
-| -------- | -------------------------------- | -------- |
-| Provider | `giles-provider-<name>` binary    | gRPC     |
-| Channel  | `giles-channel-<name>` binary     | gRPC     |
-| Toolset  | Any MCP server                   | MCP      |
+| Kind     | What it is                          | Protocol |
+| -------- | ----------------------------------- | -------- |
+| Provider | `giles-provider-<name>` binary      | gRPC     |
+| Channel  | `giles-channel-<name>` binary       | gRPC     |
+| Toolset  | Any MCP server, by `command` or URL | MCP      |
 
 gRPC plugins:
 

@@ -1,5 +1,5 @@
-//! Finding the binaries Giles launches: plugin binaries in `<root>/plugins/`, then on `$PATH`
-//! (PLAN section 7.3), and stdio toolset commands on `$PATH` (section 7.10).
+//! Finding the binaries Giles launches: channel plugin binaries in `<root>/plugins/`, then on
+//! `$PATH` (PLAN section 7.3), and stdio toolset commands on `$PATH` (section 7.10).
 //!
 //! The config loader uses this to protect the directories holding those binaries from write
 //! grants; the plugin host uses the same lookup to launch them.
@@ -94,10 +94,10 @@ mod tests {
             Some(root.plugins_dir().join("giles-channel-irc"))
         );
         // The kind is part of the name.
-        assert_eq!(discover_plugin(&root, Kind::Toolset, "irc", &env), None);
+        assert_eq!(discover_plugin(&root, Kind::Provider, "irc", &env), None);
         // Directories are not programs.
-        fs::create_dir_all(b.join("giles-toolset-dir")).unwrap();
-        assert_eq!(discover_plugin(&root, Kind::Toolset, "dir", &env), None);
+        fs::create_dir_all(b.join("giles-channel-dir")).unwrap();
+        assert_eq!(discover_plugin(&root, Kind::Channel, "dir", &env), None);
         // Without PATH, only the plugins directory is searched.
         assert_eq!(discover_plugin(&root, Kind::Channel, "x", &|_| None), None);
     }

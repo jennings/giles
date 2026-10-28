@@ -739,7 +739,8 @@ identity, not a conversation (section 8.5).
 | `channel`  | `giles-channel-<name>` binary                                   | gRPC `ChannelService`    |
 | `toolset`  | Any MCP server: a stdio command or an HTTP URL                  | MCP (section 7.10)       |
 
-First-party toolsets are MCP servers named `giles-toolset-<name>`.
+A first-party toolset is a stdio MCP server configured with `command` like any other: toolsets have
+no component and no plugin binary name.
 
 For gRPC plugins, the core checks that the kind in `Describe` matches the `<type>` in the binary
 name, and refuses the plugin otherwise.
@@ -757,9 +758,9 @@ renames the directories, and renames the instance's config (in the current layou
 `[<kind>.<old>]` table in `giles.toml`, section 11.2). At startup, the core refuses to start a new
 instance whose name doesn't match any known data while an unused old name has data, and points to
 the rename command. An instance removed on purpose, whose data stays, is listed in
-`[core] retired_instances` (section 11.2), which the check ignores. Renaming an instance that has no
-`component` key keeps its component by writing `component = "<old>"`, since the component defaults
-to the instance name.
+`[core] retired_instances` (section 11.2), which the check ignores. Renaming a provider or channel
+that has no `component` key keeps its component by writing `component = "<old>"`, since the
+component defaults to the instance name. A toolset has no component.
 
 ### 7.3 Discovery and enablement
 
@@ -916,14 +917,14 @@ exists so a toolset can stop when idle and still have its tools offered to the m
 ### 7.10 Toolsets: MCP
 
 Toolsets are MCP servers, and the core contains the MCP client (`rmcp`). There is no Giles-specific
-toolset protocol: any MCP server works as a toolset unchanged, and a first-party toolset plugin is
-an MCP server written with `rmcp`.
+toolset protocol: any MCP server works as a toolset unchanged, and a first-party toolset is a stdio
+MCP server written with `rmcp` and configured with `command` like any other.
 
 Each toolset instance is one MCP server. Where it is configured depends on whether Giles runs it:
 
-- Stdio: a `[toolset.<instance>]` table of `giles.toml`, written by the operator: a `command`
-  (absolute path) with `args` and `env`, or the first-party plugin `giles-toolset-<component>`,
-  launched by the core through the sandbox trampoline (section 12), one sandbox per server.
+- Stdio: a `[toolset.<instance>]` table of `giles.toml`, written by the operator: a required
+  `command` (an absolute path or a name on the operator's `PATH`) with `args` and `env`, launched by
+  the core through the sandbox trampoline (section 12), one sandbox per server.
 - Remote: a streamable HTTP `url`, with `auth = { bearer = { secret = ... } }`, stored in the
   database and managed in the web UI (Admin → MCP servers), the admin RPCs, and `giles toolset`
   (section 8.7), while Giles runs. The deprecated HTTP+SSE transport is not supported, and `rmcp` no
@@ -1390,8 +1391,9 @@ http_listen = "127.0.0.1:8080"
 retired_instances = []        # instance names removed on purpose; their data stays (section 7.2)
 journal_mode = "wal"          # SQLite journal mode: wal (default), delete, truncate, persist (11.4)
 
-# Instances: [<kind>.<instance>]. `component` defaults to the instance name. The core uses a
-# built-in component with that name if there is one, else the plugin giles-<kind>-<component>.
+# Instances: [<kind>.<instance>]. A provider's or channel's `component` defaults to the instance
+# name. The core uses a built-in component with that name if there is one, else the plugin
+# giles-<kind>-<component>.
 [provider.anthropic]
 config = { api_key = { secret = "anthropic" } }
 
@@ -1424,11 +1426,12 @@ agents = ["*"]
 tools = ["*"]
 ```
 
-Keys at the instance level belong to the core: `component`, `address`, `auth`, `insecure`,
-`sandbox`, `unknown_senders`, `deadline`, `idle_stop`, `max_blob`, `unsandboxed`, and for toolsets
-`command`, `args`, `env`, `skills`, `parallel`. Only the `config` table goes to a provider or
-channel component. A `[toolset.<instance>]` table with `url` is ignored whatever else it holds, and
-each start logs a warning naming it.
+Keys at the instance level belong to the core: `component` (providers and channels), `address`,
+`auth`, `insecure`, `sandbox`, `unknown_senders`, `deadline`, `idle_stop`, `max_blob`,
+`unsandboxed`, and for toolsets `command` (required), `args`, `env`, `skills`, `parallel`. Only the
+`config` table goes to a provider or channel component. A `[toolset.<instance>]` table with `url` is
+ignored whatever else it holds, and each start logs a warning naming it. `component` in any other
+`[toolset.<instance>]` table is an error.
 
 A key in `giles.toml` that the core doesn't know is ignored with a startup warning; a known key with
 a value of the wrong type stops startup. The exceptions stay strict: `sandbox` tables (a typo would
@@ -1695,8 +1698,9 @@ with `toml`, `tracing`, `thiserror` in libraries and `anyhow` in the binary, `cr
 `notify` for config watching, `pulldown-cmark`, `landlock` and a seccomp filter crate on Linux,
 `rustls` with bundled roots.
 
-Core also: `rmcp` (MCP client). First-party plugins: `rmcp` (toolset servers), `whatsapp-rust`
-(WhatsApp), `twilight` (Discord). IRC and email libraries are chosen when those plugins are built.
+Core also: `rmcp` (MCP client). First-party toolset servers: `rmcp`. First-party plugins:
+`whatsapp-rust` (WhatsApp), `twilight` (Discord). IRC and email libraries are chosen when those
+plugins are built.
 
 ### 13.3 Core modules
 

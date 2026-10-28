@@ -114,7 +114,7 @@ impl Protect<'_> {
 
 /// What to grant for `binary`: its install prefix, else its directory, else the file itself,
 /// whichever is the first that `protect` allows (a prefix may be the home directory, as for
-/// `~/bin/server`, or contain the data root). `None` if even the file is refused (a bundled plugin
+/// `~/bin/server`, or contain the data root). `None` if even the file is refused (a program
 /// inside the data root, which the sandbox lets the command run anyway).
 fn grant_for(protect: &Protect<'_>, binary: &Path) -> Option<PathBuf> {
     let candidates = [install_prefix(binary), binary.parent(), Some(binary)];
@@ -394,7 +394,7 @@ mod tests {
     #[test]
     fn a_binary_inside_the_data_root_gets_no_grant() {
         let s = Setup::new();
-        let found = s.file("home/.giles/plugins/giles-toolset-x", "");
+        let found = s.file("home/.giles/bin/server", "");
         let plan = s.plan(&found, &|_| None);
         assert!(plan.grants.is_empty(), "{plan:?}");
     }

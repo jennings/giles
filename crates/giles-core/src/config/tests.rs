@@ -412,7 +412,7 @@ bogus = true
     assert_eq!(config.owner.identities.len(), 1);
     assert!(matches!(
         &config.toolsets["files"].transport,
-        ToolsetTransport::Stdio(stdio) if stdio.program == Program::Command("/x".into())
+        ToolsetTransport::Stdio(stdio) if stdio.command == "/x"
     ));
 
     let owner = config
@@ -810,9 +810,7 @@ fn toolsets() {
     let config = Home::new(&format!(
         "{MINIMAL}[toolset.files]\ncommand = \"/opt/homebrew/bin/mcp-server-filesystem\"\n\
          args = [\"/Users/me/Documents\"]\nidle_stop = \"30m\"\nskills = [\"/opt/skills\"]\n\
-         [toolset.fetch]\ncommand = \"uvx\"\ndeadline = \"2m\"\nparallel = true\n\
-         [toolset.shell]\n\
-         [toolset.sh2]\ncomponent = \"shell\"\n"
+         [toolset.fetch]\ncommand = \"uvx\"\ndeadline = \"2m\"\nparallel = true\n"
     ))
     .load_ok();
 
@@ -823,29 +821,47 @@ fn toolsets() {
     let ToolsetTransport::Stdio(stdio) = &files.transport else {
         panic!("{:?}", files.transport)
     };
-    assert_eq!(
-        stdio.program,
-        Program::Command("/opt/homebrew/bin/mcp-server-filesystem".into())
-    );
+    assert_eq!(stdio.command, "/opt/homebrew/bin/mcp-server-filesystem");
     assert_eq!(stdio.args, ["/Users/me/Documents"]);
     assert_eq!(stdio.idle_stop, Some(Duration::from_secs(1800)));
 
     let fetch = &config.toolsets["fetch"];
     assert_eq!(fetch.deadline, Duration::from_secs(120));
     assert!(fetch.parallel);
-
-    let program = |name: &str| match &config.toolsets[name].transport {
-        ToolsetTransport::Stdio(stdio) => stdio.program.clone(),
-        other => panic!("{other:?}"),
+    let ToolsetTransport::Stdio(stdio) = &fetch.transport else {
+        panic!("{:?}", fetch.transport)
     };
-    assert_eq!(program("fetch"), Program::Command("uvx".into()));
-    let plugin = |component: &str| Program::Plugin {
-        component: component.into(),
-        binary: format!("giles-toolset-{component}"),
-    };
-    assert_eq!(program("shell"), plugin("shell"));
-    assert_eq!(program("sh2"), plugin("shell"));
+    assert_eq!(stdio.command, "uvx");
     assert!(config.ignored_toolset_tables().is_empty());
+}
+
+#[test]
+fn a_toolset_without_command_is_refused() {
+    for table in ["", "parallel = true\nargs = [\"--stdio\"]"] {
+        let home = Home::new(&format!("{MINIMAL}[toolset.shell]\n{table}\n"));
+        assert_error(&home, "giles.toml", "toolset.shell", "missing `command`");
+    }
+}
+
+#[test]
+fn a_toolset_with_component_is_refused_with_the_program_to_set_instead() {
+    // The hint names the program the table ran before: `component`, else the toolset's name.
+    for (table, program) in [
+        ("component = \"sh\"", "\"giles-toolset-sh\""),
+        (
+            "command = \"/bin/sh\"\ncomponent = 5",
+            "\"giles-toolset-shell\"",
+        ),
+    ] {
+        let home = Home::new(&format!("{MINIMAL}[toolset.shell]\n{table}\n"));
+        assert_error(
+            &home,
+            "giles.toml",
+            "toolset.shell.component",
+            "a toolset has no component: set `command`",
+        );
+        assert_error(&home, "giles.toml", "toolset.shell.component", program);
+    }
 }
 
 #[test]
@@ -904,16 +920,11 @@ fn a_toolset_table_with_url_is_ignored_whatever_it_holds_and_reported() {
 
 #[test]
 fn toolset_rules() {
+    // Each case is a stdio toolset: `command = "/x"` unless the case sets `command`.
     let cases = [
         ("insecure = true", "insecure", "without `url`"),
-        (
-            "command = \"/bin/x\"\ncomponent = \"x\"",
-            "component",
-            "together with `command`",
-        ),
         ("command = \"bin/x\"", "command", "absolute path"),
         ("command = \"\"", "command", "not be empty"),
-        ("component = \"a_b\"", "component", "invalid component name"),
         ("deadline = \"5\"", "deadline", "invalid duration"),
         ("deadline = \"0s\"", "deadline", "longer than 0s"),
         ("idle_stop = \"0ms\"", "idle_stop", "longer than 0s"),
@@ -932,13 +943,13 @@ fn toolset_rules() {
         ("parallel = \"yes\"", "parallel", "invalid type"),
     ];
     for (toml, key, reason) in cases {
-        let home = Home::new(&format!("{MINIMAL}[toolset.t]\n{toml}\n"));
-        let key = if key.is_empty() {
-            "toolset.t".to_owned()
+        let command = if toml.starts_with("command") {
+            ""
         } else {
-            format!("toolset.t.{key}")
+            "command = \"/x\"\n"
         };
-        assert_error(&home, "giles.toml", &key, reason);
+        let home = Home::new(&format!("{MINIMAL}[toolset.t]\n{command}{toml}\n"));
+        assert_error(&home, "giles.toml", &format!("toolset.t.{key}"), reason);
     }
 }
 
@@ -2020,9 +2031,9 @@ fn grants_must_not_write_where_binaries_live() {
     executable("path/giles-channel-irc");
     executable("path/uvx");
     let server = executable("venv/bin/server");
-    let real_shell = executable("real/giles-toolset-shell");
+    let real_shell = executable("real/shell");
     std::fs::create_dir_all(tools.join("other")).unwrap();
-    std::os::unix::fs::symlink(&real_shell, tools.join("path/giles-toolset-shell")).unwrap();
+    std::os::unix::fs::symlink(&real_shell, tools.join("path/shell")).unwrap();
     let path_var = tools.join("path").into_os_string();
     let env = move |name: &str| (name == "PATH").then(|| path_var.clone());
 
@@ -2030,7 +2041,7 @@ fn grants_must_not_write_where_binaries_live() {
     let load = |instance: &str, sandbox: &str, giles_exe: Option<PathBuf>| {
         let mut toml = format!(
             "{MINIMAL}[channel.irc]\n[toolset.venv]\ncommand = {server:?}\n\
-             [toolset.uv]\ncommand = \"uvx\"\n[toolset.shell]\n"
+             [toolset.uv]\ncommand = \"uvx\"\n[toolset.shell]\ncommand = \"shell\"\n"
         );
         toml = toml.replace(
             &format!("[{instance}]\n"),
@@ -2088,7 +2099,7 @@ fn grants_must_not_write_where_binaries_live() {
     }
     // A directory holding only `uvx`, found on PATH, is protected too.
     std::fs::remove_file(tools.join("path/giles-channel-irc")).unwrap();
-    std::fs::remove_file(tools.join("path/giles-toolset-shell")).unwrap();
+    std::fs::remove_file(tools.join("path/shell")).unwrap();
     let err = load("toolset.venv", &format!("write = [{}]", dir("path")), None).unwrap_err();
     assert!(err.reason.contains("toolset uv's server"), "{err}");
 

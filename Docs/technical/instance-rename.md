@@ -82,13 +82,12 @@ renamed. If the file already has a `[<kind>.<new>]` table when the renamed table
 (only an ignored `[toolset.<new>]` can be there), the rename is refused rather than overwriting it:
 `giles.toml already has a [toolset.<new>] table: remove it, then run the command again`.
 
-An instance with no `component` key runs the component named like the instance (`[channel.web]` is
-the built-in web channel, `[toolset.github]` without `command` runs `giles-toolset-github`), so a
-plain rename would change what runs, and for a channel also the identity namespace, which must start
-with the component's name. When the renamed table lacks `component` and the instance runs a
-component (providers and channels always; a toolset only without `command`, since `component` next
-to `command` is an error), the edit adds `component = "<old>"`. The check after editing compares the
-component the old and the new table resolve to and refuses if they differ.
+A provider or channel with no `component` key runs the component named like the instance
+(`[channel.web]` is the built-in web channel), so a plain rename would change what runs, and for a
+channel also the identity namespace, which must start with the component's name. When the renamed
+provider or channel table lacks `component`, the edit adds `component = "<old>"`. The check after
+editing compares the component the old and the new table resolve to and refuses if they differ. A
+toolset runs its `command` and has no component, so its table is renamed as written.
 
 ## The steps
 

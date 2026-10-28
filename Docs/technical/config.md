@@ -146,12 +146,18 @@ kind is `Component::BuiltIn`; anything else is `Component::Plugin` with binary
 `giles-<kind>-<component>` (`plugin_binary`). The built-in list is a parameter, `Builtins`, so the
 core can pass the components its Cargo features compiled in; `Builtins::V1` lists every v1 built-in
 (`anthropic` and `openai` providers, `web` channel). Finding the binary in `<root>/plugins/` or on
-`$PATH` is the plugin host's job, at launch.
+`$PATH` is the plugin host's job, at launch. Only providers and channels have a component.
 
-A stdio toolset's `command` is kept as written (an absolute path or a bare program name); resolving
-it on the operator's `$PATH` and adding its install prefix to the sandbox grants happens at launch
-(PLAN section 7.10). Every toolset of `giles.toml` is a stdio one: a remote toolset (`url`) is
-stored in the database, and its table in the file is ignored.
+A stdio toolset's `command` is required and kept as written (an absolute path or a bare program
+name); resolving it on the operator's `$PATH` and adding its install prefix to the sandbox grants
+happens at launch (PLAN section 7.10). A table without `command` is an error at `toolset.<name>`.
+Every toolset of `giles.toml` is a stdio one: a remote toolset (`url`) is stored in the database,
+and its table in the file is ignored.
+
+A toolset has no component. `component` in a `[toolset.<name>]` table without `url` is an error at
+`toolset.<name>.component`, checked on the raw table before it is read as a `ToolsetSpec` (which has
+no such key). Such a table used to run a first-party plugin binary named after the component, so the
+reason names that binary as the program to set in `command`.
 
 Remote URLs (`address`, `url`) are parsed with `url`, must be `http` or `https` with a host and no
 credentials, and plain `http` needs `insecure = true` unless the host is `localhost`, `127.0.0.0/8`,
@@ -189,13 +195,13 @@ Validation of a toolset is separate from reading `giles.toml`, so the same check
 that comes from elsewhere, such as a spec stored as JSON, against the configuration that is running
 now. The pieces, all in `giles_core::config`:
 
-- `ToolsetSpec`: one toolset as written, with the keys of a `[toolset.<name>]` table (`component`,
-  `command`, `args`, `env`, `url`, `auth`, `insecure`, `deadline`, `idle_stop`, `parallel`,
-  `skills`, `sandbox`, `unsandboxed`). Loading deserializes each `[toolset.<name>]` table without
-  `url` into it, and `ToolsetSpec::from_json` reads the same keys from JSON; it also serializes.
-  Nothing is checked beyond each value's type. Credentials stay unresolved: `env` and `auth` are raw
-  values holding plain strings or `{ secret = ... }` / `{ env = ... }` references, and its `Debug`
-  leaves them out. `sandbox` is a `SandboxSpec`.
+- `ToolsetSpec`: one toolset as written, with the keys of a `[toolset.<name>]` table (`command`,
+  `args`, `env`, `url`, `auth`, `insecure`, `deadline`, `idle_stop`, `parallel`, `skills`,
+  `sandbox`, `unsandboxed`). Loading deserializes each `[toolset.<name>]` table without `url` into
+  it, and `ToolsetSpec::from_json` reads the same keys from JSON; it also serializes. Nothing is
+  checked beyond each value's type. Credentials stay unresolved: `env` and `auth` are raw values
+  holding plain strings or `{ secret = ... }` / `{ env = ... }` references, and its `Debug` leaves
+  them out. `sandbox` is a `SandboxSpec`.
 - `validate_toolset(name, &spec, &ToolsetContext) -> Result<ToolsetInstance, ToolsetError>`: the
   rules of `Ctx::toolset` (which keys fit a stdio or a remote toolset, `command`, `url`, `env`
   names, `auth`, durations, skill paths, grants against the data root and socket directory,
@@ -318,9 +324,9 @@ another instance's grants, so after every instance is validated the loader colle
 - the directory of the running `giles` binary, which is also the `sandbox-exec` trampoline
   (`LoadOptions::giles_exe`, default `std::env::current_exe()`);
 - for each launched channel plugin and each stdio toolset, the directory of its binary as found now:
-  `discover_plugin(root, kind, component, env)` for plugins (`<root>/plugins/`, then each absolute
-  `PATH` entry, executable regular files only; PLAN section 7.3), and `find_program(command, env)`
-  for a toolset `command` (as given if absolute, else on `PATH`).
+  `discover_plugin(root, kind, component, env)` for channel plugins (`<root>/plugins/`, then each
+  absolute `PATH` entry, executable regular files only; PLAN section 7.3), and
+  `find_program(command, env)` for a toolset `command` (as given if absolute, else on `PATH`).
 
 Each binary contributes the parent of every spelling of its path, so a symlinked binary protects
 both the link's directory and its target's. `write` and `unix` grants overlapping one of these
@@ -394,5 +400,3 @@ computed independently from this table, guard the algorithm; changing it needs a
   those keys are rejected as unknown. `ask_to = "deliver_to"` keeps PLAN's spelling and means the
   owner. The owner's time zone is `[owner] timezone`, which stands in for `user.toml`'s.
 - `prompt_file` must exist at startup, so a typo shows up then rather than at the first run.
-- A toolset with neither `command` nor `url` runs the first-party plugin
-  `giles-toolset-<component>`, mirroring how channel plugins are found.

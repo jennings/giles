@@ -125,8 +125,7 @@ message PluginInstance {
   string instance = 1;
   // The kind of instance.
   InstanceKind kind = 2;
-  // The component, e.g. "irc" for giles-channel-irc. Empty for an MCP toolset that runs a command
-  // or a URL.
+  // The component, e.g. "irc" for giles-channel-irc. Empty for a toolset, which has none.
   string component = 3;
   // The executable's path once found, else the program as configured (e.g. giles-channel-irc); or
   // the URL of a remote instance.
