@@ -3,7 +3,7 @@
 Code: `crates/giles-core/src/toolsets/` (`giles_core::toolsets`). Design: PLAN sections 7.5, 7.6,
 7.9, and 7.10. A toolset is an MCP server; the [MCP client](mcp.md) is the connection, and this
 module decides how to reach each configured `[toolset.<instance>]` (`ToolsetLauncher`) and keeps it
-going for the life of the daemon (`ToolsetHost`).
+going until it is removed or the daemon stops (`ToolsetHost`).
 
 ## Connecting
 
@@ -115,14 +115,16 @@ Like a plugin launch ([Plugin host](plugin-host.md)), without the gRPC parts:
 ([The `giles` Binary](daemon.md#giles-serve-lifecycle)). For each configured toolset it:
 
 1. Looks up the [tool-list cache](#tool-list-cache) (stdio servers only) and offers a hit at once.
-2. Registers a `ManagedToolset` with `Registry::register_toolset`, once, for the life of the daemon.
-   It never changes, so the dispatcher needs nothing beyond the registry.
+2. Registers a `ManagedToolset` with `Registry::register_toolset`. It stays registered until the
+   toolset is [replaced or removed](#changing-toolsets-while-giles-runs), so the dispatcher needs
+   nothing beyond the registry.
 3. Spawns the instance's supervisor task (`toolsets/lifecycle.rs`, under a `toolset{instance}`
    span), which owns the connection and makes the first start.
 
 `started()` waits for every first start to succeed or fail; `serve` waits for it alongside the
-plugin launches before logging `giles started`. `stop()` cancels the supervisors and waits for them,
-dropping every connection (a stdio server's process group is killed).
+plugin launches before logging `giles started`. `stop()` cancels every supervisor and waits for
+them, dropping every connection (a stdio server's process group is killed). It is for shutdown;
+after it, nothing starts any more.
 
 `ManagedToolset` is the instance's face:
 
@@ -145,7 +147,7 @@ The supervisor is a loop over four states:
 | `Running` | the connection closing, idle stop, shutdown   | gets the connection                     |
 | `Idle`    | a call (relaunches, then answers it), shutdown | waits for the relaunch                  |
 | `Down`    | the retry time (starts again), shutdown       | fails at once: `Unavailable` with the reason and `retry_after` |
-| `Stopped` | (ends the task)                               | fails: Giles is stopping                |
+| `Stopped` | (ends the task)                               | fails: `Unavailable`, the toolset is stopped |
 
 Every start lists the tools, offers them, and stores them in the cache. A start whose listing fails
 keeps offering the previous list.
@@ -195,6 +197,39 @@ restart while a start is under way abandons that attempt and begins another, so 
 retried. The old connection closes when its last call ends, so a call still running keeps the old
 server alive until it finishes. `restart` answers `false` for an instance the host doesn't
 supervise, such as a toolset that couldn't be registered.
+
+## Changing toolsets while Giles runs
+
+A toolset can be added, replaced, and removed without restarting Giles. Each call takes the toolset
+as it is, or is to be, in the registry's
+[live configuration](registry.md#the-running-configuration): the caller changes the `LiveConfig`
+first (`add_toolset`, `replace_toolset`, `remove_toolset`) and then tells the host, because
+`register_toolset` checks the live configuration. The host serializes its changes, so two of them
+never interleave.
+
+- `add(&ToolsetInstance)` does what boot does for one toolset: the cache lookup, `register_toolset`
+  (so the cached tools are offered at once), and a new supervisor. It doesn't wait for the first
+  start. A supervisor still running under the same name is stopped first, so a second `add` never
+  leaves two. It fails with `RegistryError::NotConfigured` if the instance isn't in the live
+  configuration, and does nothing once the host has been stopped.
+- `replace(&ToolsetInstance)` stops the old supervisor, then adds the new instance under the same
+  name. Stopping drops the old connection, which kills a stdio server's process group, and a call
+  still running on it ends as `Unavailable` (`toolset <instance>: stopped`). Its `config_hash`
+  differs from the old one's, so the cache lookup misses and nothing is offered until the new server
+  answers. Registering replaces the old object and starts a new tool-index generation, which drops
+  the old object's watcher, so a late `list_changed` from the old server can't overwrite the new
+  list (it can't arrive at all: its connection is gone).
+- `remove(&InstanceName)` stops the supervisor, then calls `Registry::unregister_toolset`, which
+  withdraws the tools from new sessions. A call still running ends `Unavailable`, and a session that
+  took its tools earlier still lists them, but the dispatcher answers a call to one with
+  `tool unavailable`: the registry has no such toolset.
+
+Every supervisor has its own cancellation token, a child of the host's, so a stop affects one
+toolset and `stop()` still stops all. A stopped supervisor's task ends, and the host waits for that
+before it registers the replacement or unregisters the toolset. `stop()` takes the same lock as a
+change, so a change in progress finishes first and none starts a supervisor that `stop()` doesn't
+wait for. The state the admin service reports follows: a removed toolset is gone from `plugins()`,
+and a replaced one starts over as `Starting`.
 
 ## Tool-list cache
 
@@ -251,3 +286,12 @@ failed write is logged.
   same media hand-over, and a copy a crash left behind removed at the next start (the server's own
   files stay). Remote: listing tools over streamable HTTP with the bearer token, and a wrong token
   refused as `InvalidRequest`.
+- Runtime changes (`toolsets/tests.rs`): adding a toolset registers it, offers its cached tools
+  while it starts, and gives new snapshots its tools but not running sessions; replacing it drops
+  the old connection (once the call running on it is dropped), ends that call as unavailable, misses
+  the cache, offers the new list, and the old connection can't announce a list any more; removing it
+  withdraws its tools, ends its calls, drops it from the admin report, and the name can be added
+  again; a stopped host starts nothing. The registry's tests cover registering a toolset added to
+  the live configuration and unregistering one, and the dispatcher's cover a call from a session
+  that lists a removed toolset (`tool unavailable`) and the next batch using an edited toolset's
+  `deadline`.

@@ -1,6 +1,7 @@
 //! The toolset lifecycle with fake servers and paused time: boot, the tool cache, idle stop and
-//! relaunch, crash restarts with backoff, a degraded remote server, `list_changed`, shutdown, and
-//! the state each instance reports to the admin service, with restarts.
+//! relaunch, crash restarts with backoff, a degraded remote server, `list_changed`, shutdown, the
+//! state each instance reports to the admin service, with restarts, and toolsets added, replaced,
+//! and removed while running.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::os::unix::process::ExitStatusExt as _;
@@ -101,6 +102,8 @@ struct Script {
     failures: VecDeque<Error>,
     /// When set, each connect waits for a permit.
     gate: Option<Arc<Semaphore>>,
+    /// When set, each source lookup waits for a permit.
+    source_gate: Option<Arc<Semaphore>>,
     connects: usize,
     /// Per connection: closing it (a crash, with this status) and its `list_changed` sender.
     crash: Vec<Option<oneshot::Sender<Option<ExitStatus>>>>,
@@ -117,6 +120,7 @@ impl Script {
             tools: tools.iter().map(|t| tool(t)).collect(),
             failures: VecDeque::new(),
             gate: None,
+            source_gate: None,
             connects: 0,
             crash: Vec::new(),
             changes: Vec::new(),
@@ -174,6 +178,10 @@ impl FakeConnector {
 #[async_trait]
 impl Connector for FakeConnector {
     async fn source(&self, instance: &ToolsetInstance) -> Result<String> {
+        let gate = self.script(instance.name.as_str(), |s| s.source_gate.clone());
+        if let Some(gate) = gate {
+            gate.acquire().await.unwrap().forget();
+        }
         Ok(self.script(instance.name.as_str(), |s| s.source.clone()))
     }
 
@@ -883,5 +891,308 @@ async fn a_restart_during_a_start_begins_the_start_over() {
     let files = reported(&host, "files");
     assert!(matches!(files.state, PluginRunState::Running { .. }));
     assert_eq!(files.restarts, 1);
+    host.stop().await;
+}
+
+/// `base` as the toolset `as_name` with a different configuration, as the web UI would save it.
+fn variant(base: &ToolsetInstance, as_name: &str, change: &str) -> ToolsetInstance {
+    let mut instance = base.clone();
+    instance.name = name(as_name);
+    let mut table = toml::Table::new();
+    table.insert("change".to_owned(), change.into());
+    instance.config_hash = crate::config::ConfigHash::of(&table);
+    instance
+}
+
+#[tokio::test(start_paused = true)]
+async fn adding_a_toolset_registers_and_starts_it_and_new_snapshots_get_its_tools() {
+    let s = Setup::new(FILES);
+    let gate = Arc::new(Semaphore::new(0));
+    let mut extra_script = Script::new(&["fetch"]);
+    extra_script.gate = Some(gate.clone());
+    let connector =
+        FakeConnector::with([("files", Script::new(&["read"])), ("extra", extra_script)]);
+    let host = s.host(&connector).await;
+    host.started().await;
+    let session = s.registry.tools().snapshot();
+    assert_eq!(session.len(), 1);
+
+    let extra = variant(&s.instance("files"), "extra", "extra");
+    let key = CacheKey {
+        source: "sha256:v1".to_owned(),
+        config_hash: extra.config_hash.to_string(),
+        server_version: Some("0.9".to_owned()),
+    };
+    s.cache().store(&name("extra"), &key, &[tool("cached")]);
+
+    // The toolset has to be in the live configuration first.
+    assert!(matches!(
+        host.add(&extra).await,
+        Err(crate::registry::RegistryError::NotConfigured { .. })
+    ));
+    assert_eq!(connector.connects("extra"), 0);
+    s.registry.live_config().add_toolset(extra.clone()).unwrap();
+    host.add(&extra).await.unwrap();
+
+    // Its cached tools are offered while the server starts, and then its own list.
+    assert_eq!(s.offered().await, ["extra__cached", "files__read"]);
+    assert_eq!(reported(&host, "extra").state, PluginRunState::Starting);
+    gate.add_permits(1);
+    assert_eq!(s.offered().await, ["extra__fetch", "files__read"]);
+    assert_eq!(connector.connects("extra"), 1);
+    assert!(matches!(
+        reported(&host, "extra").state,
+        PluginRunState::Running { .. }
+    ));
+    assert_eq!(s.call_text("extra", "fetch").await, "fetch by connection 1");
+    assert!(s.registry.pending().is_empty());
+    // A session that started before keeps its tools.
+    assert_eq!(session.len(), 1);
+    assert!(session.get("extra__fetch").is_none());
+
+    // Shutdown stops it with the rest, and nothing is started after that.
+    host.stop().await;
+    assert_eq!(connector.live("extra"), 0);
+    let late = variant(&s.instance("files"), "late", "late");
+    s.registry.live_config().add_toolset(late.clone()).unwrap();
+    host.add(&late).await.unwrap();
+    assert!(s.registry.toolset("late").is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn replacing_a_toolset_drops_the_old_connection_and_offers_the_new_list() {
+    let s = Setup::new(FILES);
+    let connector = FakeConnector::with([("files", Script::new(&["read", "slow"]))]);
+    let host = s.host(&connector).await;
+    host.started().await;
+    let session = s.registry.tools().snapshot();
+    let old = s.registry.toolset("files").unwrap();
+    // A call in flight on the old connection.
+    let mut slow = s.call("files", "slow").await.unwrap();
+    assert_eq!(connector.live("files"), 1);
+
+    let gate = Arc::new(Semaphore::new(0));
+    connector.script("files", |script| {
+        script.tools = vec![tool("search")];
+        script.gate = Some(gate.clone());
+    });
+    let edited = variant(&s.instance("files"), "files", "v2");
+    s.registry
+        .live_config()
+        .replace_toolset(edited.clone())
+        .unwrap();
+    host.replace(&edited).await.unwrap();
+    settle().await;
+
+    // The old supervisor is gone, but the call running on it still holds its connection until the
+    // call's events end. They end as unavailable, which releases the connection. The new
+    // configuration hashes differently, so the cache missed and nothing is offered until the new
+    // server answers.
+    assert_eq!(connector.live("files"), 1);
+    match slow.events.next().await {
+        Some(Err(Error::Unavailable { message, .. })) => {
+            assert!(message.contains("files"), "{message}");
+        }
+        other => panic!("{:?}", other.map(|event| event.is_ok())),
+    }
+    assert_eq!(connector.live("files"), 0, "the old connection is dropped");
+    drop(slow);
+    assert!(s.offered().await.is_empty());
+    assert!(!Arc::ptr_eq(&old, &s.registry.toolset("files").unwrap()));
+    assert!(matches!(
+        old.call(
+            ToolCall {
+                id: "late".to_owned(),
+                name: "read".to_owned(),
+                input: json!({}),
+                media: Vec::new(),
+            },
+            CallContext {
+                agent: AgentId::new("agent").unwrap(),
+                requester: None,
+                conversation: None,
+            },
+        )
+        .await,
+        Err(Error::Unavailable { .. })
+    ));
+
+    gate.add_permits(1);
+    assert_eq!(s.offered().await, ["files__search"]);
+    assert_eq!(connector.live("files"), 1);
+    assert_eq!(
+        s.call_text("files", "search").await,
+        "search by connection 2"
+    );
+    assert_eq!(
+        s.cache()
+            .lookup(&name("files"), "sha256:v1", &edited.config_hash),
+        Some(vec![tool("search")])
+    );
+    // A running session keeps its snapshot.
+    assert!(session.get("files__read").is_some());
+
+    // The old connection can't announce a list any more, and the new toolset's list stands. The
+    // `ToolIndex` tests `watched_changes_update_the_index_until_registered_again` and
+    // `a_removed_instance_stops_its_watcher_and_ignores_late_updates` pin the generation guard.
+    let late = connector.script("files", |script| {
+        script.changes[0].unbounded_send(vec![tool("late")])
+    });
+    assert!(late.is_err());
+    assert_eq!(s.offered().await, ["files__search"]);
+    assert!(matches!(
+        reported(&host, "files").state,
+        PluginRunState::Running { .. }
+    ));
+    host.stop().await;
+    assert_eq!(connector.live("files"), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn adding_a_running_name_stops_the_old_supervisor_first() {
+    let s = Setup::new(FILES);
+    let connector = FakeConnector::with([("files", Script::new(&["read"]))]);
+    let host = s.host(&connector).await;
+    host.started().await;
+    assert_eq!(connector.live("files"), 1);
+
+    host.add(&s.instance("files")).await.unwrap();
+    settle().await;
+
+    // Exactly one supervisor is left: the old connection was dropped, not leaked, and the admin
+    // service sees one instance.
+    assert_eq!(connector.connects("files"), 2);
+    assert_eq!(connector.live("files"), 1);
+    assert_eq!(host.plugins().len(), 1);
+    assert_eq!(s.offered().await, ["files__read"]);
+    assert_eq!(s.call_text("files", "read").await, "read by connection 2");
+
+    host.stop().await;
+    assert_eq!(connector.live("files"), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn removing_a_toolset_withdraws_its_tools_and_ends_its_calls() {
+    let s = Setup::new(&format!("{FILES}{REMOTE}"));
+    let connector = FakeConnector::with([
+        ("files", Script::new(&["read", "slow"])),
+        ("remote", Script::new(&["fetch"])),
+    ]);
+    let host = s.host(&connector).await;
+    host.started().await;
+    // A session that started before keeps its tools.
+    let session = s.registry.tools().snapshot();
+    assert_eq!(session.len(), 3);
+    let mut slow = s.call("files", "slow").await.unwrap();
+
+    let removed = s
+        .registry
+        .live_config()
+        .remove_toolset(&name("files"))
+        .unwrap();
+    host.remove(&removed.name).await;
+    settle().await;
+
+    assert!(s.registry.toolset("files").is_none());
+    assert_eq!(s.offered().await, ["remote__fetch"]);
+    // Calls to its tools from the old snapshot have nowhere to go: the dispatcher answers them
+    // `tool unavailable` (see its tests), and the call in flight ends as unavailable.
+    assert!(session.get("files__read").is_some());
+    assert!(matches!(
+        slow.events.next().await,
+        Some(Err(Error::Unavailable { .. }))
+    ));
+    drop(slow);
+    assert_eq!(connector.live("files"), 0);
+    assert_eq!(connector.live("remote"), 1);
+    // The admin service no longer sees it, and can't restart it.
+    assert!(
+        host.plugins()
+            .iter()
+            .all(|p| p.instance.as_str() != "files")
+    );
+    assert!(!host.restart("files"));
+    assert_eq!(
+        s.call_text("remote", "fetch").await,
+        "fetch by connection 1"
+    );
+
+    // Removing it again changes nothing, and the name can be added again.
+    host.remove(&name("files")).await;
+    s.registry
+        .live_config()
+        .add_toolset(removed.clone())
+        .unwrap();
+    host.add(&removed).await.unwrap();
+    settle().await;
+    assert_eq!(
+        s.offered().await,
+        ["files__read", "files__slow", "remote__fetch"]
+    );
+    assert_eq!(s.call_text("files", "read").await, "read by connection 2");
+    host.stop().await;
+    assert_eq!(connector.live("files"), 0);
+    assert_eq!(connector.live("remote"), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn stopping_waits_for_a_change_in_progress() {
+    let s = Setup::new(FILES);
+    let gate = Arc::new(Semaphore::new(0));
+    let mut extra_script = Script::new(&["fetch"]);
+    extra_script.source_gate = Some(gate.clone());
+    let connector =
+        FakeConnector::with([("files", Script::new(&["read"])), ("extra", extra_script)]);
+    let host = Arc::new(s.host(&connector).await);
+    host.started().await;
+    let extra = variant(&s.instance("files"), "extra", "extra");
+    s.registry.live_config().add_toolset(extra.clone()).unwrap();
+
+    // The add holds the change lock while it waits for the server's source.
+    let add = tokio::spawn({
+        let host = host.clone();
+        async move { host.add(&extra).await }
+    });
+    settle().await;
+    let stop = tokio::spawn({
+        let host = host.clone();
+        async move { host.stop().await }
+    });
+    settle().await;
+    assert!(!add.is_finished());
+    assert!(!stop.is_finished());
+
+    // The add finishes first, so its supervisor is stopped with the rest.
+    gate.add_permits(1);
+    add.await.unwrap().unwrap();
+    stop.await.unwrap();
+    assert_eq!(connector.live("extra"), 0);
+    assert_eq!(connector.live("files"), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn replacing_with_a_toolset_that_is_not_configured_unregisters_the_old_one() {
+    let s = Setup::new(FILES);
+    let connector = FakeConnector::with([("files", Script::new(&["read"]))]);
+    let host = s.host(&connector).await;
+    host.started().await;
+    assert_eq!(s.offered().await, ["files__read"]);
+    let instance = s.instance("files");
+
+    s.registry
+        .live_config()
+        .remove_toolset(&name("files"))
+        .unwrap();
+    assert!(matches!(
+        host.replace(&instance).await,
+        Err(crate::registry::RegistryError::NotConfigured { .. })
+    ));
+    settle().await;
+
+    // The old supervisor is gone, so the old toolset is no longer offered.
+    assert!(s.offered().await.is_empty());
+    assert!(s.registry.toolset("files").is_none());
+    assert!(host.plugins().is_empty());
+    assert_eq!(connector.live("files"), 0);
     host.stop().await;
 }

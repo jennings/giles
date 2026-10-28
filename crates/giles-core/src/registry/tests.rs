@@ -575,6 +575,64 @@ async fn registered_toolsets_feed_the_tool_index() {
 }
 
 #[tokio::test]
+async fn toolsets_added_and_removed_at_runtime_follow_the_live_configuration() {
+    let home = Home::new("[toolset.github]\nurl = \"https://example.com/mcp\"\n");
+    let registry = home.build().unwrap();
+    let mut extra = registry.config().toolsets["github"].clone();
+    extra.name = name("extra");
+
+    // Registering needs the instance in the live configuration.
+    let err = expect_err(
+        registry
+            .register_toolset(&name("extra"), Arc::new(FakeToolset::new(&["a"])))
+            .await,
+    );
+    assert!(
+        matches!(
+            err,
+            RegistryError::NotConfigured {
+                kind: Kind::Toolset,
+                ..
+            }
+        ),
+        "{err}"
+    );
+    registry.live_config().add_toolset(extra).unwrap();
+    let pending: Vec<_> = registry.pending().into_iter().map(|p| p.name).collect();
+    assert_eq!(pending, [name("extra"), name("github")]);
+    let (extra_toolset, changes) = FakeToolset::new(&["a"]).with_changes();
+    registry
+        .register_toolset(&name("extra"), Arc::new(extra_toolset))
+        .await
+        .unwrap();
+    assert_eq!(tool_names(&registry), ["extra__a"]);
+    let session = registry.tools().snapshot();
+
+    // Unregistering removes the object and withdraws its tools from new snapshots only.
+    assert!(registry.unregister_toolset(&name("extra")).is_some());
+    assert!(registry.toolset("extra").is_none());
+    assert!(tool_names(&registry).is_empty());
+    assert!(session.get("extra__a").is_some());
+    // Its change watcher is gone: a late list changes nothing.
+    let _ = changes.unbounded_send(vec![spec("late")]);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(tool_names(&registry).is_empty());
+    assert!(registry.unregister_toolset(&name("extra")).is_none());
+
+    // A toolset taken out of the live configuration can't be registered any more.
+    registry
+        .live_config()
+        .remove_toolset(&name("extra"))
+        .unwrap();
+    let err = expect_err(
+        registry
+            .register_toolset(&name("extra"), Arc::new(FakeToolset::new(&["a"])))
+            .await,
+    );
+    assert!(matches!(err, RegistryError::NotConfigured { .. }), "{err}");
+}
+
+#[tokio::test]
 async fn agent_skills_combine_toolset_global_and_agent_sources() {
     let tools_dir = tempfile::tempdir().unwrap();
     let skill = |dir: &Path, name: &str, description: &str| {

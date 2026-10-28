@@ -243,13 +243,17 @@ impl State {
     }
 
     /// Replaces `instance`'s tools if its generation is still `generation` (`None`: any).
-    /// Returns the rejected names, or `None` if the update was stale.
+    /// Returns the rejected names, or `None` if the update was stale: the instance was
+    /// registered again, or removed, since.
     fn apply(
         &mut self,
         instance: &InstanceName,
         generation: Option<u64>,
         tools: Vec<ToolSpec>,
     ) -> Option<Vec<ToolNameError>> {
+        if generation.is_some() && !self.toolsets.contains_key(instance) {
+            return None;
+        }
         let next = &mut self.next_generation;
         let entry = self.toolsets.entry(instance.clone()).or_insert_with(|| {
             *next += 1;
@@ -573,6 +577,31 @@ mod tests {
         index.watch(&fs, first, stream::iter([vec![spec("stale")]]).boxed());
         tokio::task::yield_now().await;
         assert_eq!(names(&index.snapshot()), ["fs__list"]);
+    }
+
+    #[tokio::test]
+    async fn a_removed_instance_stops_its_watcher_and_ignores_late_updates() {
+        let index = ToolIndex::new();
+        let fs = instance("fs");
+        let generation = index.begin(&fs);
+        index.apply(&fs, generation, vec![spec("read")]);
+        let (tx, rx) = mpsc::unbounded();
+        index.watch(&fs, generation, rx.boxed());
+        assert_eq!(names(&index.snapshot()), ["fs__read"]);
+
+        index.remove_toolset(&fs);
+        assert!(index.snapshot().is_empty());
+        // An update the old object still had in flight neither lists tools nor brings the
+        // instance back.
+        index.apply(&fs, generation, vec![spec("late")]);
+        assert!(index.snapshot().is_empty());
+        for _ in 0..500 {
+            if tx.is_closed() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(tx.is_closed(), "the watcher should stop");
     }
 
     async fn wait_for(index: &ToolIndex, expected: &[&str]) {

@@ -9,7 +9,8 @@
 //! the sandbox's scrubbed environment.
 //!
 //! [`ToolsetHost`] registers every configured toolset at boot and supervises it ([`lifecycle`]):
-//! starts, restarts with backoff, `idle_stop`, and the tool-list cache ([`cache`]).
+//! starts, restarts with backoff, `idle_stop`, and the tool-list cache ([`cache`]). It also adds,
+//! replaces, and removes one toolset while Giles runs.
 
 mod cache;
 mod grants;

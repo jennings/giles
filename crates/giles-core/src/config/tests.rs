@@ -1075,6 +1075,161 @@ fn live_config_replaces_and_removes_agents_and_tells_subscribers() {
     assert!(changes.has_changed().unwrap());
 }
 
+fn instance_name(name: &str) -> InstanceName {
+    InstanceName::new(name).unwrap()
+}
+
+/// A configuration with a provider `anthropic`, a channel `web`, and toolsets `github` and
+/// `files`.
+fn with_toolsets() -> Config {
+    Home::new(&format!(
+        "{MINIMAL}[provider.anthropic]\n[channel.web]\n\
+         [toolset.github]\nurl = \"https://api.githubcopilot.com/mcp/\"\n\
+         [toolset.files]\ncommand = \"/opt/homebrew/bin/mcp-server-filesystem\"\n"
+    ))
+    .load_ok()
+}
+
+/// `toolset` under another name.
+fn toolset_named(toolset: &ToolsetInstance, name: &str) -> ToolsetInstance {
+    let mut toolset = toolset.clone();
+    toolset.name = instance_name(name);
+    toolset
+}
+
+#[test]
+fn live_config_adds_replaces_and_removes_toolsets_and_tells_subscribers() {
+    let config = with_toolsets();
+    let github = config.toolsets["github"].clone();
+    let live = LiveConfig::new(std::sync::Arc::new(config));
+    let mut changes = live.subscribe();
+    let before = live.get();
+
+    // An addition is in the new configuration, not in snapshots taken before.
+    let after = live.add_toolset(toolset_named(&github, "gh2")).unwrap();
+    assert_eq!(after.toolsets.len(), 3);
+    assert!(std::sync::Arc::ptr_eq(&after, &live.get()));
+    assert_eq!(before.toolsets.len(), 2);
+    assert!(changes.has_changed().unwrap());
+    changes.borrow_and_update();
+
+    // An edit replaces the toolset of that name.
+    let mut edited = toolset_named(&github, "gh2");
+    edited.parallel = true;
+    assert!(!after.toolsets["gh2"].parallel);
+    let edited_config = live.replace_toolset(edited).unwrap();
+    assert!(edited_config.toolsets["gh2"].parallel);
+    assert!(!after.toolsets["gh2"].parallel);
+    assert!(changes.has_changed().unwrap());
+    changes.borrow_and_update();
+
+    // A name nobody has can't be replaced or removed, and nothing is announced.
+    let stranger = toolset_named(&github, "nobody");
+    assert_eq!(
+        live.replace_toolset(stranger).unwrap_err().0.as_str(),
+        "nobody"
+    );
+    assert!(live.remove_toolset(&instance_name("nobody")).is_none());
+    assert!(!changes.has_changed().unwrap());
+
+    // A removal takes the toolset out of the configuration, not out of earlier snapshots.
+    let removed = live.remove_toolset(&instance_name("gh2")).unwrap();
+    assert_eq!(removed.name.as_str(), "gh2");
+    assert!(!live.get().toolsets.contains_key("gh2"));
+    assert!(edited_config.toolsets.contains_key("gh2"));
+    assert!(changes.has_changed().unwrap());
+}
+
+#[test]
+fn live_config_refuses_a_toolset_name_another_instance_has_whatever_its_kind_or_case() {
+    let config = with_toolsets();
+    let github = config.toolsets["github"].clone();
+    let live = LiveConfig::new(std::sync::Arc::new(config));
+    let changes = live.subscribe();
+    let before = live.get();
+
+    for (name, kind, existing) in [
+        ("anthropic", Kind::Provider, "anthropic"),
+        ("ANTHROPIC", Kind::Provider, "anthropic"),
+        ("web", Kind::Channel, "web"),
+        ("Web", Kind::Channel, "web"),
+        ("github", Kind::Toolset, "github"),
+        ("FILES", Kind::Toolset, "files"),
+    ] {
+        let refused = live.add_toolset(toolset_named(&github, name)).unwrap_err();
+        assert_eq!(refused.kind, kind, "{name}");
+        assert_eq!(refused.existing.as_str(), existing, "{name}");
+        assert!(refused.to_string().contains(existing), "{refused}");
+
+        // A toolset may take its own name in another case, so that isn't a refusal.
+        if name.eq_ignore_ascii_case("files") {
+            continue;
+        }
+        let refused = live
+            .rename_toolset(&instance_name("files"), instance_name(name))
+            .unwrap_err();
+        assert_eq!(
+            refused,
+            RenameToolsetError::Exists(InstanceExists {
+                kind,
+                existing: instance_name(existing),
+            }),
+            "{name}"
+        );
+    }
+    // Refusals change nothing and announce nothing.
+    assert!(std::sync::Arc::ptr_eq(&before, &live.get()));
+    assert!(!changes.has_changed().unwrap());
+}
+
+#[test]
+fn live_config_renames_a_toolset_keeping_its_settings() {
+    let config = with_toolsets();
+    let live = LiveConfig::new(std::sync::Arc::new(config));
+    let mut changes = live.subscribe();
+    let before = live.get();
+    let github = instance_name("github");
+
+    let after = live.rename_toolset(&github, instance_name("gh")).unwrap();
+    assert!(!after.toolsets.contains_key("github"));
+    assert_eq!(after.toolsets["gh"].name.as_str(), "gh");
+    assert_eq!(
+        after.toolsets["gh"].config_hash,
+        before.toolsets["github"].config_hash
+    );
+    assert!(
+        before.toolsets.contains_key("github"),
+        "earlier snapshots keep the old name"
+    );
+    assert!(changes.has_changed().unwrap());
+    changes.borrow_and_update();
+
+    // The old name is free again, and the new one is taken.
+    assert_eq!(
+        live.rename_toolset(&github, instance_name("other"))
+            .unwrap_err(),
+        RenameToolsetError::NoSuchToolset(NoSuchToolset(github.clone()))
+    );
+    assert_eq!(
+        live.add_toolset(toolset_named(&after.toolsets["gh"], "GH"))
+            .unwrap_err()
+            .existing
+            .as_str(),
+        "gh"
+    );
+    live.add_toolset(toolset_named(&after.toolsets["gh"], "github"))
+        .unwrap();
+    changes.borrow_and_update();
+
+    // Changing only the case of its own name is a rename, not a conflict.
+    let cased = live
+        .rename_toolset(&instance_name("gh"), instance_name("GH"))
+        .unwrap();
+    assert!(cased.toolsets.contains_key("GH"));
+    assert!(!cased.toolsets.contains_key("gh"));
+    assert!(changes.has_changed().unwrap());
+}
+
 #[test]
 fn agent_settings() {
     let home = with_provider();

@@ -337,6 +337,9 @@ impl Registry {
     /// later list the stream yields (new sessions see them; running ones keep their
     /// snapshot). A failed `list_tools` is logged and keeps the instance's previous tools (none
     /// on first registration) until a change arrives. Must be called inside a Tokio runtime.
+    /// The instance must be in the [live configuration](Self::live_config), so a toolset added at
+    /// runtime ([`LiveConfig::add_toolset`](crate::config::LiveConfig::add_toolset)) can be
+    /// registered.
     ///
     /// Cancel-safe: nothing changes until `list_tools` has returned, and then the object, its
     /// tools, and its change watcher are installed together without another `await`. Dropping
@@ -363,6 +366,22 @@ impl Registry {
             self.tools.watch(name, generation, changes);
         }
         Ok(old)
+    }
+
+    /// Removes the toolset registered for instance `name` and withdraws its tools from the
+    /// index: sessions started after this don't offer them, and a running session's snapshot
+    /// still lists them, but a call to one finds no toolset and fails as unavailable. The
+    /// toolset's change watcher is stopped, and an update it still had in flight is dropped.
+    /// Returns the object, or `None` if none was registered. The instance's configuration is
+    /// untouched; take it out of [`live_config`](Self::live_config) separately.
+    pub fn unregister_toolset(&self, name: &InstanceName) -> Option<Arc<dyn Toolset>> {
+        let old = self
+            .toolsets
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(name);
+        self.tools.remove_toolset(name);
+        old
     }
 
     fn check_configured(&self, kind: Kind, name: &InstanceName) -> Result<(), RegistryError> {
@@ -446,7 +465,7 @@ impl Registry {
             .map(|t| Pending {
                 kind: Kind::Toolset,
                 name: t.name.clone(),
-                reason: "registered by the toolset host at startup",
+                reason: "registered by the toolset host",
             });
         channels.chain(toolsets).collect()
     }

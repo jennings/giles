@@ -20,7 +20,7 @@ use tonic::Code;
 use tonic::transport::{Channel, Endpoint, Uri};
 
 use super::*;
-use crate::config::{Config, InstanceName, LoadOptions};
+use crate::config::{Config, InstanceName, LiveConfig, LoadOptions};
 use crate::paths::DataRoot;
 use crate::sandbox::HostReport;
 use crate::sessions::{ChannelStatusRecord, Clock};
@@ -158,7 +158,7 @@ impl Harness {
         let lock = InstanceLock::acquire(&root).unwrap();
         let listener = AdminListener::bind(&root, &lock).unwrap();
         let service = Arc::new(AdminService::new(AdminOptions {
-            config: Arc::new(config),
+            config: LiveConfig::new(Arc::new(config)),
             root: root.clone(),
             blobs,
             store: store.clone(),

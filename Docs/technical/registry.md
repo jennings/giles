@@ -31,10 +31,12 @@ and exits.
 ## The running configuration
 
 The registry holds the configuration as a `config::LiveConfig`: the `Config` loaded at startup, plus
-the agents created, edited, and removed since (the web UI's agent pages). `Registry::config()`
-returns a snapshot, `Arc<Config>`; a caller keeps one snapshot for the work at hand (a turn, a tool
-call, a page). `Registry::live_config()` is the shared handle: the core tools, the session manager
-(its `AgentPolicies`), and the scheduler hold clones, so they see a change at their next lookup.
+the agents and toolsets created, edited, renamed, and removed since. Whoever manages them changes
+the `LiveConfig`; the toolset host only follows. `Registry::config()` returns a snapshot,
+`Arc<Config>`; a caller keeps one snapshot for the work at hand (a turn, a tool call, a page).
+`Registry::live_config()` is the shared handle: the core tools, the session manager (its
+`AgentPolicies`), the scheduler, and the admin service hold clones, so they see a change at their
+next lookup.
 
 - `add_agent(AgentConfig)` swaps in a copy of the configuration with the agent added and refuses an
   id already taken, ignoring ASCII case (`AgentExists`).
@@ -45,10 +47,36 @@ call, a page). `Registry::live_config()` is the shared handle: the core tools, t
   created under an id a removal freed. State that belongs to one life (the agent loop's cached
   session prompts) checks it.
 - `subscribe()` is a counter that goes up after every one of those changes, for what keeps state
-  derived from the agents (the scheduler's config job tasks, [Scheduler](scheduler.md#timing)).
+  derived from the agents or toolsets (the scheduler's config job tasks,
+  [Scheduler](scheduler.md#timing)).
 
-Nothing else changes while the core runs: instances and the owner are fixed until a restart (reload
-is deferred, D28). Routes are stored and change at runtime
+Toolsets change the same way, each change swapping in a new `Config` and bumping `subscribe()`:
+
+- `add_toolset(ToolsetInstance)` adds one and refuses a name that any other instance has, of any
+  kind (provider, channel, or toolset), ignoring ASCII case (`InstanceExists`, naming the kind and
+  the instance that has it). Instance names key data directories and tool prefixes, and are unique
+  across kinds, as in `giles.toml`.
+- `replace_toolset(ToolsetInstance)` swaps in an edited toolset under its name (`NoSuchToolset` if
+  there is none).
+- `remove_toolset(&InstanceName)` takes one out and returns it; snapshots taken before still have
+  it.
+- `rename_toolset(&InstanceName, InstanceName)` gives a toolset a new name, with the same name check
+  as `add_toolset` except that the toolset's own name doesn't count, so a change of case is allowed
+  (`RenameToolsetError::Exists` or `RenameToolsetError::NoSuchToolset` otherwise).
+
+These change the configuration only. Starting, restarting, and stopping the server is the
+[toolset host](toolsets.md#changing-toolsets-while-giles-runs)'s job, which keeps the registry in
+step with the configuration.
+
+Everything that reads toolsets per use reads the live configuration, never a copy from startup: the
+dispatcher's `deadline` and `parallel` (from one snapshot per batch of calls),
+`Registry::skill_sources`, the agent forms' tool picker, `Registry::pending`, and the admin
+service's `Status` and `ListPlugins`. A running session keeps the tool snapshot it started with
+(PLAN section 6.4), so it still lists the tools of a toolset removed since, and a call to one gets
+`tool unavailable`.
+
+Nothing else changes while the core runs: the other instances and the owner are fixed until a
+restart (reload is deferred, D28). Routes are stored and change at runtime
 ([Identity and Routing](identity-and-routing.md#routing)).
 
 ## Built-in components
@@ -84,20 +112,28 @@ Components built outside the registry are added with:
 - `register_channel(&InstanceName, Arc<dyn Channel>)`: plugin channels, launched or remote (the
   plugin host's `RemoteChannel`, see [Plugin Host](plugin-host.md#remotechannel)), or a built-in
   constructed elsewhere.
-- `register_toolset(&InstanceName, Arc<dyn Toolset>).await`: every MCP toolset, once at startup, by
-  the toolset host ([Toolsets](toolsets.md#lifecycle)).
+- `register_toolset(&InstanceName, Arc<dyn Toolset>).await`: every MCP toolset, by the toolset host
+  ([Toolsets](toolsets.md#lifecycle)), at startup and when one is added or replaced.
 - `register_provider(&InstanceName, Arc<dyn Provider>)`: future provider plugins and fakes in tests.
 
-Each requires `[<kind>.<name>]` to be configured (else `RegistryError::NotConfigured`) and replaces
-any object registered earlier under that name, returning it, so a restarted plugin's new adapter can
-take over. The maps sit behind `RwLock`s and lookups (`provider`, `channel`, `toolset`, and the
-`providers()`/`channels()`/`toolsets()` lists) clone an `Arc`, so nothing holds a lock across an
-`await`. Consuming a channel's events is the caller's job.
+Each requires `[<kind>.<name>]` to be in the live configuration (else
+`RegistryError::NotConfigured`), so a toolset just added with `LiveConfig::add_toolset` can
+register, and replaces any object registered earlier under that name, returning it, so a restarted
+plugin's new adapter can take over. The maps sit behind `RwLock`s and lookups (`provider`,
+`channel`, `toolset`, and the `providers()`/`channels()`/`toolsets()` lists) clone an `Arc`, so
+nothing holds a lock across an `await`. Consuming a channel's events is the caller's job.
 
 `pending()` lists configured channels and toolsets with nothing registered, with what will start
 them (the plugin host once the plugin is up, or a task still to land); `log_summary()` logs each as
 `instance not started`. Toolsets are never pending once `serve` has started the toolset host, which
-registers them all before the summary.
+registers them all before the summary, except one that failed to register.
+
+`unregister_toolset(&InstanceName) -> Option<Arc<dyn Toolset>>` removes a toolset's object and
+withdraws its tools: it calls `ToolIndex::remove_toolset`, which drops the instance's entry and
+aborts its change watcher, and an update the old object still had in flight is dropped. Snapshots
+taken before still list the tools, but a call to one finds no toolset and is answered
+`tool unavailable`. It leaves the configuration alone; the caller removes the instance from
+`LiveConfig` too.
 
 `Registry::new(root, config)` makes an empty registry for tests, which register fakes.
 
@@ -128,8 +164,9 @@ dropping the future during `list_tools` (a timeout around a hung server) changes
 previous object and its watcher stay in place. A failed `list_tools` is logged and leaves the
 instance's previous tools in place (none at first) until a change arrives. Each new generation
 aborts the previous object's watcher, and any update tagged with an old generation is dropped, so a
-replaced object can't overwrite its successor's list. Watchers hold only a weak reference to the
-index and stop when it is dropped.
+replaced object can't overwrite its successor's list. Removing the instance drops its entry and
+aborts the watcher too, and a stale update doesn't bring the entry back. Watchers hold only a weak
+reference to the index and stop when it is dropped.
 
 `set_toolset_tools(instance, tools)` replaces an instance's list directly (tests use it to offer
 tools without a toolset object), with the same rules; `remove_toolset` removes it. The toolset host
@@ -144,8 +181,9 @@ cached and fresh lists through `tool_changes` ([Toolsets](toolsets.md#lifecycle)
 `<root>/skills/`, then `agents/<agent>/skills/` (PLAN section 6.6). `agent_skills(agent).await` runs
 `skills::discover` over them on a blocking thread, logs each skipped skill, and returns the
 `SkillSet`. A toolset also serves its own directories, bare-named, through `Toolset::list_skills`
-and `get_skill` ([Toolsets](toolsets.md#lifecycle)); the index reads the configuration directly, so
-a stopped server's skills are listed too.
+and `get_skill` ([Toolsets](toolsets.md#lifecycle)); the index reads the live configuration, so a
+stopped server's skills are listed too, and a toolset added or removed at runtime is in or out of
+the next lookup.
 
 ## Models
 

@@ -447,6 +447,36 @@ async fn a_tool_whose_toolset_is_not_registered_is_unavailable() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_toolset_removed_or_edited_at_runtime_is_seen_by_the_next_call() {
+    let s = Setup::new().await;
+    let calls = [
+        ("first", "serial__run", json!({"ms": 10})),
+        // Its toolset is removed while `first` runs. The session's tools still list it.
+        ("late", "par__run", json!({"ms": 10})),
+    ];
+    let mut stream = s.dispatch(&["*"], &calls);
+    assert_eq!(stream.next().await, Some((0, ok("first done"))));
+    assert!(s.registry.unregister_toolset(&instance("par")).is_some());
+    let removed = s.registry.live_config().remove_toolset(&instance("par"));
+    assert!(removed.is_some());
+    assert_eq!(
+        stream.collect::<Vec<_>>().await,
+        [(1, ToolOutput::error(TOOL_UNAVAILABLE))]
+    );
+    assert_eq!(s.probe.log(), ["start first", "end first"]);
+
+    // The policy of the next batch is the edited toolset's: `serial` now has a 2 s deadline.
+    let mut edited = s.registry.config().toolsets["serial"].clone();
+    edited.deadline = Duration::from_secs(2);
+    s.registry.live_config().replace_toolset(edited).unwrap();
+    let calls = [("hang", "serial__run", json!({}))];
+    assert_eq!(
+        outputs(s.dispatch(&["*"], &calls), 1).await,
+        [ToolOutput::error("timed out after 2s")]
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn dropping_the_stream_cancels_running_calls_and_starts_no_more() {
     let s = Setup::new().await;
     let calls = [
