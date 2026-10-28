@@ -47,8 +47,10 @@ full history so the base is available. If the base has no `buf.yaml` (the push t
 contracts, or a new branch), there is nothing to compare against and the step only logs a notice.
 See [gRPC Protocols](protocols.md) for the rules.
 
-**Container image** runs after Rust and Protobuf pass, on pushes to `main` and on pull requests from
-the same repository. It publishes the image the `Dockerfile` builds
+**Container image** runs after Protobuf passes, on pushes to `main` and on pull requests from the
+same repository. It doesn't wait for Rust: the `Dockerfile` builds the workspace itself, so the two
+run side by side. A commit that fails formatting, Clippy, or tests can still publish its image. A
+compile error fails the image build. It publishes the image the `Dockerfile` builds
 ([Container image](container-image.md)) to the GitHub Container Registry as `ghcr.io/jennings/giles`
 (`ghcr.io/` plus the repository name, lowercased by `docker/metadata-action`). It is the only job
 with `packages: write`. Each push to `main` is tagged `latest`. Each pull request is tagged
