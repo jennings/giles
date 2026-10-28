@@ -59,7 +59,12 @@ fn format_report(root: &DataRoot, old: &str, new: &str, report: &RenameReport) -
          routes",
         rows.sessions, rows.inbox, rows.outbox, rows.usage, rows.messages, rows.routes
     );
-    if report.config_table {
+    if report.stored_toolset {
+        let _ = writeln!(
+            text,
+            "  database: the stored toolset {old:?} is now {new:?}"
+        );
+    } else if report.config_table {
         let _ = writeln!(
             text,
             "  giles.toml: [{kind}.{old}] -> [{kind}.{new}]",
@@ -124,6 +129,7 @@ mod tests {
                 routes: 4,
             },
             config_table: true,
+            stored_toolset: false,
             legacy_routes: 2,
             agent_files: vec![(Path::new("/g/agents/jeeves/agent.toml").to_owned(), 1)],
             moved: vec![(
@@ -151,6 +157,31 @@ mod tests {
             "{text}"
         );
         assert!(text.ends_with("Start giles again to use the new name.\n"));
+    }
+
+    #[test]
+    fn a_stored_toolset_is_reported_as_a_renamed_row() {
+        let report = RenameReport {
+            kind: Kind::Toolset,
+            rows: RenamedRows::default(),
+            config_table: false,
+            stored_toolset: true,
+            legacy_routes: 0,
+            agent_files: vec![(Path::new("/g/agents/jeeves/agent.toml").to_owned(), 2)],
+            moved: Vec::new(),
+            memory_dbs: Vec::new(),
+        };
+        let text = format_report(&root(), "notes", "memos", &report);
+        assert!(text.starts_with("Renamed toolset instance \"notes\" to \"memos\".\n"));
+        assert!(
+            text.contains("  database: the stored toolset \"notes\" is now \"memos\"\n"),
+            "{text}"
+        );
+        assert!(!text.contains("giles.toml"), "{text}");
+        assert!(
+            text.contains("agent.toml: 2 reference(s) updated"),
+            "{text}"
+        );
     }
 
     #[test]

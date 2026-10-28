@@ -147,6 +147,7 @@ impl Env {
             root: root.clone(),
             config: registry.live_config().clone(),
             host,
+            agent_lock: Arc::default(),
         })
         .await
         .unwrap();
@@ -233,6 +234,7 @@ impl Toolsets {
             ),
             jobs: env.jobs.clone(),
             activity: env.activity.clone(),
+            lock: Arc::default(),
         }));
         let app = self
             .app

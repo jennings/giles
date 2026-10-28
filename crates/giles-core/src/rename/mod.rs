@@ -16,12 +16,18 @@ use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use giles_store::{BoxError, InstanceRows, MemoryStore, OpenOptions, RenamedRows, Store};
+use giles_store::{
+    BoxError, InstanceRows, MemoryStore, OpenOptions, RenamedRows, Store, StoredToolset,
+};
+use giles_types::Timestamp;
 
 use crate::admin::InstanceLock;
 use crate::config::{Kind, is_valid_name};
 use crate::paths::DataRoot;
+use crate::toolsets::RESERVED_TOOLSET_NAME;
 
+pub use edit::GlobChange;
+pub(crate) use edit::{ToolsetGlobs, rewrite_toolset_globs};
 pub use guard::{InstanceDataError, UnusedName, check_unused_instance_data};
 
 /// What [`rename_instance`] changed.
@@ -34,6 +40,9 @@ pub struct RenameReport {
     /// Whether the `[<kind>.<old>]` table of `giles.toml` was renamed. `false` when the operator
     /// had already renamed it by hand.
     pub config_table: bool,
+    /// Whether the instance is a toolset stored in the database: its row was renamed (or
+    /// already was, by a run that stopped early), and `giles.toml` has no table to rename.
+    pub stored_toolset: bool,
     /// How many `[[routes]]` of `giles.toml` named the old channel instance. Giles imports those
     /// once and then ignores them; they are rewritten so a file not yet imported (the first start
     /// after an upgrade) imports the new name, and a leftover block stays consistent. The routes
@@ -128,16 +137,28 @@ pub enum RenameError {
         /// The stored toolset's name.
         existing: String,
     },
-    /// The old name is a toolset stored in the database, which this command doesn't rename.
+    /// A stored toolset can't have the new name: the web UI and the admin RPCs refuse it too.
+    #[error("a stored toolset can't be named {new:?}: {reason}")]
+    StoredToolsetName {
+        /// The new name.
+        new: String,
+        /// Why.
+        reason: String,
+    },
+    /// The old name is a toolset stored in the database, and `giles.toml` configures the new
+    /// name.
     #[error(
-        "{old:?} is the toolset {existing:?} stored in the database; this command renames the \
-         instances of giles.toml"
+        "{old:?} is a toolset stored in the database, and giles.toml configures [{new_kind}.{new}]: \
+         instance names are unique across kinds, so remove or rename that table first; renaming \
+         never merges two instances"
     )]
-    StoredToolsetOld {
+    NewIsConfigured {
         /// The old name.
         old: String,
-        /// The stored toolset's name.
-        existing: String,
+        /// The new name.
+        new: String,
+        /// The kind of the table that has it.
+        new_kind: Kind,
     },
     /// The new name already has data.
     #[error(
@@ -198,10 +219,13 @@ fn failed_message(step: &str, error: &str, undo_errors: &[String]) -> String {
 /// `lock`, the data root's single-instance lock.
 ///
 /// `old` is the name in `giles.toml` (`[<kind>.<old>]`), or, if the operator already renamed the
-/// table by hand, the name the data still has; `new` must not have any data. The database rows
-/// move in one transaction, and the file changes happen inside it before it commits, ending with
-/// the group owners in each agent's memory database (`agents/<agent>/memory.db`, if it has one).
-/// A failure at any step undoes the earlier ones and changes nothing.
+/// table by hand, the name the data still has; `new` must not have any data. A toolset stored in
+/// the database (made in the web UI) is renamed too, when `giles.toml` doesn't configure `old`:
+/// its row is renamed instead of a table, `old` may differ from the stored name in case, and
+/// `new` may differ from it in case only. The database rows move in one transaction, and the
+/// file changes happen inside it before it commits, ending with the group owners in each agent's
+/// memory database (`agents/<agent>/memory.db`, if it has one). A failure at any step undoes the
+/// earlier ones and changes nothing.
 ///
 /// # Errors
 ///
@@ -221,7 +245,7 @@ pub async fn rename_instance(
             });
         }
     }
-    if old.eq_ignore_ascii_case(new) {
+    if old == new {
         return Err(RenameError::SameName {
             old: old.to_owned(),
             new: new.to_owned(),
@@ -238,36 +262,17 @@ pub async fn rename_instance(
         reason: e.to_string(),
     })?;
     let configured = edit::configured(&doc);
-    if let Some(existing) = configured
-        .keys()
-        .find(|name| name.eq_ignore_ascii_case(new) && name.as_str() != new)
-    {
+    // A name that differs from `old` in case only is the same name, which is reported below.
+    if let Some(existing) = configured.keys().find(|name| {
+        name.eq_ignore_ascii_case(new) && name.as_str() != new && !name.eq_ignore_ascii_case(old)
+    }) {
         return Err(RenameError::CaseCollision {
             new: new.to_owned(),
             existing: existing.clone(),
         });
     }
-    // The stored toolsets are instances too. One isn't renamed here: its row is in the database,
-    // not in `giles.toml`. And a name one has can't be given to a table of `giles.toml`, which
-    // would take the name from it at the next start.
-    let stored = store.toolsets().await.map_err(RenameError::Store)?;
-    if !configured.contains_key(old)
-        && let Some(existing) = stored.iter().find(|t| t.name.eq_ignore_ascii_case(old))
-    {
-        return Err(RenameError::StoredToolsetOld {
-            old: old.to_owned(),
-            existing: existing.name.clone(),
-        });
-    }
-    if !configured.contains_key(new)
-        && let Some(existing) = stored.iter().find(|t| t.name.eq_ignore_ascii_case(new))
-    {
-        return Err(RenameError::StoredToolset {
-            new: new.to_owned(),
-            existing: existing.name.clone(),
-        });
-    }
 
+    let stored = store.toolsets().await.map_err(RenameError::Store)?;
     let rows = store.instance_rows().await.map_err(RenameError::Store)?;
     let memory_dbs = memory_databases(root)?;
     let dirs = dirs::scan_dirs(root).map_err(|(path, source)| RenameError::Io { path, source })?;
@@ -278,27 +283,105 @@ pub async fn rename_instance(
         rows.contains_key(name) || dirs.contains_key(name) || routes.contains_key(name)
     };
 
-    let kind = match (configured.get(old), configured.get(new)) {
-        (Some(&old_kind), Some(&new_kind)) => {
-            return Err(RenameError::BothConfigured {
-                old: old.to_owned(),
-                old_kind,
+    // The stored toolsets are instances too. The row is renamed before the agents' files are
+    // rewritten, so a run that stopped in between left the row with `new` and the agents' globs
+    // with `old`; running the command again finishes it. The names are compared exactly, and a
+    // rename that only changes the case can't be told from a finished one, so it isn't resumed.
+    let stored_resumed = !configured.contains_key(old)
+        && !configured.contains_key(new)
+        && !old.eq_ignore_ascii_case(new)
+        && stored.iter().any(|t| t.name == new)
+        && !stored
+            .iter()
+            .any(|t| t.name != new && t.name.eq_ignore_ascii_case(old));
+    // Unless `giles.toml` configures `old`, a stored toolset of that name (ignoring case) is the
+    // one to rename.
+    let stored_old = if configured.contains_key(old) || stored_resumed {
+        None
+    } else {
+        stored.iter().find(|t| t.name.eq_ignore_ascii_case(old))
+    };
+    let stored_toolset = stored_old.is_some() || stored_resumed;
+    // From here on the name as stored.
+    let old = stored_old.map_or(old, |row| row.name.as_str());
+    // Names that differ only in case are the same name, but a stored toolset can change its case.
+    if old == new || (old.eq_ignore_ascii_case(new) && !stored_toolset) {
+        return Err(RenameError::SameName {
+            old: old.to_owned(),
+            new: new.to_owned(),
+        });
+    }
+    if stored_old.is_some()
+        && let Some(&new_kind) = configured.get(new)
+    {
+        return Err(RenameError::NewIsConfigured {
+            old: old.to_owned(),
+            new: new.to_owned(),
+            new_kind,
+        });
+    }
+    // The rules a stored toolset's name has anywhere else. A resumed rename already passed them.
+    if stored_old.is_some() {
+        let reason = if new.eq_ignore_ascii_case(RESERVED_TOOLSET_NAME) {
+            Some(format!(
+                "it is the address of the web form for a new toolset ({RESERVED_TOOLSET_NAME:?} \
+                 in any case)"
+            ))
+        } else if edit::retired(&doc).iter().any(|name| name == new) {
+            Some(
+                "it is in `[core] retired_instances` in giles.toml, which lists names that are \
+                 not configured: remove it from the list to use the name"
+                    .to_owned(),
+            )
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return Err(RenameError::StoredToolsetName {
                 new: new.to_owned(),
-                new_kind,
+                reason,
             });
         }
-        (Some(&kind), None) => kind,
-        (None, Some(&kind)) if has_data(old) => kind,
-        (None, _) if !has_data(old) => {
-            return Err(RenameError::UnknownInstance {
-                old: old.to_owned(),
-            });
-        }
-        (None, _) => {
-            return Err(RenameError::NotConfigured {
-                old: old.to_owned(),
-                new: new.to_owned(),
-            });
+    }
+    // A name a stored toolset has can't be given to a table of `giles.toml` (which would take the
+    // name from it at the next start), or to another stored toolset.
+    if !configured.contains_key(new)
+        && !stored_resumed
+        && let Some(existing) = stored.iter().find(|t| {
+            t.name.eq_ignore_ascii_case(new) && stored_old.is_none_or(|row| row.name != t.name)
+        })
+    {
+        return Err(RenameError::StoredToolset {
+            new: new.to_owned(),
+            existing: existing.name.clone(),
+        });
+    }
+
+    let kind = if stored_toolset {
+        Kind::Toolset
+    } else {
+        match (configured.get(old), configured.get(new)) {
+            (Some(&old_kind), Some(&new_kind)) => {
+                return Err(RenameError::BothConfigured {
+                    old: old.to_owned(),
+                    old_kind,
+                    new: new.to_owned(),
+                    new_kind,
+                });
+            }
+            (Some(&kind), None) => kind,
+            (None, Some(&kind)) if has_data(old) => kind,
+            (None, _) if !has_data(old) => {
+                return Err(RenameError::UnknownInstance {
+                    old: old.to_owned(),
+                });
+            }
+            (None, _) => {
+                return Err(RenameError::NotConfigured {
+                    old: old.to_owned(),
+                    new: new.to_owned(),
+                });
+            }
         }
     };
 
@@ -321,7 +404,25 @@ pub async fn rename_instance(
         });
     }
 
-    let plan = Plan::build(root, old, new, kind, &config_text, &dirs)?;
+    let plan = Plan::build(
+        root,
+        old,
+        new,
+        kind,
+        (!stored_toolset).then_some(config_text.as_str()),
+        &dirs,
+    )?;
+    // A stored toolset that already has `new` is only a rename to finish if something is left
+    // under `old`: data, or agents that still name it. Otherwise `old` is no instance.
+    if stored_resumed && !has_data(old) && plan.files.is_empty() && plan.moves.is_empty() {
+        return Err(RenameError::UnknownInstance {
+            old: old.to_owned(),
+        });
+    }
+    // The row goes first, as `giles.toml` is rewritten before the agents' files and directories.
+    if let Some(row) = stored_old {
+        rename_stored_toolset(store, row, new).await?;
+    }
     let journal = Journal::default();
     let memory = MemoryJournal::default();
     let hook = {
@@ -352,11 +453,12 @@ pub async fn rename_instance(
                 .map_err(|(step, error)| fail(step, error))
         }
     };
-    match store.rename_instance(old, new, hook).await {
+    let mut result = match store.rename_instance(old, new, hook).await {
         Ok(rows) => Ok(RenameReport {
             kind,
             rows,
             config_table: plan.config_table,
+            stored_toolset,
             legacy_routes: plan.routes,
             agent_files: plan.agent_files.clone(),
             moved: plan
@@ -389,6 +491,44 @@ pub async fn rename_instance(
                 error,
                 touched,
                 undo_all(&memory, &journal, old, new).await,
+            ))
+        }
+    };
+    if let (Some(row), Err(error)) = (stored_old, &mut result)
+        && let Err(e) = store.toolset_restore(new, row).await
+    {
+        let note = format!("put the stored toolset {:?} back: {e}", row.name);
+        match error {
+            RenameError::Failed { undo_errors, .. } => undo_errors.push(note),
+            other => {
+                *other = RenameError::Failed {
+                    step: "renaming the database rows".to_owned(),
+                    error: other.to_string(),
+                    undo_errors: vec![note],
+                };
+            }
+        }
+    }
+    result
+}
+
+/// Renames the stored toolset `row` to `new`, and puts it back if that fails part-way.
+async fn rename_stored_toolset(
+    store: &Store,
+    row: &StoredToolset,
+    new: &str,
+) -> Result<(), RenameError> {
+    match store.toolset_rename(&row.name, new, Timestamp::now()).await {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            let undo = store.toolset_restore(&row.name, row).await;
+            Err(store_failure(
+                error,
+                false,
+                undo.err()
+                    .map(|e| format!("put the stored toolset {:?} back: {e}", row.name))
+                    .into_iter()
+                    .collect(),
             ))
         }
     }
@@ -475,7 +615,7 @@ impl Plan {
         old: &str,
         new: &str,
         kind: Kind,
-        config_text: &str,
+        config_text: Option<&str>,
         dirs: &BTreeMap<String, Vec<dirs::DataDir>>,
     ) -> Result<Self, RenameError> {
         let config_path = root.config_file();
@@ -508,28 +648,33 @@ impl Plan {
 
         let agent_files = files.iter().map(|f| (f.path.clone(), f.changes)).collect();
 
-        // The configuration last: it is what the startup check reads.
-        let giles = edit::rename_in_giles_toml(config_text, kind, old, new)
-            .map_err(|e| edit_error(&config_path, e))?;
-        let reparsed = edit::parse(&giles.text).map_err(|e| edit_error(&config_path, e))?;
-        let after = edit::configured(&reparsed);
-        if after.get(new) != Some(&kind) || after.contains_key(old) {
-            return Err(RenameError::Edit {
-                path: config_path,
-                reason: format!(
-                    "could not rename [{kind}.{old}] to [{kind}.{new}] without changing \
-                     anything else: it is written in a form this command doesn't edit; rename \
-                     it by hand, then run the command again to move the data"
-                ),
-            });
-        }
-        if giles.text != config_text {
-            files.push(StagedFile {
-                path: config_path,
-                original: config_text.to_owned(),
-                text: giles.text,
-                changes: giles.routes,
-            });
+        // The configuration last: it is what the startup check reads. A stored toolset has no
+        // table in it (`config_text` is `None`): its row is renamed in the database.
+        let (mut config_table, mut routes) = (false, 0);
+        if let Some(config_text) = config_text {
+            let giles = edit::rename_in_giles_toml(config_text, kind, old, new)
+                .map_err(|e| edit_error(&config_path, e))?;
+            let reparsed = edit::parse(&giles.text).map_err(|e| edit_error(&config_path, e))?;
+            let after = edit::configured(&reparsed);
+            if after.get(new) != Some(&kind) || after.contains_key(old) {
+                return Err(RenameError::Edit {
+                    path: config_path,
+                    reason: format!(
+                        "could not rename [{kind}.{old}] to [{kind}.{new}] without changing \
+                         anything else: it is written in a form this command doesn't edit; \
+                         rename it by hand, then run the command again to move the data"
+                    ),
+                });
+            }
+            if giles.text != config_text {
+                files.push(StagedFile {
+                    path: config_path,
+                    original: config_text.to_owned(),
+                    text: giles.text,
+                    changes: giles.routes,
+                });
+            }
+            (config_table, routes) = (giles.table_renamed, giles.routes);
         }
 
         let mut moves = Vec::new();
@@ -583,8 +728,8 @@ impl Plan {
             agent_files,
             files,
             moves,
-            config_table: giles.table_renamed,
-            routes: giles.routes,
+            config_table,
+            routes,
         })
     }
 

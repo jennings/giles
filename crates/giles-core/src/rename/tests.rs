@@ -712,26 +712,224 @@ async fn a_new_name_that_a_stored_toolset_has_is_refused() {
     home.rename("libera", "libera-chat").await.unwrap();
 }
 
-/// A toolset stored in the database isn't an instance of `giles.toml`, which is what the command
-/// renames, so it is refused.
-#[tokio::test]
-async fn a_stored_toolset_is_not_renamed_by_the_command() {
-    let home = Home::populated().await;
+const NOTES: &str = r#"{ "url": "https://notes.example.com/mcp" }"#;
+
+const NOTES_AGENT: &str = "models = [\"anthropic/claude\"]\n\
+                           tools = [\"notes__*\", \"memory*\"]\n\
+                           ask = [\"notes__delete\"]\n";
+
+async fn add_stored(home: &Home, name: &str, spec: &str) {
     home.store
-        .toolset_insert(
-            "Notes",
-            r#"{ "url": "https://notes.example.com/mcp" }"#,
-            jiff::Timestamp::now(),
-        )
+        .toolset_insert(name, spec, jiff::Timestamp::now())
         .await
         .unwrap();
-    for old in ["Notes", "notes"] {
-        let err = refused(&home, old, "fresh").await;
+}
+
+async fn stored_names(home: &Home) -> Vec<String> {
+    let rows = home.store.toolsets().await.unwrap();
+    rows.into_iter().map(|row| row.name).collect()
+}
+
+/// A toolset stored in the database is renamed like a table of `giles.toml`: its row replaces
+/// the table, `giles.toml` stays as it is, and the agents' globs follow the new name.
+#[tokio::test]
+async fn a_stored_toolset_is_renamed_with_its_row_and_agent_globs() {
+    let home = Home::populated().await;
+    add_stored(&home, "notes", NOTES).await;
+    home.write("agents/jeeves/agent.toml", NOTES_AGENT);
+    let before = home.store.toolsets().await.unwrap();
+
+    let report = home.rename("notes", "memos").await.unwrap();
+
+    assert_eq!(report.kind, Kind::Toolset);
+    assert!(report.stored_toolset);
+    assert!(!report.config_table);
+    assert_eq!(report.legacy_routes, 0);
+    assert_eq!(
+        report.agent_files,
+        [(home.path("agents/jeeves/agent.toml"), 2)]
+    );
+    assert!(report.moved.is_empty(), "{:?}", report.moved);
+    // The row keeps its spec and its creation time.
+    let rows = home.store.toolsets().await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].name, "memos");
+    assert_eq!(rows[0].spec, before[0].spec);
+    assert_eq!(rows[0].created_at, before[0].created_at);
+    assert_eq!(home.read("giles.toml"), GILES_TOML);
+    assert_eq!(
+        home.read("agents/jeeves/agent.toml"),
+        NOTES_AGENT.replace("notes__", "memos__")
+    );
+    check_unused_instance_data(&home.root, &home.load(), &home.store)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_stored_toolset_cannot_take_the_name_of_another_instance() {
+    let home = Home::populated().await;
+    add_stored(&home, "notes", NOTES).await;
+    add_stored(&home, "memos", NOTES).await;
+    let before = home.store.toolsets().await.unwrap();
+
+    // The tables of `giles.toml`, of every kind, own their names.
+    for (new, kind) in [
+        ("github", Kind::Toolset),
+        ("libera", Kind::Channel),
+        ("ollama", Kind::Provider),
+    ] {
+        let err = refused(&home, "notes", new).await;
         assert!(
-            matches!(&err, RenameError::StoredToolsetOld { existing, .. } if existing == "Notes"),
-            "{old}: {err}"
+            matches!(&err, RenameError::NewIsConfigured { old, new_kind, .. }
+                if old == "notes" && *new_kind == kind),
+            "{new}: {err}"
         );
     }
+    for new in ["GITHUB", "Libera"] {
+        let err = refused(&home, "notes", new).await;
+        assert!(matches!(err, RenameError::CaseCollision { .. }), "{err}");
+    }
+    // So does another stored toolset, ignoring case.
+    for new in ["memos", "MEMOS"] {
+        let err = refused(&home, "notes", new).await;
+        assert!(
+            matches!(&err, RenameError::StoredToolset { existing, .. } if existing == "memos"),
+            "{new}: {err}"
+        );
+    }
+    // And a name that has data: this command never gives an instance a name with data.
+    home.write("data/plugins/leftover/x", "1");
+    let err = refused(&home, "notes", "leftover").await;
+    assert!(matches!(err, RenameError::NewHasData { .. }), "{err}");
+    assert_eq!(home.store.toolsets().await.unwrap(), before);
+}
+
+/// The stored name is found in any case, and the case of a name can change.
+#[tokio::test]
+async fn a_stored_toolset_is_found_in_any_case_and_its_name_can_change_case() {
+    let home = Home::populated().await;
+    add_stored(&home, "Notes", NOTES).await;
+    home.write(
+        "agents/jeeves/agent.toml",
+        &NOTES_AGENT.replace("notes__", "Notes__"),
+    );
+
+    // The name it has is no new name, in whatever case it is given.
+    for old in ["Notes", "NOTES"] {
+        let err = refused(&home, old, "Notes").await;
+        assert!(matches!(err, RenameError::SameName { .. }), "{old}: {err}");
+    }
+
+    let report = home.rename("NOTES", "notes").await.unwrap();
+    assert!(report.stored_toolset);
+    assert_eq!(stored_names(&home).await, ["notes"]);
+    assert_eq!(home.read("agents/jeeves/agent.toml"), NOTES_AGENT);
+    check_unused_instance_data(&home.root, &home.load(), &home.store)
+        .await
+        .unwrap();
+
+    // Now it has the name, so the same request is the same name.
+    let err = refused(&home, "NOTES", "notes").await;
+    assert!(matches!(err, RenameError::SameName { .. }), "{err}");
+}
+
+#[tokio::test]
+async fn globs_that_match_a_stored_toolset_by_its_old_name_are_refused() {
+    let home = Home::populated().await;
+    add_stored(&home, "notes", NOTES).await;
+    home.write(
+        "agents/jeeves/agent.toml",
+        "models = [\"anthropic/claude\"]\ntools = [\"not*\"]\n",
+    );
+    let before = home.store.toolsets().await.unwrap();
+    let err = refused(&home, "notes", "memos").await;
+    assert!(matches!(err, RenameError::Edit { .. }), "{err}");
+    assert!(err.to_string().contains("tools entry \"not*\""), "{err}");
+    assert_eq!(home.store.toolsets().await.unwrap(), before);
+}
+
+#[tokio::test]
+async fn a_failing_stored_rename_puts_the_row_back_exactly() {
+    let home = Home::populated().await;
+    add_stored(&home, "notes", NOTES).await;
+    home.write("agents/jeeves/agent.toml", NOTES_AGENT);
+    home.write("agents/zed/agent.toml", NOTES_AGENT);
+    let rows = home.store.toolsets().await.unwrap();
+    let before = home.snapshot().await;
+
+    // `jeeves` is rewritten, then `zed` can't be: its directory is read-only.
+    let zed = home.path("agents/zed");
+    fs::set_permissions(&zed, fs::Permissions::from_mode(0o500)).unwrap();
+    let writable_anyway = fs::File::create(zed.join("probe")).is_ok();
+    if writable_anyway {
+        // Running as root: permissions don't stop us, so this failure can't be provoked.
+        fs::set_permissions(&zed, fs::Permissions::from_mode(0o700)).unwrap();
+        return;
+    }
+    let err = home.rename("notes", "memos").await.unwrap_err();
+    fs::set_permissions(&zed, fs::Permissions::from_mode(0o700)).unwrap();
+
+    assert!(
+        matches!(&err, RenameError::Failed { undo_errors, .. } if undo_errors.is_empty()),
+        "{err}"
+    );
+    // The row is as it was, `updated_at` included, and so are the files.
+    assert_eq!(home.store.toolsets().await.unwrap(), rows);
+    assert_eq!(home.snapshot().await, before);
+}
+
+/// The row is renamed before the agents' files are rewritten. A run that stopped in between
+/// leaves the row with the new name and the agents' globs with the old, and running the command
+/// again rewrites the globs.
+#[tokio::test]
+async fn a_stored_rename_that_stopped_after_the_row_is_finished_by_running_it_again() {
+    let home = Home::populated().await;
+    add_stored(&home, "memos", NOTES).await;
+    home.write("agents/jeeves/agent.toml", NOTES_AGENT);
+
+    let report = home.rename("notes", "memos").await.unwrap();
+
+    assert!(report.stored_toolset);
+    assert!(report.moved.is_empty(), "{:?}", report.moved);
+    assert_eq!(stored_names(&home).await, ["memos"]);
+    assert_eq!(
+        home.read("agents/jeeves/agent.toml"),
+        NOTES_AGENT.replace("notes__", "memos__")
+    );
+
+    // With nothing left under the old name there is nothing to finish: it is no instance.
+    let err = refused(&home, "notes", "memos").await;
+    assert!(matches!(err, RenameError::UnknownInstance { .. }), "{err}");
+}
+
+/// The rules for the name of a stored toolset hold for a rename in the database too.
+#[tokio::test]
+async fn a_stored_toolset_cannot_be_renamed_to_a_reserved_or_retired_name() {
+    let home = Home::populated().await;
+    home.write(
+        "giles.toml",
+        &format!("{GILES_TOML}\n[core]\nretired_instances = [\"gone\"]\n"),
+    );
+    add_stored(&home, "notes", NOTES).await;
+
+    for new in ["new", "New", "NEW"] {
+        let err = refused(&home, "notes", new).await;
+        assert!(
+            matches!(&err, RenameError::StoredToolsetName { .. }),
+            "{new}: {err}"
+        );
+        assert!(err.to_string().contains("new toolset"), "{err}");
+    }
+    let err = refused(&home, "notes", "gone").await;
+    assert!(
+        matches!(&err, RenameError::StoredToolsetName { .. }),
+        "{err}"
+    );
+    assert!(err.to_string().contains("retired_instances"), "{err}");
+
+    // A table of `giles.toml` can still be named `new`: only a stored toolset can't.
+    home.rename("libera", "new").await.unwrap();
 }
 
 #[tokio::test]

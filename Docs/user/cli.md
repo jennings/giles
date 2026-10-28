@@ -189,12 +189,29 @@ Renamed channel instance "libera" to "libera-chat".
 Start giles again to use the new name.
 ```
 
+A toolset made in the web UI or with `giles toolset` is a remote server stored in the database, with
+no table in `giles.toml`. The command renames the stored toolset and the globs that name its tools,
+leaves `giles.toml` alone, and says so on a `database: the stored toolset ... is now ...` line:
+
+```console
+$ giles instance rename files documents
+Renamed toolset instance "files" to "documents".
+  database: 0 sessions, 0 inbox rows, 0 outbox rows, 0 usage rows, 0 messages, 0 routes
+  database: the stored toolset "files" is now "documents"
+  agents/jeeves/agent.toml: 2 reference(s) updated
+Start giles again to use the new name.
+```
+
+For a stored toolset, `<old>` can be in any case, and `<new>` can be the same name in another case
+(`Notes` to `notes`).
+
 The command renames:
 
 - the instance's database rows and stored [routes](configuration.md#routes)
 - the group memories in each agent's `memory.db`
 - the instance's directories, including the per-group `MEMORY.md` files
-- the `[<kind>.<old>]` table in `giles.toml`, keeping its comments and formatting
+- the `[<kind>.<old>]` table in `giles.toml`, keeping its comments and formatting, or the stored
+  toolset
 - references in each agent's `agent.toml`: model names starting with `<old>/` for a provider, and
   `tools` and `ask` globs starting with `<old>__` for a toolset
 
@@ -208,6 +225,8 @@ in case. The command changes nothing and refuses if:
 
 - `<old>` isn't configured and has no data.
 - `<new>` is also configured or already has data. Renaming never merges two instances.
+- `<old>` is a stored toolset and `<new>` is `new` (in any case) or listed in
+  `core.retired_instances`.
 - `giles.toml` or an `agent.toml` can't be read or isn't valid TOML.
 - A renamed toolset's `tools` or `ask` globs match its tools without starting with `<old>__`, such
   as `github*` or `git*`. The command lists them. Change them (to `github__*`, say) and run it

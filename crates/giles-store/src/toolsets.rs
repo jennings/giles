@@ -176,6 +176,42 @@ impl Store {
         })
         .await
     }
+
+    /// Writes `row` over the toolset called `name` (any case): its name, spec, and both times,
+    /// exactly as `row` has them. A caller that changed a row and then has to take the change
+    /// back uses this to leave it as it was, `updated_at` included (an update or rename moves
+    /// that on, and a form opened before would then be stale).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoSuchToolset`] if there is no toolset called `name` (checked first);
+    /// [`Error::ToolsetExists`] if `row.name` belongs to a different toolset. Nothing changes in
+    /// either case.
+    pub async fn toolset_restore(&self, name: &str, row: &StoredToolset) -> Result<()> {
+        let (name, row) = (name.to_owned(), row.clone());
+        self.write(move |conn| {
+            require(conn, &name)?;
+            let taken: i64 = conn
+                .prepare_cached("SELECT count(*) FROM toolsets WHERE name = ?1 AND name <> ?2")?
+                .query_row([&row.name, &name], |found| found.get(0))?;
+            if taken > 0 {
+                return Err(Error::ToolsetExists);
+            }
+            conn.prepare_cached(
+                "UPDATE toolsets SET name = ?2, spec = ?3, created_at = ?4, updated_at = ?5
+                 WHERE name = ?1",
+            )?
+            .execute(params![
+                name,
+                row.name,
+                row.spec,
+                to_millis(row.created_at),
+                to_millis(row.updated_at)
+            ])?;
+            Ok(())
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -514,6 +550,34 @@ mod tests {
         assert!(matches!(err, Error::NoSuchToolset), "{err:?}");
         assert!(!store.toolset_remove("nope").await.unwrap());
         assert_eq!(names(&store).await, ["exists"]);
+    }
+
+    #[tokio::test]
+    async fn restore_puts_a_row_back_exactly() {
+        let (_dir, store) = store().await;
+        let first = store
+            .toolset_insert("files", r#"{"v":1}"#, at(0))
+            .await
+            .unwrap();
+        store
+            .toolset_update("files", r#"{"v":2}"#, None, at(1))
+            .await
+            .unwrap();
+        store.toolset_rename("files", "Docs", at(2)).await.unwrap();
+
+        store.toolset_restore("docs", &first).await.unwrap();
+        assert_eq!(
+            store.toolsets().await.unwrap(),
+            std::slice::from_ref(&first)
+        );
+
+        // The name it takes back must be free, and the toolset it replaces must exist.
+        store.toolset_insert("other", "{}", at(0)).await.unwrap();
+        let err = store.toolset_restore("other", &first).await.unwrap_err();
+        assert!(matches!(err, Error::ToolsetExists), "{err:?}");
+        let err = store.toolset_restore("nope", &first).await.unwrap_err();
+        assert!(matches!(err, Error::NoSuchToolset), "{err:?}");
+        assert_eq!(names(&store).await, ["files", "other"]);
     }
 
     #[tokio::test]

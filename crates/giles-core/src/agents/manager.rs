@@ -36,6 +36,11 @@ pub struct AgentManagerOptions {
     pub jobs: JobChanges,
     /// Whether an agent is being worked on, which keeps it from being removed.
     pub activity: Arc<dyn AgentActivity>,
+    /// Held for a whole change to an agent's files. Build one and give it to the
+    /// [`ToolsetManagerOptions`](crate::toolsets::ToolsetManagerOptions) too: a toolset rename
+    /// rewrites agents' `agent.toml` files and has to wait for an edit of one, and the other way
+    /// round.
+    pub lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// Manages the agents of the running core. Shared as `Arc<AgentManager>`.
@@ -47,8 +52,9 @@ pub struct AgentManager {
     pub(super) routes: Arc<Routes>,
     pub(super) jobs: JobChanges,
     pub(super) activity: Arc<dyn AgentActivity>,
-    /// Held for a whole change, so changes to agents run one at a time.
-    pub(super) lock: tokio::sync::Mutex<()>,
+    /// Held for a whole change, so changes to agents run one at a time. Shared with the toolset
+    /// manager, whose rename rewrites agents' files.
+    pub(super) lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AgentManager {
@@ -65,7 +71,7 @@ impl AgentManager {
             routes: options.routes,
             jobs: options.jobs,
             activity: options.activity,
-            lock: tokio::sync::Mutex::new(()),
+            lock: options.lock,
         }
     }
 

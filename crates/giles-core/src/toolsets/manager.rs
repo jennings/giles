@@ -44,6 +44,37 @@
 //! remote toolset has no data directory, and the tool-list cache never offers a remote server's
 //! tools, so nothing else is cleaned up. Agents' `tools` and `ask` patterns that name the
 //! toolset's tools are left alone.
+//!
+//! # Renaming
+//!
+//! A toolset's name is its tool prefix (`<name>__<tool>`) and the start of the globs that agents
+//! use in `tools` and `ask`. [`ToolsetManager::rename`] changes both, under the lock and, after
+//! that, the agent manager's lock (step 3 rewrites agents' files as an agent edit does, so the two
+//! take turns), and [`ToolsetManager::rename_preview`] runs the same checks and says what would
+//! change. A remote toolset has no data directory, so no data moves.
+//!
+//! 1. The new name must be valid and free among every kind of instance (the stored toolsets, the
+//!    instances of `giles.toml`, and `[core] retired_instances`), as for a new toolset. The old
+//!    name is exempt, so a stored toolset can be renamed to its own name in another case. Then
+//!    every agent's `agent.toml` is read: a glob that matches the toolset's tools without
+//!    starting with `<old>__` (`github*`) can't be rewritten safely, and refuses the rename
+//!    ([`ToolsetManagerError::Refused`]) with the globs listed. Those checks are the ones of
+//!    `giles instance rename`, which share their code with this.
+//! 2. The toolset is stopped: its tools leave the registry, so a running session that still
+//!    lists them gets `tool unavailable`.
+//! 3. The `<old>__` globs of each agent are rewritten in its `agent.toml` with the agent edit
+//!    machinery (a temporary file renamed into place, only that file).
+//! 4. The row is renamed.
+//! 5. The toolset is renamed in the live configuration, each rewritten agent replaces the old
+//!    one there, and the toolset is started under the new name. A failed stored toolset is
+//!    renamed too (it is started if it validates now, and else stays failed under the new name);
+//!    a stored toolset whose name an instance of `giles.toml` took leaves the agents' globs under
+//!    the name to that instance.
+//!
+//! A step that fails undoes the ones before it (the agents' files and the row are put back as
+//! they were, the toolset starts again under the old name), and the error says what couldn't be
+//! undone. Sessions that run keep the old tool names. Toolsets of `giles.toml` are
+//! [`ToolsetManagerError::Unsupported`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -63,6 +94,10 @@ use crate::config::{
 };
 use crate::paths::DataRoot;
 
+mod rename;
+
+pub use self::rename::{AgentGlobChange, GlobChange, RenamePreview, ToolsetRenamed};
+
 /// The name the web form for a new toolset has in its address, so no toolset can use it.
 pub const RESERVED_TOOLSET_NAME: &str = "new";
 
@@ -77,6 +112,10 @@ pub struct ToolsetManagerOptions {
     pub config: LiveConfig,
     /// Where toolsets are started, replaced, and stopped.
     pub host: Arc<ToolsetHost>,
+    /// The lock that [`AgentManagerOptions`](crate::agents::AgentManagerOptions) takes as `lock`,
+    /// which [`ToolsetManager::rename`] holds while it rewrites agents' `agent.toml` files, so an
+    /// edit of an agent waits for the rename and the rename for an edit.
+    pub agent_lock: Arc<AsyncMutex<()>>,
 }
 
 /// Where a toolset is configured.
@@ -145,12 +184,44 @@ pub enum ToolsetManagerError {
     /// The toolset was changed since the caller read it.
     #[error("the toolset was changed since it was loaded")]
     Stale,
+    /// A rename was refused although the new name is fine: something else stands in its way,
+    /// and the reason says what the owner must change first (such as globs of an agent that
+    /// match the toolset's tools without starting with `<name>__`, which are listed). Nothing
+    /// changed.
+    #[error("{reason}")]
+    Refused {
+        /// What stands in the way, naming each offending glob. Never contains a secret value.
+        reason: String,
+    },
+    /// A step of a rename failed (moving the data, rewriting an agent's `agent.toml`, writing
+    /// the row). The steps before it were undone, except what `undo_errors` lists.
+    #[error("{}", failed_message(.step, .error, .undo_errors))]
+    Failed {
+        /// The step that failed.
+        step: String,
+        /// Why.
+        error: String,
+        /// Changes that couldn't be undone, which the owner puts right by hand.
+        undo_errors: Vec<String>,
+    },
     /// The toolset is configured in `giles.toml`, which Giles doesn't write: edit it there.
     #[error("this toolset is configured in giles.toml, so it can only be changed there")]
     Unsupported,
     /// The database failed.
     #[error("cannot store the toolsets: {0}")]
     Store(giles_store::Error),
+}
+
+fn failed_message(step: &str, error: &str, undo_errors: &[String]) -> String {
+    if undo_errors.is_empty() {
+        format!("{step}: {error}. Nothing was changed.")
+    } else {
+        format!(
+            "{step}: {error}. Undoing the earlier steps failed too, so the rename is partly \
+             done; put these right by hand: {}",
+            undo_errors.join("; ")
+        )
+    }
 }
 
 fn key_prefix(key: &KeyPath) -> String {
@@ -167,7 +238,11 @@ impl ToolsetManagerError {
     pub fn is_invalid_input(&self) -> bool {
         matches!(
             self,
-            Self::Invalid { .. } | Self::Exists | Self::Stale | Self::Unsupported
+            Self::Invalid { .. }
+                | Self::Exists
+                | Self::Stale
+                | Self::Unsupported
+                | Self::Refused { .. }
         )
     }
 
@@ -212,6 +287,10 @@ pub struct ToolsetManager {
     root: DataRoot,
     config: LiveConfig,
     host: Arc<ToolsetHost>,
+    /// Held by [`rename`](Self::rename) after `changing`, which keeps agents from being changed
+    /// while their files are rewritten. Shared with the agent manager, which never takes
+    /// `changing`, so the two locks can't deadlock.
+    agent_lock: Arc<AsyncMutex<()>>,
     /// Held for the whole of each change.
     changing: AsyncMutex<()>,
     /// Written only under `changing`; read by the admin service without it.
@@ -248,12 +327,14 @@ impl ToolsetManager {
             root,
             config,
             host,
+            agent_lock,
         } = options;
         let manager = Arc::new_cyclic(|me| Self {
             store,
             root,
             config,
             host,
+            agent_lock,
             changing: AsyncMutex::new(()),
             state: Mutex::new(State::default()),
             me: me.clone(),
@@ -504,6 +585,38 @@ impl ToolsetManager {
         spec: &ToolsetSpec,
         replacing: Option<&InstanceName>,
     ) -> Result<ToolsetInstance, ToolsetError> {
+        self.check_name(name)?;
+        let config = self.config.get();
+        remote_only(spec)?;
+        let secrets = Secrets::load(&self.root.secrets_file()).map_err(|error| ToolsetError {
+            key: KeyPath::root(),
+            reason: error.to_string(),
+        })?;
+        // A remote toolset has no command to find, no `{ env = ... }` reference (`remote_only`
+        // refused it), and no grants: nothing to look up in the environment or check against
+        // the `giles` binary.
+        let options = LoadOptions {
+            builtins: Builtins::V1,
+            env: &no_env,
+            giles_exe: None,
+        };
+        validate_toolset(
+            name,
+            spec,
+            &ToolsetContext {
+                root: &self.root,
+                secrets: &secrets,
+                options: &options,
+                config: &config,
+                replacing,
+            },
+        )
+    }
+
+    /// What must hold for `name` to be a toolset's name, before the spec is looked at: it isn't
+    /// the address of the form for a new toolset, no instance of `giles.toml` has it, and it
+    /// isn't retired. Whether another stored toolset has it is the caller's business.
+    fn check_name(&self, name: &str) -> Result<(), ToolsetError> {
         let whole = |reason: String| ToolsetError {
             key: KeyPath::root(),
             reason,
@@ -533,28 +646,7 @@ impl ToolsetManager {
                  are not configured: remove it from the list to use the name"
             )));
         }
-        remote_only(spec)?;
-        let secrets =
-            Secrets::load(&self.root.secrets_file()).map_err(|error| whole(error.to_string()))?;
-        // A remote toolset has no command to find, no `{ env = ... }` reference (`remote_only`
-        // refused it), and no grants: nothing to look up in the environment or check against
-        // the `giles` binary.
-        let options = LoadOptions {
-            builtins: Builtins::V1,
-            env: &no_env,
-            giles_exe: None,
-        };
-        validate_toolset(
-            name,
-            spec,
-            &ToolsetContext {
-                root: &self.root,
-                secrets: &secrets,
-                options: &options,
-                config: &config,
-                replacing,
-            },
-        )
+        Ok(())
     }
 
     /// The instance of `giles.toml`, of any kind, whose name is `name` ignoring ASCII case: every

@@ -3,7 +3,8 @@
 Instance names are permanent ids (PLAN section 7.2). `giles_core::rename` renames one,
 `rename_instance`, which `giles instance rename <old> <new>` calls, and refuses a configuration that
 looks like a rename done in `giles.toml` alone, `check_unused_instance_data`, which `Runtime::start`
-calls. This page covers what a name keys, the order of the steps, and what a failure leaves behind.
+calls. `ToolsetManager::rename` renames a toolset stored in the database while Giles runs. This page
+covers what a name keys, the order of the steps, and what a failure leaves behind.
 
 ## What a name keys
 
@@ -13,6 +14,7 @@ rename must move each of them, and the startup check treats each as data.
 | Where                                        | What it is                                     | Rename does                    |
 | -------------------------------------------- | ---------------------------------------------- | ------------------------------ |
 | `giles.toml` `[<kind>.<name>]`               | The instance table and its sub-tables          | Renames the table in place     |
+| `toolsets.name`                              | A toolset stored in the database (web UI)      | Renames the row (stored toolsets) |
 | `routes.channel`                             | A stored route's channel instance              | Updates in the transaction     |
 | `giles.toml` `[[routes]]` `channel`          | A route of the old layout (imported once, then ignored) | Rewrites it (channels) |
 | `agent.toml` `models`, `compaction_model`, `[[jobs]]` `model` | `<provider instance>/<model id>` | Rewrites the prefix (providers) |
@@ -88,14 +90,15 @@ differ.
 the caller proves the core is stopped by holding the same `flock` `giles serve` holds, so no admin
 socket probing is needed and a core that starts mid-rename is refused instead.
 
-1. **Validate, read-only.** Both names must be `[a-zA-Z0-9-]+`, different ignoring case, and `new`
-   must not differ only in case from another configured instance. When `giles.toml` doesn't
-   configure `new` yet, it must not be the name of a toolset stored in the database, ignoring case
+1. **Validate, read-only.** Both names must be `[a-zA-Z0-9-]+`, and different ignoring case unless
+   `old` is a stored toolset (see [Stored toolsets](#stored-toolsets)). `new` must not differ only
+   in case from another configured instance. When `giles.toml` doesn't configure `new` yet, it must
+   not be the name of a toolset stored in the database, ignoring case
    (`RenameError::StoredToolset`): `giles.toml` would take the name at the next start. When
-   `giles.toml` doesn't configure `old`, it must not be a stored toolset either
-   (`RenameError::StoredToolsetOld`): its row is in the database, and this command renames the
-   instances of `giles.toml`. `giles.toml` and every `agent.toml` are read and parsed, the
-   database's names are listed (`instance_rows`), and the data directories are scanned.
+   `giles.toml` doesn't configure `old`, a stored toolset with that name, ignoring case, is the
+   instance to rename: its row is renamed instead of a table. `giles.toml` and every `agent.toml`
+   are read and parsed, the database's names are listed (`instance_rows`), and the data directories
+   are scanned.
    - If both names are configured the rename is refused: instances are never merged.
    - If only `old` is configured, that table is renamed.
    - If only `new` is configured, the operator already renamed the table (this is what the startup
@@ -143,6 +146,83 @@ The memory databases come last, after `giles.toml`, for the same reason and one 
 commits on its own, so a step after them would have to rename them back with another write. Renaming
 the owners is also idempotent (rows already under `new` don't match), which makes it safe to repeat
 after a crash.
+
+## Stored toolsets
+
+A toolset made in the web UI or with `giles toolset` is a remote MCP server with a row in `giles.db`
+and no table in `giles.toml`. `rename_instance` renames it when `giles.toml` doesn't configure `old`
+and the database has a toolset with that name, ignoring case. The name as stored is the old name
+from then on. What differs from an instance of `giles.toml`:
+
+- `giles.toml` isn't edited. `new` must not be configured there (`RenameError::NewIsConfigured`, or
+  `RenameError::CaseCollision` when only the case differs) and must not be another stored toolset
+  (`RenameError::StoredToolset`). The report has `stored_toolset` set and `config_table` clear.
+- Only the case of the name may change (`Notes` to `notes`), which no other instance can do, because
+  the row is looked up ignoring case.
+- A stored toolset is remote, so it has no data directory to move; what changes is the row and the
+  agents' `<old>__` globs. `new` must still have no data, as for any instance.
+- The row is renamed first, in its own transaction, before the agents' files are rewritten. A
+  failure later undoes the journal as above, and then `Store::toolset_restore` puts the row back as
+  it was, name, spec, and both times. If that fails too, the error lists it.
+- A run that was killed after the row was renamed leaves the row with the new name and the agents'
+  globs with the old. Run the command again: `old` is neither configured nor stored, a stored
+  toolset has exactly `new` and none has `old`, so the run rewrites the agents' `<old>__` globs. If
+  nothing is left under `old` the run refuses it as an unknown instance. A rename of the case only
+  can't be told from a finished one, so it isn't resumed this way.
+- A new name must be one that a stored toolset can have anywhere: not `new` in any case, which is
+  the address of the web form for a new toolset, and not in `[core] retired_instances`
+  (`RenameError::StoredToolsetName`). A table of `giles.toml` can have either.
+
+## Renaming while Giles runs
+
+`ToolsetManager::rename` renames a stored toolset in the running core, for the web UI and the admin
+socket ([Toolsets](toolsets.md#renaming)). It is the same rename as the command, with the difference
+that the core is running, so the toolset is stopped and started again and nothing is done in one
+database transaction:
+
+1. The checks, with nothing changed. The new name must be valid and free among every kind of
+   instance (another stored toolset is `ToolsetManagerError::Exists`, an instance of `giles.toml` or
+   a retired name is `Invalid` at the root key), as for a new toolset. The old name is exempt, so
+   the case of a name can change. Data under `data/plugins/<new>/`, left by an earlier instance,
+   doesn't refuse the name, as it doesn't refuse a new stored toolset: a stored toolset is remote
+   and has no data to merge with it. Then every agent's `agent.toml` is read and its `tools` and
+   `ask` globs are checked with the same function the command uses
+   (`rename::rewrite_toolset_globs`): a glob that matches the tools without starting with `<old>__`
+   refuses the rename (`ToolsetManagerError::Refused`) and the reason lists each one, and so does a
+   file that can't be parsed. The edited text of each agent is validated as the agent edit form
+   validates it.
+2. The running toolset is stopped, which takes its tools out of the registry. A session that still
+   lists them gets `tool unavailable`: running sessions keep the old tool names.
+3. Each agent's `agent.toml` is rewritten with the agent edit machinery: a temporary file in the
+   agent's directory, fsynced, renamed over the file, refused if the file changed since it was read.
+4. The row is renamed.
+5. The live configuration gets the toolset under the new name, and each rewritten agent replaces the
+   old one in it. The toolset starts under the new name; new sessions get its tools.
+
+A stored toolset has no data directory and no tool-list cache that is offered, so nothing moves on
+disk but the agents' files.
+
+A step that fails undoes the ones before it, newest first: the agents' files are put back
+(`agent.toml` is replaced again only if it still reads what the rename wrote), the row is restored
+exactly, and the toolset is started again under its old name. The error
+(`ToolsetManagerError::Failed`) names the step, and lists what couldn't be undone.
+
+A stored toolset that failed to start is renamed too: it has no connection, so only the name checks
+apply, and afterwards it is validated again and started if it now passes. One whose name an instance
+of `giles.toml` took is not that instance, so the agents' globs are left to the instance, and only
+the row changes.
+
+The rewrite of the agents' files takes the agent manager's lock (`AgentManager`'s `lock`, built once
+in `serve` and given to both managers as `agent_lock`), right after the manager's own lock. An edit,
+creation, or removal of an agent waits for a rename that is running, and a rename waits for one of
+those, so the temporary file an edit stages is never shared and an edit is neither lost nor
+installed by the rename. The agent manager never takes the toolset manager's lock, so the two can't
+deadlock. A file that still changes between the read and the write (by hand) makes its rewrite fail
+as changed, and the rename is undone.
+
+A core killed in the middle can leave some agents' globs rewritten and the row under the old name.
+Renaming the toolset to the new name again finishes it: the globs that already say `<new>__` are
+left as they are.
 
 ## Crashes
 
@@ -211,6 +291,7 @@ False positives and how each resolves:
 | An instance is removed and a different kind is added          | Starts when no kind fits | |
 | A built-in or remote channel, or a provider, has never produced data and a removed instance of that kind had data | Refused | `retired_instances`, or use the instance once |
 | A remote toolset is configured and a stdio toolset's directory is left over | Starts |  |
+| A stdio toolset is added in the web UI while the data of a removed plugin instance is left over | Refused at the next start | `retired_instances` |
 | `retired_instances` names a configured instance               | Config error | Remove one of them               |
 
 `retired_instances` (`[core]` in `giles.toml`) is the explicit "I know" list: names there are never
