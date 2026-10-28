@@ -10,7 +10,10 @@ use tonic::Status;
 use tracing::error;
 
 use crate::config::ToolsetSpec;
-use crate::toolsets::{Removed, ToolsetManager, ToolsetManagerError, ToolsetSource, ToolsetView};
+use crate::toolsets::{
+    AgentGlobChange, Removed, ToolsetManager, ToolsetManagerError, ToolsetRenamed, ToolsetSource,
+    ToolsetView,
+};
 
 /// What the toolset RPCs need of the toolset manager: [`ToolsetManager`] implements it, and every
 /// method is the manager's own. A seam so that tests can plug in a fake. Without one the RPCs
@@ -37,6 +40,9 @@ pub trait ToolsetAdmin: Send + Sync {
 
     /// [`ToolsetManager::remove`].
     async fn remove(&self, name: &str) -> Result<Removed, ToolsetManagerError>;
+
+    /// [`ToolsetManager::rename`].
+    async fn rename(&self, old: &str, new: &str) -> Result<ToolsetRenamed, ToolsetManagerError>;
 }
 
 #[async_trait]
@@ -69,14 +75,20 @@ impl ToolsetAdmin for ToolsetManager {
     async fn remove(&self, name: &str) -> Result<Removed, ToolsetManagerError> {
         ToolsetManager::remove(self, name).await
     }
+
+    async fn rename(&self, old: &str, new: &str) -> Result<ToolsetRenamed, ToolsetManagerError> {
+        ToolsetManager::rename(self, old, new).await
+    }
 }
 
-/// The caller's status for a failed toolset call. `name` is the toolset the call was about. Only a
-/// database failure is the server's: it is logged with the RPC's name and the caller gets
-/// `INTERNAL`.
+/// The caller's status for a failed toolset call. `name` is the toolset the call was about. A
+/// failed rename step and a database failure are the server's: they are logged with the RPC's
+/// name and the caller gets `INTERNAL`.
 pub(super) fn manager_status(rpc: &'static str, name: &str, err: ToolsetManagerError) -> Status {
     match err {
-        ToolsetManagerError::Invalid { .. } => Status::invalid_argument(err.to_string()),
+        ToolsetManagerError::Invalid { .. } | ToolsetManagerError::Refused { .. } => {
+            Status::invalid_argument(err.to_string())
+        }
         ToolsetManagerError::Exists => {
             Status::already_exists(format!("there is already a toolset called `{name}`"))
         }
@@ -93,6 +105,41 @@ pub(super) fn manager_status(rpc: &'static str, name: &str, err: ToolsetManagerE
             error!(rpc, toolset = name, error = %err, "admin call failed");
             Status::internal(err.to_string())
         }
+    }
+}
+
+/// The caller's status for a failed `RenameToolset`: [`manager_status`], about `new` when another
+/// stored toolset has that name and about `old` for every other failure.
+pub(super) fn rename_status(old: &str, new: &str, err: ToolsetManagerError) -> Status {
+    let name = if matches!(err, ToolsetManagerError::Exists) {
+        new
+    } else {
+        old
+    };
+    manager_status("RenameToolset", name, err)
+}
+
+/// What a rename did as the `RenameToolsetResponse` message.
+pub(super) fn renamed_to_proto(renamed: ToolsetRenamed) -> pb::RenameToolsetResponse {
+    pb::RenameToolsetResponse {
+        toolset: Some(toolset_to_proto(renamed.view)),
+        agents: renamed.agents.into_iter().map(agent_to_proto).collect(),
+        old: renamed.from,
+    }
+}
+
+fn agent_to_proto(change: AgentGlobChange) -> pb::AgentGlobChange {
+    pb::AgentGlobChange {
+        agent: change.agent,
+        globs: change
+            .globs
+            .into_iter()
+            .map(|glob| pb::GlobChange {
+                key: glob.key.to_owned(),
+                from: glob.from,
+                to: glob.to,
+            })
+            .collect(),
     }
 }
 

@@ -135,6 +135,13 @@ impl AdminRpc for FakeAdmin {
     ) -> Result<RpcResponse<pb::RemoveToolsetResponse>, Status> {
         Err(Status::unimplemented("not in this fake"))
     }
+
+    async fn rename_toolset(
+        &self,
+        _: Request<pb::RenameToolsetRequest>,
+    ) -> Result<RpcResponse<pb::RenameToolsetResponse>, Status> {
+        Err(Status::unimplemented("not in this fake"))
+    }
 }
 
 const XSS: &str = "<script>alert(1)</script>";

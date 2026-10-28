@@ -1439,7 +1439,7 @@ fn run_cli_with_stdin(env: &Env, args: &[&str], input: &str) -> (bool, String, S
 }
 
 #[test]
-fn toolset_commands_list_show_set_remove_and_restart_toolsets_of_the_running_daemon() {
+fn toolset_commands_list_show_set_remove_rename_and_restart_toolsets_of_the_running_daemon() {
     let env = Env::new();
     let home = env.path("home");
     let home_arg = home.to_str().unwrap();
@@ -1622,6 +1622,64 @@ fn toolset_commands_list_show_set_remove_and_restart_toolsets_of_the_running_dae
     let (ok, stdout, stderr) = toolset(&["set", "files", "--file", files.as_str()]);
     assert!(ok, "{stderr}");
     assert_eq!(stdout, "Saved toolset `files`.\n");
+
+    // A rename names the toolset before and after, and says no agent's globs changed. Both names
+    // are as stored.
+    let (ok, stdout, stderr) = toolset(&["rename", "FILES", "papers"]);
+    assert!(ok, "{stderr}");
+    assert_eq!(
+        stdout,
+        "Renamed toolset `files` to `papers`.\n\
+         No agent has tool globs for it.\n\
+         Sessions that are running keep the old tool names; new sessions use the new ones.\n"
+    );
+    let (ok, listed, stderr) = toolset(&["list"]);
+    assert!(ok, "{stderr}");
+    let names: Vec<&str> = listed
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    assert_eq!(names, ["docs", "notes", "papers"], "{listed}");
+    let (ok, shown, stderr) = toolset(&["show", "papers"]);
+    assert!(ok, "{stderr}");
+    assert!(
+        shown.contains("url = \"http://127.0.0.1:9/docs\""),
+        "{shown}"
+    );
+
+    // A refused rename prints its reason and changes nothing.
+    for (args, reason) in [
+        (
+            &["rename", "papers", "docs"],
+            "the name is taken by `[toolset.docs]` in giles.toml",
+        ),
+        (
+            &["rename", "papers", "NOTES"],
+            "there is already a toolset called `NOTES`",
+        ),
+        (
+            &["rename", "papers", "not a name"],
+            "use only letters, digits, and `-`",
+        ),
+        (
+            &["rename", "ghost", "other"],
+            "there is no toolset called `ghost`",
+        ),
+        (&["rename", "docs", "other"], "giles.toml"),
+    ] {
+        let (ok, stdout, stderr) = toolset(args);
+        assert!(!ok && stdout.is_empty(), "{args:?}: {stdout}");
+        assert!(stderr.contains(reason), "{args:?}: {stderr}");
+    }
+    let (ok, listed, stderr) = toolset(&["list"]);
+    assert!(ok, "{stderr}");
+    let names: Vec<&str> = listed
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    assert_eq!(names, ["docs", "notes", "papers"], "{listed}");
 
     let (status, log) = daemon.stop("TERM");
     assert!(status.success(), "{status}\n{log}");

@@ -15,7 +15,9 @@ use tonic::{Request, Response, Status};
 use tracing::{error, info};
 
 use super::plugins::{PluginControl, configured, landlock_abi, plugin_instances};
-use super::toolsets::{ToolsetAdmin, manager_status, toolset_to_proto};
+use super::toolsets::{
+    ToolsetAdmin, manager_status, rename_status, renamed_to_proto, toolset_to_proto,
+};
 use crate::backup::{self, BackupError};
 use crate::config::{ChannelRuntime, Config, InstanceName, LiveConfig, ToolsetSpec};
 use crate::paths::DataRoot;
@@ -468,6 +470,24 @@ impl AdminRpc for AdminService {
         Ok(Response::new(pb::RemoveToolsetResponse {
             name: removed.name,
         }))
+    }
+
+    async fn rename_toolset(
+        &self,
+        request: Request<pb::RenameToolsetRequest>,
+    ) -> Result<Response<pb::RenameToolsetResponse>, Status> {
+        let request = request.into_inner();
+        let renamed = self
+            .toolsets()?
+            .rename(&request.old, &request.new)
+            .await
+            .map_err(|err| rename_status(&request.old, &request.new, err))?;
+        info!(
+            from = %request.old,
+            to = %renamed.view.name,
+            "toolset renamed through the admin service"
+        );
+        Ok(Response::new(renamed_to_proto(renamed)))
     }
 }
 

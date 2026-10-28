@@ -1,6 +1,6 @@
-//! `giles toolset`: list, show, set, remove, and restart the MCP toolsets of the running daemon,
-//! over the admin service's `ListToolsets`, `GetToolset`, `SetToolset`, `RemoveToolset`, and
-//! `RestartPlugin` (PLAN section 7.10).
+//! `giles toolset`: list, show, set, remove, rename, and restart the MCP toolsets of the running
+//! daemon, over the admin service's `ListToolsets`, `GetToolset`, `SetToolset`, `RemoveToolset`,
+//! `RenameToolset`, and `RestartPlugin` (PLAN section 7.10).
 //!
 //! `show` prints a spec as TOML with an `# updated_at = <time>` comment, and `set` sends that time
 //! back as `expected_updated_at`, so `show`, an edit, and `set` can't overwrite a change made
@@ -30,6 +30,7 @@ pub fn run(home: Option<&Path>, args: &ToolsetArgs) -> anyhow::Result<()> {
         ToolsetCommand::Show(args) => show(home, &args.name),
         ToolsetCommand::Set(args) => set(home, &args.name, &args.file),
         ToolsetCommand::Remove(args) => remove(home, &args.name),
+        ToolsetCommand::Rename(args) => rename(home, &args.old, &args.new),
         ToolsetCommand::Restart(args) => restart(home, &args.name),
     }
 }
@@ -96,6 +97,54 @@ fn remove(home: Option<&Path>, name: &str) -> anyhow::Result<()> {
     })?;
     println!("Removed toolset `{}`.", removed.name);
     Ok(())
+}
+
+/// Renames a stored toolset and says which agents' globs were rewritten. A toolset that couldn't
+/// start under its new name is reported on standard error: the rename is done.
+fn rename(home: Option<&Path>, old: &str, new: &str) -> anyhow::Result<()> {
+    let request = pb::RenameToolsetRequest {
+        old: old.to_owned(),
+        new: new.to_owned(),
+    };
+    let renamed = admin_client::call(home, async |mut client| {
+        Ok(client.rename_toolset(request).await?.into_inner())
+    })?;
+    print!("{}", format_renamed(old, new, &renamed));
+    if let Some(failure) = renamed.toolset.and_then(|toolset| toolset.failure) {
+        eprintln!("warning: toolset `{new}` isn't running: {failure}");
+    }
+    Ok(())
+}
+
+/// What a rename did: the old and the new name as the daemon stored them, and each glob of each
+/// agent that was rewritten.
+fn format_renamed(old: &str, new: &str, renamed: &pb::RenameToolsetResponse) -> String {
+    let old = if renamed.old.is_empty() {
+        old
+    } else {
+        renamed.old.as_str()
+    };
+    let new = renamed
+        .toolset
+        .as_ref()
+        .map_or(new, |toolset| toolset.name.as_str());
+    let mut out = format!("Renamed toolset `{old}` to `{new}`.\n");
+    if renamed.agents.is_empty() {
+        out.push_str("No agent has tool globs for it.\n");
+    }
+    for agent in &renamed.agents {
+        for glob in &agent.globs {
+            let _ = writeln!(
+                out,
+                "  agent {}: {} `{}` -> `{}`",
+                agent.agent, glob.key, glob.from, glob.to
+            );
+        }
+    }
+    out.push_str(
+        "Sessions that are running keep the old tool names; new sessions use the new ones.\n",
+    );
+    out
 }
 
 /// Restarts the toolset through `RestartPlugin`, under the name `GetToolset` gives it (the name
@@ -372,5 +421,63 @@ notes   stored      2027-01-15 08:00:07 UTC  auth.bearer: no secret \"notes\" in
 "
         );
         assert_eq!(format_list(&[], &TimeZone::UTC), "No toolsets.\n");
+    }
+
+    fn glob(key: &str, from: &str, to: &str) -> pb::GlobChange {
+        pb::GlobChange {
+            key: key.into(),
+            from: from.into(),
+            to: to.into(),
+        }
+    }
+
+    #[test]
+    fn a_rename_lists_each_glob_that_was_rewritten() {
+        let renamed = pb::RenameToolsetResponse {
+            toolset: Some(toolset("Docs", Some(SPEC), Some(5))),
+            agents: vec![
+                pb::AgentGlobChange {
+                    agent: "main".into(),
+                    globs: vec![
+                        glob("tools", "files__*", "Docs__*"),
+                        glob("ask", "files__delete", "Docs__delete"),
+                    ],
+                },
+                pb::AgentGlobChange {
+                    agent: "helper".into(),
+                    globs: vec![glob("tools", "files__read", "Docs__read")],
+                },
+            ],
+            old: "files".into(),
+        };
+        // The names are the ones the daemon stored, which can differ in case from the arguments.
+        assert_eq!(
+            format_renamed("FILES", "docs", &renamed),
+            "\
+Renamed toolset `files` to `Docs`.
+  agent main: tools `files__*` -> `Docs__*`
+  agent main: ask `files__delete` -> `Docs__delete`
+  agent helper: tools `files__read` -> `Docs__read`
+Sessions that are running keep the old tool names; new sessions use the new ones.
+"
+        );
+    }
+
+    #[test]
+    fn a_rename_that_no_agent_names_says_so() {
+        let renamed = pb::RenameToolsetResponse {
+            toolset: None,
+            agents: Vec::new(),
+            old: String::new(),
+        };
+        // Without names from the daemon the arguments are shown.
+        assert_eq!(
+            format_renamed("files", "docs", &renamed),
+            "\
+Renamed toolset `files` to `docs`.
+No agent has tool globs for it.
+Sessions that are running keep the old tool names; new sessions use the new ones.
+"
+        );
     }
 }
