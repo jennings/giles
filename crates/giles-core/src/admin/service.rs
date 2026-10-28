@@ -197,10 +197,18 @@ impl AdminRpc for AdminService {
         request: Request<pb::RestartPluginRequest>,
     ) -> Result<Response<pb::RestartPluginResponse>, Status> {
         let instance = request.into_inner().instance;
-        if !configured(&self.options.config.get())
+        // `ListPlugins` lists the configured instances, and a stored toolset that failed to start,
+        // which the configuration doesn't have but supervision reports.
+        let listed = configured(&self.options.config.get())
             .iter()
             .any(|c| c.instance.as_str() == instance)
-        {
+            || self.options.plugins.as_ref().is_some_and(|control| {
+                control
+                    .plugins()
+                    .iter()
+                    .any(|runtime| runtime.instance.as_str() == instance)
+            });
+        if !listed {
             return Err(Status::not_found(format!(
                 "there is no plugin instance `{instance}`"
             )));

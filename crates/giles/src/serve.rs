@@ -16,7 +16,7 @@ use giles_core::plugin_host::{ChannelWiring, Launcher, PluginHost};
 use giles_core::runtime::Runtime;
 use giles_core::sandbox::{self, HostReport};
 use giles_core::sessions::SystemClock;
-use giles_core::toolsets::{ToolsetHost, ToolsetLauncher};
+use giles_core::toolsets::{ToolsetHost, ToolsetLauncher, ToolsetManager, ToolsetManagerOptions};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -74,6 +74,17 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
         )
         .await,
     );
+    // The toolsets stored in the database, validated and added beside the ones of `giles.toml`.
+    // One that fails isn't started and shows as failed; startup never fails on one. The manager is
+    // also what changes them while Giles runs.
+    let toolset_manager = ToolsetManager::start(ToolsetManagerOptions {
+        store: runtime.store.clone(),
+        root: root.clone(),
+        config: runtime.registry.live_config().clone(),
+        host: toolsets.clone(),
+    })
+    .await
+    .context("cannot read the stored toolsets")?;
     runtime.registry.log_summary();
 
     let listener = http::bind(config.core.http_listen).await?;
@@ -145,10 +156,12 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
         sandbox,
         started_at,
         channels: Arc::new(sessions.clone()),
-        // The plugin host's channel plugins and the toolset host's toolsets, as one.
+        // The plugin host's channel plugins, the toolset host's toolsets, and the stored toolsets
+        // that failed to start, as one.
         plugins: Some(Arc::new(MergedControl::new(vec![
             plugins.clone() as Arc<dyn PluginControl>,
             toolsets.clone() as Arc<dyn PluginControl>,
+            toolset_manager.clone() as Arc<dyn PluginControl>,
         ]))),
         login_links,
         clock: Arc::new(SystemClock),
@@ -212,7 +225,8 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     let admin_server = tokio::spawn(admin_listener.serve(admin, shutdown.clone()));
     // Every configured plugin channel, supervised: registered and attached to the sessions as it
     // comes up, relaunched with backoff when it fails. Startup waits for each first attempt and
-    // for every toolset's first start (a failed toolset retries in the background); a shutdown
+    // for the first start of each toolset of `giles.toml` (a failed toolset retries in the
+    // background; stored toolsets start in the background); a shutdown
     // during startup stops waiting, and `stop_all` abandons the launches still running (killing
     // their plugins).
     tokio::select! {
@@ -228,7 +242,7 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
         agents = config.agents.len(),
         providers = config.providers.len(),
         channels = config.channels.len(),
-        toolsets = config.toolsets.len(),
+        toolsets = runtime.registry.config().toolsets.len(),
         "giles started",
     );
 

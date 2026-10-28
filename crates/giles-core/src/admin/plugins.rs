@@ -1,7 +1,7 @@
 //! Plugin instances for `Status` and `ListPlugins`: what the configuration says, plus what plugin
 //! supervision reports through [`PluginControl`].
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -28,11 +28,14 @@ pub trait PluginControl: Send + Sync {
     fn restart(&self, instance: &str) -> bool;
 }
 
-/// Several [`PluginControl`]s as one: `serve` has a plugin host for channel plugins and a toolset
-/// host for toolsets, and the admin service takes a single control.
+/// Several [`PluginControl`]s as one: `serve` has a plugin host for channel plugins, a toolset
+/// host for toolsets, and the toolset manager for the stored toolsets that failed, and the admin
+/// service takes a single control.
 ///
-/// `plugins()` is every control's instances; `restart` goes to the first control that supervises
-/// the instance (instance names are unique across kinds, so at most one does).
+/// `plugins()` is every control's instances, in the order of the controls (so `ListPlugins` gives a
+/// configured instance the report of the first control that has one: a name can also be reported
+/// by a later control, as a stored toolset that lost its name to a `giles.toml` instance is).
+/// `restart` goes to the first control that accepts the instance.
 pub struct MergedControl {
     controls: Vec<Arc<dyn PluginControl>>,
 }
@@ -157,18 +160,20 @@ pub(super) fn configured(config: &Config) -> Vec<Configured<'_>> {
 }
 
 /// The `PluginInstance` of every configured plugin: the configuration, the host's sandbox, the
-/// channel statuses recorded since startup, and what supervision reports in `runtimes`.
+/// channel statuses recorded since startup, and what supervision reports in `runtimes`. A
+/// configured instance takes the first report with its name, so the report of the host that
+/// supervises it comes before one a later control makes for the same name. What is left is a
+/// report for an instance the configuration doesn't have, or for a name that another instance
+/// already took: a stored toolset that failed validation (`ToolsetManager`), listed after the
+/// configured instances as a toolset with just what the report says.
 pub(super) fn plugin_instances(
     config: &Config,
     host: &Result<HostReport, String>,
     statuses: &BTreeMap<InstanceName, ChannelStatusRecord>,
     runtimes: Vec<PluginRuntime>,
 ) -> Vec<pb::PluginInstance> {
-    let mut runtimes: HashMap<InstanceName, PluginRuntime> = runtimes
-        .into_iter()
-        .map(|r| (r.instance.clone(), r))
-        .collect();
-    configured(config)
+    let mut runtimes: Vec<Option<PluginRuntime>> = runtimes.into_iter().map(Some).collect();
+    let mut instances: Vec<pb::PluginInstance> = configured(config)
         .into_iter()
         .map(|c| {
             let mut instance = pb::PluginInstance {
@@ -184,12 +189,27 @@ pub(super) fn plugin_instances(
                     .get(c.instance)
                     .and_then(|record| status_to_proto(record.status.clone()).ok());
             }
-            if let Some(runtime) = runtimes.remove(c.instance) {
+            let first = runtimes
+                .iter_mut()
+                .find(|r| r.as_ref().is_some_and(|r| &r.instance == c.instance));
+            if let Some(runtime) = first.and_then(Option::take) {
                 apply_runtime(&mut instance, runtime);
             }
             instance
         })
-        .collect()
+        .collect();
+    let mut unconfigured: Vec<PluginRuntime> = runtimes.into_iter().flatten().collect();
+    unconfigured.sort_by(|a, b| a.instance.cmp(&b.instance));
+    instances.extend(unconfigured.into_iter().map(|runtime| {
+        let mut instance = pb::PluginInstance {
+            instance: runtime.instance.to_string(),
+            kind: pb::InstanceKind::Toolset.into(),
+            ..pb::PluginInstance::default()
+        };
+        apply_runtime(&mut instance, runtime);
+        instance
+    }));
+    instances
 }
 
 fn apply_runtime(instance: &mut pb::PluginInstance, runtime: PluginRuntime) {

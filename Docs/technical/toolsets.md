@@ -231,6 +231,93 @@ change, so a change in progress finishes first and none starts a supervisor that
 wait for. The state the admin service reports follows: a removed toolset is gone from `plugins()`,
 and a replaced one starts over as `Starting`.
 
+## Stored toolsets
+
+`toolsets/manager.rs`: the remote MCP servers that the web UI manages are stored in the database
+([Storage](storage.md#toolsets)), and `ToolsetManager` is the one place that changes them. There is
+one per core, built in `giles serve` after the host has started the toolsets of `giles.toml`. The
+web pages, the admin RPCs, and the CLI call it; none touches the table, the live configuration, or
+the host. Both sources work side by side, and instance names stay unique across them.
+
+A stored toolset is a remote server. A web login must not be able to choose a program for Giles to
+run on the host, its arguments, its environment, or its sandbox grants: installing and running code
+on the host is the operator's, so a stdio server is a `[toolset.<name>]` table of `giles.toml`.
+Connecting to a remote server is not.
+
+`ToolsetManagerOptions` holds the store, the data root, the `LiveConfig`, and the `ToolsetHost`.
+`ToolsetManager::start(options)` loads the stored toolsets, and the operations are:
+
+- `list()` is every toolset ordered by name ignoring case: the stored ones, each a `ToolsetView`
+  with its `spec` (a `ToolsetSpec`, credentials as references), its `created_at` and `updated_at`,
+  and a `failure` if it isn't running; and the ones of `giles.toml`, as `ToolsetSource::File` views
+  without a spec. `get(name)` is one of them. Names match ignoring ASCII case.
+- `add(name, &spec)`, `update(name, &spec, expected_updated_at)`, and `remove(name)`. The error is a
+  `ToolsetManagerError`: `Invalid { key, reason }` (the key is the spec key that has the problem,
+  `auth.bearer`, or the root for the name or a conflict), `Exists` (the name is stored, ignoring
+  case), `NotFound`, `Stale`, `Unsupported` (the name is a toolset of `giles.toml`, which is
+  read-only here), and `Store`.
+
+A spec is stored as JSON with the keys of the `[toolset.<name>]` table (`ToolsetSpec`'s serde form,
+so a duration is `"300000ms"`). A bearer token is a `{ secret = ... }` reference, so no secret value
+is in the database.
+
+### One change
+
+One async lock spans each change, as `Routes` does for routes. A change:
+
+1. Looks the name up in the rows. `add` refuses a stored name (`Exists`). `update` and `remove`
+   refuse a name that only `giles.toml` has (`Unsupported`) or that nothing has (`NotFound`);
+   `update` also compares `expected_updated_at` with the row's (`Stale`).
+2. Validates the spec with `validate_toolset` ([Configuration](config.md#validating-one-toolset))
+   against the running configuration, with `secrets.toml` read again: a secret added to the file is
+   found by the next save, with no restart. Before it, in this order, the manager refuses a name
+   that a `giles.toml` instance uses (the reason is
+   ``the name is taken by `[<kind>.<name>]` in giles.toml``, whatever else is wrong with the spec),
+   a name in `[core] retired_instances`, which lists names that are not configured, a spec without
+   `url` (an `Invalid` at `url`: a stdio server goes in `giles.toml`), and an `auth.bearer` that
+   isn't `{ secret = "<name>" }` (an `{ env = ... }` reference or a plain token). `validate_toolset`
+   then refuses the keys of a stdio server (`command`, `component`, `args`, `env`, `idle_stop`,
+   `sandbox`, `unsandboxed`) next to `url`, each at its key. Nothing is stored when any of these
+   fails.
+3. Writes the row. The store checks the stale token too, so a write can't overwrite a change that
+   isn't the one the caller read.
+4. Changes the `LiveConfig` (`add_toolset` or `replace_toolset`), then the host (`add` or
+   `replace`), so new sessions get the new tool list and running sessions keep their snapshot. If
+   this step fails after the row is written (it can't unless the live configuration and the manager
+   disagree), the host has unregistered the toolset, so the entry is taken out of the live
+   configuration again (`withdraw`) and the toolset is failed with the reason: it shows as one
+   failed stored toolset, not as a toolset of `giles.toml`, and can be saved or removed. The error
+   is an `Invalid` at the root.
+
+`remove` deletes the row, takes the toolset out of the live configuration, and stops it in the host,
+which withdraws its tools. A remote toolset has no data directory, and its entry in the
+[tool-list cache](#tool-list-cache) is never offered, so nothing else is cleaned up. Agents' `tools`
+and `ask` patterns that name the toolset's tools are left alone: they match nothing until a toolset
+of that name returns.
+
+### Startup
+
+`start` takes every row in name order and runs the same checks as a change, then adds it to the live
+configuration and the host. The host has started the toolsets of `giles.toml` first, so a name that
+a `giles.toml` instance (of any kind) also uses stays with that instance and the stored one fails. A
+stored toolset that fails isn't started: it is logged (`a stored toolset is not started`) and kept
+with its reason, a missing secret, a spec that a stored toolset can't have, a spec that can't be
+read, or the name. **Startup never fails on a stored toolset**; only the database can't be read.
+
+The manager is also a `PluginControl`, which `serve` merges with the plugin host and the toolset
+host. Its `plugins()` is one `Failed` `PluginRuntime` per stored toolset that isn't running, with
+the reason as `last_error`. Its `restart(name)` accepts a failed stored toolset (and answers `false`
+for any other name) and runs `retry(name)` in the background: it reads `secrets.toml` again,
+validates the stored spec against the live configuration as startup did, and starts the toolset, or
+leaves it failed with the new reason. `retry` is public, and returns the `ToolsetView`.
+`ListPlugins` and `Status` list a runtime that the configuration doesn't have as a toolset, after
+the configured instances, so `giles status` shows the failed toolset and why. The fix is in the web
+UI, which needs Giles running: saving the toolset again validates it and starts it (`update` on a
+failed toolset adds it), and removing it deletes the row.
+
+Giles doesn't wait for a stored toolset's first start before it reports that it started, as it does
+for the toolsets of `giles.toml`; it starts in the background.
+
 ## Tool-list cache
 
 `toolsets/cache.rs`, PLAN section 7.9: one JSON file per instance in `<root>/cache/toolsets/`
@@ -273,7 +360,9 @@ failed write is logged.
   listed for `load_skill`.
 - `crates/giles/tests/serve.rs`: a stdio toolset that exits and an unreachable remote one are logged
   and retried, with their tools registered (nothing pending) and `giles` running and stopping
-  cleanly.
+  cleanly. With stored toolsets, all remote, one valid and two that can't start (a bearer token from
+  the environment, a name that `giles.toml` uses): `giles` runs, the valid one is started and
+  supervised, `giles status` lists the others as failed with their reasons, and the log names them.
 - `crates/giles-core/tests/toolsets.rs` (`harness = false`): the test binary is both the trampoline
   and the server, found by name on a `PATH` through a link. It reports its environment, working
   directory, and a TCP connect to a local listener on stderr. Sandboxed (Seatbelt on macOS, Landlock
@@ -295,3 +384,18 @@ failed write is logged.
   the live configuration and unregistering one, and the dispatcher's cover a call from a session
   that lists a removed toolset (`tool unavailable`) and the next batch using an edited toolset's
   `deadline`.
+- The manager (`toolsets/manager_tests.rs`, with the fake connector of `tests.rs`, on a real
+  database and data root): add, update, and remove reach the database, the live configuration, the
+  registry, and the host (an edit restarts the toolset and drops the old connection; a stale update
+  and an invalid one change nothing); an invalid spec is refused with its key and nothing is stored;
+  a spec without `url`, with a key of a stdio server, or with a bearer token that isn't a
+  `{ secret = ... }` reference is refused at that key; a missing secret is refused, then accepted
+  after it is added to `secrets.toml` with no restart, and only the reference is stored; startup
+  adds the valid stored toolset beside a `giles.toml` toolset and reports each failure (missing
+  secret, a name taken by a toolset or a channel of `giles.toml` with the exact reason, a stdio
+  spec, a damaged spec) as failed, and saving or removing a failed toolset works and leaves the
+  instance that kept the name running; toolsets of `giles.toml` can't be changed, and a stored name
+  is unique ignoring case. The admin tests cover a `Failed` runtime that the configuration doesn't
+  have in `ListPlugins` and `Status` (also when a `giles.toml` instance has the name, which keeps
+  the host's report), and restarting it; the rename tests cover stored toolsets in the startup
+  check, the refusal of a new name that a stored toolset has, and of an old name that is one.

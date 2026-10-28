@@ -122,9 +122,18 @@ impl Daemon {
     }
 
     fn wait_for_log(&mut self, needle: &str) {
+        self.wait_for_line(&[needle]);
+    }
+
+    /// Waits for one line of the log that contains every one of `needles`.
+    fn wait_for_line(&mut self, needles: &[&str]) {
         let deadline = Instant::now() + TIMEOUT;
         loop {
-            if self.log.iter().any(|l| l.contains(needle)) {
+            if self
+                .log
+                .iter()
+                .any(|l| needles.iter().all(|needle| l.contains(needle)))
+            {
                 return;
             }
             let left = deadline.saturating_duration_since(Instant::now());
@@ -132,7 +141,10 @@ impl Daemon {
                 Ok(line) => self.log.push(line),
                 Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
                     let _ = self.child.kill();
-                    panic!("no {needle:?} in the log:\n{}", self.log.join("\n"));
+                    panic!(
+                        "no line with {needles:?} in the log:\n{}",
+                        self.log.join("\n")
+                    );
                 }
             }
         }
@@ -1010,6 +1022,108 @@ fn toolsets_that_fail_to_start_leave_giles_running_and_retrying() {
     }
     // Both were registered before the summary, so neither is pending.
     assert!(!log.contains("instance not started"), "{log}");
+    assert!(log.contains("giles stopped"), "{log}");
+}
+
+/// Stores toolsets in `home`'s database, as the web UI would.
+fn store_toolsets(home: &Path, toolsets: &[(&str, &str)]) {
+    fs::create_dir_all(home.join("data")).unwrap();
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let store = giles_store::Store::open(home.join("data/giles.db"))
+                .await
+                .unwrap();
+            for (name, spec) in toolsets {
+                store
+                    .toolset_insert(name, spec, jiff::Timestamp::now())
+                    .await
+                    .unwrap();
+            }
+        });
+}
+
+#[test]
+fn stored_toolsets_start_or_are_reported_failed_and_giles_runs() {
+    let env = Env::new();
+    let home = env.path("home");
+    let home_arg = home.to_str().unwrap();
+    write_config(
+        &home,
+        "[core]\nhttp_listen = \"127.0.0.1:0\"\n\n\
+         [owner]\nidentities = [\"web:owner\"]\n\n[channel.web]\n",
+    );
+    // Nothing listens on the discard port, so the valid one starts, fails, and is retried.
+    let unreachable = r#"{ "url": "http://127.0.0.1:9/mcp" }"#;
+    store_toolsets(
+        &home,
+        &[
+            // Valid: started (and retried, as in the test above).
+            ("stored-ok", unreachable),
+            // A token from the environment: a stored toolset's comes from `secrets.toml`.
+            (
+                "stored-bad",
+                r#"{ "url": "http://127.0.0.1:9/mcp", "auth": { "bearer": { "env": "TOKEN" } } }"#,
+            ),
+            // A name that `giles.toml` uses.
+            ("web", unreachable),
+        ],
+    );
+
+    // Giles runs, though two of the three can't. The valid one is registered with the others
+    // before the summary (nothing is pending), and is started and retried.
+    let mut daemon = Daemon::start(env.command(&["serve", "--home", home_arg]));
+    daemon.wait_for_line(&[
+        "toolset{instance=stored-ok}",
+        "cannot start the toolset; retrying",
+    ]);
+    let (ok, stdout, stderr) = run_cli(&env, &["status", "--home", home_arg]);
+    assert!(ok, "{stderr}");
+
+    // The valid one was started, so it is supervised and not failed.
+    let ok_block = stdout.split("stored-ok (toolset)\n").nth(1).expect(&stdout);
+    let state = ok_block.lines().next().unwrap();
+    assert!(state.starts_with("    state:"), "{stdout}");
+    assert!(!state.contains("failed"), "{stdout}");
+    // The others are reported failed, with the reason.
+    for (instance, reason) in [
+        ("stored-bad", "auth.bearer: must be { secret = \"<name>\" }"),
+        ("web", "the name is taken by `[channel.web]` in giles.toml"),
+    ] {
+        let block = stdout
+            .split(&format!("{instance} (toolset)\n"))
+            .nth(1)
+            .unwrap_or_else(|| panic!("{instance} in:\n{stdout}"));
+        let mut lines = block.lines();
+        let state = lines.next().unwrap();
+        assert!(
+            state.starts_with("    state:") && state.contains("failed"),
+            "{stdout}"
+        );
+        let error = lines.next().unwrap();
+        assert!(
+            error.starts_with("    error:") && error.contains(reason),
+            "{stdout}"
+        );
+    }
+
+    let (status, log) = daemon.stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+    assert!(!log.contains("instance not started"), "{log}");
+    let summary = log.lines().find(|line| line.contains("registry ready"));
+    let summary = summary.unwrap_or_else(|| panic!("no registry summary in:\n{log}"));
+    assert!(
+        summary.contains("toolsets=1") && summary.contains("pending=0"),
+        "{summary}"
+    );
+    for instance in ["stored-bad", "web"] {
+        let reported = log.lines().any(|line| {
+            line.contains("a stored toolset is not started")
+                && line.contains(&format!("toolset={instance}"))
+        });
+        assert!(reported, "{instance}\n{log}");
+    }
     assert!(log.contains("giles stopped"), "{log}");
 }
 

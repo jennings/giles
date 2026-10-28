@@ -92,7 +92,7 @@ impl Toolset for FakeServer {
 }
 
 /// What the fake connector does for one instance.
-struct Script {
+pub(super) struct Script {
     source: String,
     version: String,
     /// The program a connection reports it runs.
@@ -112,7 +112,7 @@ struct Script {
 }
 
 impl Script {
-    fn new(tools: &[&str]) -> Self {
+    pub(super) fn new(tools: &[&str]) -> Self {
         Self {
             source: "sha256:v1".to_owned(),
             version: "1.0".to_owned(),
@@ -130,12 +130,12 @@ impl Script {
 }
 
 #[derive(Default)]
-struct FakeConnector {
+pub(super) struct FakeConnector {
     scripts: Mutex<BTreeMap<String, Script>>,
 }
 
 impl FakeConnector {
-    fn with(scripts: impl IntoIterator<Item = (&'static str, Script)>) -> Arc<Self> {
+    pub(super) fn with(scripts: impl IntoIterator<Item = (&'static str, Script)>) -> Arc<Self> {
         Arc::new(Self {
             scripts: Mutex::new(
                 scripts
@@ -150,11 +150,11 @@ impl FakeConnector {
         f(self.scripts.lock().unwrap().get_mut(instance).unwrap())
     }
 
-    fn connects(&self, instance: &str) -> usize {
+    pub(super) fn connects(&self, instance: &str) -> usize {
         self.script(instance, |s| s.connects)
     }
 
-    fn live(&self, instance: &str) -> usize {
+    pub(super) fn live(&self, instance: &str) -> usize {
         self.script(instance, |s| s.live.load(Ordering::SeqCst))
     }
 
@@ -308,7 +308,7 @@ impl Setup {
 }
 
 /// Lets spawned tasks run without moving the paused clock.
-async fn settle() {
+pub(super) async fn settle() {
     for _ in 0..50 {
         tokio::task::yield_now().await;
     }

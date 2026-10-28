@@ -57,8 +57,10 @@ to stderr, with ANSI colors only when stderr is a terminal. The filter is `GILES
    ([Instance Rename](instance-rename.md#startup-check)), then open the blob store and build the
    registry from the configuration. Any error ends the process. Then register every toolset
    (`ToolsetHost::start`, [Toolsets](toolsets.md)), each offering its cached tools, with its first
-   start running in the background, and log what is registered (`registry ready`) and each instance
-   still pending.
+   start running in the background. Then load the stored toolsets (`ToolsetManager::start`,
+   [Toolsets](toolsets.md#stored-toolsets)): each is validated and added beside them, one that fails
+   is logged and kept as failed, and only a database error ends the process. Log what is registered
+   (`registry ready`) and each instance still pending.
 7. Bind the HTTP listener on `core.http_listen` (a busy address fails startup here). Then write a
    fresh admin token and bind the admin socket (`AdminListener::bind`, removing one a crash left).
 8. Start the outbox's sender (`Runtime::start_outbox`, [Outbox](outbox.md)): drop the approval
@@ -71,13 +73,14 @@ to stderr, with ANSI colors only when stderr is a terminal. The filter is `GILES
    its own task ([HTTP Server](http.md#lifecycle)) and the admin service on another
    ([Admin service](admin.md)), and start supervising every plugin channel (`PluginHost::start`,
    [Plugin Host](plugin-host.md#supervision)), which waits for each one's first launch attempt,
-   while also waiting for every toolset's first start (`ToolsetHost::started`); both waits end if a
-   shutdown signal arrives first. Each plugin is registered with the registry and attached to the
-   sessions as it comes up; one that fails is logged and relaunched with backoff, or once its binary
-   changes. A toolset that fails to start is logged and retried with backoff
-   ([Toolsets](toolsets.md#lifecycle)). The admin service reports plugin and toolset supervision
-   through one `admin::PluginControl` (`admin::MergedControl` over the plugin host and the toolset
-   host). The scheduler and the blob sweep (`Runtime::start_blob_sweep`,
+   while also waiting for the first start of each toolset of `giles.toml` (`ToolsetHost::started`; a
+   stored toolset starts in the background); both waits end if a shutdown signal arrives first. Each
+   plugin is registered with the registry and attached to the sessions as it comes up; one that
+   fails is logged and relaunched with backoff, or once its binary changes. A toolset that fails to
+   start is logged and retried with backoff ([Toolsets](toolsets.md#lifecycle)). The admin service
+   reports plugin and toolset supervision through one `admin::PluginControl` (`admin::MergedControl`
+   over the plugin host, the toolset host, and the toolset manager, which reports the stored
+   toolsets that failed to start). The scheduler and the blob sweep (`Runtime::start_blob_sweep`,
    `giles_core::blobs::BlobSweep`) start just before them. The sweep waits 60 seconds, so recovery
    and the first turns finish first, then runs `BlobStore::sweep` ([Storage](storage.md#sweep))
    every six hours, with the 48-hour grace period (constants `SWEEP_FIRST_DELAY` and

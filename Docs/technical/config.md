@@ -33,7 +33,9 @@ The steps:
    and report their own unknown keys through `Ctx::unknown`.
 2. Validate `[core]` and `[owner]`. `core.retired_instances` holds valid instance names that appear
    once and that no `[provider.*]`, `[channel.*]`, or `[toolset.*]` table uses; the core only stores
-   them, for the startup check in [Instance Rename](instance-rename.md#startup-check).
+   them, for the startup check in [Instance Rename](instance-rename.md#startup-check). A toolset
+   stored in the database can't be checked here, since loading reads no database: the toolset
+   manager refuses a stored toolset with a retired name when it is saved and at startup.
    `core.journal_mode` is parsed with `giles_store::JournalMode::from_str` (case-insensitive;
    `memory` and `off` and anything unknown are errors at `core.journal_mode`) and defaults to WAL
    ([Storage](storage.md#journal-modes)); `Runtime::start` passes it to the store.
@@ -197,6 +199,13 @@ toolset's server and `skills` directories. The error then names the other instan
 instances that were already there (a binary that appeared in a granted directory after startup) are
 not blamed on the toolset being validated, while loading `giles.toml` still rejects them. `skills`
 overlapping the plugin data root is checked for the toolset being validated only.
+
+`ToolsetManager` ([Toolsets](toolsets.md#stored-toolsets)) is the caller for toolsets stored in the
+database. It reads `secrets.toml` for every validation and adds its own rules. A name that a
+`giles.toml` instance of any kind uses, or that `[core] retired_instances` lists, is refused. A
+stored toolset is a remote server: a spec without `url` is refused as an `Invalid` at `url`, and an
+`auth.bearer` that isn't `{ secret = "<name>" }` at `auth.bearer`. `giles.toml` keeps accepting
+every credential form.
 
 ## Secrets
 
