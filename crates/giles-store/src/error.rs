@@ -86,6 +86,17 @@ pub enum Error {
     /// was based on found a different one. Nothing changed; the caller reloads and decides again.
     #[error("memory {0} changed since it was loaded")]
     StaleMemory(crate::MemoryId),
+    /// A toolset with that name exists already. Names are compared without regard to ASCII case.
+    #[error("a toolset with that name already exists")]
+    ToolsetExists,
+    /// There is no toolset with that name.
+    #[error("no such toolset")]
+    NoSuchToolset,
+    /// The toolset was changed after the caller loaded it: an update that named the `updated_at`
+    /// it was based on found a different one. Nothing changed; the caller reloads and decides
+    /// again.
+    #[error("the toolset changed since it was loaded")]
+    StaleToolset,
     /// A memory's content is longer than the limit.
     #[error("memory content is {chars} characters; the limit is {max}")]
     MemoryTooLong {
