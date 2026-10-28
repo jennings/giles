@@ -1,12 +1,13 @@
-//! Every configured toolset, started at boot and stopped at shutdown.
+//! Every configured toolset, started at boot, changed while Giles runs, and stopped at shutdown.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
 use futures::FutureExt as _;
 use giles_types::{Error, Result};
-use tokio::sync::oneshot;
+use tokio::sync::{Mutex as AsyncMutex, oneshot};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument as _, debug, info, warn};
@@ -16,16 +17,51 @@ use super::launch::ToolsetLauncher;
 use super::lifecycle::{Connection, Connector, Control, Managed, Report};
 use crate::admin::{PluginControl, PluginRuntime};
 use crate::config::{InstanceName, ToolsetInstance, ToolsetTransport};
-use crate::registry::Registry;
+use crate::registry::{Registry, RegistryError};
 
 /// The configured toolsets of a running core (PLAN section 7.5): each is registered at boot
-/// (offering its cached tools) and supervised, from its first start to shutdown.
+/// (offering its cached tools) and supervised, from its first start until it's replaced or
+/// removed ([`replace`](Self::replace), [`remove`](Self::remove)) or Giles shuts down. Toolsets
+/// can be [added](Self::add) while Giles runs.
 #[derive(Debug)]
 pub struct ToolsetHost {
     shutdown: CancellationToken,
     tasks: Mutex<JoinSet<()>>,
     started: Mutex<Vec<oneshot::Receiver<()>>>,
     controls: Mutex<BTreeMap<InstanceName, Control>>,
+    dynamic: Dynamic,
+}
+
+/// What changing a toolset after boot needs, and how to stop each supervisor.
+struct Dynamic {
+    registry: Arc<Registry>,
+    connector: Arc<dyn Connector>,
+    cache: ToolCache,
+    /// The supervisors, by toolset name. Held for the whole of a change, so changes to the host
+    /// can't interleave.
+    supervised: AsyncMutex<BTreeMap<InstanceName, Supervised>>,
+}
+
+impl fmt::Debug for Dynamic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Dynamic").finish_non_exhaustive()
+    }
+}
+
+/// One toolset's supervisor, which can be stopped and waited for on its own.
+struct Supervised {
+    stop: CancellationToken,
+    ended: oneshot::Receiver<()>,
+}
+
+impl Supervised {
+    /// Stops the supervisor, which drops its connection (a stdio server's process group is
+    /// killed) and fails the calls running on it as unavailable, and waits until it has ended.
+    async fn stop(self) {
+        self.stop.cancel();
+        // The sender is dropped when the supervisor's task ends, whether or not it sent.
+        let _ = self.ended.await;
+    }
 }
 
 impl ToolsetHost {
@@ -33,48 +69,100 @@ impl ToolsetHost {
     /// stdio servers in their sandbox, remote servers over HTTP. Each instance offers its cached
     /// tools (if the cache matches its program and configuration) from the moment it's
     /// registered; [`ToolsetHost::started`] waits for the first starts.
-    pub async fn start(launcher: ToolsetLauncher, registry: &Registry) -> Self {
+    pub async fn start(launcher: ToolsetLauncher, registry: &Arc<Registry>) -> Self {
         let cache = ToolCache::new(launcher.root().cache_dir().join("toolsets"));
         Self::start_with(Arc::new(LaunchConnector { launcher }), registry, cache).await
     }
 
     pub(crate) async fn start_with(
         connector: Arc<dyn Connector>,
-        registry: &Registry,
+        registry: &Arc<Registry>,
         cache: ToolCache,
     ) -> Self {
-        let shutdown = CancellationToken::new();
-        let mut tasks = JoinSet::new();
-        let mut started = Vec::new();
-        let mut controls = BTreeMap::new();
-        for instance in registry.config().toolsets.values() {
-            let cached = cached_tools(&*connector, &cache, instance).await;
-            let managed = Managed::new(
-                instance.clone(),
-                cached,
-                connector.clone(),
-                cache.clone(),
-                shutdown.clone(),
-            );
-            if let Err(error) = registry
-                .register_toolset(&instance.name, managed.toolset)
-                .await
-            {
-                warn!(toolset = %instance.name, %error, "cannot register the toolset");
-                continue;
+        let host = Self {
+            shutdown: CancellationToken::new(),
+            tasks: Mutex::new(JoinSet::new()),
+            started: Mutex::new(Vec::new()),
+            controls: Mutex::new(BTreeMap::new()),
+            dynamic: Dynamic {
+                registry: registry.clone(),
+                connector,
+                cache,
+                supervised: AsyncMutex::default(),
+            },
+        };
+        {
+            let mut supervised = host.dynamic.supervised.lock().await;
+            for instance in registry.config().toolsets.values() {
+                match host.launch(&mut supervised, instance).await {
+                    Ok(started) => lock(&host.started).push(started),
+                    Err(error) => {
+                        warn!(toolset = %instance.name, %error, "cannot register the toolset");
+                    }
+                }
             }
-            controls.insert(instance.name.clone(), managed.control);
-            let (started_tx, started_rx) = oneshot::channel();
-            let span = tracing::info_span!("toolset", instance = %instance.name);
-            tasks.spawn(managed.supervisor.run(started_tx).instrument(span));
-            started.push(started_rx);
         }
-        Self {
-            shutdown,
-            tasks: Mutex::new(tasks),
-            started: Mutex::new(started),
-            controls: Mutex::new(controls),
+        host
+    }
+
+    /// Registers `instance`, offering its cached tools, and spawns its supervisor. A supervisor
+    /// still running under the same name is stopped first (and, if `instance` can't be
+    /// registered, its toolset is unregistered). The receiver resolves once the first start has
+    /// succeeded or failed.
+    async fn launch(
+        &self,
+        supervised: &mut BTreeMap<InstanceName, Supervised>,
+        instance: &ToolsetInstance,
+    ) -> Result<oneshot::Receiver<()>, RegistryError> {
+        let stopped_old = match supervised.remove(&instance.name) {
+            Some(old) => {
+                old.stop().await;
+                true
+            }
+            None => false,
+        };
+        let Dynamic {
+            registry,
+            connector,
+            cache,
+            ..
+        } = &self.dynamic;
+        let cached = cached_tools(&**connector, cache, instance).await;
+        let stop = self.shutdown.child_token();
+        let managed = Managed::new(
+            instance.clone(),
+            cached,
+            connector.clone(),
+            cache.clone(),
+            stop.clone(),
+        );
+        let registered = registry
+            .register_toolset(&instance.name, managed.toolset)
+            .await;
+        if let Err(error) = registered {
+            if stopped_old {
+                // The old supervisor is gone, so the old toolset must not stay offered.
+                lock(&self.controls).remove(&instance.name);
+                registry.unregister_toolset(&instance.name);
+            }
+            return Err(error);
         }
+        lock(&self.controls).insert(instance.name.clone(), managed.control);
+        let (started_tx, started_rx) = oneshot::channel();
+        let (ended_tx, ended) = oneshot::channel();
+        let span = tracing::info_span!("toolset", instance = %instance.name);
+        let supervisor = managed.supervisor.run(started_tx).instrument(span);
+        {
+            let mut tasks = lock(&self.tasks);
+            // Reaps the supervisors of toolsets replaced or removed since.
+            while tasks.try_join_next().is_some() {}
+            tasks.spawn(async move {
+                supervisor.await;
+                let _ = ended_tx.send(());
+            });
+        }
+        supervised.insert(instance.name.clone(), Supervised { stop, ended });
+        Ok(started_rx)
     }
 
     /// Waits until every toolset's first start has succeeded or failed (a failed one keeps
@@ -85,11 +173,71 @@ impl ToolsetHost {
     }
 
     /// Stops every toolset: stdio servers are killed with their process groups, and remote
-    /// connections closed. Calls still running fail.
+    /// connections closed. Calls still running fail. A change in progress finishes first, so none
+    /// starts a supervisor that this doesn't wait for, and a change after this does nothing.
     pub async fn stop(&self) {
+        let _changes = self.dynamic.supervised.lock().await;
         self.shutdown.cancel();
         let mut tasks = std::mem::take(&mut *lock(&self.tasks));
         while tasks.join_next().await.is_some() {}
+    }
+
+    /// Adds a toolset while Giles runs: looks up its cached tools, registers it, and starts it in
+    /// the background. New sessions get its tools as soon as they're known. `instance` must be
+    /// in the registry's live configuration already
+    /// ([`LiveConfig::add_toolset`](crate::config::LiveConfig::add_toolset)). A toolset still
+    /// running under the same name is stopped first, as [`replace`](Self::replace) does. Does
+    /// nothing once the host has been [stopped](Self::stop).
+    ///
+    /// # Errors
+    ///
+    /// [`RegistryError::NotConfigured`] if `instance` isn't in the live configuration; nothing
+    /// starts.
+    pub async fn add(&self, instance: &ToolsetInstance) -> Result<(), RegistryError> {
+        let mut supervised = self.dynamic.supervised.lock().await;
+        if self.shutdown.is_cancelled() {
+            return Ok(());
+        }
+        self.launch(&mut supervised, instance).await?;
+        info!(toolset = %instance.name, "toolset added");
+        Ok(())
+    }
+
+    /// Replaces a running toolset with `instance`, which has the same name: stops the old
+    /// supervisor (its connection is dropped, a stdio server's process group is killed, and
+    /// calls running on it fail as unavailable), then adds the new one as [`add`](Self::add)
+    /// does. Its `config_hash` differs from the old one's, so the tool-list cache misses and the
+    /// new toolset offers only what its own server reports. `instance` must be in the registry's
+    /// live configuration already
+    /// ([`LiveConfig::replace_toolset`](crate::config::LiveConfig::replace_toolset)).
+    ///
+    /// # Errors
+    ///
+    /// [`RegistryError::NotConfigured`] if `instance` isn't in the live configuration. The old
+    /// supervisor has been stopped by then, so the old toolset is unregistered too.
+    pub async fn replace(&self, instance: &ToolsetInstance) -> Result<(), RegistryError> {
+        let mut supervised = self.dynamic.supervised.lock().await;
+        if self.shutdown.is_cancelled() {
+            return Ok(());
+        }
+        self.launch(&mut supervised, instance).await?;
+        info!(toolset = %instance.name, "toolset replaced");
+        Ok(())
+    }
+
+    /// Removes a toolset while Giles runs: stops its supervisor (as [`replace`](Self::replace)
+    /// does), then unregisters it, which withdraws its tools from new sessions. A call running
+    /// on it fails as unavailable, and so does a call to its tool from a session that still
+    /// lists it. The caller takes it out of the live configuration
+    /// ([`LiveConfig::remove_toolset`](crate::config::LiveConfig::remove_toolset)).
+    pub async fn remove(&self, name: &InstanceName) {
+        let mut supervised = self.dynamic.supervised.lock().await;
+        if let Some(old) = supervised.remove(name) {
+            old.stop().await;
+        }
+        lock(&self.controls).remove(name);
+        self.dynamic.registry.unregister_toolset(name);
+        info!(toolset = %name, "toolset removed");
     }
 }
 

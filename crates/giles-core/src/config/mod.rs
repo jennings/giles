@@ -50,7 +50,9 @@ pub use instances::{
     OAuthClientCredentials, Program, ProviderInstance, Remote, Sandbox, StdioServer,
     ToolsetInstance, ToolsetSpec, ToolsetTransport,
 };
-pub use live::{AgentExists, LiveConfig, NoSuchAgent};
+pub use live::{
+    AgentExists, InstanceExists, LiveConfig, NoSuchAgent, NoSuchToolset, RenameToolsetError,
+};
 pub use model::ModelRef;
 pub use names::{Builtins, Component, InstanceName, Kind, is_valid_name, plugin_binary};
 pub use plugin_config::PluginConfig;

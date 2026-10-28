@@ -135,7 +135,8 @@ impl CallPolicy {
                 parallel: PARALLEL_SAFE_CORE_TOOLS.contains(&name),
                 deadline: DEFAULT_TOOL_DEADLINE,
             },
-            // Registered toolsets are always configured.
+            // A toolset removed since the session started has no configuration, so it gets the
+            // default policy.
             Some(ToolTarget::Toolset { instance, .. }) => config.toolsets.get(instance).map_or(
                 Self {
                     parallel: false,

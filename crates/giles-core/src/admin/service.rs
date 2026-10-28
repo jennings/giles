@@ -16,7 +16,7 @@ use tracing::{error, info};
 
 use super::plugins::{PluginControl, configured, landlock_abi, plugin_instances};
 use crate::backup::{self, BackupError};
-use crate::config::{ChannelRuntime, Config, InstanceName};
+use crate::config::{ChannelRuntime, Config, InstanceName, LiveConfig};
 use crate::paths::DataRoot;
 use crate::sandbox::HostReport;
 use crate::sessions::{ChannelStatusRecord, Clock, Sessions};
@@ -90,8 +90,9 @@ impl LoginLinks for crate::channels::web::WebChannel {
 
 /// What the admin service reads and controls.
 pub struct AdminOptions {
-    /// The configuration, as loaded at startup.
-    pub config: Arc<Config>,
+    /// The running configuration: the one loaded at startup, plus the changes since. Read for
+    /// each request, so toolsets added, edited, and removed at runtime show up.
+    pub config: LiveConfig,
     /// The data root, for `Backup`.
     pub root: DataRoot,
     /// The blob store, whose sweep `Backup` holds off.
@@ -147,7 +148,7 @@ impl AdminService {
             .map(|control| control.plugins())
             .unwrap_or_default();
         plugin_instances(
-            &self.options.config,
+            &self.options.config.get(),
             &self.options.sandbox,
             statuses,
             runtimes,
@@ -177,7 +178,7 @@ impl AdminRpc for AdminService {
             config_error: None,
             plugins: self.plugins(&statuses),
             sandbox_host: Some(sandbox_host(&self.options.sandbox)),
-            channels: channel_instances(&self.options.config, &statuses),
+            channels: channel_instances(&self.options.config.get(), &statuses),
         }))
     }
 
@@ -196,7 +197,7 @@ impl AdminRpc for AdminService {
         request: Request<pb::RestartPluginRequest>,
     ) -> Result<Response<pb::RestartPluginResponse>, Status> {
         let instance = request.into_inner().instance;
-        if !configured(&self.options.config)
+        if !configured(&self.options.config.get())
             .iter()
             .any(|c| c.instance.as_str() == instance)
         {

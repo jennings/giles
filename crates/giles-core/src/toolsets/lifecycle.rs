@@ -202,11 +202,14 @@ pub(crate) struct ManagedToolset {
     requests: mpsc::Sender<Reply>,
     /// The instance's `skills` directories.
     skills: Vec<std::path::PathBuf>,
+    /// Cancelled when the supervisor is stopped (the toolset was replaced or removed, or Giles
+    /// is shutting down): calls running on its connection end then.
+    stop: CancellationToken,
 }
 
 impl ManagedToolset {
     fn stopped(&self) -> Error {
-        Error::unavailable(format!("toolset {}: Giles is stopping", self.instance))
+        Error::unavailable(format!("toolset {}: stopped", self.instance))
     }
 
     /// The skills in the instance's `skills` directories, bare-named (a later directory
@@ -272,7 +275,8 @@ impl Toolset for ManagedToolset {
     /// Gets the connection from the supervisor (relaunching an idle stdio server first) and
     /// calls it. The connection counts as busy, and isn't stopped for idleness, until the
     /// returned events are dropped. While the server is down the call fails as
-    /// [`Error::Unavailable`] with the reason.
+    /// [`Error::Unavailable`] with the reason. If the supervisor is stopped while the call runs,
+    /// its events end with the same error.
     async fn call(&self, call: ToolCall, ctx: CallContext) -> Result<ToolCallHandle> {
         let (reply, lease) = oneshot::channel();
         self.requests
@@ -285,6 +289,12 @@ impl Toolset for ManagedToolset {
             let _held = &lease;
             event
         });
+        let stop = self.stop.clone();
+        let stopped = self.stopped();
+        let events = events.take_until(stop.clone().cancelled_owned()).chain(
+            futures::stream::once(async move { stop.is_cancelled().then_some(stopped) })
+                .filter_map(|stopped| futures::future::ready(stopped.map(Err))),
+        );
         Ok(ToolCallHandle {
             events: events.boxed(),
             answers: handle.answers,
@@ -316,6 +326,7 @@ impl Managed {
             tools,
             requests: requests_tx,
             skills: instance.skills.clone(),
+            stop: shutdown.clone(),
         });
         let (stdio, idle_stop) = match &instance.transport {
             ToolsetTransport::Stdio(server) => (true, server.idle_stop),
@@ -615,7 +626,7 @@ impl Supervisor {
         let answer = match &state {
             State::Running(running) => Ok(self.lease(&running.toolset)),
             State::Down { reason, .. } => Err(self.not_running(reason, None)),
-            _ => Err(self.not_running("Giles is stopping", None)),
+            _ => Err(self.not_running("it is being stopped", None)),
         };
         let _ = reply.send(answer);
         state
