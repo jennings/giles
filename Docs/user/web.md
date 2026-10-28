@@ -267,9 +267,9 @@ file. See [Configuration](configuration.md#routes).
 shows how the server runs, its state, how many tools it offers, and its last error. A server's page
 shows its settings and the name and description of each tool, and has a **Restart** button.
 
-Here you add, edit, and remove remote servers, and the change applies at once, without a restart. A
-conversation that is already going keeps the tools it started with. New conversations get the new
-list.
+Here you add, edit, rename, and remove remote servers, and the change applies at once, without a
+restart. A conversation that is already going keeps the tools it started with. New conversations get
+the new list.
 
 A server that Giles runs on this machine, a stdio server, is a `[toolset.<name>]` table in
 `giles.toml`, which [Configuration](configuration.md#toolsets) describes. It shows in the list too,
@@ -307,9 +307,9 @@ nothing.
 
 ### Editing and removing an MCP server
 
-**Edit** opens the form filled in. The name can't change. Saving restarts the server's connection
-with the new settings. If someone changed the server after you opened the form, saving is refused.
-Use the form's link to reload the current values.
+**Edit** opens the form filled in. The name can't change there. Use **Rename** for that. Saving
+restarts the server's connection with the new settings. If someone changed the server after you
+opened the form, saving is refused. Use the form's link to reload the current values.
 
 A server that failed to start, for example because its secret was missing, stays in the list with
 the reason. Fix the cause and select **Restart**, or change its settings and save.
@@ -318,3 +318,26 @@ the reason. Fix the cause and select **Restart**, or change its settings and sav
 **Remove MCP server**. Giles disconnects from the server and deletes its settings. The page lists
 the agents whose tools or ask-first list name the server's tools. Giles leaves those agents as they
 are.
+
+### Renaming an MCP server
+
+The name is the prefix of the server's tools, and agents name those tools in their tools and
+ask-first lists, so a rename changes more than the name. To rename an MCP server:
+
+1. Open the server's page and select **Rename**.
+2. Enter the **New name** and select **Show the changes**.
+3. Check the list of agents. Giles rewrites the entries in each agent's tools and ask-first lists
+   that start with `<old name>__` to start with `<new name>__`.
+4. Select **Rename to** `<new name>`.
+
+Giles disconnects from the server, rewrites the agents, and connects again under the new name. If a
+step fails, it undoes the steps before it, and the page says which step failed and why. A
+conversation that is already going keeps the old tool names, and its calls to them fail. Start a new
+conversation to use the new names.
+
+Giles refuses the rename, and changes nothing, if the new name is taken, or if an agent has a glob
+that matches the server's tools without starting with `<old name>__`, such as `github*`. The page
+lists those globs. Rewrite them, for example to `github__*`, and try again.
+
+You can't rename a server that you configure in `giles.toml` here. Stop Giles and run
+[`giles instance rename`](cli.md#giles-instance-rename-old-new) for that.

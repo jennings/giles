@@ -1,7 +1,8 @@
 //! The toolset pages: every toolset, one toolset's settings and tools, and the forms that add,
-//! edit, and remove a stored toolset while the core runs. Next to the admin pages (`admin.rs`), the
-//! agent pages (`agents.rs`), and the route pages (`routes.rs`), and like them: behind the login,
-//! the owner only, every answer `no-store`, every change a CSRF-checked form post.
+//! edit, rename, and remove a stored toolset while the core runs. Next to the admin pages
+//! (`admin.rs`), the agent pages (`agents.rs`), and the route pages (`routes.rs`), and like them:
+//! behind the login, the owner only, every answer `no-store`, every change a CSRF-checked form
+//! post.
 //!
 //! A change is made by the [`ToolsetManager`], which validates it, stores it, and starts, restarts,
 //! or stops the server. What the pages say about a toolset's state and tool count comes from the
@@ -20,14 +21,14 @@ use std::time::Duration;
 
 use askama::Template;
 use axum::Router;
-use axum::extract::{Form, Path, State};
+use axum::extract::{Form, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{from_fn_with_state, map_response};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use giles_proto::admin::v1 as pb;
 use giles_proto::admin::v1::admin_service_server::AdminService as AdminRpc;
-use giles_types::Timestamp;
+use giles_types::{AgentId, Timestamp};
 use serde_json::{Map, Value};
 use tonic::Request;
 use tracing::error;
@@ -42,7 +43,8 @@ use crate::config::{
 use crate::http::{self, RouterBuilder};
 use crate::registry::{Registry, ToolTarget};
 use crate::toolsets::{
-    RESERVED_TOOLSET_NAME, ToolsetManager, ToolsetManagerError, ToolsetSource, ToolsetView,
+    AgentGlobChange, RESERVED_TOOLSET_NAME, ToolsetManager, ToolsetManagerError, ToolsetSource,
+    ToolsetView,
 };
 
 /// The toolset pages' state.
@@ -107,6 +109,10 @@ impl WebApp {
                 .route(
                     "/admin/mcp-servers/{name}/edit",
                     get(edit_page).post(update),
+                )
+                .route(
+                    "/admin/mcp-servers/{name}/rename",
+                    get(rename_page).post(rename),
                 )
                 .route(
                     "/admin/mcp-servers/{name}/remove",
@@ -884,6 +890,190 @@ async fn remove(
     }
 }
 
+/// A tool glob an agent has, before and after a rename.
+struct GlobRow {
+    key: &'static str,
+    from: String,
+    to: String,
+}
+
+/// An agent whose globs a rename rewrites.
+struct AgentRow {
+    id: String,
+    label: String,
+    globs: Vec<GlobRow>,
+}
+
+/// A rename that went wrong on the server's side: the step, why, and what couldn't be undone.
+struct RenameFailure {
+    step: String,
+    error: String,
+    undo_errors: Vec<String>,
+}
+
+/// What the rename page shows besides the form.
+enum RenameState {
+    /// Only the form.
+    Form,
+    /// The agents that change, and the button to confirm.
+    Preview(Vec<AgentRow>),
+    /// The reason the name was refused, with the status that says so.
+    Refused(StatusCode, String),
+    /// A step of the rename failed.
+    Failed(RenameFailure),
+}
+
+#[derive(Template)]
+#[template(path = "web/admin_toolset_rename.html")]
+struct RenamePage<'a> {
+    csrf: &'a str,
+    name: String,
+    /// What the owner typed as the new name.
+    new: String,
+    error: Option<String>,
+    failure: Option<RenameFailure>,
+    preview: Option<Vec<AgentRow>>,
+}
+
+/// The agents of a rename's change list, labeled as the other pages label them.
+fn agent_rows(config: &Config, changes: &[AgentGlobChange]) -> Vec<AgentRow> {
+    let mut rows = Vec::new();
+    for change in changes {
+        let label = match AgentId::new(change.agent.as_str()) {
+            Ok(id) => agent_label(config, &id),
+            Err(_) => change.agent.clone(),
+        };
+        rows.push(AgentRow {
+            id: change.agent.clone(),
+            label,
+            globs: change
+                .globs
+                .iter()
+                .map(|glob| GlobRow {
+                    key: glob.key,
+                    from: glob.from.clone(),
+                    to: glob.to.clone(),
+                })
+                .collect(),
+        });
+    }
+    rows
+}
+
+/// The rename page for the toolset `name` and the new name `new`, in `state`.
+fn render_rename(user: &WebUser, name: &str, new: &str, state: RenameState) -> Response {
+    let (status, error, failure, preview) = match state {
+        RenameState::Form => (StatusCode::OK, None, None, None),
+        RenameState::Preview(agents) => (StatusCode::OK, None, None, Some(agents)),
+        RenameState::Refused(status, reason) => (status, Some(reason), None, None),
+        RenameState::Failed(failure) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, None, Some(failure), None)
+        }
+    };
+    let mut response = http::render(&RenamePage {
+        csrf: &user.csrf,
+        name: name.to_owned(),
+        new: new.to_owned(),
+        error,
+        failure,
+        preview,
+    });
+    if status != StatusCode::OK && response.status().is_success() {
+        *response.status_mut() = status;
+    }
+    response
+}
+
+/// The answer to a rename the manager refused or that failed: the form again with the typed name
+/// and the reason (400 for a name or a glob that isn't valid, 409 for a name that is taken, 500
+/// for a failed step), or [`failed`]'s page for a toolset that is gone or can't be renamed.
+fn rename_problem(user: &WebUser, name: &str, new: &str, err: &ToolsetManagerError) -> Response {
+    let state = match err {
+        ToolsetManagerError::Refused { reason } => {
+            RenameState::Refused(StatusCode::BAD_REQUEST, reason.clone())
+        }
+        // The manager logs a failed rename, and the page tells the owner why a check couldn't run.
+        ToolsetManagerError::Failed {
+            step,
+            error,
+            undo_errors,
+        } => RenameState::Failed(RenameFailure {
+            step: step.clone(),
+            error: error.clone(),
+            undo_errors: undo_errors.clone(),
+        }),
+        err => match Problem::of(err, new) {
+            Some(problem) => RenameState::Refused(problem.status, problem.message),
+            None => return failed(err, "MCP server not renamed"),
+        },
+    };
+    render_rename(user, name, new, state)
+}
+
+/// `GET /admin/mcp-servers/<name>/rename`: the form for the new name. With `?new=`, the agents
+/// whose `tools` and `ask` globs would change, and the button that renames. Nothing is changed.
+async fn rename_page(
+    State(pages): State<ToolsetPages>,
+    user: WebUser,
+    Path(name): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    if !may_administer(&user) {
+        return forbidden();
+    }
+    let (view, _) = match stored_view(&pages, &name).await {
+        Ok(found) => found,
+        Err(response) => return *response,
+    };
+    let new = query.get("new").map_or("", |new| new.trim());
+    if new.is_empty() {
+        return render_rename(&user, &view.name, "", RenameState::Form);
+    }
+    match pages.manager.rename_preview(&view.name, new).await {
+        Ok(preview) => {
+            let agents = agent_rows(&pages.config.get(), &preview.agents);
+            render_rename(&user, &view.name, new, RenameState::Preview(agents))
+        }
+        Err(err) => rename_problem(&user, &view.name, new, &err),
+    }
+}
+
+/// `POST /admin/mcp-servers/<name>/rename` (CSRF-checked): renames the toolset to the form's `new`,
+/// then 303 to its page under the new name. A name or glob that is refused is shown on the form
+/// again with the typed name; nothing is changed.
+async fn rename(
+    State(pages): State<ToolsetPages>,
+    user: WebUser,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Form(fields): Form<HashMap<String, String>>,
+) -> Response {
+    if !may_administer(&user) {
+        return forbidden();
+    }
+    if let Err(rejected) = check_csrf(&user, &headers, fields.get("csrf").map(String::as_str)) {
+        return rejected.into_response();
+    }
+    let (view, _) = match stored_view(&pages, &name).await {
+        Ok(found) => found,
+        Err(response) => return *response,
+    };
+    let new = fields.get("new").map_or("", |new| new.trim());
+    if new.is_empty() {
+        let state = RenameState::Refused(
+            StatusCode::BAD_REQUEST,
+            "enter the new name of the MCP server".to_owned(),
+        );
+        return render_rename(&user, &view.name, "", state);
+    }
+    match pages.manager.rename(&view.name, new).await {
+        Ok(renamed) => {
+            Redirect::to(&format!("/admin/mcp-servers/{}", renamed.view.name)).into_response()
+        }
+        Err(err) => rename_problem(&user, &view.name, new, &err),
+    }
+}
+
 /// `POST /admin/mcp-servers/<name>/restart` (CSRF-checked): `RestartPlugin` for the toolset, then 303
 /// back to its page. A name that isn't a toolset is a 404, whatever else has the name.
 async fn restart(
@@ -921,6 +1111,43 @@ mod tests {
 
     fn spec(json: &str) -> ToolsetSpec {
         ToolsetSpec::from_json(json).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// What the rename page says when undoing the earlier steps failed too: the owner is told to
+    /// put each thing right by hand, and that the rename is partly done.
+    #[tokio::test]
+    async fn a_rename_that_could_not_be_undone_lists_what_to_put_right() {
+        let user = WebUser {
+            user: giles_types::UserId::new("owner").unwrap(),
+            sender: giles_types::NativeId::new("owner").unwrap(),
+            csrf: "token".to_owned(),
+            login: super::super::auth::Login::Test,
+        };
+        let err = ToolsetManagerError::Failed {
+            step: "rewriting /agents/zed/agent.toml".to_owned(),
+            error: "permission denied".to_owned(),
+            undo_errors: vec![
+                "put /agents/jeeves/agent.toml back: the file changed while the rename ran"
+                    .to_owned(),
+                "put the toolset's row back: <busy>".to_owned(),
+            ],
+        };
+        let response = rename_problem(&user, "box", "chest", &err);
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        for expected in [
+            "rewriting /agents/zed/agent.toml: permission denied",
+            "so the rename is partly done",
+            "put /agents/jeeves/agent.toml back: the file changed while the rename ran",
+            // The reason is escaped.
+            "row back: &#60;busy&#62;",
+        ] {
+            assert!(html.contains(expected), "{expected}\n{html}");
+        }
+        assert!(!html.contains("Nothing was changed"), "{html}");
     }
 
     /// A spec filled into the form and built again is the same spec.

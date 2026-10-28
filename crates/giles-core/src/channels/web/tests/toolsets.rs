@@ -267,9 +267,11 @@ async fn only_the_owner_gets_the_toolset_pages() {
         (Method::GET, "/admin/mcp-servers/box"),
         (Method::GET, "/admin/mcp-servers/box/edit"),
         (Method::GET, "/admin/mcp-servers/box/remove"),
+        (Method::GET, "/admin/mcp-servers/box/rename?new=chest"),
         (Method::POST, "/admin/mcp-servers"),
         (Method::POST, "/admin/mcp-servers/box/edit"),
         (Method::POST, "/admin/mcp-servers/box/remove"),
+        (Method::POST, "/admin/mcp-servers/box/rename"),
         (Method::POST, "/admin/mcp-servers/box/restart"),
     ];
     let body = encode(&[
@@ -316,6 +318,7 @@ async fn every_change_needs_the_csrf_token() {
         "/admin/mcp-servers",
         "/admin/mcp-servers/box/edit",
         "/admin/mcp-servers/box/remove",
+        "/admin/mcp-servers/box/rename",
         "/admin/mcp-servers/box/restart",
     ] {
         for (headers, body) in [
@@ -1151,4 +1154,233 @@ async fn a_stored_spec_that_cannot_be_read_gets_an_empty_form_and_can_be_removed
     let (status, _, _) = t.post("/admin/mcp-servers/odd/remove", &[]).await;
     assert_eq!(status, StatusCode::SEE_OTHER);
     assert!(stored(&env).await.is_empty());
+}
+
+/// The text of the test agent `wooster`'s `agent.toml`.
+fn wooster(env: &Env) -> String {
+    std::fs::read_to_string(env.root().agents_dir().join("wooster").join("agent.toml")).unwrap()
+}
+
+#[tokio::test]
+async fn renaming_previews_the_agents_whose_globs_change_then_renames() {
+    let env = env().await;
+    let t = env.toolsets("").await;
+    t.manager.add("box", &spec(BOX)).await.unwrap();
+    let before = wooster(&env);
+
+    // The page links to the form, which asks for the name and says what happens to sessions.
+    let (_, html) = t.get("/admin/mcp-servers/box").await;
+    assert!(
+        html.contains(r#"href="/admin/mcp-servers/box/rename""#),
+        "{html}"
+    );
+    let (status, html) = t.get("/admin/mcp-servers/box/rename").await;
+    assert_eq!(status, StatusCode::OK);
+    for expected in [
+        "<h1>Rename box</h1>",
+        r#"name="new""#,
+        "Running conversations keep the old tool names",
+    ] {
+        assert!(html.contains(expected), "{expected}\n{html}");
+    }
+    assert!(!html.contains("What changes"), "{html}");
+
+    // With a name, the agents whose globs change, and the button. Nothing changes yet.
+    let (status, html) = t.get("/admin/mcp-servers/box/rename?new=chest").await;
+    assert_eq!(status, StatusCode::OK);
+    for expected in [
+        "What changes",
+        r#"<a href="/admin/agents/wooster/edit">wooster</a>"#,
+        "<code>box__*</code>",
+        "<code>chest__*</code>",
+        "<code>box__delete_*</code>",
+        "<code>chest__delete_*</code>",
+        r#"action="/admin/mcp-servers/box/rename""#,
+        r#"name="new" value="chest""#,
+        &format!(r#"name="csrf" value="{CSRF}""#),
+    ] {
+        assert!(html.contains(expected), "{expected}\n{html}");
+    }
+    assert!(
+        !html.contains("jeeves") && !html.contains("bunter"),
+        "{html}"
+    );
+    assert_eq!(stored(&env).await, ["box"]);
+    assert_eq!(wooster(&env), before);
+
+    // A toolset no agent mentions says so.
+    t.manager.add("other", &spec(BOX)).await.unwrap();
+    let (status, html) = t.get("/admin/mcp-servers/other/rename?new=lone").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("so no agent changes"), "{html}");
+
+    // Posting renames, and the page is now at the new name.
+    let (status, _, location) = t
+        .post("/admin/mcp-servers/box/rename", &[("new", "chest")])
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(location.as_deref(), Some("/admin/mcp-servers/chest"));
+    assert_eq!(stored(&env).await, ["chest", "other"]);
+    let after = wooster(&env);
+    assert!(
+        after.contains("chest__*") && after.contains("chest__delete_*"),
+        "{after}"
+    );
+    assert!(!after.contains("box__"), "{after}");
+    let (status, _) = t.get("/admin/mcp-servers/chest").await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = t.get("/admin/mcp-servers/box").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = t.get("/admin/mcp-servers/box/rename").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = t
+        .post("/admin/mcp-servers/box/rename", &[("new", "x")])
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_glob_that_would_stop_matching_refuses_the_rename_and_changes_nothing() {
+    let env = env().await;
+    let t = env.toolsets("").await;
+    t.manager.add("box", &spec(BOX)).await.unwrap();
+    let file = env.root().agents_dir().join("wooster").join("agent.toml");
+    std::fs::write(
+        &file,
+        "models = [\"fake/test-model\"]\ntools = [\"memory_add\", \"box*\"]\n",
+    )
+    .unwrap();
+    let before = wooster(&env);
+    let previewed = t.get("/admin/mcp-servers/box/rename?new=chest").await;
+    let (status, html, _) = t
+        .post("/admin/mcp-servers/box/rename", &[("new", "chest")])
+        .await;
+    for (status, html) in [previewed, (status, html)] {
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{html}");
+        // The manager's reason names the agent and the glob, and the form keeps the name.
+        for expected in ["box*", "wooster", r#"name="new" value="chest""#] {
+            assert!(html.contains(expected), "{expected}\n{html}");
+        }
+        assert!(!html.contains("What changes"), "{html}");
+    }
+    assert_eq!(stored(&env).await, ["box"]);
+    assert_eq!(wooster(&env), before);
+}
+
+/// A file the manager can't read isn't the owner's name or glob to fix: the check fails, the page
+/// says which step and why with a 500, and nothing changed. Undoing a step that failed is shown by
+/// a unit test of the page in `toolsets.rs`, because it can't be provoked from here.
+#[tokio::test]
+async fn an_agent_file_that_cannot_be_read_fails_the_rename_and_changes_nothing() {
+    let env = env().await;
+    let t = env.toolsets("").await;
+    t.manager.add("box", &spec(BOX)).await.unwrap();
+    let file = env.root().agents_dir().join("wooster").join("agent.toml");
+    let before = wooster(&env);
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&file).is_ok() {
+        // Running as root: permissions don't stop the read, so this failure can't be provoked.
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        return;
+    }
+    let previewed = t.get("/admin/mcp-servers/box/rename?new=chest").await;
+    let (status, html, _) = t
+        .post("/admin/mcp-servers/box/rename", &[("new", "chest")])
+        .await;
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    for (status, html) in [previewed, (status, html)] {
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{html}");
+        for expected in [
+            "Renaming can't go ahead",
+            "reading the agent `wooster`",
+            "Permission denied",
+            "Nothing was changed.",
+            r#"name="new" value="chest""#,
+        ] {
+            assert!(html.contains(expected), "{expected}\n{html}");
+        }
+        assert!(!html.contains("What changes"), "{html}");
+        assert!(!html.contains("partly done"), "{html}");
+    }
+    assert_eq!(stored(&env).await, ["box"]);
+    assert_eq!(wooster(&env), before);
+}
+
+#[tokio::test]
+async fn a_name_that_cannot_be_used_comes_back_on_the_form() {
+    let env = env().await;
+    let t = env.toolsets("").await;
+    t.manager.add("box", &spec(BOX)).await.unwrap();
+    t.manager.add("chest", &spec(BOX)).await.unwrap();
+    let before = wooster(&env);
+
+    // Taken by another stored toolset, or by one of giles.toml: 409.
+    for taken in ["chest", "CHEST", "files"] {
+        let (status, html, _) = t
+            .post("/admin/mcp-servers/box/rename", &[("new", taken)])
+            .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{taken}\n{html}");
+        assert!(
+            html.contains(&format!(r#"name="new" value="{taken}""#)),
+            "{html}"
+        );
+        let (status, _) = t
+            .get(&format!("/admin/mcp-servers/box/rename?new={taken}"))
+            .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{taken}");
+    }
+    // Not a name: 400.
+    let (status, _, _) = t
+        .post("/admin/mcp-servers/box/rename", &[("new", "has space")])
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // What was typed is escaped, in the form and in the reason.
+    let (status, html, _) = t
+        .post("/admin/mcp-servers/box/rename", &[("new", XSS)])
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        html.contains("&#60;script&#62;alert(1)&#60;/script&#62;"),
+        "{html}"
+    );
+    assert!(!html.contains(XSS), "{html}");
+    let query: String = url::form_urlencoded::byte_serialize(XSS.as_bytes()).collect();
+    let (status, html) = t
+        .get(&format!("/admin/mcp-servers/box/rename?new={query}"))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(!html.contains(XSS), "{html}");
+    // No name at all is asked for again.
+    let (status, _, _) = t
+        .post("/admin/mcp-servers/box/rename", &[("new", " ")])
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(stored(&env).await, ["box", "chest"]);
+    assert_eq!(wooster(&env), before);
+}
+
+#[tokio::test]
+async fn a_toolset_of_giles_toml_cannot_be_renamed() {
+    let env = env().await;
+    let t = env.toolsets("").await;
+    t.manager.add("box", &spec(BOX)).await.unwrap();
+    let (_, html) = t.get("/admin/mcp-servers/files").await;
+    assert!(!html.contains("/admin/mcp-servers/files/rename"), "{html}");
+    let (status, html) = t.get("/admin/mcp-servers/files/rename?new=chest").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(html.contains("only be changed there"), "{html}");
+    let (status, html, _) = t
+        .post("/admin/mcp-servers/files/rename", &[("new", "chest")])
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(html.contains("only be changed there"), "{html}");
+    assert_eq!(stored(&env).await, ["box"]);
+    assert!(
+        t.registry
+            .config()
+            .toolsets
+            .keys()
+            .any(|n| n.as_str() == "files")
+    );
 }
