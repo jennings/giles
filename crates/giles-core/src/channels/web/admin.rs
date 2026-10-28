@@ -240,6 +240,8 @@ struct PluginRow {
     channel: Option<String>,
     location: String,
     version: Option<String>,
+    /// How many tools a toolset offers to new sessions.
+    tools: Option<u32>,
     sandbox: String,
     lacking: Vec<String>,
     requests: Option<String>,
@@ -283,7 +285,12 @@ fn plugin_row(plugin: &pb::PluginInstance) -> PluginRow {
         pb::PluginState::Failed => (
             "failed",
             "bad",
-            "failed (not retried until its binary changes or it's restarted)".to_owned(),
+            if plugin.kind() == pb::InstanceKind::Toolset {
+                "failed (not retried until it's restarted)"
+            } else {
+                "failed (not retried until its binary changes or it's restarted)"
+            }
+            .to_owned(),
         ),
         pb::PluginState::Stopped => ("stopped", "unknown", "stopped".to_owned()),
     };
@@ -315,6 +322,7 @@ fn plugin_row(plugin: &pb::PluginInstance) -> PluginRow {
         channel,
         location: plugin.location.clone(),
         version: plugin.version.clone(),
+        tools: plugin.tool_count,
         sandbox,
         lacking,
         requests: plugin.requested_grants.as_ref().map(requested_grants),
@@ -545,5 +553,21 @@ mod tests {
         assert_eq!(row.channel, None);
         assert_eq!(row.sandbox, "none (remote)");
         assert!(!row.restartable);
+
+        // A supervised toolset: its state, the tools it offers, and a restart for a failed one.
+        plugin.state = pb::PluginState::Failed.into();
+        plugin.tool_count = Some(0);
+        let row = plugin_row(&plugin);
+        assert_eq!(
+            row.state,
+            "failed (not retried until it's restarted); 2 restarts"
+        );
+        assert_eq!(row.tools, Some(0));
+        assert!(row.restartable);
+        plugin.kind = pb::InstanceKind::Channel.into();
+        assert_eq!(
+            plugin_row(&plugin).state,
+            "failed (not retried until its binary changes or it's restarted); 2 restarts"
+        );
     }
 }

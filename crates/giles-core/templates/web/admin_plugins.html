@@ -36,6 +36,10 @@
 <dt>Version</dt>
 <dd>{{ version }}</dd>
 {%- endif %}
+{%- if let Some(tools) = plugin.tools %}
+<dt>Tools</dt>
+<dd>{{ tools }}</dd>
+{%- endif %}
 <dt>Sandbox</dt>
 <dd>{{ plugin.sandbox }}</dd>
 {%- for missing in plugin.lacking %}

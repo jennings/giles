@@ -108,8 +108,9 @@ The buttons send [the same replies](commands.md) you could type, and typing them
 
 `/admin` shows what [`giles status`](cli.md) shows, including each channel's last status.
 
-`/admin/plugins` shows each plugin in detail, including its state, restarts, and last error.
-**Restart** restarts a plugin now, even one that failed for good or is waiting to retry.
+`/admin/plugins` shows each plugin in detail, including its state, restarts, and last error. It
+lists MCP toolsets too, with the number of tools each offers. **Restart** restarts a plugin or
+toolset now, even one that failed for good or is waiting to retry.
 
 ### Linking a channel
 

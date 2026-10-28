@@ -6,7 +6,12 @@
 //! stopped stdio server relaunches on the next call without the registry or the dispatcher
 //! knowing. The tools offered are the supervisor's: the cached list until the server answers,
 //! then each fresh list.
+//!
+//! The supervisor reports its state, restarts, last error, and tool count through a [`Control`],
+//! which also takes a restart request ([`Control::request_restart`]): the connection is dropped
+//! and the server starts again at once, with the backoff reset, even if it failed for good.
 
+use std::path::PathBuf;
 use std::process::ExitStatus;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -24,6 +29,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use super::cache::{CacheKey, ToolCache};
+use crate::admin::PluginRunState;
 use crate::config::{InstanceName, ToolsetInstance, ToolsetTransport};
 
 /// The first restart delay after a crash or a failed start (PLAN section 7.5).
@@ -46,6 +52,9 @@ pub(crate) struct Connection {
     pub source: String,
     /// The version the server reported.
     pub server_version: Option<String>,
+    /// The program that runs, for a stdio server (symlinks resolved): what the admin pages show
+    /// as its location. `None` for a remote server.
+    pub binary: Option<PathBuf>,
     /// Resolves when the connection ends, with a stdio server's exit status if it exited.
     pub closed: BoxFuture<'static, Option<ExitStatus>>,
 }
@@ -59,6 +68,68 @@ pub(crate) trait Connector: Send + Sync + 'static {
 
     /// Connects to `instance`, ready for calls.
     async fn connect(&self, instance: &ToolsetInstance) -> Result<Connection>;
+}
+
+/// What a supervisor reports about its instance to the admin service.
+#[derive(Debug, Clone)]
+pub(crate) struct Report {
+    /// Where the instance is.
+    pub state: PluginRunState,
+    /// Starts after a crash, a failed start, or a restart request. Neither the first start nor
+    /// the relaunch of an idle server for a call counts.
+    pub restarts: u32,
+    /// The last failed start or crash, as the failed calls see it.
+    pub last_error: Option<String>,
+    /// The program of the latest connection, if the server is a local process.
+    pub binary: Option<PathBuf>,
+    /// The version the server reported at the latest connection.
+    pub version: Option<String>,
+    /// The number of tools offered to new sessions.
+    pub tools: usize,
+}
+
+/// What the admin service gets of a supervisor: its latest [`Report`], and a way to ask for a
+/// restart. Clones share the same supervisor.
+#[derive(Debug, Clone)]
+pub(crate) struct Control {
+    report: Arc<Mutex<Report>>,
+    restart: Arc<Notify>,
+}
+
+impl Control {
+    /// A control for an instance that hasn't started yet and offers `tools` tools.
+    fn new(tools: usize) -> Self {
+        Self {
+            report: Arc::new(Mutex::new(Report {
+                state: PluginRunState::Starting,
+                restarts: 0,
+                last_error: None,
+                binary: None,
+                version: None,
+                tools,
+            })),
+            restart: Arc::new(Notify::new()),
+        }
+    }
+
+    /// The supervisor's latest report.
+    pub(crate) fn report(&self) -> Report {
+        self.report
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Asks the supervisor to drop the connection and start again now, with the restart backoff
+    /// reset. A failed instance that isn't retried gets a new try too. Remembered if the
+    /// supervisor is busy, and ignored once it has stopped.
+    pub(crate) fn request_restart(&self) {
+        self.restart.notify_one();
+    }
+
+    fn update(&self, change: impl FnOnce(&mut Report)) {
+        change(&mut self.report.lock().unwrap_or_else(PoisonError::into_inner));
+    }
 }
 
 /// A connection lent to one call, and the call's place in the in-flight count.
@@ -225,6 +296,7 @@ impl Toolset for ManagedToolset {
 pub(crate) struct Managed {
     pub toolset: Arc<ManagedToolset>,
     pub supervisor: Supervisor,
+    pub control: Control,
 }
 
 impl Managed {
@@ -236,6 +308,7 @@ impl Managed {
         cache: ToolCache,
         shutdown: CancellationToken,
     ) -> Self {
+        let control = Control::new(cached.len());
         let (tools_tx, tools) = watch::channel(cached);
         let (requests_tx, requests) = mpsc::channel(REQUEST_BUFFER);
         let toolset = Arc::new(ManagedToolset {
@@ -258,11 +331,13 @@ impl Managed {
             requests,
             activity: Arc::new(Activity::new()),
             shutdown,
+            control: control.clone(),
             backoff: RESTART_BACKOFF_MIN,
         };
         Self {
             toolset,
             supervisor,
+            control,
         }
     }
 }
@@ -278,6 +353,8 @@ enum State {
         reason: String,
     },
     Stopped,
+    /// A restart was requested: start now, whatever state it was in.
+    Restart,
 }
 
 struct Running {
@@ -300,25 +377,25 @@ pub(crate) struct Supervisor {
     activity: Arc<Activity>,
     shutdown: CancellationToken,
     backoff: Duration,
+    control: Control,
 }
 
 impl Supervisor {
     /// Starts the server, signals `started` once that first attempt is over, and then keeps it
     /// going until shutdown. Runs under a `toolset{instance}` span.
     pub(crate) async fn run(mut self, started: oneshot::Sender<()>) {
-        let shutdown = self.shutdown.clone();
-        let mut state = tokio::select! {
-            state = self.start() => state,
-            () = shutdown.cancelled() => State::Stopped,
-        };
+        let mut state = self.start_or_stop().await;
+        self.publish(&state);
         let _ = started.send(());
         loop {
             state = match state {
                 State::Running(running) => self.running(running).await,
                 State::Idle => self.idle().await,
                 State::Down { retry_at, reason } => self.down(retry_at, &reason).await,
+                State::Restart => self.start_or_stop().await,
                 State::Stopped => return,
             };
+            self.publish(&state);
         }
     }
 
@@ -328,6 +405,7 @@ impl Supervisor {
 
     /// Offers `tools` to new sessions, if they changed.
     fn offer(&self, tools: Vec<ToolSpec>) {
+        self.control.update(|report| report.tools = tools.len());
         self.tools.send_if_modified(|offered| {
             let changed = *offered != tools;
             *offered = tools;
@@ -341,8 +419,55 @@ impl Supervisor {
         delay
     }
 
+    /// Starts the server, unless shutdown comes first. A restart request while it starts begins
+    /// the attempt over.
+    async fn start_or_stop(&mut self) -> State {
+        let shutdown = self.shutdown.clone();
+        let control = self.control.clone();
+        loop {
+            tokio::select! {
+                state = self.start() => return state,
+                () = shutdown.cancelled() => return State::Stopped,
+                () = control.restart.notified() => self.restart_now(),
+            }
+        }
+    }
+
+    /// A restart was requested: the backoff starts over and the restart is counted.
+    fn restart_now(&mut self) {
+        info!("restarting the toolset on request");
+        self.backoff = RESTART_BACKOFF_MIN;
+        self.count_restart();
+    }
+
+    fn count_restart(&self) {
+        self.control.update(|report| report.restarts += 1);
+    }
+
+    /// Reports `state` to the admin service.
+    fn publish(&self, state: &State) {
+        let reported = match state {
+            State::Running(_) => PluginRunState::Running {
+                pid: None,
+                since: giles_types::Timestamp::now(),
+            },
+            State::Idle => PluginRunState::Idle,
+            State::Down {
+                retry_at: Some(at), ..
+            } => PluginRunState::BackingOff {
+                until: later(at.saturating_duration_since(Instant::now())),
+            },
+            State::Down { retry_at: None, .. } => PluginRunState::Failed,
+            State::Stopped => PluginRunState::Stopped,
+            State::Restart => return,
+        };
+        self.control.update(|report| report.state = reported);
+    }
+
     /// Connects, lists the tools (offering and caching them), and returns the new state.
     async fn start(&mut self) -> State {
+        self.control
+            .update(|report| report.state = PluginRunState::Starting);
         let connection = match self.connector.connect(&self.instance).await {
             Ok(connection) => connection,
             Err(error) => return self.failed(&error),
@@ -354,6 +479,10 @@ impl Supervisor {
             config_hash: self.instance.config_hash.to_string(),
             server_version: connection.server_version,
         };
+        self.control.update(|report| {
+            report.binary = connection.binary;
+            report.version.clone_from(&key.server_version);
+        });
         match connection.toolset.list_tools().await {
             Ok(tools) => {
                 info!(
@@ -383,6 +512,8 @@ impl Supervisor {
     /// while it will be retried, as for a crash, and are withdrawn if it won't be.
     fn failed(&mut self, error: &Error) -> State {
         let reason = error.to_string();
+        self.control
+            .update(|report| report.last_error = Some(reason.clone()));
         if error.is_retryable() {
             if !self.stdio {
                 self.offer(Vec::new());
@@ -395,7 +526,7 @@ impl Supervisor {
             }
         } else {
             self.offer(Vec::new());
-            error!(%error, "cannot start the toolset; not retrying until Giles restarts");
+            error!(%error, "cannot start the toolset; not retrying until it's restarted");
             State::Down {
                 retry_at: None,
                 reason,
@@ -421,6 +552,10 @@ impl Supervisor {
             let idle_at = self.idle_deadline();
             tokio::select! {
                 () = self.shutdown.cancelled() => return State::Stopped,
+                () = self.control.restart.notified() => {
+                    self.restart_now();
+                    return State::Restart;
+                }
                 status = &mut running.closed => {
                     if running.since.elapsed() >= HEALTHY_RESET {
                         self.backoff = RESTART_BACKOFF_MIN;
@@ -430,6 +565,8 @@ impl Supervisor {
                         Some(status) => format!("its server exited ({status})"),
                         None => "the connection closed".to_owned(),
                     };
+                    self.control
+                        .update(|report| report.last_error = Some(reason.clone()));
                     warn!(retry_in = ?delay, "toolset stopped: {reason}; restarting");
                     if !self.stdio {
                         self.offer(Vec::new());
@@ -464,16 +601,17 @@ impl Supervisor {
         let shutdown = self.shutdown.clone();
         let reply = tokio::select! {
             () = shutdown.cancelled() => return State::Stopped,
+            () = self.control.restart.notified() => {
+                self.restart_now();
+                return State::Restart;
+            }
             reply = self.requests.recv() => match reply {
                 Some(reply) => reply,
                 None => return State::Stopped,
             },
         };
         info!("relaunching the idle toolset for a call");
-        let state = tokio::select! {
-            state = self.start() => state,
-            () = shutdown.cancelled() => State::Stopped,
-        };
+        let state = self.start_or_stop().await;
         let answer = match &state {
             State::Running(running) => Ok(self.lease(&running.toolset)),
             State::Down { reason, .. } => Err(self.not_running(reason, None)),
@@ -489,10 +627,12 @@ impl Supervisor {
             tokio::select! {
                 () = shutdown.cancelled() => return State::Stopped,
                 () = sleep_until(retry_at) => {
-                    return tokio::select! {
-                        state = self.start() => state,
-                        () = shutdown.cancelled() => State::Stopped,
-                    };
+                    self.count_restart();
+                    return self.start_or_stop().await;
+                }
+                () = self.control.restart.notified() => {
+                    self.restart_now();
+                    return State::Restart;
                 }
                 Some(reply) = self.requests.recv() => {
                     let retry_after = retry_at.map(|at| at.saturating_duration_since(Instant::now()));
@@ -527,4 +667,12 @@ async fn sleep_until(at: Option<Instant>) {
         Some(at) => tokio::time::sleep_until(at).await,
         None => std::future::pending().await,
     }
+}
+
+/// The wall-clock time `delay` from now, for display.
+fn later(delay: Duration) -> giles_types::Timestamp {
+    let delay = jiff::SignedDuration::try_from(delay).unwrap_or(jiff::SignedDuration::MAX);
+    giles_types::Timestamp::now()
+        .checked_add(delay)
+        .unwrap_or(giles_types::Timestamp::MAX)
 }

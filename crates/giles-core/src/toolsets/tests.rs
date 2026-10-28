@@ -1,9 +1,10 @@
 //! The toolset lifecycle with fake servers and paused time: boot, the tool cache, idle stop and
-//! relaunch, crash restarts with backoff, a degraded remote server, `list_changed`, and shutdown.
+//! relaunch, crash restarts with backoff, a degraded remote server, `list_changed`, shutdown, and
+//! the state each instance reports to the admin service, with restarts.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::os::unix::process::ExitStatusExt as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -22,6 +23,7 @@ use tokio::sync::{Semaphore, oneshot};
 use super::cache::{CacheKey, ToolCache};
 use super::host::ToolsetHost;
 use super::lifecycle::{Connection, Connector};
+use crate::admin::{PluginControl, PluginRunState, PluginRuntime};
 use crate::config::{Config, InstanceName, LoadOptions, ToolsetInstance};
 use crate::paths::DataRoot;
 use crate::registry::Registry;
@@ -92,6 +94,8 @@ impl Toolset for FakeServer {
 struct Script {
     source: String,
     version: String,
+    /// The program a connection reports it runs.
+    binary: Option<PathBuf>,
     tools: Vec<ToolSpec>,
     /// Errors for the next connects, in order.
     failures: VecDeque<Error>,
@@ -109,6 +113,7 @@ impl Script {
         Self {
             source: "sha256:v1".to_owned(),
             version: "1.0".to_owned(),
+            binary: None,
             tools: tools.iter().map(|t| tool(t)).collect(),
             failures: VecDeque::new(),
             gate: None,
@@ -197,6 +202,7 @@ impl Connector for FakeConnector {
                 toolset: Arc::new(server),
                 source: s.source.clone(),
                 server_version: Some(s.version.clone()),
+                binary: s.binary.clone(),
                 // A dropped sender is a connection that never ends by itself.
                 closed: async move { crashed.await.unwrap_or(None) }.boxed(),
             })
@@ -653,5 +659,229 @@ async fn list_changed_reaches_new_sessions_and_the_cache() {
             .lookup(&name("files"), "sha256:v1", &files.config_hash),
         Some(vec![tool("read"), tool("search")])
     );
+    host.stop().await;
+}
+
+const PLAIN: &str = "\n[toolset.files]\ncommand = \"/nonexistent/files\"\n";
+
+/// What the admin service sees of `instance`.
+fn reported(host: &ToolsetHost, instance: &str) -> PluginRuntime {
+    host.plugins()
+        .into_iter()
+        .find(|p| p.instance.as_str() == instance)
+        .unwrap_or_else(|| panic!("{instance} isn't reported"))
+}
+
+#[tokio::test(start_paused = true)]
+async fn every_instance_reports_its_supervisor_state() {
+    let s = Setup::new(&format!("{FILES}{REMOTE}"));
+    let gate = Arc::new(Semaphore::new(0));
+    let mut files = Script::new(&["read", "write"]);
+    files.gate = Some(gate.clone());
+    files.binary = Some(PathBuf::from("/opt/mcp/files"));
+    let mut remote = Script::new(&["fetch"]);
+    remote
+        .failures
+        .push_back(Error::InvalidRequest("HTTP 401".to_owned()));
+    let connector = FakeConnector::with([("files", files), ("remote", remote)]);
+    let host = s.host(&connector).await;
+    settle().await;
+
+    // Still starting: nothing is known of the server yet.
+    let files = reported(&host, "files");
+    assert_eq!(files.state, PluginRunState::Starting);
+    assert_eq!((files.binary, files.version), (None, None));
+    assert_eq!(files.tool_count, Some(0));
+
+    // Running, after the first start. `pid` stays unset: stdio servers run under the trampoline.
+    // Every connect takes a permit, so later ones (an idle relaunch, a retry) need some too.
+    gate.add_permits(10);
+    host.started().await;
+    let files = reported(&host, "files");
+    assert!(
+        matches!(files.state, PluginRunState::Running { pid: None, .. }),
+        "{:?}",
+        files.state
+    );
+    assert_eq!(files.binary, Some(PathBuf::from("/opt/mcp/files")));
+    assert_eq!(files.version.as_deref(), Some("1.0"));
+    assert_eq!((files.restarts, files.last_error), (0, None));
+    assert_eq!(files.tool_count, Some(2));
+    assert_eq!(files.requested_grants, None);
+
+    // Failed: rejected credentials aren't retried. The error is the reason the start failed.
+    let remote = reported(&host, "remote");
+    assert_eq!(remote.state, PluginRunState::Failed);
+    assert!(remote.last_error.unwrap().contains("HTTP 401"));
+    assert_eq!((remote.tool_count, remote.version), (Some(0), None));
+
+    // The tool count follows `list_changed`.
+    connector.change_tools("files", &["read", "write", "search"]);
+    settle().await;
+    assert_eq!(reported(&host, "files").tool_count, Some(3));
+
+    // Idle: stopped for idleness, its tools still offered.
+    advance(Duration::from_secs(61)).await;
+    let files = reported(&host, "files");
+    assert_eq!(files.state, PluginRunState::Idle);
+    assert_eq!(files.tool_count, Some(3));
+
+    // Relaunched by a call: running again, and not counted as a restart.
+    let relaunched = tokio::time::timeout(Duration::from_secs(60), s.call_text("files", "read"))
+        .await
+        .expect("the idle relaunch never connected");
+    assert_eq!(relaunched, "read by connection 2");
+    let files = reported(&host, "files");
+    assert!(matches!(files.state, PluginRunState::Running { .. }));
+    assert_eq!(files.restarts, 0);
+
+    // Backing off after a crash, with the reason; the retry counts as a restart.
+    connector.crash("files", 3);
+    settle().await;
+    let files = reported(&host, "files");
+    assert!(
+        matches!(files.state, PluginRunState::BackingOff { .. }),
+        "{:?}",
+        files.state
+    );
+    assert!(files.last_error.unwrap().contains("exit status: 3"));
+    assert_eq!(files.restarts, 0);
+    advance(Duration::from_secs(1)).await;
+    let files = reported(&host, "files");
+    assert!(matches!(files.state, PluginRunState::Running { .. }));
+    assert_eq!(files.restarts, 1);
+
+    // Stopped at shutdown, whether it ran or had failed.
+    host.stop().await;
+    assert_eq!(reported(&host, "files").state, PluginRunState::Stopped);
+    assert_eq!(reported(&host, "remote").state, PluginRunState::Stopped);
+}
+
+#[tokio::test(start_paused = true)]
+async fn restarting_a_running_toolset_drops_the_connection_and_starts_again() {
+    let s = Setup::new(PLAIN);
+    let connector = FakeConnector::with([("files", Script::new(&["read"]))]);
+    let host = s.host(&connector).await;
+    host.started().await;
+    assert_eq!(s.call_text("files", "read").await, "read by connection 1");
+
+    assert!(host.restart("files"));
+    settle().await;
+    assert_eq!(connector.connects("files"), 2);
+    assert_eq!(connector.live("files"), 1, "the old connection is dropped");
+    assert_eq!(s.call_text("files", "read").await, "read by connection 2");
+    let files = reported(&host, "files");
+    assert!(matches!(files.state, PluginRunState::Running { .. }));
+    assert_eq!(files.restarts, 1);
+    assert_eq!(s.offered().await, ["files__read"]);
+
+    // An instance the host doesn't supervise.
+    assert!(!host.restart("nope"));
+    host.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn restarting_an_idle_toolset_starts_it_now() {
+    let s = Setup::new(FILES);
+    let connector = FakeConnector::with([("files", Script::new(&["read"]))]);
+    let host = s.host(&connector).await;
+    host.started().await;
+    advance(Duration::from_secs(61)).await;
+    assert_eq!(reported(&host, "files").state, PluginRunState::Idle);
+    assert_eq!(connector.live("files"), 0);
+
+    assert!(host.restart("files"));
+    settle().await;
+    assert_eq!(connector.connects("files"), 2);
+    assert_eq!(connector.live("files"), 1);
+    let files = reported(&host, "files");
+    assert!(matches!(files.state, PluginRunState::Running { .. }));
+    assert_eq!(files.restarts, 1);
+    host.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn restarting_a_backing_off_toolset_starts_it_now_and_resets_the_backoff() {
+    let s = Setup::new(PLAIN);
+    let connector = FakeConnector::with([("files", Script::new(&["read"]))]);
+    let host = s.host(&connector).await;
+    host.started().await;
+    // Two quick crashes: the next delay would be 4 s, and this one is 2 s.
+    connector.crash("files", 1);
+    advance(Duration::from_secs(1)).await;
+    connector.crash("files", 1);
+    settle().await;
+    assert!(matches!(
+        reported(&host, "files").state,
+        PluginRunState::BackingOff { .. }
+    ));
+    assert_eq!(connector.connects("files"), 2);
+
+    assert!(host.restart("files"));
+    settle().await;
+    assert_eq!(connector.connects("files"), 3);
+    let files = reported(&host, "files");
+    assert!(matches!(files.state, PluginRunState::Running { .. }));
+    // The retry after the first crash, and the requested restart.
+    assert_eq!(files.restarts, 2);
+
+    // The backoff starts over at 1 s.
+    connector.crash("files", 1);
+    advance(Duration::from_secs(1)).await;
+    assert_eq!(connector.connects("files"), 4);
+    host.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn restarting_a_failed_toolset_gives_it_a_fresh_try() {
+    let s = Setup::new(REMOTE);
+    let mut remote = Script::new(&["fetch"]);
+    remote
+        .failures
+        .push_back(Error::InvalidRequest("HTTP 401".to_owned()));
+    let connector = FakeConnector::with([("remote", remote)]);
+    let host = s.host(&connector).await;
+    host.started().await;
+    assert_eq!(reported(&host, "remote").state, PluginRunState::Failed);
+    assert!(s.offered().await.is_empty());
+    // Never retried by itself.
+    advance(Duration::from_secs(3600)).await;
+    assert_eq!(connector.connects("remote"), 1);
+
+    assert!(host.restart("remote"));
+    settle().await;
+    assert_eq!(connector.connects("remote"), 2);
+    let remote = reported(&host, "remote");
+    assert!(matches!(remote.state, PluginRunState::Running { .. }));
+    assert_eq!(remote.restarts, 1);
+    assert_eq!(remote.tool_count, Some(1));
+    assert_eq!(s.offered().await, ["remote__fetch"]);
+    assert_eq!(
+        s.call_text("remote", "fetch").await,
+        "fetch by connection 2"
+    );
+    host.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_restart_during_a_start_begins_the_start_over() {
+    let s = Setup::new(PLAIN);
+    let gate = Arc::new(Semaphore::new(0));
+    let mut files = Script::new(&["read"]);
+    files.gate = Some(gate.clone());
+    let connector = FakeConnector::with([("files", files)]);
+    let host = s.host(&connector).await;
+    settle().await;
+    assert_eq!(reported(&host, "files").state, PluginRunState::Starting);
+
+    // The first attempt is waiting for its server; the restart abandons it and tries again.
+    assert!(host.restart("files"));
+    settle().await;
+    gate.add_permits(1);
+    host.started().await;
+    assert_eq!(connector.connects("files"), 1);
+    let files = reported(&host, "files");
+    assert!(matches!(files.state, PluginRunState::Running { .. }));
+    assert_eq!(files.restarts, 1);
     host.stop().await;
 }

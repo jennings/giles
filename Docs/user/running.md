@@ -74,7 +74,7 @@ Giles logs `giles started` once every [toolset](configuration.md#toolsets) has s
 toolset that fails doesn't stop Giles. It's logged as `cannot start the toolset; retrying`, with the
 reason, and retried with a growing delay of up to 5 minutes. Some failures can't be fixed by
 retrying, such as rejected credentials or a host that can't sandbox. Those are logged once, and the
-toolset isn't retried until Giles restarts.
+toolset isn't retried until you restart it on the [admin page](web.md#admin-pages) or restart Giles.
 
 Only one `giles serve` can use a data root at a time. A second one exits at once with
 `giles is already running with the data root ... as pid <pid>`. To run more than one Giles on a

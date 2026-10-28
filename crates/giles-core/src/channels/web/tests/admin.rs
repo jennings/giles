@@ -177,6 +177,31 @@ fn state() -> pb::StatusResponse {
                 ..pb::PluginInstance::default()
             },
             pb::PluginInstance {
+                instance: "files".into(),
+                kind: pb::InstanceKind::Toolset.into(),
+                location: "/usr/local/bin/mcp-files".into(),
+                state: pb::PluginState::Running.into(),
+                started_at: at(1_792_540_900),
+                restarts: 1,
+                version: Some("2.1.0".into()),
+                tool_count: Some(4),
+                sandbox: Some(pb::SandboxStatus {
+                    enabled: true,
+                    landlock_abi: None,
+                    missing: vec![],
+                }),
+                ..pb::PluginInstance::default()
+            },
+            pb::PluginInstance {
+                instance: "broken".into(),
+                kind: pb::InstanceKind::Toolset.into(),
+                location: "https://mcp.example.com/broken".into(),
+                state: pb::PluginState::Failed.into(),
+                last_error: Some(format!("HTTP 401 {XSS}")),
+                tool_count: Some(0),
+                ..pb::PluginInstance::default()
+            },
+            pb::PluginInstance {
                 instance: "search".into(),
                 kind: pb::InstanceKind::Toolset.into(),
                 location: "https://mcp.example.com/".into(),
@@ -388,6 +413,57 @@ async fn the_plugins_page_shows_each_plugin_and_restart_buttons_for_supervised_o
 }
 
 #[tokio::test]
+async fn the_plugins_page_shows_a_toolsets_state_and_a_restart_form() {
+    let env = env().await;
+    let admin = Arc::new(FakeAdmin {
+        status: Mutex::new(state()),
+        ..FakeAdmin::default()
+    });
+    let (status, html) = env.admin_page(&admin, "/admin/plugins").await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, rest) = html.split_once(r#"id="plugin-files""#).unwrap();
+    let (files, rest) = rest.split_once(r#"id="plugin-broken""#).unwrap();
+    let (broken, _) = rest.split_once(r#"id="plugin-search""#).unwrap();
+
+    // A running toolset: state with its restarts, the binary found, the version, the tools it
+    // offers, and no pid (stdio servers run under the sandbox trampoline).
+    for expected in [
+        "toolset",
+        "running, since 2026-10-21 00:01:40 UTC; 1 restarts",
+        "/usr/local/bin/mcp-files",
+        "<dd>2.1.0</dd>",
+        "<dt>Tools</dt>",
+        "<dd>4</dd>",
+        r#"<form method="post" action="/admin/plugins/files/restart">"#,
+        &format!(r#"<input type="hidden" name="csrf" value="{CSRF}">"#),
+    ] {
+        assert!(files.contains(expected), "{expected}\n{files}");
+    }
+    assert!(!files.contains("pid"), "{files}");
+
+    // A failed one: why, that only a restart retries it, and the same restart form.
+    for expected in [
+        "failed (not retried until it",
+        "HTTP 401 &#60;script&#62;",
+        r#"<form method="post" action="/admin/plugins/broken/restart">"#,
+    ] {
+        assert!(broken.contains(expected), "{expected}\n{broken}");
+    }
+    assert!(!broken.contains("binary changes"), "{broken}");
+    assert!(!html.contains(XSS), "{html}");
+
+    // The status page's summary has the state word and the tool count.
+    let (_, html) = env.admin_page(&admin, "/admin").await;
+    for expected in [
+        r##"<a href="/admin/plugins#plugin-files">files</a>"##,
+        r#"<td class="state-ok">running</td><td>4</td>"#,
+        r#"<td class="state-bad">failed</td><td>0</td>"#,
+    ] {
+        assert!(html.contains(expected), "{expected}\n{html}");
+    }
+}
+
+#[tokio::test]
 async fn restarting_a_plugin_needs_the_csrf_token() {
     let env = env().await;
     let admin = Arc::new(FakeAdmin {
@@ -439,4 +515,10 @@ async fn restarting_a_plugin_needs_the_csrf_token() {
         "{html}"
     );
     assert_eq!(admin.restarted(), ["libera", "libera"]);
+
+    // A toolset's Restart goes to the same RPC.
+    let response = restart("/admin/plugins/files/restart", &[], &form).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.headers()[LOCATION], "/admin/plugins");
+    assert_eq!(admin.restarted(), ["libera", "libera", "files"]);
 }

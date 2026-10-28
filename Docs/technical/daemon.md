@@ -75,8 +75,9 @@ to stderr, with ANSI colors only when stderr is a terminal. The filter is `GILES
    shutdown signal arrives first. Each plugin is registered with the registry and attached to the
    sessions as it comes up; one that fails is logged and relaunched with backoff, or once its binary
    changes. A toolset that fails to start is logged and retried with backoff
-   ([Toolsets](toolsets.md#lifecycle)). The admin service reports plugin supervision through
-   `admin::PluginControl`. The scheduler and the blob sweep (`Runtime::start_blob_sweep`,
+   ([Toolsets](toolsets.md#lifecycle)). The admin service reports plugin and toolset supervision
+   through one `admin::PluginControl` (`admin::MergedControl` over the plugin host and the toolset
+   host). The scheduler and the blob sweep (`Runtime::start_blob_sweep`,
    `giles_core::blobs::BlobSweep`) start just before them. The sweep waits 60 seconds, so recovery
    and the first turns finish first, then runs `BlobStore::sweep` ([Storage](storage.md#sweep))
    every six hours, with the 48-hour grace period (constants `SWEEP_FIRST_DELAY` and
