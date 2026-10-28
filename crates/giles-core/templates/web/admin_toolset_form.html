@@ -24,7 +24,7 @@
 <input type="hidden" name="updated_at" value="{{ form.updated_at }}">
 <span class="label">Name</span>
 <code>{{ form.name }}</code>
-<p class="detail">The name can't be changed here. It is the prefix of the MCP server's tools.</p>
+<p class="detail">The name can't be changed here. It is the prefix of the MCP server's tools. <a href="/admin/mcp-servers/{{ form.name }}/rename">Rename the MCP server</a> to change it.</p>
 {%- else %}
 <label for="name">Name</label>
 <input id="name" name="name" value="{{ form.name }}" required>

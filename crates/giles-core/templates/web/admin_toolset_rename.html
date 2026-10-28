@@ -1,0 +1,56 @@
+{% extends "layout.html" %}
+
+{% block title %}Rename {{ name }} - MCP servers - Giles{% endblock %}
+
+{% block content %}
+{% include "web/admin_nav.html" %}
+<h1>Rename {{ name }}</h1>
+{%- if let Some(error) = error %}
+<p class="error" role="alert">{{ error }}</p>
+{%- endif %}
+{%- if let Some(failure) = failure %}
+<p class="error" role="alert">Renaming can't go ahead. It failed while {{ failure.step }}: {{ failure.error }}</p>
+{%- if failure.undo_errors.is_empty() %}
+<p>Nothing was changed.</p>
+{%- else %}
+<p class="state-bad">Undoing the earlier steps failed too, so the rename is partly done. Put these right by hand:</p>
+<ul>
+{%- for undo in failure.undo_errors %}
+<li>{{ undo }}</li>
+{%- endfor %}
+</ul>
+{%- endif %}
+{%- endif %}
+<p>The name is the prefix of the MCP server's tools (<code>{{ name }}__read</code>). Renaming rewrites the <code>{{ name }}__</code> entries in every agent's tools and ask-first lists. Running conversations keep the old tool names, and calls to them fail until you start a new conversation.</p>
+<form class="agent-form" method="get" action="/admin/mcp-servers/{{ name }}/rename">
+<label for="new">New name</label>
+<input id="new" name="new" value="{{ new }}" required>
+<p class="detail">Letters, digits, <code>-</code>, and <code>_</code>, such as <code>files</code>.</p>
+<button type="submit">Show the changes</button>
+</form>
+{%- if let Some(agents) = preview %}
+<h2>What changes</h2>
+{%- if agents.is_empty() %}
+<p>No agent's tools or ask-first list mentions <code>{{ name }}__</code>, so no agent changes.</p>
+{%- else %}
+<p>{% if agents.len() == 1 %}This agent's entry changes{% else %}These agents' entries change{% endif %}:</p>
+<ul>
+{%- for agent in agents %}
+<li><a href="/admin/agents/{{ agent.id }}/edit">{{ agent.label }}</a>
+<ul>
+{%- for glob in agent.globs %}
+<li>{{ glob.key }}: <code>{{ glob.from }}</code> becomes <code>{{ glob.to }}</code></li>
+{%- endfor %}
+</ul>
+</li>
+{%- endfor %}
+</ul>
+{%- endif %}
+<form class="inline-form" method="post" action="/admin/mcp-servers/{{ name }}/rename">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="new" value="{{ new }}">
+<button type="submit">Rename to {{ new }}</button>
+</form>
+{%- endif %}
+<p><a href="/admin/mcp-servers/{{ name }}">Cancel</a></p>
+{% endblock %}

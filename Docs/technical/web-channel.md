@@ -737,16 +737,18 @@ for what `ListPlugins` knows (state, last error, and tool count, built by the pl
 | `POST /admin/mcp-servers/<name>/edit`    | `ToolsetManager::update`, then 303 to the page          |
 | `GET /admin/mcp-servers/<name>/remove`   | the confirmation                                        |
 | `POST /admin/mcp-servers/<name>/remove`  | `ToolsetManager::remove`, then 303 to the list          |
+| `GET /admin/mcp-servers/<name>/rename`   | the form; with `?new=`, `rename_preview` and the button |
+| `POST /admin/mcp-servers/<name>/rename`  | `ToolsetManager::rename`, then 303 to the new page      |
 | `POST /admin/mcp-servers/<name>/restart` | `RestartPlugin`, then 303 to the page                   |
 
 - **The list** has one row per `ToolsetManager::list` entry, with Edit and Remove for stored
   toolsets only, which are remote servers. A toolset of `giles.toml` (`ToolsetSource::File`), such
   as a stdio server, is listed with how it runs (from the running configuration), marked, and
-  read-only, and a page for editing or removing one is a 409 with the manager's `Unsupported`
-  message. The state and tool count come from `ListPlugins` by instance name; a stored toolset that
-  failed to start is there as `Failed` with its reason, because `serve` merges the manager into the
-  admin service's `PluginControl`. Where the service has nothing, the row shows the manager's
-  `failure`.
+  read-only, and a page for editing, renaming, or removing one is a 409 with the manager's
+  `Unsupported` message. The state and tool count come from `ListPlugins` by instance name; a stored
+  toolset that failed to start is there as `Failed` with its reason, because `serve` merges the
+  manager into the admin service's `PluginControl`. Where the service has nothing, the row shows the
+  manager's `failure`.
 - **The toolset page** shows the settings from the stored spec (a toolset of `giles.toml` has no
   spec to show), the state, the tools new conversations get from the registry's tool index (prefixed
   name and description), and a Restart form when the service knows the instance. The restart route
@@ -779,20 +781,41 @@ for what `ListPlugins` knows (state, last error, and tool count, built by the pl
 - **Removal.** The confirmation lists the agents whose `tools` or `ask` have an entry that starts
   with `<name>__`. The manager leaves them alone, and the page says so. A stored toolset has no data
   directory, so nothing else is removed.
+- **Renaming.** The form is a plain `GET` with the new name in `?new=`, so the preview needs no
+  script and no state between steps: `ToolsetManager::rename_preview` runs every check of the rename
+  and lists, per agent, the `tools` and `ask` globs that change, and the page shows them with a
+  CSRF-checked POST form that carries the name. The POST calls `ToolsetManager::rename` (the checks
+  run again under the manager's lock, so a change between the two steps is caught) and answers 303
+  to the page under the new name. The Rename link is shown for stored toolsets only. A toolset of
+  `giles.toml` is the same 409 as for edit. What the manager refuses comes back on the form with the
+  typed name, or on the error page:
+
+  - On the form, 400 for a name that isn't valid and for `Refused` (a glob that would stop matching,
+    or an `agent.toml` that isn't valid TOML or that the edit form can't edit, with the agents and
+    globs listed by the manager).
+  - On the form, 409 for a name that can't be used: another stored toolset, an instance of
+    `giles.toml`, a retired name, or the toolset's own name (all `Problem::of`).
+  - On the form, 500 for `Failed`, which shows the step, the error, and the undo errors if there are
+    any. The preview can show it too, for an agent file that can't be read, and says nothing was
+    changed.
+  - On the error page, 404 for a toolset that is gone, 409 for a toolset of `giles.toml`, and 500
+    for a database error (`Store`).
+
+  The page says that running conversations keep the old tool names.
 
 ## Templates and styles
 
 Templates are in `crates/giles-core/templates/web/`: pages `chats.html`, `chat.html`, `error.html`,
 `login_required.html`, `login.html`, `admin_status.html`, `admin_plugins.html`, `admin_agents.html`,
 `admin_agent.html`, `admin_agent_new.html`, `admin_routes.html`, `admin_route_form.html`,
-`admin_toolsets.html`, `admin_toolset.html`, `admin_toolset_form.html`, `admin_toolset_remove.html`
-(extending `layout.html`; `admin_nav.html` is included by the admin pages), and fragments
-`message.html`, `approval.html`, `compose.html`, `attachments.html` (rendered by `render.rs`).
-Nothing inline: no scripts, styles, or `hx-on` handlers (the CSP and `allowEval: false` forbid
-them). The chat page is `hx-ext="sse"` with `sse-connect`; `#messages` has `sse-swap="message"` and
-`hx-swap="beforeend"`. The compose form replaces itself (`hx-target="this"`, `hx-swap="outerHTML"`);
-approval forms use `hx-swap="none"`. Every form also works as a plain form post. Styles are classes
-in `assets/giles.css`.
+`admin_toolsets.html`, `admin_toolset.html`, `admin_toolset_form.html`, `admin_toolset_remove.html`,
+`admin_toolset_rename.html` (extending `layout.html`; `admin_nav.html` is included by the admin
+pages), and fragments `message.html`, `approval.html`, `compose.html`, `attachments.html` (rendered
+by `render.rs`). Nothing inline: no scripts, styles, or `hx-on` handlers (the CSP and
+`allowEval: false` forbid them). The chat page is `hx-ext="sse"` with `sse-connect`; `#messages` has
+`sse-swap="message"` and `hx-swap="beforeend"`. The compose form replaces itself
+(`hx-target="this"`, `hx-swap="outerHTML"`); approval forms use `hx-swap="none"`. Every form also
+works as a plain form post. Styles are classes in `assets/giles.css`.
 
 ## Tests
 
@@ -876,3 +899,15 @@ plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`, `l
   a secret starts it; Restart goes through the admin service and returns to the page, and refuses a
   name that is not a toolset; a failed stored toolset shows its reason and starts when saved with a
   working setting; a stored spec that can't be read gets an empty form and can be removed.
+- Renaming a toolset: the preview lists the agents whose globs change and changes nothing; posting
+  renames the toolset, rewrites the agent's file, and redirects to the new name, and the old name is
+  a 404; a glob such as `box*` is a 400 with the manager's reason and the typed name, on the preview
+  and on the post, and nothing changes; a stored name, a name of `giles.toml`, and an invalid name
+  come back on the form; the name is escaped; a toolset of `giles.toml` has no Rename link and is a
+  409; every rename route is 401 without a login and 403 for a non-owner, and the POST needs the
+  CSRF token. An agent's `agent.toml` made unreadable (skipped when running as root) fails the
+  check: the preview and the post are a 500 on the form with the step, the reason, "Nothing was
+  changed", and the typed name, and the toolset and the agent are as they were. Undoing a failed
+  step can't be provoked from the router, so a unit test in `toolsets.rs` renders the page for a
+  `Failed` error with undo errors: the list to put right by hand, escaped, and no "Nothing was
+  changed".
