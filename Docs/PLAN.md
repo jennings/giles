@@ -1718,8 +1718,8 @@ plugins. (Bazel may be added later.)
   from `PROTOC` if set, else from a vendored `protoc` crate, so building needs no system `protoc`.
 - `giles-plugin-sdk` is publishable to crates.io for third-party plugin authors.
 - CI runs `cargo fmt --check`, `cargo clippy`, `cargo test --workspace`, and `buf lint` and
-  `buf breaking` against the main branch. On pushes to the main branch, after those pass, it also
-  builds the container image (section 14.2) and publishes it to the GitHub Container Registry.
+  `buf breaking` against the main branch. After the `buf` checks pass, alongside the Rust checks, it
+  also builds the container image (section 14.2) and publishes it to the GitHub Container Registry.
 - A snapshot test renders the system prompt and tool list for representative agent configs, so any
   change to the cached prompt prefix shows up in review.
 

@@ -82,10 +82,12 @@ jobs:
           fi
 
   # Builds the container image, smoke-tests it, and publishes it to the GitHub Container Registry.
+  # The Dockerfile builds the workspace itself, so this runs alongside the Rust jobs. It waits for
+  # Protobuf, which is fast, so an image never ships a breaking contract change.
   image:
     name: Container image
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
-    needs: [rust, protobuf]
+    needs: [protobuf]
     runs-on: ubuntu-latest
     permissions:
       contents: read
