@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use giles_plugin_sdk::convert::{status_to_proto, timestamp_to_proto};
 use giles_proto::admin::v1 as pb;
@@ -27,6 +28,37 @@ pub trait PluginControl: Send + Sync {
     fn restart(&self, instance: &str) -> bool;
 }
 
+/// Several [`PluginControl`]s as one: `serve` has a plugin host for channel plugins and a toolset
+/// host for toolsets, and the admin service takes a single control.
+///
+/// `plugins()` is every control's instances; `restart` goes to the first control that supervises
+/// the instance (instance names are unique across kinds, so at most one does).
+pub struct MergedControl {
+    controls: Vec<Arc<dyn PluginControl>>,
+}
+
+impl MergedControl {
+    /// Merges `controls`.
+    pub fn new(controls: Vec<Arc<dyn PluginControl>>) -> Self {
+        Self { controls }
+    }
+}
+
+impl PluginControl for MergedControl {
+    fn plugins(&self) -> Vec<PluginRuntime> {
+        self.controls
+            .iter()
+            .flat_map(|control| control.plugins())
+            .collect()
+    }
+
+    fn restart(&self, instance: &str) -> bool {
+        self.controls
+            .iter()
+            .any(|control| control.restart(instance))
+    }
+}
+
 /// What supervision knows about one instance.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PluginRuntime {
@@ -44,6 +76,8 @@ pub struct PluginRuntime {
     pub version: Option<String>,
     /// The sandbox grants it asked for in `Describe`. Advisory only.
     pub requested_grants: Option<SandboxGrants>,
+    /// The number of tools it offers to new sessions. Toolsets only.
+    pub tool_count: Option<u32>,
 }
 
 /// Where a supervised instance is in its lifecycle (PLAN section 7.5).
@@ -183,6 +217,7 @@ fn apply_runtime(instance: &mut pb::PluginInstance, runtime: PluginRuntime) {
     instance.last_error = runtime.last_error;
     instance.version = runtime.version;
     instance.requested_grants = runtime.requested_grants;
+    instance.tool_count = runtime.tool_count;
 }
 
 /// The sandbox an instance with `sandbox` gets on this host.

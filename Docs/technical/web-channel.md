@@ -368,11 +368,15 @@ trait.
   v1 has only the owner; the `admin` role (PLAN section 3.1) comes with multi-user support.
 - `GET /admin` calls `Status`: version, start time, the host's sandbox, the configuration error
   (always unset in v1), every configured channel with its runtime and last status (and when it
-  arrived), and a table of the plugins (instance, kind, one-word state) linking to the plugins page.
+  arrived), and a table of the plugins (instance, kind, one-word state, and for a toolset the number
+  of tools it offers) linking to the plugins page.
 - `GET /admin/plugins` calls `ListPlugins`: per plugin its state with details (pid, start time,
-  retry time, restarts), last error, channel status, location, version, sandbox, what the sandbox
-  lacks on this host, and the grants it requested. A plugin with a known state (supervision reports
-  it) has a **Restart** form; toolsets, which don't report to the admin service yet, have none.
+  retry time, restarts), last error, channel status, location, version, the number of tools a
+  toolset offers (`tool_count`), sandbox, what the sandbox lacks on this host, and the grants it
+  requested. A plugin with a known state (supervision reports it) has a **Restart** form: channel
+  plugins and toolsets alike, since `serve` merges both hosts into one `PluginControl`. A failed
+  toolset's state says only a restart retries it (a failed channel plugin's also names a changed
+  binary).
 - `POST /admin/plugins/<instance>/restart` checks the owner, then CSRF (`check_csrf`: the `csrf`
   field or the `X-CSRF-Token` header), then calls `RestartPlugin` and answers 303 to
   `/admin/plugins`. Errors show the service's message: `NOT_FOUND` as 404, `FAILED_PRECONDITION` as
@@ -768,11 +772,12 @@ plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`, `l
   with plugin strings escaped and no reload; a `NeedsAuth` QR channel gets an `<svg>` (a new
   payload, a new code), the refresh, and never the payload text; pair codes and URLs are escaped,
   and a `javascript:` URL isn't a link; the plugins page shows details and a restart form only for
-  supervised plugins; restarting needs the CSRF token (field or header) and shows the service's
-  `NOT_FOUND` escaped; every admin answer, refusals and redirects included, is `no-store`. `qr.rs`
-  checks that the SVG draws exactly the code's dark modules inside the quiet zone, and that an
-  oversized payload is an error. `crates/giles/tests/serve.rs` checks that the daemon serves
-  `/admin` from its own admin service, behind the login.
+  supervised plugins, including a running and a failed toolset (state, tool count, and error); the
+  status summary has the tool count; restarting needs the CSRF token (field or header), works for a
+  toolset, and shows the service's `NOT_FOUND` escaped; every admin answer, refusals and redirects
+  included, is `no-store`. `qr.rs` checks that the SVG draws exactly the code's dark modules inside
+  the quiet zone, and that an oversized payload is an error. `crates/giles/tests/serve.rs` checks
+  that the daemon serves `/admin` from its own admin service, behind the login.
 - Route pages (`tests/routes.rs`, over the test configuration): anonymous requests get 401 and a
   non-owner 403 on every route including the POSTs, with nothing changed; every POST needs the CSRF
   token (a wrong or missing one is 403, the header works as well as the field); the list is in order

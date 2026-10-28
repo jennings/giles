@@ -4,7 +4,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context;
-use giles_core::admin::{AdminListener, AdminOptions, AdminService, InstanceLock, PluginControl};
+use giles_core::admin::{
+    AdminListener, AdminOptions, AdminService, InstanceLock, MergedControl, PluginControl,
+};
 use giles_core::agent_loop::AgentLoop;
 use giles_core::approvals::{ApprovalBoard, ChannelPresenter};
 use giles_core::config::Config;
@@ -60,16 +62,18 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     let runtime = Runtime::start(root.clone(), config.clone()).await?;
     // Every toolset, registered now with its cached tools (so resumed turns see them) and started
     // in the background.
-    let toolsets = ToolsetHost::start(
-        ToolsetLauncher::new(
-            root.clone(),
-            giles_exe.clone(),
-            sandbox.clone().map(drop),
-            runtime.blobs.clone(),
-        ),
-        &runtime.registry,
-    )
-    .await;
+    let toolsets = Arc::new(
+        ToolsetHost::start(
+            ToolsetLauncher::new(
+                root.clone(),
+                giles_exe.clone(),
+                sandbox.clone().map(drop),
+                runtime.blobs.clone(),
+            ),
+            &runtime.registry,
+        )
+        .await,
+    );
     runtime.registry.log_summary();
 
     let listener = http::bind(config.core.http_listen).await?;
@@ -141,7 +145,11 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
         sandbox,
         started_at,
         channels: Arc::new(sessions.clone()),
-        plugins: Some(plugins.clone() as Arc<dyn PluginControl>),
+        // The plugin host's channel plugins and the toolset host's toolsets, as one.
+        plugins: Some(Arc::new(MergedControl::new(vec![
+            plugins.clone() as Arc<dyn PluginControl>,
+            toolsets.clone() as Arc<dyn PluginControl>,
+        ]))),
         login_links,
         clock: Arc::new(SystemClock),
     }));

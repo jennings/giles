@@ -69,10 +69,11 @@ Each `PluginInstance` combines three sources:
   nothing on macOS), or one entry with the host's error when the host can't sandbox at all.
   Unsandboxed instances have `enabled = false`; remote ones no sandbox.
 - The channel statuses recorded since startup (`channel_status`, channels only).
-- Plugin supervision, through `PluginControl::plugins()`: state (`Running` sets `pid` and
-  `started_at`, `BackingOff` sets `retry_at`), the binary found (replaces the location), restarts,
-  the last error, the version, and the `requested_grants` from `Describe`. Without supervision, or
-  for an instance it doesn't report, these stay unset and `state` is `UNSPECIFIED`.
+- Supervision, through `PluginControl::plugins()`: state (`Running` sets `pid` and `started_at`,
+  `BackingOff` sets `retry_at`), the binary found (replaces the location), restarts, the last error,
+  the version, the `requested_grants` from `Describe` (channel plugins), and `tool_count` (toolsets:
+  the number of tools offered to new sessions). Without supervision, or for an instance it doesn't
+  report, these stay unset and `state` is `UNSPECIFIED`.
 
 ## Seams for later subsystems
 
@@ -98,6 +99,7 @@ pub struct PluginRuntime {
     pub last_error: Option<String>,
     pub version: Option<String>,
     pub requested_grants: Option<giles_proto::plugin::v1::SandboxGrants>,
+    pub tool_count: Option<u32>, // toolsets only
 }
 
 pub trait LoginLinks: Send + Sync {
@@ -111,6 +113,11 @@ The built-in web channel implements `LoginLinks` (its `UnknownUser` becomes `Unk
 `[channel.web]` instance `CreateLoginLink` answers `UNAVAILABLE`. The plugin host implements
 `PluginControl` ([Plugin Host](plugin-host.md#status)): `plugins()` maps each `PluginStatus` field
 for field (a remote plugin runs with no pid, and the version and `requested_grants` come from the
-live or cached `Describe` answer), and `restart` is `PluginHost::restart`. `serve` passes it as
-`plugins`. Toolsets are supervised by the toolset host ([Toolsets](toolsets.md#lifecycle)), which
-doesn't report to the admin service yet, so their lifecycle fields stay unset.
+live or cached `Describe` answer), and `restart` is `PluginHost::restart`. So does the toolset host
+([Toolsets](toolsets.md#lifecycle)): each supervisor's report becomes a `PluginRuntime` (state,
+restarts, last error, the binary found, the server's version from `initialize`, and `tool_count`;
+`pid` and `requested_grants` stay unset), and `restart` is `Control::request_restart`, which drops
+the connection and starts again at once, with the backoff reset (a `Failed` toolset gets a fresh
+try). `serve` passes both as one `PluginControl`, `MergedControl`: `plugins()` is the instances of
+every host, and `restart(instance)` goes to the first host that supervises the instance (names are
+unique across kinds). `RestartPlugin` therefore restarts channel plugins and toolsets alike.

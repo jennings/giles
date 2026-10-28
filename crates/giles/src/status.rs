@@ -116,6 +116,9 @@ fn format_plugin(out: &mut String, plugin: &pb::PluginInstance, tz: &TimeZone) {
             Some(at) => format!("down, retrying at {}", proto_time(at, tz)),
             None => "down, retrying".to_owned(),
         },
+        pb::PluginState::Failed if plugin.kind() == pb::InstanceKind::Toolset => {
+            "failed (not retried until it's restarted)".to_owned()
+        }
         pb::PluginState::Failed => {
             "failed (not retried until its binary changes or it's restarted)".to_owned()
         }
@@ -138,6 +141,9 @@ fn format_plugin(out: &mut String, plugin: &pb::PluginInstance, tz: &TimeZone) {
     field(out, "location:", &plugin.location);
     if let Some(version) = &plugin.version {
         field(out, "version:", version);
+    }
+    if let Some(tools) = plugin.tool_count {
+        field(out, "tools:", &tools.to_string());
     }
     match &plugin.sandbox {
         None => field(out, "sandbox:", "none (remote)"),
@@ -275,11 +281,29 @@ mod tests {
                         state: Some(State::Error("netsplit".into())),
                     }),
                     retry_at: None,
+                    tool_count: None,
                 },
                 pb::PluginInstance {
                     instance: "github".into(),
                     kind: pb::InstanceKind::Toolset.into(),
                     location: "https://api.example.com/mcp/".into(),
+                    ..pb::PluginInstance::default()
+                },
+                pb::PluginInstance {
+                    instance: "files".into(),
+                    kind: pb::InstanceKind::Toolset.into(),
+                    location: "/usr/local/bin/mcp-files".into(),
+                    state: pb::PluginState::Running.into(),
+                    version: Some("2.1.0".into()),
+                    restarts: 1,
+                    last_error: Some("its server exited (exit status: 3)".into()),
+                    started_at: ts(1_800_000_020),
+                    sandbox: Some(pb::SandboxStatus {
+                        enabled: true,
+                        landlock_abi: None,
+                        missing: vec![],
+                    }),
+                    tool_count: Some(4),
                     ..pb::PluginInstance::default()
                 },
             ],
@@ -307,6 +331,13 @@ Plugins:
     state:     unknown (plugin supervision is not available)
     location:  https://api.example.com/mcp/
     sandbox:   none (remote)
+  files (toolset)
+    state:     running, since 2027-01-15 08:00:20 UTC; 1 restarts
+    error:     its server exited (exit status: 3)
+    location:  /usr/local/bin/mcp-files
+    version:   2.1.0
+    tools:     4
+    sandbox:   on
 ";
         assert_eq!(format_status(&status, &TimeZone::UTC), expected);
     }
@@ -360,5 +391,31 @@ Plugins:
             "network: all; write: /w"
         );
         assert_eq!(requested_grants(&SandboxGrants::default()), "nothing");
+    }
+
+    #[test]
+    fn a_failed_toolset_is_only_retried_when_restarted() {
+        let failed = |kind: pb::InstanceKind| pb::PluginInstance {
+            instance: "github".into(),
+            kind: kind.into(),
+            state: pb::PluginState::Failed.into(),
+            ..pb::PluginInstance::default()
+        };
+
+        let mut out = String::new();
+        format_plugin(&mut out, &failed(pb::InstanceKind::Toolset), &TimeZone::UTC);
+        assert!(
+            out.contains("state:     failed (not retried until it's restarted)\n"),
+            "{out}"
+        );
+
+        let mut out = String::new();
+        format_plugin(&mut out, &failed(pb::InstanceKind::Channel), &TimeZone::UTC);
+        assert!(
+            out.contains(
+                "state:     failed (not retried until its binary changes or it's restarted)\n"
+            ),
+            "{out}"
+        );
     }
 }

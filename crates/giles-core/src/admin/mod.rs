@@ -27,7 +27,7 @@ mod tests;
 pub use self::auth::BearerToken;
 pub use self::client::{AdminClient, ConnectError, connect};
 pub use self::lock::{InstanceLock, LockError};
-pub use self::plugins::{PluginControl, PluginRunState, PluginRuntime};
+pub use self::plugins::{MergedControl, PluginControl, PluginRunState, PluginRuntime};
 pub use self::server::{AdminListener, BindError, DRAIN_TIMEOUT};
 pub use self::service::{
     AdminOptions, AdminService, ChannelStatuses, LoginLink, LoginLinkError, LoginLinks,

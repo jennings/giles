@@ -95,8 +95,8 @@ message ListPluginsResponse {
 
 // A configured instance that runs as a plugin: a gRPC plugin or an MCP toolset, local or remote.
 // Built-in components are part of the core and aren't listed. The lifecycle fields (state through
-// requested_grants) come from plugin supervision and stay unset while the core doesn't supervise
-// the instance.
+// requested_grants, retry_at, and tool_count) come from plugin supervision and stay unset without
+// it.
 message PluginInstance {
   // The instance name, e.g. "libera".
   string instance = 1;
@@ -128,6 +128,8 @@ message PluginInstance {
   giles.channel.v1.ChannelStatus channel_status = 13;
   // In BACKOFF: when the next launch or connection attempt starts.
   google.protobuf.Timestamp retry_at = 14;
+  // The number of tools an MCP toolset currently offers to new sessions. Unset for other kinds.
+  optional uint32 tool_count = 15;
 }
 
 // The kind of a configured instance.
@@ -149,7 +151,8 @@ enum PluginState {
   PLUGIN_STATE_IDLE = 3;
   // Down, waiting to restart or reconnect.
   PLUGIN_STATE_BACKOFF = 4;
-  // Down and not retried, e.g. after a protocol version mismatch, until the binary changes.
+  // Down and not retried, e.g. after a protocol version mismatch, until the binary changes (for a
+  // toolset: until it is restarted).
   PLUGIN_STATE_FAILED = 5;
   // Stopped because the core is shutting down.
   PLUGIN_STATE_STOPPED = 6;

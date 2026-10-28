@@ -35,14 +35,24 @@ Plugins:
     version:   1.2.0
     sandbox:   on, Landlock ABI 6
     requests:  network: tcp:6697
+  github (toolset)
+    state:     running, since 2026-10-23 09:12:06 PDT
+    location:  https://api.githubcopilot.com/mcp/
+    version:   1.0.0
+    tools:     41
+    sandbox:   none (remote)
 ```
 
 For each plugin:
 
 - `state`: `starting`, `running`, `idle` (a toolset stopped for idleness), `down, retrying at ...`,
   `failed`, or `stopped`. A `failed` plugin isn't retried until its binary changes or it's
-  restarted. This version of Giles doesn't supervise plugins yet, so it shows `unknown`.
-- `error`: the last launch failure, crash, or failed health check.
+  restarted. A `failed` toolset isn't retried until you restart it on the
+  [admin page](web.md#admin-pages). The restart count in a toolset's `state` counts starts after a
+  crash, a failed start, or a restart you asked for.
+- `error`: the last launch failure, crash, or failed health check. For a toolset, the reason its
+  last start failed or its server stopped.
+- `tools`: how many tools a toolset offers to new conversations.
 - `channel`: the channel's last status. `needs linking` or `needs login` tells you what to do, such
   as the code to enter on your phone.
 - `location`: the plugin's executable, or the address of a remote plugin.

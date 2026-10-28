@@ -155,9 +155,10 @@ connection, or a start that fails with a retryable error leads to `Down` with a 
 `RESTART_BACKOFF_MIN` (1 s), doubling up to `RESTART_BACKOFF_MAX` (5 min); a connection that lasted
 `HEALTHY_RESET` (10 min) starts the backoff over. A non-retryable failure (`InvalidRequest`: the
 host can't sandbox, the sandbox trampoline failed with 125 or macOS's 71, rejected credentials, no
-shared protocol) isn't retried until Giles restarts, and the instance's tools are withdrawn, cached
-or not: every call would fail. While a stdio server will be retried, its tools stay offered, and
-calls fail with the reason and when the next attempt is due, as for a server that's restarting.
+shared protocol) isn't retried until it's restarted by hand or Giles restarts, and the instance's
+tools are withdrawn, cached or not: every call would fail. While a stdio server will be retried, its
+tools stay offered, and calls fail with the reason and when the next attempt is due, as for a server
+that's restarting.
 
 **Remote servers** (PLAN section 7.6): the same backoff, but while one is unreachable (at boot or
 later) its tools are withdrawn, so new sessions don't get them; sessions that already have them get
@@ -170,6 +171,30 @@ server, and goes `Idle`. The tools stay offered (the in-memory list, the same on
 and the next call relaunches the server, which also refreshes the list. A server stopped for
 idleness didn't crash, so the restart backoff starts over at 1 s; otherwise a server whose
 `idle_stop` is under `HEALTHY_RESET` would never reset it.
+
+**Reporting and restart**: each supervisor keeps a `Report` that `ToolsetHost` hands to the admin
+service as a `PluginRuntime` (`ToolsetHost` implements `PluginControl`, see
+[Admin Service](admin.md#seams-for-later-subsystems)):
+
+| Field          | Value                                                                              |
+| -------------- | ---------------------------------------------------------------------------------- |
+| `state`        | `Starting` while a start is under way (and before the first), `Running`, `Idle`, `BackingOff { until }` (a `Down` that will be retried), `Failed` (a `Down` that won't), `Stopped` |
+| `restarts`     | starts after a crash, a failed start, or a restart request; not the first start, and not the relaunch of an idle server for a call |
+| `last_error`   | the reason of the last failed start or crash, as failed calls see it (already scrubbed); kept after the toolset recovers |
+| `binary`       | the program of the latest connection (`ResolvedProgram::program`, links resolved); unset for a remote server |
+| `version`      | `serverInfo.version` of the latest connection                                      |
+| `tool_count`   | the number of tools offered to new sessions, so the cached list while a stdio server starts, and none while a remote server is down |
+
+`pid` is never set: a stdio server runs under the sandbox trampoline, so the process the core
+spawned isn't the server, and a remote server has none.
+
+`PluginControl::restart(instance)` (`Control::request_restart`) wakes the supervisor whatever state
+it is in, and the supervisor drops the connection and starts again at once. It starts the backoff
+over and counts a restart. `Failed` toolsets get a fresh try, as a Giles restart would give them. A
+restart while a start is under way abandons that attempt and begins another, so a hung start can be
+retried. The old connection closes when its last call ends, so a call still running keeps the old
+server alive until it finishes. `restart` answers `false` for an instance the host doesn't
+supervise, such as a toolset that couldn't be registered.
 
 ## Tool-list cache
 

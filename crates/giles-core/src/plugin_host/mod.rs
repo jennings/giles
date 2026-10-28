@@ -1015,6 +1015,7 @@ fn plugin_runtime(status: PluginStatus) -> PluginRuntime {
         last_error: status.last_error,
         version,
         requested_grants,
+        tool_count: None,
     }
 }
 

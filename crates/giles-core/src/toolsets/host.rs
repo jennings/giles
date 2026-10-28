@@ -1,5 +1,6 @@
 //! Every configured toolset, started at boot and stopped at shutdown.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
@@ -12,7 +13,8 @@ use tracing::{Instrument as _, debug, info, warn};
 
 use super::cache::{ToolCache, file_digest};
 use super::launch::ToolsetLauncher;
-use super::lifecycle::{Connection, Connector, Managed};
+use super::lifecycle::{Connection, Connector, Control, Managed, Report};
+use crate::admin::{PluginControl, PluginRuntime};
 use crate::config::{InstanceName, ToolsetInstance, ToolsetTransport};
 use crate::registry::Registry;
 
@@ -23,6 +25,7 @@ pub struct ToolsetHost {
     shutdown: CancellationToken,
     tasks: Mutex<JoinSet<()>>,
     started: Mutex<Vec<oneshot::Receiver<()>>>,
+    controls: Mutex<BTreeMap<InstanceName, Control>>,
 }
 
 impl ToolsetHost {
@@ -43,6 +46,7 @@ impl ToolsetHost {
         let shutdown = CancellationToken::new();
         let mut tasks = JoinSet::new();
         let mut started = Vec::new();
+        let mut controls = BTreeMap::new();
         for instance in registry.config().toolsets.values() {
             let cached = cached_tools(&*connector, &cache, instance).await;
             let managed = Managed::new(
@@ -59,6 +63,7 @@ impl ToolsetHost {
                 warn!(toolset = %instance.name, %error, "cannot register the toolset");
                 continue;
             }
+            controls.insert(instance.name.clone(), managed.control);
             let (started_tx, started_rx) = oneshot::channel();
             let span = tracing::info_span!("toolset", instance = %instance.name);
             tasks.spawn(managed.supervisor.run(started_tx).instrument(span));
@@ -68,6 +73,7 @@ impl ToolsetHost {
             shutdown,
             tasks: Mutex::new(tasks),
             started: Mutex::new(started),
+            controls: Mutex::new(controls),
         }
     }
 
@@ -84,6 +90,43 @@ impl ToolsetHost {
         self.shutdown.cancel();
         let mut tasks = std::mem::take(&mut *lock(&self.tasks));
         while tasks.join_next().await.is_some() {}
+    }
+}
+
+/// What the admin service's `Status`, `ListPlugins`, and `RestartPlugin` see of the toolsets:
+/// each instance's supervisor state, and a restart that drops its connection and starts again at
+/// once (a failed toolset gets a new try too).
+impl PluginControl for ToolsetHost {
+    fn plugins(&self) -> Vec<PluginRuntime> {
+        lock(&self.controls)
+            .iter()
+            .map(|(instance, control)| plugin_runtime(instance, control.report()))
+            .collect()
+    }
+
+    fn restart(&self, instance: &str) -> bool {
+        match lock(&self.controls).get(instance) {
+            Some(control) => {
+                control.request_restart();
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// A supervisor's report as the admin service shows it. A stdio server's `pid` stays unset: it
+/// runs under the sandbox trampoline, so the process the core spawned isn't the server.
+fn plugin_runtime(instance: &InstanceName, report: Report) -> PluginRuntime {
+    PluginRuntime {
+        instance: instance.clone(),
+        binary: report.binary,
+        state: report.state,
+        restarts: report.restarts,
+        last_error: report.last_error,
+        version: report.version,
+        requested_grants: None,
+        tool_count: Some(u32::try_from(report.tools).unwrap_or(u32::MAX)),
     }
 }
 
@@ -150,7 +193,7 @@ impl Connector for LaunchConnector {
     }
 
     async fn connect(&self, instance: &ToolsetInstance) -> Result<Connection> {
-        let (toolset, source) = match &instance.transport {
+        let (toolset, source, binary) = match &instance.transport {
             ToolsetTransport::Stdio(server) => {
                 // The digest of exactly the program launched.
                 let resolved = self.launcher.resolve(&instance.name, server)?;
@@ -159,11 +202,12 @@ impl Connector for LaunchConnector {
                     .launcher
                     .launch(&instance.name, server, &resolved)
                     .await?;
-                (toolset, source)
+                (toolset, source, Some(resolved.program))
             }
             ToolsetTransport::Http(remote) => (
                 self.launcher.connect(instance).await?,
                 remote.url.to_string(),
+                None,
             ),
         };
         let server_version = toolset.server_version();
@@ -173,6 +217,7 @@ impl Connector for LaunchConnector {
             toolset,
             source,
             server_version,
+            binary,
             closed: async move { watched.closed().await }.boxed(),
         })
     }

@@ -130,7 +130,7 @@ struct Harness {
 /// What to plug into the service.
 #[derive(Default)]
 struct Fakes {
-    control: Option<Arc<FakeControl>>,
+    control: Option<Arc<dyn PluginControl>>,
     links: bool,
     sandbox: Option<Result<HostReport, String>>,
 }
@@ -167,7 +167,7 @@ impl Harness {
                 .unwrap_or(Ok(HostReport::Linux { landlock_abi: 5 })),
             started_at: at(0),
             channels: statuses.clone(),
-            plugins: fakes.control.map(|c| c as Arc<dyn PluginControl>),
+            plugins: fakes.control,
             login_links: fakes
                 .links
                 .then(|| Arc::new(FakeLinks) as Arc<dyn LoginLinks>),
@@ -359,6 +359,7 @@ async fn status_reports_the_sandbox_channels_and_plugins() {
                 network_ports: vec!["tcp:6697".into()],
                 ..SandboxGrants::default()
             }),
+            tool_count: None,
         }],
         ..FakeControl::default()
     };
@@ -523,6 +524,7 @@ async fn restart_plugin_needs_a_configured_supervised_plugin() {
             last_error: None,
             version: None,
             requested_grants: None,
+            tool_count: None,
         }],
         ..FakeControl::default()
     });
@@ -534,6 +536,77 @@ async fn restart_plugin_needs_a_configured_supervised_plugin() {
     assert_eq!(restart(&h, "libera").await, Ok(()));
     assert_eq!(*control.restarted.lock().unwrap(), ["libera"]);
     assert_eq!(restart(&h, "files").await, Err(Code::FailedPrecondition));
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_merged_control_lists_every_host_and_restarts_on_the_one_that_owns_the_instance() {
+    let runtime = |instance: &str, state, tool_count| PluginRuntime {
+        instance: InstanceName::new(instance).unwrap(),
+        binary: None,
+        state,
+        restarts: 1,
+        last_error: Some(format!("{instance} failed")),
+        version: Some("2.0".into()),
+        requested_grants: None,
+        tool_count,
+    };
+    let channels = Arc::new(FakeControl {
+        plugins: vec![runtime("libera", PluginRunState::Failed, None)],
+        ..FakeControl::default()
+    });
+    let toolsets = Arc::new(FakeControl {
+        plugins: vec![
+            runtime("files", PluginRunState::Idle, Some(3)),
+            runtime(
+                "github",
+                PluginRunState::BackingOff { until: at(60) },
+                Some(0),
+            ),
+        ],
+        ..FakeControl::default()
+    });
+    let merged = Arc::new(MergedControl::new(vec![
+        channels.clone() as Arc<dyn PluginControl>,
+        toolsets.clone() as Arc<dyn PluginControl>,
+    ]));
+    let h = Harness::start(Fakes {
+        control: Some(merged),
+        ..Fakes::default()
+    })
+    .await;
+
+    // `ListPlugins` shows the toolsets with their state, last error, restarts, version, and tool
+    // count, beside the channel plugin.
+    let listed = h
+        .client()
+        .await
+        .list_plugins(pb::ListPluginsRequest::default())
+        .await
+        .unwrap()
+        .into_inner()
+        .plugins;
+    let by_name = |name: &str| listed.iter().find(|p| p.instance == name).unwrap();
+    let files = by_name("files");
+    assert_eq!(files.kind(), pb::InstanceKind::Toolset);
+    assert_eq!(files.state(), pb::PluginState::Idle);
+    assert_eq!(files.tool_count, Some(3));
+    assert_eq!(files.restarts, 1);
+    assert_eq!(files.last_error.as_deref(), Some("files failed"));
+    assert_eq!(files.version.as_deref(), Some("2.0"));
+    let github = by_name("github");
+    assert_eq!(github.state(), pb::PluginState::Backoff);
+    assert_eq!(github.retry_at.unwrap().seconds, at(60).as_second());
+    assert_eq!(github.tool_count, Some(0));
+    assert_eq!(by_name("libera").state(), pb::PluginState::Failed);
+    assert_eq!(by_name("libera").tool_count, None);
+
+    // Each restart reaches only the host that supervises the instance.
+    assert_eq!(restart(&h, "files").await, Ok(()));
+    assert_eq!(restart(&h, "libera").await, Ok(()));
+    assert_eq!(restart(&h, "mail").await, Err(Code::FailedPrecondition));
+    assert_eq!(*toolsets.restarted.lock().unwrap(), ["files"]);
+    assert_eq!(*channels.restarted.lock().unwrap(), ["libera"]);
     h.stop().await;
 }
 
