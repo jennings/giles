@@ -11,7 +11,9 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
+use serde::Serialize;
 use serde::de::{self, Deserializer, SeqAccess, Visitor};
+use serde::ser::Serializer;
 
 use super::error::{ConfigError, KeyPath};
 use super::names::InstanceName;
@@ -93,6 +95,19 @@ impl<'de> Deserialize<'de> for NetworkGrant {
     }
 }
 
+impl Serialize for NetworkGrant {
+    /// The form [`Deserialize`] reads: `false`, `true`, or a list of `"tcp:<port>"`.
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::None => serializer.serialize_bool(false),
+            Self::All => serializer.serialize_bool(true),
+            Self::TcpPorts(ports) => {
+                serializer.collect_seq(ports.iter().map(|port| format!("tcp:{port}")))
+            }
+        }
+    }
+}
+
 /// Parses `"tcp:<port>"`, port 1 to 65535.
 fn parse_port(entry: &str) -> Result<u16, String> {
     entry
@@ -104,19 +119,29 @@ fn parse_port(entry: &str) -> Result<u16, String> {
         })
 }
 
+/// A `sandbox` table as written, before its paths are checked: the raw form of
+/// [`Sandbox`](super::Sandbox).
+///
 /// Strict, unlike the rest of `giles.toml`: a misspelled `network` or `min_abi` would silently
 /// leave the default (network on, no ABI floor) and widen the plugin's sandbox.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct RawSandbox {
-    network: Option<NetworkGrant>,
-    #[serde(default)]
-    read: Vec<String>,
-    #[serde(default)]
-    write: Vec<String>,
-    #[serde(default)]
-    unix: Vec<String>,
-    min_abi: Option<u32>,
+pub struct SandboxSpec {
+    /// `network`: `true`, `false`, or a list of `"tcp:<port>"`. Unset means the kind's default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<NetworkGrant>,
+    /// `read`: paths the instance may read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read: Vec<String>,
+    /// `write`: paths the instance may read and write.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub write: Vec<String>,
+    /// `unix`: Unix sockets the instance may connect to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unix: Vec<String>,
+    /// `min_abi`: the lowest Landlock ABI the instance may run under.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_abi: Option<u32>,
 }
 
 /// The directories no grant may overlap, and the one exception.
@@ -232,7 +257,7 @@ pub fn check_grant(root: &DataRoot, instance: &InstanceName, grant: &Path) -> Re
 pub(crate) fn grants(
     file: &Path,
     path: &KeyPath,
-    raw: Option<RawSandbox>,
+    raw: Option<SandboxSpec>,
     toolset: bool,
     protected: &Protected,
 ) -> Result<Grants, ConfigError> {

@@ -41,7 +41,8 @@ The steps:
 4. Check that instance names are unique across the three kinds, ignoring ASCII case (they share the
    data directory namespace, `data/plugins/<instance>/`, and pid files, and macOS file systems are
    case-insensitive by default), then validate each instance into its typed form, resolving secret
-   references.
+   references. A toolset goes through `Ctx::toolset`, the same function
+   [`validate_toolset`](#validating-one-toolset) uses.
 5. Load every agent: each directory in `agents/` not starting with `.` must have a valid name and an
    `agent.toml`. Models are checked against the configured provider instances.
 6. Keep `[[routes]]` as written (`Config::legacy_routes`, unvalidated). Routes are stored in the
@@ -98,7 +99,7 @@ an `oauth` table.
 
 Some tables stay strict, because a typo there would not be harmless:
 
-- `RawSandbox` keeps `#[serde(deny_unknown_fields)]`: a misspelled `network` or `min_abi` would
+- `SandboxSpec` keeps `#[serde(deny_unknown_fields)]`: a misspelled `network` or `min_abi` would
   leave the default (network on, no ABI floor) and widen the plugin's sandbox. The error is
   positioned at the key like any other.
 - An `auth` table with no `bearer` or `oauth` is an error: ignoring it would leave a remote without
@@ -151,6 +152,51 @@ or `::1` (PLAN section 7.6).
 
 The `config` table becomes a `PluginConfig`, a JSON object for `Configure` (PLAN section 7.7). TOML
 datetimes become their TOML text; infinite and NaN floats, which JSON can't carry, are errors.
+
+## Validating one toolset
+
+Validation of a toolset is separate from reading `giles.toml`, so the same checks run on a toolset
+that comes from elsewhere, such as a spec stored as JSON, against the configuration that is running
+now. The pieces, all in `giles_core::config`:
+
+- `ToolsetSpec`: one toolset as written, with the keys of a `[toolset.<name>]` table (`component`,
+  `command`, `args`, `env`, `url`, `auth`, `insecure`, `deadline`, `idle_stop`, `parallel`,
+  `skills`, `sandbox`, `unsandboxed`). `giles.toml` deserializes into it (it is the type of the
+  values of `RawGiles.toolset`), and `ToolsetSpec::from_json` reads the same keys from JSON; it also
+  serializes. Nothing is checked beyond each value's type. Credentials stay unresolved: `env` and
+  `auth` are raw values holding plain strings or `{ secret = ... }` / `{ env = ... }` references,
+  and its `Debug` leaves them out. `sandbox` is a `SandboxSpec`.
+- `validate_toolset(name, &spec, &ToolsetContext) -> Result<ToolsetInstance, ToolsetError>`: the
+  rules of `Ctx::toolset` (which keys fit a stdio or a remote toolset, `command`, `url`, `env`
+  names, `auth`, durations, skill paths, grants against the data root and socket directory,
+  credentials resolved), then the checks that involve other instances: the name against every
+  provider, channel, and toolset of the configuration (`instance_named` finds the clash and
+  `name_clash` words it, the message `giles.toml` gives), and the binary directories
+  (`check_binary_dirs`). `ToolsetContext::replacing` names the toolset being edited or renamed: that
+  one instance is left out of the name check and of the other instances' grants and directories.
+  `None` adds a toolset, so every existing instance of the name, of any kind, is a clash. The
+  toolset's own name edits it. Its old name renames it: the new name must be free, and a change only
+  in case (`github` to `GitHub`) is allowed because the old instance is left out.
+- `ToolsetContext { root, secrets, options, config, replacing }`: the data root (with its socket
+  directory), a `Secrets` loaded from `secrets.toml` by the caller (so a new secret needs no
+  restart), the `LoadOptions` (built-ins, the environment for `{ env = ... }` references and `PATH`,
+  the `giles` binary), the `Config` whose other instances the toolset must fit with, and the toolset
+  being replaced, if any.
+- `ToolsetError { key, reason }`: `key` is relative to the toolset's table (`env.TOKEN`,
+  `sandbox.write[0]`, `skills[1]`), so a form can show the reason next to the field; it is the root
+  when the problem is the name or a clash. `Ctx` raises `ConfigError`s at `toolset.<name>.<key>` in
+  the file being loaded; `validate_toolset` runs `Ctx` with no file and strips that prefix, so the
+  reasons are byte for byte the ones `giles.toml` loading gives. Like them, they never quote a
+  credential.
+
+With one toolset the binary-directory check only reports what involves it: the toolset's own `write`
+and `unix` grants against every binary directory (the `giles` binary, channel plugins, every stdio
+server including its own, every toolset's `skills`), and each other instance's grants against this
+toolset's server and `skills` directories. The error then names the other instance's key
+(`toolset.other.sandbox.write[0]`) in the reason, with an empty `key`. Problems among other
+instances that were already there (a binary that appeared in a granted directory after startup) are
+not blamed on the toolset being validated, while loading `giles.toml` still rejects them. `skills`
+overlapping the plugin data root is checked for the toolset being validated only.
 
 ## Secrets
 
@@ -245,6 +291,10 @@ binary that isn't found protects nothing here; the plugin host reports it at lau
 and stdio launcher should call `discover_plugin` and `find_program` rather than searching
 themselves, so what is launched is what was checked.
 
+Collecting these directories and checking the grants against them is `check_binary_dirs`
+(`config/toolset.rs`): loading calls it once with every instance, and `validate_toolset` with one
+toolset in focus ([Validating one toolset](#validating-one-toolset)).
+
 ## Instance config hash
 
 Every instance carries `config_hash: ConfigHash`, the "hash of the instance config taken before
@@ -252,6 +302,14 @@ secrets are resolved" in the tool discovery cache key (PLAN section 7.9). It cov
 `[<kind>.<instance>]` table as written, core keys and `config` alike, with references hashed as the
 reference (`{ secret = "github" }`), not the value. So changing a secret's value doesn't refresh the
 cache, renaming the secret does, and the hash never depends on or reveals a secret.
+
+A toolset can also be hashed from its `ToolsetSpec`, with `ToolsetSpec::config_hash`: the spec is
+serialized to a `toml::Table` (unset keys left out, durations as whole milliseconds, so `"5m"` and
+`"300s"` hash alike) and hashed the same way. The hash of a spec that has no keys beyond the spec's,
+no durations, and values written the way the spec serializes them equals the hash of the
+`giles.toml` table that holds the same keys, so the same toolset keeps its cache key whichever way
+it was configured. Loading `giles.toml` still hashes the table as written, so cache keys of file
+toolsets don't change.
 
 The file is parsed a second time as a plain `toml::Table` and each instance's table is hashed with a
 canonical encoding, so the hash is the same for every way of writing the same TOML value: key order,
