@@ -5,6 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use giles_plugin_sdk::convert::timestamp_to_proto;
 use giles_proto::admin::v1 as pb;
 use giles_proto::admin::v1::admin_service_client::AdminServiceClient;
 use giles_proto::channel::v1 as channel_pb;
@@ -20,10 +21,11 @@ use tonic::Code;
 use tonic::transport::{Channel, Endpoint, Uri};
 
 use super::*;
-use crate::config::{Config, InstanceName, LiveConfig, LoadOptions};
+use crate::config::{Config, InstanceName, KeyPath, LiveConfig, LoadOptions, ToolsetSpec};
 use crate::paths::DataRoot;
 use crate::sandbox::HostReport;
 use crate::sessions::{ChannelStatusRecord, Clock};
+use crate::toolsets::{Removed, ToolsetManagerError, ToolsetSource, ToolsetView};
 
 const CONFIG: &str = r#"
 [owner]
@@ -116,6 +118,212 @@ impl LoginLinks for FakeLinks {
     }
 }
 
+/// A toolset manager over a map, with the answers of the real one that the RPCs depend on:
+/// names match ignoring case, a `giles.toml` toolset can't be changed, an update is refused as
+/// stale when it expects another `updated_at`, and a spec without `url` is refused.
+#[derive(Default)]
+struct FakeToolsets {
+    state: Mutex<FakeToolsetState>,
+}
+
+#[derive(Default)]
+struct FakeToolsetState {
+    /// By name: the spec and when it changed, in seconds after [`at`]`(0)`.
+    stored: BTreeMap<String, (ToolsetSpec, i64)>,
+    /// The toolsets of `giles.toml`.
+    file: Vec<String>,
+    /// The seconds of the last change.
+    clock: i64,
+    /// Another call creates the name between `update` and `add`: `update` finds nothing and
+    /// `add` finds the name taken.
+    racing: bool,
+    /// The database fails.
+    broken: bool,
+}
+
+const FILES_SPEC: &str = r#"
+url = "https://files.example.com/mcp"
+deadline = "90s"
+skills = ["/skills/files"]
+
+[auth]
+bearer = { secret = "files" }
+"#;
+
+fn spec(text: &str) -> ToolsetSpec {
+    ToolsetSpec::from_toml(text).unwrap()
+}
+
+impl FakeToolsets {
+    fn new(stored: &[(&str, &str)], file: &[&str]) -> Arc<Self> {
+        let fake = Self::default();
+        {
+            let mut state = fake.state.lock().unwrap();
+            for (name, text) in stored {
+                state.clock += 1;
+                let clock = state.clock;
+                state.stored.insert((*name).to_owned(), (spec(text), clock));
+            }
+            state.file = file.iter().map(|name| (*name).to_owned()).collect();
+        }
+        Arc::new(fake)
+    }
+
+    fn with<R>(&self, f: impl FnOnce(&mut FakeToolsetState) -> R) -> R {
+        f(&mut self.state.lock().unwrap())
+    }
+
+    /// The stored spec of `name`, and when it changed.
+    fn stored(&self, name: &str) -> Option<(ToolsetSpec, i64)> {
+        self.with(|state| state.stored.get(name).cloned())
+    }
+}
+
+impl FakeToolsetState {
+    fn check(&self) -> Result<(), ToolsetManagerError> {
+        if self.broken {
+            return Err(ToolsetManagerError::Store(giles_store::Error::Io(
+                std::io::Error::other("disk on fire"),
+            )));
+        }
+        Ok(())
+    }
+
+    fn stored_name(&self, name: &str) -> Option<String> {
+        self.stored
+            .keys()
+            .find(|other| other.eq_ignore_ascii_case(name))
+            .cloned()
+    }
+
+    fn is_file(&self, name: &str) -> bool {
+        self.file
+            .iter()
+            .any(|other| other.eq_ignore_ascii_case(name))
+    }
+
+    fn view(&self, name: &str) -> ToolsetView {
+        match self.stored.get(name) {
+            Some((spec, changed)) => ToolsetView {
+                name: name.to_owned(),
+                source: ToolsetSource::Stored {
+                    created_at: at(0),
+                    updated_at: at(*changed),
+                },
+                spec: Some(spec.clone()),
+                failure: (name == "broken").then(|| "no secret \"broken\"".to_owned()),
+            },
+            None => ToolsetView {
+                name: name.to_owned(),
+                source: ToolsetSource::File,
+                spec: None,
+                failure: None,
+            },
+        }
+    }
+
+    fn refuse_stdio(spec: &ToolsetSpec) -> Result<(), ToolsetManagerError> {
+        if spec.url.is_none() {
+            return Err(ToolsetManagerError::Invalid {
+                key: KeyPath::root().key("url"),
+                reason: "a stored toolset is a remote server: set `url`".to_owned(),
+            });
+        }
+        Ok(())
+    }
+}
+
+#[tonic::async_trait]
+impl ToolsetAdmin for FakeToolsets {
+    async fn list(&self) -> Result<Vec<ToolsetView>, ToolsetManagerError> {
+        self.with(|state| {
+            state.check()?;
+            let mut names: Vec<&String> = state.stored.keys().chain(&state.file).collect();
+            names.sort_by_key(|name| name.to_ascii_lowercase());
+            Ok(names.into_iter().map(|name| state.view(name)).collect())
+        })
+    }
+
+    async fn get(&self, name: &str) -> Result<ToolsetView, ToolsetManagerError> {
+        self.with(|state| {
+            state.check()?;
+            let own = state.stored_name(name).or_else(|| {
+                state
+                    .file
+                    .iter()
+                    .find(|other| other.eq_ignore_ascii_case(name))
+                    .cloned()
+            });
+            own.map(|own| state.view(&own))
+                .ok_or(ToolsetManagerError::NotFound)
+        })
+    }
+
+    async fn add(
+        &self,
+        name: &str,
+        spec: &ToolsetSpec,
+    ) -> Result<ToolsetView, ToolsetManagerError> {
+        self.with(|state| {
+            state.check()?;
+            if state.racing || state.stored_name(name).is_some() {
+                return Err(ToolsetManagerError::Exists);
+            }
+            // A name that a provider or channel of giles.toml has.
+            if name == "libera" {
+                return Err(ToolsetManagerError::Invalid {
+                    key: KeyPath::root(),
+                    reason: "the name is taken by `[channel.libera]` in giles.toml".to_owned(),
+                });
+            }
+            FakeToolsetState::refuse_stdio(spec)?;
+            state.clock += 1;
+            let clock = state.clock;
+            state.stored.insert(name.to_owned(), (spec.clone(), clock));
+            Ok(state.view(name))
+        })
+    }
+
+    async fn update(
+        &self,
+        name: &str,
+        spec: &ToolsetSpec,
+        expected_updated_at: Option<Timestamp>,
+    ) -> Result<ToolsetView, ToolsetManagerError> {
+        self.with(|state| {
+            state.check()?;
+            let own = match state.stored_name(name) {
+                Some(own) if !state.racing => own,
+                _ if state.is_file(name) => return Err(ToolsetManagerError::Unsupported),
+                _ => return Err(ToolsetManagerError::NotFound),
+            };
+            if expected_updated_at.is_some_and(|expected| expected != at(state.stored[&own].1)) {
+                return Err(ToolsetManagerError::Stale);
+            }
+            FakeToolsetState::refuse_stdio(spec)?;
+            state.clock += 1;
+            let clock = state.clock;
+            state.stored.insert(own.clone(), (spec.clone(), clock));
+            Ok(state.view(&own))
+        })
+    }
+
+    async fn remove(&self, name: &str) -> Result<Removed, ToolsetManagerError> {
+        self.with(|state| {
+            state.check()?;
+            let Some(own) = state.stored_name(name) else {
+                return Err(if state.is_file(name) {
+                    ToolsetManagerError::Unsupported
+                } else {
+                    ToolsetManagerError::NotFound
+                });
+            };
+            state.stored.remove(&own);
+            Ok(Removed { name: own })
+        })
+    }
+}
+
 /// A running admin service in a temporary data root.
 struct Harness {
     _dir: TempDir,
@@ -131,6 +339,7 @@ struct Harness {
 #[derive(Default)]
 struct Fakes {
     control: Option<Arc<dyn PluginControl>>,
+    toolsets: Option<Arc<dyn ToolsetAdmin>>,
     links: bool,
     sandbox: Option<Result<HostReport, String>>,
 }
@@ -171,6 +380,7 @@ impl Harness {
             login_links: fakes
                 .links
                 .then(|| Arc::new(FakeLinks) as Arc<dyn LoginLinks>),
+            toolsets: fakes.toolsets,
             clock: Arc::new(FixedClock),
         }));
         let shutdown = CancellationToken::new();
@@ -281,6 +491,42 @@ where
                     // Rejected before it touches anything.
                     .backup(pb::BackupRequest {
                         dir: "relative".into(),
+                    })
+                    .await,
+            ),
+        ),
+        (
+            "ListToolsets",
+            code(client.list_toolsets(pb::ListToolsetsRequest {}).await),
+        ),
+        (
+            "GetToolset",
+            code(
+                client
+                    .get_toolset(pb::GetToolsetRequest {
+                        name: "files".into(),
+                    })
+                    .await,
+            ),
+        ),
+        (
+            "SetToolset",
+            code(
+                client
+                    .set_toolset(pb::SetToolsetRequest {
+                        name: "files".into(),
+                        spec_toml: FILES_SPEC.into(),
+                        expected_updated_at: None,
+                    })
+                    .await,
+            ),
+        ),
+        (
+            "RemoveToolset",
+            code(
+                client
+                    .remove_toolset(pb::RemoveToolsetRequest {
+                        name: "files".into(),
                     })
                     .await,
             ),
@@ -1042,5 +1288,364 @@ async fn backup_needs_an_absolute_path_to_an_existing_directory() {
     }
     // Nothing was written anywhere.
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    h.stop().await;
+}
+
+fn toolset_with(toolsets: &Arc<FakeToolsets>) -> Fakes {
+    Fakes {
+        toolsets: Some(toolsets.clone()),
+        ..Fakes::default()
+    }
+}
+
+fn set_request(name: &str, spec_toml: &str, expected: Option<i64>) -> pb::SetToolsetRequest {
+    pb::SetToolsetRequest {
+        name: name.into(),
+        spec_toml: spec_toml.into(),
+        expected_updated_at: expected.map(|secs| timestamp_to_proto(at(secs))),
+    }
+}
+
+async fn set_toolset(
+    client: &mut AdminClient,
+    request: pb::SetToolsetRequest,
+) -> Result<pb::Toolset, tonic::Status> {
+    client
+        .set_toolset(request)
+        .await
+        .map(|response| response.into_inner().toolset.unwrap())
+}
+
+#[tokio::test]
+async fn toolsets_are_listed_and_shown_as_toml_with_references_as_written() {
+    let toolsets = FakeToolsets::new(
+        &[
+            ("notes", "url = \"https://notes.example.com/mcp\""),
+            ("files", FILES_SPEC),
+        ],
+        &["Github"],
+    );
+    toolsets.with(|state| {
+        state.stored.insert(
+            "broken".into(),
+            (spec("url = \"https://gone.example.com/mcp\""), 7),
+        );
+    });
+    let h = Harness::start(toolset_with(&toolsets)).await;
+    let mut client = h.client().await;
+
+    let listed = client
+        .list_toolsets(pb::ListToolsetsRequest {})
+        .await
+        .unwrap()
+        .into_inner()
+        .toolsets;
+    let names: Vec<&str> = listed.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["broken", "files", "Github", "notes"]);
+
+    let files = &listed[1];
+    assert_eq!(files.source(), pb::ToolsetSource::Stored);
+    assert_eq!(files.updated_at, Some(timestamp_to_proto(at(2))));
+    assert_eq!(files.failure, None);
+    // The references are as written, and the text reads back as the stored spec.
+    let text = files.spec_toml.as_deref().unwrap();
+    assert!(text.contains("secret = \"files\""), "{text}");
+    assert_eq!(ToolsetSpec::from_toml(text).unwrap(), spec(FILES_SPEC));
+
+    // A stored toolset that isn't running says why.
+    assert_eq!(listed[0].failure.as_deref(), Some("no secret \"broken\""));
+
+    // A toolset of giles.toml has a source and nothing else.
+    let github = &listed[2];
+    assert_eq!(github.source(), pb::ToolsetSource::GilesToml);
+    assert_eq!((&github.spec_toml, &github.updated_at), (&None, &None));
+
+    // `GetToolset` finds it ignoring case, under the name it has.
+    let got = client
+        .get_toolset(pb::GetToolsetRequest {
+            name: "FILES".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .toolset
+        .unwrap();
+    assert_eq!(&got, files);
+    let github = client
+        .get_toolset(pb::GetToolsetRequest {
+            name: "github".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .toolset
+        .unwrap();
+    assert_eq!(github.name, "Github");
+    assert_eq!(github.source(), pb::ToolsetSource::GilesToml);
+    let err = client
+        .get_toolset(pb::GetToolsetRequest {
+            name: "ghost".into(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+    assert!(err.message().contains("`ghost`"), "{}", err.message());
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn set_toolset_creates_and_replaces() {
+    let toolsets = FakeToolsets::new(&[], &[]);
+    let h = Harness::start(toolset_with(&toolsets)).await;
+    let mut client = h.client().await;
+
+    let created = set_toolset(&mut client, set_request("files", FILES_SPEC, None))
+        .await
+        .unwrap();
+    assert_eq!(created.name, "files");
+    assert_eq!(created.source(), pb::ToolsetSource::Stored);
+    assert_eq!(created.updated_at, Some(timestamp_to_proto(at(1))));
+    assert_eq!(toolsets.stored("files"), Some((spec(FILES_SPEC), 1)));
+
+    // The name matches ignoring case, and keeps its spelling. No `expected_updated_at`: replaces
+    // whatever is there.
+    let other = "url = \"https://other.example.com/mcp\"";
+    let replaced = set_toolset(&mut client, set_request("Files", other, None))
+        .await
+        .unwrap();
+    assert_eq!(replaced.name, "files");
+    assert_eq!(replaced.updated_at, Some(timestamp_to_proto(at(2))));
+    assert_eq!(toolsets.stored("files"), Some((spec(other), 2)));
+    assert_eq!(toolsets.stored("Files"), None);
+
+    // With the `updated_at` of the last read, it replaces.
+    let again = set_toolset(
+        &mut client,
+        set_request("files", "url = \"https://third.example.com/mcp\"", Some(2)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(again.updated_at, Some(timestamp_to_proto(at(3))));
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn set_toolset_refuses_a_change_made_since_it_was_read() {
+    let toolsets = FakeToolsets::new(&[("files", FILES_SPEC)], &["github"]);
+    let h = Harness::start(toolset_with(&toolsets)).await;
+    let mut client = h.client().await;
+
+    // Changed since the caller read it (at 0).
+    let err = set_toolset(
+        &mut client,
+        set_request("files", "url = \"https://other.example.com/mcp\"", Some(0)),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code(), Code::FailedPrecondition);
+    assert!(err.message().contains("was changed"), "{}", err.message());
+    assert_eq!(toolsets.stored("files"), Some((spec(FILES_SPEC), 1)));
+
+    // Expecting a toolset that isn't there.
+    let err = set_toolset(&mut client, set_request("ghost", FILES_SPEC, Some(1)))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+    assert_eq!(toolsets.stored("ghost"), None);
+
+    // A toolset of giles.toml can't be changed, with or without the time.
+    for expected in [None, Some(1)] {
+        let err = set_toolset(&mut client, set_request("github", FILES_SPEC, expected))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Code::FailedPrecondition, "{expected:?}");
+        assert!(err.message().contains("giles.toml"), "{}", err.message());
+    }
+
+    // An `expected_updated_at` that isn't a time.
+    let mut request = set_request("files", FILES_SPEC, None);
+    request.expected_updated_at = Some(prost_types::Timestamp {
+        seconds: i64::MAX,
+        nanos: 0,
+    });
+    let err = client.set_toolset(request).await.unwrap_err();
+    assert_eq!(err.code(), Code::InvalidArgument);
+    assert!(
+        err.message().starts_with("expected_updated_at: "),
+        "{}",
+        err.message()
+    );
+    assert_eq!(toolsets.stored("files"), Some((spec(FILES_SPEC), 1)));
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn set_toolset_names_the_key_of_a_spec_that_is_refused() {
+    let toolsets = FakeToolsets::new(&[("files", FILES_SPEC)], &[]);
+    let h = Harness::start(toolset_with(&toolsets)).await;
+    let mut client = h.client().await;
+
+    for (what, name, spec_toml, expected) in [
+        // The manager refuses it, at a key.
+        (
+            "a stdio server",
+            "files",
+            "command = \"/bin/files\"\n",
+            "url: a stored toolset is a remote server",
+        ),
+        (
+            "a stdio server, new",
+            "new",
+            "command = \"/bin/files\"\n",
+            "url: a stored toolset is a remote server",
+        ),
+        // Or as a whole.
+        (
+            "a taken name",
+            "libera",
+            "url = \"https://libera.example.com/mcp\"\n",
+            "the name is taken by `[channel.libera]` in giles.toml",
+        ),
+        // The text isn't a spec.
+        (
+            "a syntax error",
+            "new",
+            "url = \n",
+            "invalid TOML at line 1, column ",
+        ),
+        (
+            "a wrong type",
+            "new",
+            "url = \"https://x.example.com/mcp\"\nparallel = \"yes\"\n",
+            "parallel: ",
+        ),
+        (
+            "a wrong type in a list",
+            "new",
+            "skills = [\"/a\", 2]\n",
+            "skills[1]: ",
+        ),
+        (
+            "a misspelled key",
+            "new",
+            "ulr = \"https://x.example.com/mcp\"\n",
+            "ulr: unknown key",
+        ),
+        (
+            "a misspelled key in a strict table",
+            "new",
+            "[sandbox]\nredd = [\"/x\"]\n",
+            "sandbox.redd: unknown field `redd`",
+        ),
+    ] {
+        let err = set_toolset(&mut client, set_request(name, spec_toml, None))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.code(),
+            Code::InvalidArgument,
+            "{what}: {}",
+            err.message()
+        );
+        assert!(
+            err.message().starts_with(expected),
+            "{what}: {}",
+            err.message()
+        );
+    }
+    // Nothing changed.
+    assert_eq!(toolsets.stored("files"), Some((spec(FILES_SPEC), 1)));
+    assert_eq!(toolsets.stored("new"), None);
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_set_toolset_that_races_with_a_create_says_it_exists_and_a_database_failure_is_internal()
+{
+    let toolsets = FakeToolsets::new(&[], &[]);
+    let h = Harness::start(toolset_with(&toolsets)).await;
+    let mut client = h.client().await;
+
+    toolsets.with(|state| state.racing = true);
+    let err = set_toolset(&mut client, set_request("files", FILES_SPEC, None))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::AlreadyExists);
+    assert!(err.message().contains("`files`"), "{}", err.message());
+    toolsets.with(|state| state.racing = false);
+
+    toolsets.with(|state| state.broken = true);
+    for code in [
+        set_toolset(&mut client, set_request("files", FILES_SPEC, None))
+            .await
+            .unwrap_err()
+            .code(),
+        client
+            .list_toolsets(pb::ListToolsetsRequest {})
+            .await
+            .unwrap_err()
+            .code(),
+        client
+            .get_toolset(pb::GetToolsetRequest {
+                name: "files".into(),
+            })
+            .await
+            .unwrap_err()
+            .code(),
+        client
+            .remove_toolset(pb::RemoveToolsetRequest {
+                name: "files".into(),
+            })
+            .await
+            .unwrap_err()
+            .code(),
+    ] {
+        assert_eq!(code, Code::Internal);
+    }
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn remove_toolset_removes_a_stored_toolset() {
+    let toolsets = FakeToolsets::new(&[("files", FILES_SPEC)], &["github"]);
+    let h = Harness::start(toolset_with(&toolsets)).await;
+    let mut client = h.client().await;
+    let remove = |name: &str| pb::RemoveToolsetRequest { name: name.into() };
+
+    let removed = client
+        .remove_toolset(remove("FILES"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(removed.name, "files");
+    assert_eq!(toolsets.stored("files"), None);
+
+    let err = client.remove_toolset(remove("files")).await.unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+    assert!(err.message().contains("`files`"), "{}", err.message());
+    let err = client.remove_toolset(remove("github")).await.unwrap_err();
+    assert_eq!(err.code(), Code::FailedPrecondition);
+    assert!(err.message().contains("giles.toml"), "{}", err.message());
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn toolset_rpcs_are_unavailable_without_a_toolset_manager() {
+    let h = Harness::start(Fakes::default()).await;
+    let mut client = h.client().await;
+    let codes: Vec<(&str, Code)> = every_rpc(&mut client)
+        .await
+        .into_iter()
+        .filter(|(rpc, _)| rpc.ends_with("Toolset") || *rpc == "ListToolsets")
+        .collect();
+    assert_eq!(
+        codes,
+        [
+            ("ListToolsets", Code::Unavailable),
+            ("GetToolset", Code::Unavailable),
+            ("SetToolset", Code::Unavailable),
+            ("RemoveToolset", Code::Unavailable),
+        ]
+    );
     h.stop().await;
 }

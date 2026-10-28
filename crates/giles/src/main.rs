@@ -10,6 +10,7 @@ mod sandbox_exec;
 mod serve;
 mod shutdown;
 mod status;
+mod toolset;
 mod usage;
 
 use clap::Parser;
@@ -43,6 +44,10 @@ fn main() -> anyhow::Result<()> {
             match args.command {
                 AdminCommand::LoginLink(args) => login_link::run(home, &args),
             }
+        }
+        Command::Toolset(args) => {
+            logging?;
+            toolset::run(home, &args)
         }
         Command::Instance(args) => {
             logging?;

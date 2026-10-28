@@ -11,9 +11,10 @@
 //!   the same user.
 //! - [`connect`] is the client side: check the socket directory, connect, read the token.
 //!
-//! Other subsystems plug in through traits: [`PluginControl`] (plugin supervision) and
-//! [`LoginLinks`] (implemented by the built-in web channel). Without them, the RPCs that need them
-//! answer `UNAVAILABLE`. See `Docs/technical/admin.md`.
+//! Other subsystems plug in through traits: [`PluginControl`] (plugin supervision), [`LoginLinks`]
+//! (implemented by the built-in web channel), and [`ToolsetAdmin`] (implemented by the toolset
+//! manager). Without them, the RPCs that need them answer `UNAVAILABLE`. See
+//! `Docs/technical/admin.md`.
 
 mod auth;
 mod client;
@@ -23,6 +24,7 @@ mod server;
 mod service;
 #[cfg(test)]
 mod tests;
+mod toolsets;
 
 pub use self::auth::BearerToken;
 pub use self::client::{AdminClient, ConnectError, connect};
@@ -32,3 +34,4 @@ pub use self::server::{AdminListener, BindError, DRAIN_TIMEOUT};
 pub use self::service::{
     AdminOptions, AdminService, ChannelStatuses, LoginLink, LoginLinkError, LoginLinks,
 };
+pub use self::toolsets::ToolsetAdmin;

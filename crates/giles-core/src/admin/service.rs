@@ -15,11 +15,13 @@ use tonic::{Request, Response, Status};
 use tracing::{error, info};
 
 use super::plugins::{PluginControl, configured, landlock_abi, plugin_instances};
+use super::toolsets::{ToolsetAdmin, manager_status, toolset_to_proto};
 use crate::backup::{self, BackupError};
-use crate::config::{ChannelRuntime, Config, InstanceName, LiveConfig};
+use crate::config::{ChannelRuntime, Config, InstanceName, LiveConfig, ToolsetSpec};
 use crate::paths::DataRoot;
 use crate::sandbox::HostReport;
 use crate::sessions::{ChannelStatusRecord, Clock, Sessions};
+use crate::toolsets::ToolsetManagerError;
 
 /// The latest status each channel reported since startup. Implemented by [`Sessions`], which
 /// records them.
@@ -109,6 +111,8 @@ pub struct AdminOptions {
     pub plugins: Option<Arc<dyn PluginControl>>,
     /// The web channel's login links, if it runs.
     pub login_links: Option<Arc<dyn LoginLinks>>,
+    /// The toolset manager, which every toolset RPC calls. Without it they answer `UNAVAILABLE`.
+    pub toolsets: Option<Arc<dyn ToolsetAdmin>>,
     /// The current time.
     pub clock: Arc<dyn Clock>,
 }
@@ -121,6 +125,7 @@ impl fmt::Debug for AdminOptions {
             .field("started_at", &self.started_at)
             .field("plugins", &self.plugins.is_some())
             .field("login_links", &self.login_links.is_some())
+            .field("toolsets", &self.toolsets.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -153,6 +158,12 @@ impl AdminService {
             statuses,
             runtimes,
         )
+    }
+
+    fn toolsets(&self) -> Result<&dyn ToolsetAdmin, Status> {
+        self.options.toolsets.as_deref().ok_or_else(|| {
+            Status::unavailable("toolset management is not available, so toolsets can't be changed")
+        })
     }
 }
 
@@ -382,6 +393,80 @@ impl AdminRpc for AdminService {
         let path = |path: PathBuf| path.to_string_lossy().into_owned();
         Ok(Response::new(pb::BackupResponse {
             paths: vec![path(snapshot.database), path(snapshot.archive)],
+        }))
+    }
+
+    async fn list_toolsets(
+        &self,
+        _request: Request<pb::ListToolsetsRequest>,
+    ) -> Result<Response<pb::ListToolsetsResponse>, Status> {
+        let toolsets = self.toolsets()?;
+        let views = toolsets
+            .list()
+            .await
+            .map_err(|err| manager_status("ListToolsets", "", err))?;
+        Ok(Response::new(pb::ListToolsetsResponse {
+            toolsets: views.into_iter().map(toolset_to_proto).collect(),
+        }))
+    }
+
+    async fn get_toolset(
+        &self,
+        request: Request<pb::GetToolsetRequest>,
+    ) -> Result<Response<pb::GetToolsetResponse>, Status> {
+        let name = request.into_inner().name;
+        let view = self
+            .toolsets()?
+            .get(&name)
+            .await
+            .map_err(|err| manager_status("GetToolset", &name, err))?;
+        Ok(Response::new(pb::GetToolsetResponse {
+            toolset: Some(toolset_to_proto(view)),
+        }))
+    }
+
+    async fn set_toolset(
+        &self,
+        request: Request<pb::SetToolsetRequest>,
+    ) -> Result<Response<pb::SetToolsetResponse>, Status> {
+        let request = request.into_inner();
+        let name = request.name;
+        let expected = request
+            .expected_updated_at
+            .map(timestamp_from_proto)
+            .transpose()
+            .map_err(|err| Status::invalid_argument(format!("expected_updated_at: {err}")))?;
+        let toolsets = self.toolsets()?;
+        let spec = ToolsetSpec::from_toml(&request.spec_toml)
+            .map_err(|err| Status::invalid_argument(err.to_string()))?;
+        // A stored name is replaced (refused if it changed since `expected`). Any other name is
+        // created, unless the caller expected to find the toolset.
+        let view = match toolsets.update(&name, &spec, expected).await {
+            Err(ToolsetManagerError::NotFound) if expected.is_none() => {
+                toolsets.add(&name, &spec).await
+            }
+            result => result,
+        }
+        .map_err(|err| manager_status("SetToolset", &name, err))?;
+        info!(toolset = %view.name, "toolset set through the admin service");
+        Ok(Response::new(pb::SetToolsetResponse {
+            toolset: Some(toolset_to_proto(view)),
+        }))
+    }
+
+    async fn remove_toolset(
+        &self,
+        request: Request<pb::RemoveToolsetRequest>,
+    ) -> Result<Response<pb::RemoveToolsetResponse>, Status> {
+        let name = request.into_inner().name;
+        let removed = self
+            .toolsets()?
+            .remove(&name)
+            .await
+            .map_err(|err| manager_status("RemoveToolset", &name, err))?;
+        info!(toolset = %removed.name, "toolset removed through the admin service");
+        Ok(Response::new(pb::RemoveToolsetResponse {
+            name: removed.name,
         }))
     }
 }
