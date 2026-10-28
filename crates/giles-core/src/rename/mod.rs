@@ -117,6 +117,28 @@ pub enum RenameError {
         /// The configured instance.
         existing: String,
     },
+    /// A toolset stored in the database has the new name, which giles.toml would gain.
+    #[error(
+        "{new:?} is the name of the toolset {existing:?} stored in the database; instance names \
+         are unique across kinds, ignoring case. Remove that toolset or choose another name"
+    )]
+    StoredToolset {
+        /// The new name.
+        new: String,
+        /// The stored toolset's name.
+        existing: String,
+    },
+    /// The old name is a toolset stored in the database, which this command doesn't rename.
+    #[error(
+        "{old:?} is the toolset {existing:?} stored in the database; this command renames the \
+         instances of giles.toml"
+    )]
+    StoredToolsetOld {
+        /// The old name.
+        old: String,
+        /// The stored toolset's name.
+        existing: String,
+    },
     /// The new name already has data.
     #[error(
         "{new:?} already has data ({what}); renaming never merges two instances' data. Choose \
@@ -223,6 +245,26 @@ pub async fn rename_instance(
         return Err(RenameError::CaseCollision {
             new: new.to_owned(),
             existing: existing.clone(),
+        });
+    }
+    // The stored toolsets are instances too. One isn't renamed here: its row is in the database,
+    // not in `giles.toml`. And a name one has can't be given to a table of `giles.toml`, which
+    // would take the name from it at the next start.
+    let stored = store.toolsets().await.map_err(RenameError::Store)?;
+    if !configured.contains_key(old)
+        && let Some(existing) = stored.iter().find(|t| t.name.eq_ignore_ascii_case(old))
+    {
+        return Err(RenameError::StoredToolsetOld {
+            old: old.to_owned(),
+            existing: existing.name.clone(),
+        });
+    }
+    if !configured.contains_key(new)
+        && let Some(existing) = stored.iter().find(|t| t.name.eq_ignore_ascii_case(new))
+    {
+        return Err(RenameError::StoredToolset {
+            new: new.to_owned(),
+            existing: existing.name.clone(),
         });
     }
 

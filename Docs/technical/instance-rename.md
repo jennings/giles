@@ -89,9 +89,13 @@ the caller proves the core is stopped by holding the same `flock` `giles serve` 
 socket probing is needed and a core that starts mid-rename is refused instead.
 
 1. **Validate, read-only.** Both names must be `[a-zA-Z0-9-]+`, different ignoring case, and `new`
-   must not differ only in case from another configured instance. `giles.toml` and every
-   `agent.toml` are read and parsed, the database's names are listed (`instance_rows`), and the data
-   directories are scanned.
+   must not differ only in case from another configured instance. When `giles.toml` doesn't
+   configure `new` yet, it must not be the name of a toolset stored in the database, ignoring case
+   (`RenameError::StoredToolset`): `giles.toml` would take the name at the next start. When
+   `giles.toml` doesn't configure `old`, it must not be a stored toolset either
+   (`RenameError::StoredToolsetOld`): its row is in the database, and this command renames the
+   instances of `giles.toml`. `giles.toml` and every `agent.toml` are read and parsed, the
+   database's names are listed (`instance_rows`), and the data directories are scanned.
    - If both names are configured the rename is refused: instances are never merged.
    - If only `old` is configured, that table is renamed.
    - If only `new` is configured, the operator already renamed the table (this is what the startup
@@ -181,6 +185,11 @@ Definitions:
   memories in a restored agent's database keep the old instance name, so the renamed instance's
   groups don't see them. Memory databases are not data to this check.
 - A configured instance is **fresh** if its name has no data.
+- Toolsets stored in the database ([Toolsets](toolsets.md#stored-toolsets)) are configured: the
+  check reads them with `Store::toolsets`. They are remote, so they have no data of their own and
+  nothing matches them, but data that an earlier instance left under a stored toolset's name is not
+  an unused name (the name can't be listed in `[core] retired_instances` while a stored toolset has
+  it). A name that a `giles.toml` instance also has stays that instance's.
 - A name is **unused** if it has data, is not configured, and is not in `[core] retired_instances`.
 - An unused name **matches** a fresh instance if the kinds fit. Rows of `sessions`, `inbox`, or
   `outbox` can only belong to a channel; `usage` rows to a provider; a `groups` directory to a

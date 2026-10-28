@@ -11,16 +11,27 @@
 //! [`ToolsetHost`] registers every configured toolset at boot and supervises it ([`lifecycle`]):
 //! starts, restarts with backoff, `idle_stop`, and the tool-list cache ([`cache`]). It also adds,
 //! replaces, and removes one toolset while Giles runs.
+//!
+//! [`ToolsetManager`] ([`manager`]) keeps the toolsets stored in `giles.db` and changes them: it
+//! validates a spec, stores it, and adds, replaces, or removes the toolset in the live
+//! configuration and the host.
 
 mod cache;
 mod grants;
 mod host;
 mod launch;
 mod lifecycle;
+pub mod manager;
 
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod manager_tests;
+
 pub use self::host::ToolsetHost;
 pub use self::launch::{ResolvedProgram, ToolsetLauncher};
 pub use self::lifecycle::{HEALTHY_RESET, RESTART_BACKOFF_MAX, RESTART_BACKOFF_MIN};
+pub use self::manager::{
+    Removed, ToolsetManager, ToolsetManagerError, ToolsetManagerOptions, ToolsetSource, ToolsetView,
+};

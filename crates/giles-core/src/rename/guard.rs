@@ -89,6 +89,9 @@ fn unused_message(unused: &[UnusedName]) -> String {
 ///   `agents/*/groups/<name>`. Stored routes (`routes.channel`) don't count: a route to a removed
 ///   instance is kept on purpose, and must not make adding an instance look like a rename.
 /// - A configured instance is *fresh* if its name has no data.
+/// - Toolsets stored in the database are configured. They are remote, so they never have data
+///   and never match, but data under their name (left by an earlier instance) isn't unused: the
+///   name can't be retired while a stored toolset has it.
 /// - An *unused name* has data, isn't configured, and isn't in `[core] retired_instances`.
 /// - They *match* if the kinds fit: database rows of a channel (sessions, inbox, outbox) belong to
 ///   a channel, `usage` rows to a provider, a `groups` directory to a channel, and a
@@ -109,7 +112,7 @@ pub async fn check_unused_instance_data(
 ) -> Result<(), InstanceDataError> {
     let rows = store.instance_rows().await?;
     let dirs = scan_dirs(root).map_err(|(path, source)| InstanceDataError::Io { path, source })?;
-    let configured = config
+    let mut configured: BTreeMap<String, Instance> = config
         .providers
         .keys()
         .map(|name| {
@@ -133,6 +136,18 @@ pub async fn check_unused_instance_data(
             )
         }))
         .collect();
+    // Toolsets stored in the database are configured too, whether or not they started, so data
+    // under their name isn't an unused name (`[core] retired_instances` can't list a name a stored
+    // toolset has), and a name taken by an instance of `giles.toml` stays that instance's. They're
+    // remote, so never `launched`, and never the target of a rename.
+    for stored in store.toolsets().await? {
+        let taken = configured
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case(&stored.name));
+        if !taken {
+            configured.insert(stored.name, Instance::new(Kind::Toolset, false));
+        }
+    }
     let retired = config
         .core
         .retired_instances

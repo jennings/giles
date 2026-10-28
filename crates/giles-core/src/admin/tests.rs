@@ -611,6 +611,122 @@ async fn a_merged_control_lists_every_host_and_restarts_on_the_one_that_owns_the
 }
 
 #[tokio::test]
+async fn a_failed_stored_toolset_is_listed_though_the_configuration_lacks_it() {
+    // The manager reports a stored toolset that failed validation, which isn't in the live
+    // configuration, so it isn't started. It is listed, and restarting it goes to the manager.
+    let control = Arc::new(FakeControl {
+        plugins: vec![PluginRuntime {
+            instance: InstanceName::new("notes").unwrap(),
+            binary: None,
+            state: PluginRunState::Failed,
+            restarts: 0,
+            last_error: Some("auth.bearer: no secret \"notes-token\" in secrets.toml".into()),
+            version: None,
+            requested_grants: None,
+            tool_count: Some(0),
+        }],
+        ..FakeControl::default()
+    });
+    let h = Harness::start(Fakes {
+        control: Some(control.clone()),
+        ..Fakes::default()
+    })
+    .await;
+    let mut client = h.client().await;
+
+    let listed = client
+        .list_plugins(pb::ListPluginsRequest::default())
+        .await
+        .unwrap()
+        .into_inner()
+        .plugins;
+    let notes = listed.iter().find(|p| p.instance == "notes").unwrap();
+    assert_eq!(notes.kind(), pb::InstanceKind::Toolset);
+    assert_eq!(notes.state(), pb::PluginState::Failed);
+    assert_eq!(
+        notes.last_error.as_deref(),
+        Some("auth.bearer: no secret \"notes-token\" in secrets.toml")
+    );
+    assert_eq!(notes.tool_count, Some(0));
+    // The configured instances are still listed, and `Status` shows it too.
+    assert!(listed.len() > 1, "{listed:?}");
+    let status = client
+        .status(pb::StatusRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(status.plugins.iter().any(|p| p.instance == "notes"));
+
+    assert_eq!(restart(&h, "notes").await, Ok(()));
+    assert_eq!(*control.restarted.lock().unwrap(), ["notes"]);
+    assert_eq!(restart(&h, "ghost").await, Err(Code::NotFound));
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_stored_toolset_that_lost_its_name_does_not_replace_the_instance_that_kept_it() {
+    let runtime = |state, last_error: &str, tool_count| PluginRuntime {
+        instance: InstanceName::new("files").unwrap(),
+        binary: None,
+        state,
+        restarts: 0,
+        last_error: Some(last_error.into()),
+        version: None,
+        requested_grants: None,
+        tool_count,
+    };
+    // The toolset host supervises `[toolset.files]`; the manager reports the stored `files`.
+    let host = Arc::new(FakeControl {
+        plugins: vec![runtime(PluginRunState::Idle, "idle", Some(3))],
+        ..FakeControl::default()
+    });
+    let manager = Arc::new(FakeControl {
+        plugins: vec![runtime(
+            PluginRunState::Failed,
+            "the name is taken by `[toolset.files]` in giles.toml",
+            Some(0),
+        )],
+        ..FakeControl::default()
+    });
+    let merged = Arc::new(MergedControl::new(vec![
+        host.clone() as Arc<dyn PluginControl>,
+        manager.clone() as Arc<dyn PluginControl>,
+    ]));
+    let h = Harness::start(Fakes {
+        control: Some(merged),
+        ..Fakes::default()
+    })
+    .await;
+
+    let listed = h
+        .client()
+        .await
+        .list_plugins(pb::ListPluginsRequest::default())
+        .await
+        .unwrap()
+        .into_inner()
+        .plugins;
+    let files: Vec<_> = listed.iter().filter(|p| p.instance == "files").collect();
+    assert_eq!(files.len(), 2, "{listed:?}");
+    // The configured toolset (listed with the configured instances) has the host's report.
+    assert_eq!(files[0].state(), pb::PluginState::Idle);
+    assert_eq!(files[0].tool_count, Some(3));
+    assert_eq!(files[0].location, "/bin/echo");
+    // The stored one is the unconfigured row, failed, with the reason.
+    assert_eq!(files[1].kind(), pb::InstanceKind::Toolset);
+    assert_eq!(files[1].state(), pb::PluginState::Failed);
+    assert_eq!(
+        files[1].last_error.as_deref(),
+        Some("the name is taken by `[toolset.files]` in giles.toml")
+    );
+    // A restart goes to the first control that has the name.
+    assert_eq!(restart(&h, "files").await, Ok(()));
+    assert_eq!(*host.restarted.lock().unwrap(), ["files"]);
+    assert!(manager.restarted.lock().unwrap().is_empty());
+    h.stop().await;
+}
+
+#[tokio::test]
 async fn sessions_are_listed_and_reset() {
     let h = Harness::start(Fakes::default()).await;
     let key = SessionKey {

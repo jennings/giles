@@ -501,6 +501,36 @@ async fn the_startup_check_does_not_read_the_trash() {
         .unwrap();
 }
 
+/// Toolsets stored in the database are configured instances: data under a stored toolset's name
+/// in `data/plugins/` isn't an unused name, so the check can't refuse to start because of it.
+#[tokio::test]
+async fn stored_toolsets_count_as_configured_in_the_startup_check() {
+    let home = Home::new(
+        "[owner]\nidentities = [\"web:owner\"]\n[channel.web]\n\
+         [toolset.docs]\ncommand = \"/bin/docs\"\n",
+    )
+    .await;
+    // An earlier `notes` left data. `docs` is fresh, so with `notes` unknown to the check that
+    // data looks like what `docs` was renamed from.
+    home.write("data/plugins/notes/state", "1");
+    let refused = check_unused_instance_data(&home.root, &home.load(), &home.store)
+        .await
+        .unwrap_err();
+    assert!(refused.to_string().contains("notes"), "{refused}");
+
+    home.store
+        .toolset_insert(
+            "notes",
+            r#"{ "url": "https://notes.example.com/mcp" }"#,
+            jiff::Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    check_unused_instance_data(&home.root, &home.load(), &home.store)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn renaming_a_toolset_rewrites_the_tool_globs_and_moves_its_directory() {
     let home = Home::populated().await;
@@ -656,6 +686,52 @@ async fn bad_requests_are_refused_without_changing_anything() {
     // A new name that is another configured instance in a different case.
     let err = refused(&home, "libera", "WEB").await;
     assert!(matches!(err, RenameError::CaseCollision { .. }), "{err}");
+}
+
+/// A toolset stored in the database is an instance: its name can't be given to a table of
+/// `giles.toml`, ignoring case, which would take the name from it at the next start.
+#[tokio::test]
+async fn a_new_name_that_a_stored_toolset_has_is_refused() {
+    let home = Home::populated().await;
+    home.store
+        .toolset_insert(
+            "Notes",
+            r#"{ "url": "https://notes.example.com/mcp" }"#,
+            jiff::Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    for new in ["notes", "Notes", "NOTES"] {
+        let err = refused(&home, "libera", new).await;
+        assert!(
+            matches!(&err, RenameError::StoredToolset { existing, .. } if existing == "Notes"),
+            "{new}: {err}"
+        );
+    }
+    // Another name still works.
+    home.rename("libera", "libera-chat").await.unwrap();
+}
+
+/// A toolset stored in the database isn't an instance of `giles.toml`, which is what the command
+/// renames, so it is refused.
+#[tokio::test]
+async fn a_stored_toolset_is_not_renamed_by_the_command() {
+    let home = Home::populated().await;
+    home.store
+        .toolset_insert(
+            "Notes",
+            r#"{ "url": "https://notes.example.com/mcp" }"#,
+            jiff::Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    for old in ["Notes", "notes"] {
+        let err = refused(&home, old, "fresh").await;
+        assert!(
+            matches!(&err, RenameError::StoredToolsetOld { existing, .. } if existing == "Notes"),
+            "{old}: {err}"
+        );
+    }
 }
 
 #[tokio::test]
