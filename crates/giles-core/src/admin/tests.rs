@@ -25,7 +25,10 @@ use crate::config::{Config, InstanceName, KeyPath, LiveConfig, LoadOptions, Tool
 use crate::paths::DataRoot;
 use crate::sandbox::HostReport;
 use crate::sessions::{ChannelStatusRecord, Clock};
-use crate::toolsets::{Removed, ToolsetManagerError, ToolsetSource, ToolsetView};
+use crate::toolsets::{
+    AgentGlobChange, GlobChange, Removed, ToolsetManagerError, ToolsetRenamed, ToolsetSource,
+    ToolsetView,
+};
 
 const CONFIG: &str = r#"
 [owner]
@@ -322,6 +325,76 @@ impl ToolsetAdmin for FakeToolsets {
             Ok(Removed { name: own })
         })
     }
+
+    /// The checks of the real one that the RPC maps, by name: `libera` is taken by a channel of
+    /// giles.toml, `globby` is refused for an agent's glob, `stuck` fails a step that can't be
+    /// undone. Renaming `files` rewrites two globs of the agent `main`.
+    async fn rename(&self, old: &str, new: &str) -> Result<ToolsetRenamed, ToolsetManagerError> {
+        self.with(|state| {
+            state.check()?;
+            let Some(own) = state.stored_name(old) else {
+                return Err(if state.is_file(old) {
+                    ToolsetManagerError::Unsupported
+                } else {
+                    ToolsetManagerError::NotFound
+                });
+            };
+            let invalid = |reason: &str| ToolsetManagerError::Invalid {
+                key: KeyPath::root(),
+                reason: reason.to_owned(),
+            };
+            if own == new {
+                return Err(invalid("the new name is the same as the old one"));
+            }
+            if InstanceName::new(new).is_err() {
+                return Err(invalid("the name can only have letters, digits, and `-`"));
+            }
+            if new == "libera" {
+                return Err(invalid(
+                    "the name is taken by `[channel.libera]` in giles.toml",
+                ));
+            }
+            if state.stored_name(new).is_some_and(|other| other != own) {
+                return Err(ToolsetManagerError::Exists);
+            }
+            if new == "globby" {
+                return Err(ToolsetManagerError::Refused {
+                    reason: "agent `main` has the glob `fi*` in tools, which matches the tools of \
+                             `files` without starting with `files__`"
+                        .to_owned(),
+                });
+            }
+            if new == "stuck" {
+                return Err(ToolsetManagerError::Failed {
+                    step: "rewriting /agents/main/agent.toml".to_owned(),
+                    error: "permission denied".to_owned(),
+                    undo_errors: vec!["put the toolset's row back: busy".to_owned()],
+                });
+            }
+            let (spec, _) = state.stored.remove(&own).unwrap();
+            state.clock += 1;
+            let clock = state.clock;
+            state.stored.insert(new.to_owned(), (spec, clock));
+            let agents = if own == "files" {
+                let glob = |key: &'static str, suffix: &str| GlobChange {
+                    key,
+                    from: format!("files__{suffix}"),
+                    to: format!("{new}__{suffix}"),
+                };
+                vec![AgentGlobChange {
+                    agent: "main".to_owned(),
+                    globs: vec![glob("tools", "*"), glob("ask", "delete")],
+                }]
+            } else {
+                Vec::new()
+            };
+            Ok(ToolsetRenamed {
+                from: own,
+                view: state.view(new),
+                agents,
+            })
+        })
+    }
 }
 
 /// A running admin service in a temporary data root.
@@ -527,6 +600,17 @@ where
                 client
                     .remove_toolset(pb::RemoveToolsetRequest {
                         name: "files".into(),
+                    })
+                    .await,
+            ),
+        ),
+        (
+            "RenameToolset",
+            code(
+                client
+                    .rename_toolset(pb::RenameToolsetRequest {
+                        old: "files".into(),
+                        new: "docs".into(),
                     })
                     .await,
             ),
@@ -1602,6 +1686,15 @@ async fn a_set_toolset_that_races_with_a_create_says_it_exists_and_a_database_fa
     ] {
         assert_eq!(code, Code::Internal);
     }
+    let err = client
+        .rename_toolset(pb::RenameToolsetRequest {
+            old: "files".into(),
+            new: "docs".into(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::Internal);
+    toolsets.with(|state| state.broken = false);
     h.stop().await;
 }
 
@@ -1629,6 +1722,131 @@ async fn remove_toolset_removes_a_stored_toolset() {
     h.stop().await;
 }
 
+fn rename_request(old: &str, new: &str) -> pb::RenameToolsetRequest {
+    pb::RenameToolsetRequest {
+        old: old.into(),
+        new: new.into(),
+    }
+}
+
+#[tokio::test]
+async fn rename_toolset_renames_a_stored_toolset_and_lists_the_globs_it_rewrote() {
+    let toolsets = FakeToolsets::new(&[("files", FILES_SPEC), ("notes", FILES_SPEC)], &[]);
+    let h = Harness::start(toolset_with(&toolsets)).await;
+    let mut client = h.client().await;
+
+    // The old name matches ignoring case.
+    let renamed = client
+        .rename_toolset(rename_request("FILES", "docs"))
+        .await
+        .unwrap()
+        .into_inner();
+    // The name as stored, not as asked for.
+    assert_eq!(renamed.old, "files");
+    let toolset = renamed.toolset.unwrap();
+    assert_eq!(toolset.name, "docs");
+    assert_eq!(toolset.source(), pb::ToolsetSource::Stored);
+    assert_eq!(
+        toolset.updated_at,
+        Some(timestamp_to_proto(at(toolsets.stored("docs").unwrap().1)))
+    );
+    assert_eq!(toolset.failure, None);
+    assert_eq!(
+        renamed.agents,
+        [pb::AgentGlobChange {
+            agent: "main".into(),
+            globs: vec![
+                pb::GlobChange {
+                    key: "tools".into(),
+                    from: "files__*".into(),
+                    to: "docs__*".into(),
+                },
+                pb::GlobChange {
+                    key: "ask".into(),
+                    from: "files__delete".into(),
+                    to: "docs__delete".into(),
+                },
+            ],
+        }]
+    );
+    assert_eq!(toolsets.stored("files"), None);
+    assert_eq!(toolsets.stored("docs").unwrap().0, spec(FILES_SPEC));
+
+    // No agent names it: nothing is listed.
+    let renamed = client
+        .rename_toolset(rename_request("notes", "memos"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(renamed.old, "notes");
+    assert_eq!(renamed.toolset.unwrap().name, "memos");
+    assert!(renamed.agents.is_empty());
+
+    // Another case of the same name is a rename too.
+    let renamed = client
+        .rename_toolset(rename_request("memos", "Memos"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(renamed.old, "memos");
+    assert_eq!(renamed.toolset.unwrap().name, "Memos");
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn rename_toolset_answers_each_refusal_with_its_status() {
+    let toolsets = FakeToolsets::new(&[("files", FILES_SPEC), ("notes", FILES_SPEC)], &["github"]);
+    let h = Harness::start(toolset_with(&toolsets)).await;
+    let mut client = h.client().await;
+    let mut rename = async |old: &str, new: &str| {
+        client
+            .rename_toolset(rename_request(old, new))
+            .await
+            .unwrap_err()
+    };
+
+    let err = rename("ghost", "docs").await;
+    assert_eq!(err.code(), Code::NotFound);
+    assert!(err.message().contains("`ghost`"), "{}", err.message());
+
+    // The name that is taken is the new one.
+    let err = rename("files", "NOTES").await;
+    assert_eq!(err.code(), Code::AlreadyExists);
+    assert!(err.message().contains("`NOTES`"), "{}", err.message());
+
+    for (new, reason) in [
+        ("files", "the same"),
+        ("not a name", "letters, digits"),
+        ("libera", "`[channel.libera]`"),
+    ] {
+        let err = rename("files", new).await;
+        assert_eq!(err.code(), Code::InvalidArgument, "{new}");
+        assert!(err.message().contains(reason), "{new}: {}", err.message());
+    }
+
+    // A glob that can't be rewritten is named.
+    let err = rename("files", "globby").await;
+    assert_eq!(err.code(), Code::InvalidArgument);
+    assert!(err.message().contains("`fi*`"), "{}", err.message());
+
+    let err = rename("github", "code").await;
+    assert_eq!(err.code(), Code::FailedPrecondition);
+    assert!(err.message().contains("giles.toml"), "{}", err.message());
+
+    // A failed step says which, why, and what could not be undone.
+    let err = rename("files", "stuck").await;
+    assert_eq!(err.code(), Code::Internal);
+    for part in [
+        "rewriting /agents/main/agent.toml",
+        "permission denied",
+        "put the toolset's row back: busy",
+    ] {
+        assert!(err.message().contains(part), "{part}: {}", err.message());
+    }
+    assert_eq!(toolsets.stored("files").unwrap().0, spec(FILES_SPEC));
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn toolset_rpcs_are_unavailable_without_a_toolset_manager() {
     let h = Harness::start(Fakes::default()).await;
@@ -1645,6 +1863,7 @@ async fn toolset_rpcs_are_unavailable_without_a_toolset_manager() {
             ("GetToolset", Code::Unavailable),
             ("SetToolset", Code::Unavailable),
             ("RemoveToolset", Code::Unavailable),
+            ("RenameToolset", Code::Unavailable),
         ]
     );
     h.stop().await;

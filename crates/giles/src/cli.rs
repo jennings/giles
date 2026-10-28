@@ -106,6 +106,8 @@ pub enum ToolsetCommand {
     Set(SetToolsetArgs),
     /// Remove a stored toolset.
     Remove(ToolsetNameArgs),
+    /// Rename a stored toolset, with its tool prefix and the agents' globs.
+    Rename(RenameToolsetArgs),
     /// Restart a toolset's server now.
     Restart(ToolsetNameArgs),
 }
@@ -116,6 +118,18 @@ pub struct ToolsetNameArgs {
     /// The toolset name.
     #[arg(value_name = "NAME")]
     pub name: String,
+}
+
+/// Arguments to `giles toolset rename`.
+#[derive(Debug, Args)]
+pub struct RenameToolsetArgs {
+    /// The toolset's name now.
+    #[arg(value_name = "OLD")]
+    pub old: String,
+
+    /// The new name: letters, digits, and `-`.
+    #[arg(value_name = "NEW")]
+    pub new: String,
 }
 
 /// Arguments to `giles toolset set`.
@@ -281,6 +295,10 @@ mod tests {
             toolset(&["giles", "toolset", "restart", "files"]),
             ToolsetCommand::Restart(args) if args.name == "files"
         ));
+        assert!(matches!(
+            toolset(&["giles", "toolset", "rename", "files", "docs"]),
+            ToolsetCommand::Rename(args) if args.old == "files" && args.new == "docs"
+        ));
         let ToolsetCommand::Set(args) =
             toolset(&["giles", "toolset", "set", "files", "--file", "-"])
         else {
@@ -300,6 +318,9 @@ mod tests {
             &["giles", "toolset", "set", "--file", "x.toml"],
             &["giles", "toolset", "remove"],
             &["giles", "toolset", "restart"],
+            &["giles", "toolset", "rename"],
+            &["giles", "toolset", "rename", "files"],
+            &["giles", "toolset", "rename", "files", "docs", "more"],
         ] {
             assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
         }

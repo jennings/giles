@@ -93,7 +93,7 @@ need the built-in `web` channel.
 
 ## `giles toolset`
 
-Adds, changes, and removes the remote MCP servers your agents use as
+Adds, changes, renames, and removes the remote MCP servers your agents use as
 [toolsets](configuration.md#toolsets), with no restart. The [MCP servers](web.md#mcp-servers) admin
 page shows the same toolsets.
 
@@ -103,6 +103,8 @@ page shows the same toolsets.
 - `giles toolset set <name> --file <spec.toml>` creates the toolset, or replaces the spec of the one
   with that name. Give `-` as the file to read the spec from standard input.
 - `giles toolset remove <name>` stops a stored toolset and removes it.
+- `giles toolset rename <old> <new>` renames a stored toolset and its tool names. Giles rewrites the
+  agents' `tools` and `ask` globs to match.
 - `giles toolset restart <name>` restarts the toolset's server now, as the **Restart** button on the
   admin pages does.
 
@@ -160,8 +162,35 @@ changes the toolset after your `show`, `set` refuses with `was changed since it 
 To make a new toolset from the spec of another, delete that line first. Without it, `set` creates
 the toolset, or replaces the spec of one that has the name.
 
-A toolset configured in `giles.toml` is listed, and `restart` works on it. `show`, `set`, and
-`remove` refuse it. Change it in `giles.toml`.
+A toolset configured in `giles.toml` is listed, and `restart` works on it. `show`, `set`, `remove`,
+and `rename` refuse it. Change it in `giles.toml`.
+
+### Rename a toolset
+
+A toolset's name is the prefix of its tools (`files__read`), so rename it with `rename` instead of
+removing it and setting it again. Each agent's `tools` and `ask` globs that start with `<old>__`
+change to `<new>__`, and the command lists them:
+
+```console
+$ giles toolset rename files documents
+Renamed toolset `files` to `documents`.
+  agent jeeves: tools `files__*` -> `documents__*`
+  agent jeeves: ask `files__delete` -> `documents__delete`
+Sessions that are running keep the old tool names; new sessions use the new ones.
+```
+
+A session that is running keeps the old tool names, and its calls to them fail with
+`tool unavailable`. New sessions use the new names. The [admin pages](web.md#admin-pages) rename a
+toolset too.
+
+Names use only letters, digits, and `-`. The command changes nothing and prints the reason if:
+
+- `<new>` is the name of another toolset or instance, or is retired.
+- An agent has a glob that matches the toolset's tools without starting with `<old>__`, such as
+  `files*`. The error lists them. Change them (to `files__*`, say) and run the command again.
+
+If a step fails, the command undoes the earlier ones and says what failed. If undoing a step fails
+too, the error lists what to fix by hand.
 
 ## `giles backup <dir>`
 
@@ -219,6 +248,8 @@ If the table has no `component` key, the command adds `component = "<old>"`, so 
 running the same component. You don't need to change `[owner] identities`, because they're named
 after the network, not the instance. [Instance rename](../technical/instance-rename.md) lists
 everything the command touches.
+
+To rename a stored toolset while Giles runs, use [`giles toolset rename`](#rename-a-toolset).
 
 Names use only letters, digits, and `-`. `<new>` must not differ from another instance's name only
 in case. The command changes nothing and refuses if:

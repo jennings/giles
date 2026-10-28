@@ -60,12 +60,13 @@ token (after the socket answers, so it's the running core's). A missing socket, 
 | `GetToolset`      | `ToolsetAdmin::get`: one toolset, the name matched ignoring case. `NOT_FOUND` if there is none. |
 | `SetToolset`      | Creates a stored toolset or replaces the spec of the one with that name: `ToolsetAdmin::update`, or `add` when there is no such toolset and the call has no `expected_updated_at`. |
 | `RemoveToolset`   | `ToolsetAdmin::remove`: deletes a stored toolset and stops it. Answers the name the toolset has. |
+| `RenameToolset`   | `ToolsetAdmin::rename`: renames a stored toolset and the globs of the agents that name its tools, with no restart. Answers the toolset under its new name (its `failure` says why it didn't start under it) and the agents whose globs were rewritten, each with its `tools` and `ask` globs before and after. See [Toolset RPCs](#toolset-rpcs). |
 
 Store failures are logged and answered with `INTERNAL`.
 
 ### Toolset RPCs
 
-The four toolset RPCs call `ToolsetManager` ([Toolsets](toolsets.md#stored-toolsets)) through the
+The five toolset RPCs call `ToolsetManager` ([Toolsets](toolsets.md#stored-toolsets)) through the
 `ToolsetAdmin` trait, so validation, the live change, and the stored data are the manager's. They
 answer `UNAVAILABLE` when `AdminOptions::toolsets` is `None`. `RestartPlugin` is the restart: the
 manager is part of the `MergedControl` that handles it.
@@ -98,7 +99,16 @@ The manager stores only remote servers. A spec without `url` (a stdio server, wh
 | The toolset changed since `expected_updated_at` (`Stale`)   | `FAILED_PRECONDITION`                                                  |
 | The name is a toolset of `giles.toml` (`Unsupported`)       | `FAILED_PRECONDITION`                                                  |
 | The database failed (`Store`)                               | `INTERNAL`, logged                                                     |
+| `RenameToolset` refuses the new name, or an agent's globs (`Invalid`, `Refused`) | `INVALID_ARGUMENT`. The message is the manager's reason, which names each glob that can't be rewritten. |
+| `RenameToolset` finds another stored toolset with the new name (`Exists`) | `ALREADY_EXISTS`, naming the new name                                  |
+| A step of `RenameToolset` failed (`Failed`)                 | `INTERNAL`, logged. The message has the step, why, and what the undo could not put back. |
 | No toolset manager                                          | `UNAVAILABLE`                                                          |
+
+`RenameToolset` takes `old` and `new`. `old` matches ignoring case, and `NOT_FOUND` and
+`FAILED_PRECONDITION` (a toolset of `giles.toml`) are about it. The manager's checks and steps, and
+the undo of a failed step, are in [Toolsets](toolsets.md#stored-toolsets). The response's agents are
+the manager's `ToolsetRenamed::agents`, ordered by agent id, and its `old` is
+`ToolsetRenamed::from`, the name the toolset had as stored.
 
 ### `giles toolset`
 
@@ -109,6 +119,12 @@ made meanwhile. A file without the comment replaces whatever is there, or create
 the daemon answers `NOT_FOUND` to a call that sent a time (a copy of another toolset's `show`
 output), `set` says to remove the comment. `restart` looks the toolset up with `GetToolset` and
 restarts it under the name that answers, so it restarts only toolsets and gets the spelling right.
+
+`rename` prints the old and the new name as the daemon stored them (`RenameToolsetResponse.old` and
+`toolset.name`, which can differ in case from the arguments), each glob of each agent that was
+rewritten, and says that running sessions keep the old tool names. A toolset that couldn't start
+under its new name is reported on standard error, since the rename itself is done. A refusal is
+printed with the daemon's reason.
 
 ### Plugin instances
 
@@ -165,6 +181,7 @@ pub trait ToolsetAdmin: Send + Sync {          // async, through `async_trait`
     async fn update(&self, name: &str, spec: &ToolsetSpec, expected_updated_at: Option<Timestamp>)
         -> Result<ToolsetView, ToolsetManagerError>;
     async fn remove(&self, name: &str) -> Result<Removed, ToolsetManagerError>;
+    async fn rename(&self, old: &str, new: &str) -> Result<ToolsetRenamed, ToolsetManagerError>;
 }                                              // Implemented by `ToolsetManager`.
 ```
 

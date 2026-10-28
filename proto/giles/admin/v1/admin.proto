@@ -46,6 +46,15 @@ service AdminService {
   // Removes a stored toolset. NOT_FOUND if there is none; FAILED_PRECONDITION if it is configured
   // in giles.toml.
   rpc RemoveToolset(RemoveToolsetRequest) returns (RemoveToolsetResponse);
+  // Renames a stored toolset, with its tool prefix and the globs of every agent that names it,
+  // with no Giles restart. Running sessions keep the old tool names. Status codes: NOT_FOUND (no
+  // such toolset), ALREADY_EXISTS (another stored toolset has the new name), INVALID_ARGUMENT (the
+  // new name is the same, invalid, reserved, taken by a giles.toml instance, or retired; or an
+  // agent has globs that match the toolset's tools without starting with "<old>__", which the
+  // message lists), FAILED_PRECONDITION (the toolset is configured in giles.toml), INTERNAL (a step
+  // failed: the message says which, and what could not be undone), and UNAVAILABLE (no toolset
+  // management).
+  rpc RenameToolset(RenameToolsetRequest) returns (RenameToolsetResponse);
 }
 
 message StatusRequest {}
@@ -310,8 +319,8 @@ message Toolset {
 // Where a toolset is configured.
 enum ToolsetSource {
   TOOLSET_SOURCE_UNSPECIFIED = 0;
-  // A remote server in the database, made in the web UI or with SetToolset. Can be changed and
-  // removed.
+  // A remote server in the database, made in the web UI or with SetToolset. Can be changed,
+  // renamed, and removed.
   TOOLSET_SOURCE_STORED = 1;
   // A [toolset.<name>] table of giles.toml, which can only be changed there.
   TOOLSET_SOURCE_GILES_TOML = 2;
@@ -353,4 +362,39 @@ message RemoveToolsetRequest {
 message RemoveToolsetResponse {
   // The toolset's name as it was stored, which can differ in case from the request's.
   string name = 1;
+}
+
+message RenameToolsetRequest {
+  // The toolset's name now, ignoring ASCII case.
+  string old = 1;
+  // The name to give it. The same name in another case is allowed.
+  string new = 2;
+}
+
+message RenameToolsetResponse {
+  // The toolset under its new name. Its failure is set if it could not be started under that
+  // name: the rename is done anyway.
+  Toolset toolset = 1;
+  // The agents whose tools or ask globs were rewritten, ordered by agent id.
+  repeated AgentGlobChange agents = 2;
+  // The toolset's name as it was stored, which can differ in case from the request's old.
+  string old = 3;
+}
+
+// The globs of one agent that a toolset rename rewrote.
+message AgentGlobChange {
+  // The agent's id.
+  string agent = 1;
+  // The globs that changed, tools before ask, in the order of the agent's file.
+  repeated GlobChange globs = 2;
+}
+
+// One tool glob of an agent, before and after a toolset rename.
+message GlobChange {
+  // The list the glob is in: "tools" or "ask".
+  string key = 1;
+  // The glob as it was written, starting with "<old>__".
+  string from = 2;
+  // The glob now, starting with "<new>__".
+  string to = 3;
 }
