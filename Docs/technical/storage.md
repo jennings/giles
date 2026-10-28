@@ -137,11 +137,11 @@ rules apply, and `before_migrate` receives that file's plan.
 - Row ids are opaque newtypes (`SessionId`, ...) over SQLite rowids.
 - Agent, user, channel instance, and conversation ids are stored as their string forms.
 
-## Schema (version 3)
+## Schema (version 4)
 
 The files in `crates/giles-store/src/migrations/` are the authority (`0001_initial.sql` has every
-table but `blobs` and `routes`, which `0002_blobs.sql` and `0003_routes.sql` add); this is their
-outline.
+table but `blobs`, `routes`, and `toolsets`, which `0002_blobs.sql`, `0003_routes.sql`, and
+`0004_toolsets.sql` add); this is their outline.
 
 | Table          | Columns and rules                                                                    |
 | -------------- | ------------------------------------------------------------------------------------ |
@@ -158,6 +158,7 @@ outline.
 | `blobs`        | `id` (hex SHA-256), `size`, `media_type`, `name`, `created_at`, `stored_at` (latest put). |
 | `routes`       | The ordered routing rules: `position` (dense, 0 first), `channel`, `kind` (`direct`, `group`), `conversation` (each null for any), `agent`. Ids are `AUTOINCREMENT`, never reused. |
 | `routes_imported` | One row, once the `[[routes]]` of `giles.toml` were imported: `at`.                  |
+| `toolsets`     | The MCP toolsets the web UI manages: `name` (primary key, `NOCASE`), `spec` (JSON text), `created_at`, `updated_at`. |
 
 `identities` and `pairings` are deferred with multi-user support (PLAN 1.1, D49) and don't exist
 yet.
@@ -478,6 +479,39 @@ has no row it inserts one, and stores the routes in order unless routes exist al
 how many it stored. If the row exists it does nothing and returns `None`, even when `routes` holds
 something new and even when every route has since been deleted: the marker, not the table being
 empty, says the import happened. A config with no `[[routes]]` still records the import.
+
+## Toolsets
+
+`toolsets` holds the MCP toolsets that the web UI creates and edits: one row per toolset, `spec`
+being the JSON of its definition. The store keeps the spec as the text it was given and checks
+nothing about it; parsing it and validating it (the command, the sandbox, the secrets) is the core's
+business (`giles_core::config`), done before it writes. `name` is the primary key with
+`COLLATE NOCASE`, so `Files` and `files` can't both exist and every lookup by name ignores ASCII
+case; the row keeps the spelling it was written with. Because the table is in `giles.db`, a
+[backup](backups.md) covers the toolsets with no extra step, and a restore brings them back.
+
+| Method                                         | Contract                                                      |
+| ---------------------------------------------- | ------------------------------------------------------------- |
+| `toolsets`                                     | Every toolset, ordered by lower-cased name, then by name.     |
+| `toolset_insert(name, spec, now)`              | Adds a toolset; `Error::ToolsetExists` if the name is taken in any case. |
+| `toolset_update(name, spec, expected_updated_at, now)` | Replaces the spec and sets `updated_at`; `Error::NoSuchToolset` if absent, `Error::StaleToolset` on a stale expectation. |
+| `toolset_remove(name)`                         | Deletes a toolset; `false` if there is none.                  |
+| `toolset_rename(old, new, now)`                | Renames a row, keeping `created_at`; `Error::NoSuchToolset` if `old` is absent, `Error::ToolsetExists` if `new` is another toolset's name. A change of case alone is allowed. |
+
+All of them return the stored row (`StoredToolset`: name, spec, `created_at`, `updated_at`) except
+`toolsets` and `toolset_remove`. `toolset_insert`, `toolset_update`, and `toolset_rename` take a
+`now` as their last argument, like the other methods that depend on the current time. Insert stamps
+both times with it. Update and rename stamp `updated_at` with it too, but never earlier than a
+millisecond past the stored value, so two changes in one millisecond, or after the clock stepped
+back, are told apart.
+
+`updated_at` is the stale-update token, as it is for memories. A caller that loaded a toolset passes
+the `updated_at` it saw; if the stored value differs, someone changed the toolset in between, and
+`toolset_update` fails with `Error::StaleToolset` without changing anything. The compare and the
+write are one transaction. `None` skips the check, for a caller that means to overwrite. A rename
+also moves `updated_at`, so a form loaded before a rename is stale too (and its name no longer finds
+the row). The absence check comes first: a missing toolset is `NoSuchToolset` whatever else is
+wrong.
 
 ## Blob store
 

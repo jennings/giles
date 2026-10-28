@@ -32,6 +32,7 @@ mod routes;
 mod search;
 mod sessions;
 mod time;
+mod toolsets;
 mod usage;
 mod web_sessions;
 
@@ -57,6 +58,7 @@ pub use outbox::{NewOutbox, OutboxEntry, OutboxId};
 pub use routes::{NewRoute, RouteId, StoredRoute};
 pub use search::{SNIPPET_ELLIPSIS, SNIPPET_END, SNIPPET_START, SearchHit, SearchScope};
 pub use sessions::{Session, SessionId, SessionKey, SessionKind, SessionSummary};
+pub use toolsets::StoredToolset;
 pub use usage::{AgentUsage, ModelUsage, UsageRecord};
 pub use web_sessions::WebSession;
 
