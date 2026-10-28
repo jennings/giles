@@ -17,6 +17,7 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::approvals::{ApprovalBoard, UNATTENDED_RESULT};
+use crate::config::test_toolsets::add_toolsets;
 use crate::config::{InstanceName, LoadOptions};
 use crate::core_tools::{CoreCall, CoreTool};
 use crate::identity::owner;
@@ -163,14 +164,11 @@ impl Setup {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("giles.toml"),
-            "[owner]\nidentities = [\"fake:owner\"]\n\
-             [toolset.par]\nurl = \"https://example.com/mcp\"\nparallel = true\n\
-             [toolset.serial]\nurl = \"https://example.com/mcp\"\ndeadline = \"1s\"\n\
-             [toolset.ghost]\nurl = \"https://example.com/mcp\"\nparallel = true\n",
+            "[owner]\nidentities = [\"fake:owner\"]\n",
         )
         .unwrap();
         let root = DataRoot::new(dir.path(), Path::new("/tmp")).unwrap();
-        let config = Config::load_with(
+        let mut config = Config::load_with(
             &root,
             &LoadOptions {
                 env: &|_| None,
@@ -179,6 +177,24 @@ impl Setup {
             },
         )
         .unwrap_or_else(|e| panic!("{e}"));
+        add_toolsets(
+            &root,
+            &mut config,
+            [
+                (
+                    "par",
+                    "url = \"https://example.com/mcp\"\nparallel = true\n",
+                ),
+                (
+                    "serial",
+                    "url = \"https://example.com/mcp\"\ndeadline = \"1s\"\n",
+                ),
+                (
+                    "ghost",
+                    "url = \"https://example.com/mcp\"\nparallel = true\n",
+                ),
+            ],
+        );
         let registry = Arc::new(Registry::new(root, Arc::new(config)));
         let probe = Arc::new(Probe::default());
         for name in ["par", "serial"] {

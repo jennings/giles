@@ -32,7 +32,7 @@ config = { server = "irc.libera.chat" }
 [channel.web]
 
 [toolset.github]
-url = "https://example.com/mcp"
+command = "/bin/github"
 
 [[routes]]
 channel = "libera"
@@ -805,6 +805,45 @@ async fn a_stored_toolset_cannot_take_the_name_of_another_instance() {
     assert_eq!(home.store.toolsets().await.unwrap(), before);
 }
 
+/// `giles.toml` ignores a `[toolset.<name>]` with `url`, and so does this command: the stored
+/// toolset of that name is the one renamed, and the table's name is free.
+#[tokio::test]
+async fn an_ignored_remote_toolset_table_is_not_an_instance() {
+    let with_ignored = format!(
+        "{GILES_TOML}[toolset.notes]\nurl = \"https://notes.example.com/mcp\"\n\
+         [toolset.memos]\nurl = \"https://memos.example.com/mcp\"\n"
+    );
+    let home = Home::new(&with_ignored).await;
+    home.write("agents/jeeves/agent.toml", NOTES_AGENT);
+    add_stored(&home, "notes", NOTES).await;
+
+    // The stored toolset is renamed, to the name another ignored table has, and `giles.toml`
+    // stays as it is.
+    let report = home.rename("notes", "memos").await.unwrap();
+    assert!(report.stored_toolset);
+    assert!(!report.config_table);
+    assert_eq!(stored_names(&home).await, ["memos"]);
+    assert_eq!(home.read("giles.toml"), with_ignored);
+    assert_eq!(
+        home.read("agents/jeeves/agent.toml"),
+        NOTES_AGENT.replace("notes__", "memos__")
+    );
+
+    // Without a stored toolset, the name of an ignored table is no instance.
+    let err = refused(&home, "notes", "docs").await;
+    assert!(matches!(err, RenameError::UnknownInstance { .. }), "{err}");
+
+    // A table of `giles.toml` can't be renamed onto an ignored table: one would overwrite the
+    // other.
+    let err = refused(&home, "github", "notes").await;
+    assert!(
+        matches!(&err, RenameError::Edit { reason, .. }
+            if reason.contains("already has a [toolset.notes] table")),
+        "{err}"
+    );
+    assert_eq!(home.read("giles.toml"), with_ignored);
+}
+
 /// The stored name is found in any case, and the case of a name can change.
 #[tokio::test]
 async fn a_stored_toolset_is_found_in_any_case_and_its_name_can_change_case() {
@@ -1526,18 +1565,18 @@ mod startup_check {
         // referenced.
         home.write(
             "giles.toml",
-            "[owner]\nidentities = [\"web:owner\"]\n[channel.web]\n[provider.anthropic]\n[provider.ollama]\ncomponent = \"openai\"\n[toolset.github]\nurl = \"https://example.com/mcp\"\n",
+            "[owner]\nidentities = [\"web:owner\"]\n[channel.web]\n[provider.anthropic]\n[provider.ollama]\ncomponent = \"openai\"\n[toolset.github]\ncommand = \"/bin/github\"\n",
         );
         check(&home).await.unwrap();
     }
 
     #[tokio::test]
     async fn a_remote_toolset_is_never_taken_for_a_renamed_plugin() {
-        // `github` is remote (`url`): it never has rows or a data directory, so it always looks
+        // A stored toolset is remote: it never has rows or a data directory, so it always looks
         // new. The directory of a stdio toolset that was removed must not make the check
         // refuse to start, and the check must not suggest moving that state onto `github`.
-        let remote = "[owner]\nidentities = [\"web:owner\"]\n[toolset.github]\nurl = \"https://example.com/mcp\"\n";
-        let home = Home::new(remote).await;
+        let home = Home::new("[owner]\nidentities = [\"web:owner\"]\n").await;
+        add_stored(&home, "github", r#"{ "url": "https://example.com/mcp" }"#).await;
         home.write("data/plugins/files/state.json", "{}");
         check(&home).await.unwrap();
 

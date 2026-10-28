@@ -4,6 +4,9 @@
 //! turn-control, approval, and memory-tool tests, on paused Tokio time.
 #![allow(dead_code)] // Each test file uses a part of it.
 
+#[path = "stored_toolsets.rs"]
+mod stored_toolsets;
+
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -26,6 +29,7 @@ use giles_types::{
     StopReason, ToolCall, ToolCallEvent, ToolCallHandle, ToolSpec, Toolset, Usage,
 };
 use serde_json::{Value, json};
+use stored_toolsets::add_toolsets;
 use tempfile::TempDir;
 use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
@@ -297,9 +301,6 @@ impl Daemon {
             "[owner]\nidentities = [\"fake:owner\"]\ntimezone = \"Europe/London\"\n\
              [provider.anthropic]\nconfig = { api_key = \"sk-test\" }\n\
              [channel.fake]\n\
-             [toolset.met]\nurl = \"https://example.com/mcp\"\n\
-             [toolset.par]\nurl = \"https://example.com/mcp\"\nparallel = true\n\
-             [toolset.slow]\nurl = \"https://example.com/mcp\"\ndeadline = \"1s\"\n\
              [[routes]]\nagent = \"jeeves\"\n",
         );
         write(
@@ -309,7 +310,7 @@ impl Daemon {
                  tools = [\"met__*\", \"par__*\", \"slow__*\", \"memory*\"]\n{agent_toml}"
             ),
         );
-        let config = Config::load_with(
+        let mut config = Config::load_with(
             &root,
             &LoadOptions {
                 env: &|_| None,
@@ -318,6 +319,21 @@ impl Daemon {
             },
         )
         .unwrap_or_else(|e| panic!("{e}"));
+        add_toolsets(
+            &root,
+            &mut config,
+            &[
+                ("met", "url = \"https://example.com/mcp\"\n"),
+                (
+                    "par",
+                    "url = \"https://example.com/mcp\"\nparallel = true\n",
+                ),
+                (
+                    "slow",
+                    "url = \"https://example.com/mcp\"\ndeadline = \"1s\"\n",
+                ),
+            ],
+        );
         let runtime = Runtime::start(root, Arc::new(config)).await.unwrap();
 
         let name = |n: &str| InstanceName::new(n).unwrap();

@@ -442,16 +442,16 @@ than the admin service: there are no agent RPCs yet (PLAN section 8.7).
   (`agents::split_list`).
 - Tools are chosen with checkboxes (`agents::tool_picker`), shared by the create and edit forms.
   `agent.toml` keeps `tools` as a list of globs; a box stands for one entry: a core tool's name
-  (`CORE_TOOLS`, with a one-line note each) or `<instance>__*` for each `[toolset.<instance>]` in
-  the running configuration. A box is posted as the field `tool:<entry>` (browsers send only ticked
-  boxes, so the forms read them through a flattened map). Any other entry is the "Other tools" text
-  (`tools`): `split` separates the two when the form is filled in, `compose` joins them on save
-  (boxes in the picker's order, then the text as written, without repeats), so a hand-written
-  `github__create_*` or `memory*` survives a save. An entry in the text that covers a box
-  (`glob::matches(entry, <box's entry>)`; for a toolset the probe is `<instance>__*` itself, so `*`
-  covers it and `github__create_*` doesn't) shows the box ticked and disabled, and `compose` leaves
-  that box out. A posted `tool:` field that no box stands for is ignored. Saving rewrites `tools`
-  only if the resulting list differs from the file's.
+  (`CORE_TOOLS`, with a one-line note each) or `<instance>__*` for each toolset in the running
+  configuration, of `giles.toml` or stored. A box is posted as the field `tool:<entry>` (browsers
+  send only ticked boxes, so the forms read them through a flattened map). Any other entry is the
+  "Other tools" text (`tools`): `split` separates the two when the form is filled in, `compose`
+  joins them on save (boxes in the picker's order, then the text as written, without repeats), so a
+  hand-written `github__create_*` or `memory*` survives a save. An entry in the text that covers a
+  box (`glob::matches(entry, <box's entry>)`; for a toolset the probe is `<instance>__*` itself, so
+  `*` covers it and `github__create_*` doesn't) shows the box ticked and disabled, and `compose`
+  leaves that box out. A posted `tool:` field that no box stands for is ignored. Saving rewrites
+  `tools` only if the resulting list differs from the file's.
 - The form asks for the name before the id. The id is derived from the name by
   `agents::agent_id_from_name`, a pure function: lowercase (`str::to_lowercase`), each space to `-`,
   every other character outside `a-z`, `0-9`, `-` removed. Nothing is trimmed or collapsed, ids are
@@ -742,13 +742,13 @@ for what `ListPlugins` knows (state, last error, and tool count, built by the pl
 | `POST /admin/mcp-servers/<name>/restart` | `RestartPlugin`, then 303 to the page                   |
 
 - **The list** has one row per `ToolsetManager::list` entry, with Edit and Remove for stored
-  toolsets only, which are remote servers. A toolset of `giles.toml` (`ToolsetSource::File`), such
-  as a stdio server, is listed with how it runs (from the running configuration), marked, and
-  read-only, and a page for editing, renaming, or removing one is a 409 with the manager's
-  `Unsupported` message. The state and tool count come from `ListPlugins` by instance name; a stored
-  toolset that failed to start is there as `Failed` with its reason, because `serve` merges the
-  manager into the admin service's `PluginControl`. Where the service has nothing, the row shows the
-  manager's `failure`.
+  toolsets only, which are remote servers. A toolset of `giles.toml` (`ToolsetSource::File`), a
+  stdio server, is listed with how it runs (from the running configuration), marked, and read-only,
+  and a page for editing, renaming, or removing one is a 409 with the manager's `Unsupported`
+  message. The state and tool count come from `ListPlugins` by instance name; a stored toolset that
+  failed to start is there as `Failed` with its reason, because `serve` merges the manager into the
+  admin service's `PluginControl`. Where the service has nothing, the row shows the manager's
+  `failure`.
 - **The toolset page** shows the settings from the stored spec (a toolset of `giles.toml` has no
   spec to show), the state, the tools new conversations get from the registry's tool index (prefixed
   name and description), and a Restart form when the service knows the instance. The restart route

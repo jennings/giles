@@ -25,6 +25,7 @@ use super::cache::{CacheKey, ToolCache};
 use super::host::ToolsetHost;
 use super::lifecycle::{Connection, Connector};
 use crate::admin::{PluginControl, PluginRunState, PluginRuntime};
+use crate::config::test_toolsets::add_toolsets;
 use crate::config::{Config, InstanceName, LoadOptions, ToolsetInstance};
 use crate::paths::DataRoot;
 use crate::registry::Registry;
@@ -227,6 +228,16 @@ struct Setup {
 
 impl Setup {
     fn new(toolsets: &str) -> Self {
+        Self::build(toolsets, None)
+    }
+
+    /// `toolsets` in `giles.toml`, and the stored toolset `remote` at [`REMOTE_URL`], with the
+    /// keys `more` besides `url`.
+    fn with_remote(toolsets: &str, more: &str) -> Self {
+        Self::build(toolsets, Some(more))
+    }
+
+    fn build(toolsets: &str, remote: Option<&str>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = DataRoot::new(dir.path(), Path::new("/tmp")).unwrap();
         std::fs::write(
@@ -234,7 +245,7 @@ impl Setup {
             format!("[owner]\nidentities = [\"web:owner\"]\n{toolsets}"),
         )
         .unwrap();
-        let config = Config::load_with(
+        let mut config = Config::load_with(
             &root,
             &LoadOptions {
                 env: &|_| None,
@@ -243,6 +254,13 @@ impl Setup {
             },
         )
         .unwrap_or_else(|e| panic!("{e}"));
+        if let Some(more) = remote {
+            add_toolsets(
+                &root,
+                &mut config,
+                [("remote", format!("url = {REMOTE_URL:?}\n{more}"))],
+            );
+        }
         let registry = Arc::new(Registry::new(root.clone(), Arc::new(config)));
         Self {
             _dir: dir,
@@ -322,11 +340,11 @@ async fn advance(by: Duration) {
 }
 
 const FILES: &str = "\n[toolset.files]\ncommand = \"/nonexistent/files\"\nidle_stop = \"1m\"\n";
-const REMOTE: &str = "\n[toolset.remote]\nurl = \"https://mcp.example.com/mcp\"\n";
+const REMOTE_URL: &str = "https://mcp.example.com/mcp";
 
 #[tokio::test(start_paused = true)]
 async fn boot_starts_and_registers_every_toolset() {
-    let s = Setup::new(&format!("{FILES}{REMOTE}"));
+    let s = Setup::with_remote(FILES, "");
     let connector = FakeConnector::with([
         ("files", Script::new(&["read", "write"])),
         ("remote", Script::new(&["fetch"])),
@@ -443,7 +461,7 @@ async fn an_idle_server_stops_keeps_its_tools_and_relaunches_on_a_call() {
 
 #[tokio::test(start_paused = true)]
 async fn a_remote_server_never_stops_for_idleness() {
-    let s = Setup::new(REMOTE);
+    let s = Setup::with_remote("", "");
     let connector = FakeConnector::with([("remote", Script::new(&["fetch"]))]);
     let host = s.host(&connector).await;
     host.started().await;
@@ -495,7 +513,7 @@ async fn a_crashed_server_restarts_with_backoff() {
 
 #[tokio::test(start_paused = true)]
 async fn an_unreachable_remote_server_leaves_giles_degraded_and_retrying() {
-    let s = Setup::new(&format!("{FILES}{REMOTE}"));
+    let s = Setup::with_remote(FILES, "");
     let mut remote = Script::new(&["fetch"]);
     remote.failures = (0..3)
         .map(|_| Error::unavailable("connection refused"))
@@ -586,7 +604,7 @@ async fn a_stdio_server_that_fails_for_good_withdraws_its_cached_tools() {
 
 #[tokio::test(start_paused = true)]
 async fn rejected_credentials_are_not_retried() {
-    let s = Setup::new(REMOTE);
+    let s = Setup::with_remote("", "");
     let mut remote = Script::new(&["fetch"]);
     remote
         .failures
@@ -618,7 +636,7 @@ async fn skill_directories_are_served_bare_and_indexed_with_the_prefix() {
     )
     .unwrap();
     std::fs::write(skill.join("scripts/check.sh"), "echo ok\n").unwrap();
-    let s = Setup::new(&format!("{REMOTE}skills = [\"{}\"]\n", base.display()));
+    let s = Setup::with_remote("", &format!("skills = [\"{}\"]\n", base.display()));
     let connector = FakeConnector::with([("remote", Script::new(&["fetch"]))]);
     let host = s.host(&connector).await;
 
@@ -682,7 +700,7 @@ fn reported(host: &ToolsetHost, instance: &str) -> PluginRuntime {
 
 #[tokio::test(start_paused = true)]
 async fn every_instance_reports_its_supervisor_state() {
-    let s = Setup::new(&format!("{FILES}{REMOTE}"));
+    let s = Setup::with_remote(FILES, "");
     let gate = Arc::new(Semaphore::new(0));
     let mut files = Script::new(&["read", "write"]);
     files.gate = Some(gate.clone());
@@ -842,7 +860,7 @@ async fn restarting_a_backing_off_toolset_starts_it_now_and_resets_the_backoff()
 
 #[tokio::test(start_paused = true)]
 async fn restarting_a_failed_toolset_gives_it_a_fresh_try() {
-    let s = Setup::new(REMOTE);
+    let s = Setup::with_remote("", "");
     let mut remote = Script::new(&["fetch"]);
     remote
         .failures
@@ -1073,7 +1091,7 @@ async fn adding_a_running_name_stops_the_old_supervisor_first() {
 
 #[tokio::test(start_paused = true)]
 async fn removing_a_toolset_withdraws_its_tools_and_ends_its_calls() {
-    let s = Setup::new(&format!("{FILES}{REMOTE}"));
+    let s = Setup::with_remote(FILES, "");
     let connector = FakeConnector::with([
         ("files", Script::new(&["read", "slow"])),
         ("remote", Script::new(&["fetch"])),

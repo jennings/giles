@@ -36,6 +36,9 @@ pub fn run(home: Option<&Path>, _args: &ServeArgs) -> anyhow::Result<()> {
     for unknown in &config.unknown_keys {
         warn!("{unknown}");
     }
+    for ignored in config.ignored_toolset_tables() {
+        warn!("{ignored}");
+    }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

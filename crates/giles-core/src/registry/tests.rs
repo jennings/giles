@@ -18,6 +18,7 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::config::LoadOptions;
+use crate::config::test_toolsets::add_toolsets;
 use crate::skills::SkillSource;
 
 const MINIMAL: &str = "[owner]\nidentities = [\"web:owner\"]\n";
@@ -25,15 +26,28 @@ const MINIMAL: &str = "[owner]\nidentities = [\"web:owner\"]\n";
 struct Home {
     dir: TempDir,
     root: DataRoot,
+    /// Remote toolsets added to the configuration as stored ones, `(name, spec TOML)`.
+    stored: Vec<(String, String)>,
 }
 
 impl Home {
     fn new(giles_toml: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = DataRoot::new(dir.path(), Path::new("/tmp")).unwrap();
-        let home = Self { dir, root };
+        let home = Self {
+            dir,
+            root,
+            stored: Vec::new(),
+        };
         home.write("giles.toml", &format!("{MINIMAL}{giles_toml}"));
         home
+    }
+
+    /// This home with the remote toolset `name` at `url`, plus `more` keys of its spec.
+    fn with_toolset(mut self, name: &str, url: &str, more: &str) -> Self {
+        self.stored
+            .push((name.to_owned(), format!("url = {url:?}\n{more}")));
+        self
     }
 
     fn path(&self, relative: &str) -> PathBuf {
@@ -52,7 +66,7 @@ impl Home {
     }
 
     fn config(&self) -> Arc<Config> {
-        let config = Config::load_with(
+        let mut config = Config::load_with(
             &self.root,
             &LoadOptions {
                 env: &|_| None,
@@ -61,6 +75,7 @@ impl Home {
             },
         )
         .unwrap_or_else(|e| panic!("{e}"));
+        add_toolsets(&self.root, &mut config, self.stored.iter().cloned());
         Arc::new(config)
     }
 
@@ -396,9 +411,9 @@ fn builds_the_web_channel_once() {
 fn plugin_instances_stay_pending_until_registered() {
     let home = Home::new(
         "[channel.libera]\ncomponent = \"irc\"\n\
-         [channel.mail]\ncomponent = \"email\"\naddress = \"https://mail.example.com\"\n\
-         [toolset.github]\nurl = \"https://example.com/mcp\"\n",
-    );
+         [channel.mail]\ncomponent = \"email\"\naddress = \"https://mail.example.com\"\n",
+    )
+    .with_toolset("github", "https://example.com/mcp", "");
     let registry = home.build().unwrap();
     let pending: Vec<_> = registry
         .pending()
@@ -479,11 +494,10 @@ async fn registering_needs_a_configured_instance_of_that_kind() {
 
 #[tokio::test]
 async fn registered_toolsets_feed_the_tool_index() {
-    let home = Home::new(
-        "[toolset.github]\nurl = \"https://example.com/mcp\"\n\
-         [toolset.fs]\nurl = \"https://example.com/fs\"\n\
-         [toolset.down]\nurl = \"https://example.com/down\"\n",
-    );
+    let home = Home::new("")
+        .with_toolset("github", "https://example.com/mcp", "")
+        .with_toolset("fs", "https://example.com/fs", "")
+        .with_toolset("down", "https://example.com/down", "");
     let registry = home.build().unwrap();
     registry.tools().set_core_tool(spec("memory_add")).unwrap();
     let long = "x".repeat(60);
@@ -576,7 +590,7 @@ async fn registered_toolsets_feed_the_tool_index() {
 
 #[tokio::test]
 async fn toolsets_added_and_removed_at_runtime_follow_the_live_configuration() {
-    let home = Home::new("[toolset.github]\nurl = \"https://example.com/mcp\"\n");
+    let home = Home::new("").with_toolset("github", "https://example.com/mcp", "");
     let registry = home.build().unwrap();
     let mut extra = registry.config().toolsets["github"].clone();
     extra.name = name("extra");
@@ -646,11 +660,11 @@ async fn agent_skills_combine_toolset_global_and_agent_sources() {
     };
     skill(tools_dir.path(), "review", "Review a pull request.");
     skill(tools_dir.path(), "pdf", "The toolset's PDF skill.");
-    let home = Home::new(&format!(
-        "[provider.anthropic]\nconfig = {{ api_key = \"k\" }}\n\
-         [toolset.github]\nurl = \"https://example.com/mcp\"\nskills = [{:?}]\n",
-        tools_dir.path().display().to_string()
-    ));
+    let home = Home::new("[provider.anthropic]\nconfig = { api_key = \"k\" }\n").with_toolset(
+        "github",
+        "https://example.com/mcp",
+        &format!("skills = [{:?}]\n", tools_dir.path().display().to_string()),
+    );
     home.agent("jeeves", "models = [\"anthropic/a\"]\n");
     skill(&home.path("skills"), "pdf", "Global PDF skill.");
     skill(&home.path("skills"), "notes", "Global notes skill.");

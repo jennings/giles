@@ -47,9 +47,11 @@ several users and group chats are the design for later; v1 builds this subset of
 - Tool approvals: answered by the owner.
 - Models: each agent uses the first model in `models`, with no fallback.
 - Config: read at startup; changes need a restart, except agents created, edited, and removed in the
-  web UI, which change the running configuration (section 8.7), and routes, which the web UI changes
-  for the next message (section 6.1). Agent Markdown files are read per turn. v1 keeps the owner and
-  instances in `giles.toml`; they move to the web UI later (section 11.2).
+  web UI, which change the running configuration (section 8.7), remote toolsets, which are stored in
+  the database and changed in the web UI while Giles runs (section 7.10), and routes, which the web
+  UI changes for the next message (section 6.1). Agent Markdown files are read per turn. v1 keeps
+  the owner, the provider and channel instances, and the stdio toolsets in `giles.toml`; the owner
+  and the instances that launch no program move to the web UI later (section 11.2).
 
 Deferred decisions, each with what v1 does meanwhile and when to revisit it, are in
 `Docs/decisions/`: D28, D49, D57, D58, D63, D65, D66.
@@ -72,9 +74,9 @@ many tools from one process.
 
 ### 3.1 Users and roles
 
-- The operator writes the startup settings in `giles.toml` and the credentials in `secrets.toml`.
-  Users, agents, routes, and the rest are managed by Giles and changed by admins in the web UI
-  (section 11.2).
+- The operator writes the startup settings and the programs Giles runs in `giles.toml`, and the
+  credentials in `secrets.toml`. Users, agents, routes, and the rest are managed by Giles and
+  changed by admins in the web UI (section 11.2).
 - Every person who talks to an agent is a user, with exactly one role. An admin adds users in the
   web UI. In the current layout a user is a `users/<user>/user.toml` file (section 11.3).
 - Roles are defined in config. Each role lists the agents its users may talk to and tool globs they
@@ -533,9 +535,9 @@ way.
 
 - Plugin tools are always `<instance>__<tool>`. The plugin reports bare names; the core adds the
   prefix.
-- The instance name is the prefix: `[toolset.github]` gives `github__create_issue`. For channel and
-  provider plugins it defaults to the plugin's `<name>`; config can define several instances of one
-  plugin with their own names (`irc-libera`, `irc-oftc`).
+- The instance name is the prefix: a toolset named `github` gives `github__create_issue`. For
+  channel and provider plugins it defaults to the plugin's `<name>`; config can define several
+  instances of one plugin with their own names (`irc-libera`, `irc-oftc`).
 - Instance names match `[a-zA-Z0-9-]+`, so they never contain `__`. A prefixed name longer than 64
   characters is rejected when the tool list is loaded.
 - Core tools (`memory_add`, `memory_edit`, `memory_forget`, `memory_recall`, `memory_search`,
@@ -917,15 +919,23 @@ Toolsets are MCP servers, and the core contains the MCP client (`rmcp`). There i
 toolset protocol: any MCP server works as a toolset unchanged, and a first-party toolset plugin is
 an MCP server written with `rmcp`.
 
-Each `[toolset.<instance>]` is one MCP server:
+Each toolset instance is one MCP server. Where it is configured depends on whether Giles runs it:
 
-- Stdio: a `command` (absolute path) with `args` and `env`, launched by the core through the sandbox
-  trampoline (section 12), one sandbox per server.
-- Remote: a streamable HTTP `url`, with `auth = { bearer = ... }`. The deprecated HTTP+SSE transport
-  is not supported, and `rmcp` no longer ships a client for it. Remote servers run elsewhere and
-  aren't sandboxed by the core.
+- Stdio: a `[toolset.<instance>]` table of `giles.toml`, written by the operator: a `command`
+  (absolute path) with `args` and `env`, or the first-party plugin `giles-toolset-<component>`,
+  launched by the core through the sandbox trampoline (section 12), one sandbox per server.
+- Remote: a streamable HTTP `url`, with `auth = { bearer = { secret = ... } }`, stored in the
+  database and managed in the web UI (Admin → MCP servers), the admin RPCs, and `giles toolset`
+  (section 8.7), while Giles runs. The deprecated HTTP+SSE transport is not supported, and `rmcp` no
+  longer ships a client for it. Remote servers run elsewhere and aren't sandboxed by the core.
 
-The instance name is the tool prefix: `[toolset.github]` gives `github__create_issue`.
+A web login must not be able to choose a program for Giles to run on the host, its arguments, its
+environment, or its sandbox grants: installing and running code on the host is an operator act, and
+connecting to a remote server is not. So a stored toolset can only be remote, and a
+`[toolset.<instance>]` table with `url` in `giles.toml` is ignored, with a warning at every start;
+nothing is migrated from it, and a stored toolset may use its name.
+
+The instance name is the tool prefix: a toolset named `github` gives `github__create_issue`.
 
 How MCP maps onto Giles:
 
@@ -1328,8 +1338,8 @@ No plugin is ever granted read or write access to any part of `GILES_HOME` excep
 
 ### 11.2 Configuration
 
-`giles.toml` holds only the settings Giles needs to start. The operator writes them and Giles never
-edits them:
+`giles.toml` holds only the settings Giles needs to start and the ones that make Giles run a program
+on the host. The operator writes them and Giles never edits them:
 
 - The address the web interface listens on (`[core] http_listen`).
 - Names of instances removed on purpose, whose data stays (`[core] retired_instances`). The startup
@@ -1337,6 +1347,9 @@ edits them:
 - The default time zone for users who don't set one.
 - Security-model requirements, such as whether the sandbox is always enforced or a plugin instance
   may be configured to run unsandboxed (section 12).
+- The programs Giles launches, with their arguments, environment, and sandbox grants: plugin
+  instances and stdio toolsets (section 7.10). Installing and running code on the host is an
+  operator act, so a web login must not choose any of it.
 
 Most other settings are managed by Giles and meant to be changed in the web UI, not in files, so
 Giles creates and edits them:
@@ -1346,19 +1359,24 @@ Giles creates and edits them:
 - Routes from channel identities to users and agents: identity links (section 3.2) and routing rules
   (section 6.1). Routing rules are the first of these built: they're stored in SQLite and edited in
   the web UI.
-- Component instances (providers, channels, toolsets) are headed for the web UI too, within the
+- Remote MCP servers (toolsets with `url`): stored in SQLite and managed in the web UI, the admin
+  RPCs, and `giles toolset` (section 7.10). A `[toolset.<instance>]` table with `url` in
+  `giles.toml` is ignored with a warning at every start, and nothing is migrated from it.
+- Provider and channel instances that launch no program are headed for the web UI too, within the
   limits `giles.toml` sets; how they're managed there is not designed yet.
 
 Where each kind of data is stored, in SQLite or in Markdown, JSONL, or other text files under
-`GILES_HOME`, is decided as each is built. `secrets.toml` stays operator-written; where secrets for
+`GILES_HOME`, is decided as each is built. `secrets.toml` stays operator-written; a stored toolset
+names its bearer token's secret there (`{ secret = "<name>" }`), and where secrets for other
 settings managed in the web UI live is open.
 
-Transition: the current implementation still reads the owner (section 1.1) and instances from
-`giles.toml`, and the multi-user design below keeps roles there and users in `user.toml`. Each moves
-to storage Giles manages as its web UI lands; the migration isn't designed, except for routes, which
-already moved: `[[routes]]` is imported once into the database and then ignored (section 6.1). Open:
-the first login (section 3.4) needs the owner's identity, so whether some bootstrap identity stays
-in `giles.toml` is undecided.
+Transition: the current implementation still reads the owner (section 1.1) and the provider and
+channel instances from `giles.toml`, and the multi-user design below keeps roles there and users in
+`user.toml`. Each moves to storage Giles manages as its web UI lands; the migration isn't designed,
+except for routes, which already moved: `[[routes]]` is imported once into the database and then
+ignored (section 6.1). Remote toolsets moved with no migration (above). Open: the first login
+(section 3.4) needs the owner's identity, so whether some bootstrap identity stays in `giles.toml`
+is undecided.
 
 The current layout has three kinds of TOML file: `giles.toml`, `agents/<agent>/agent.toml`, and
 `users/<user>/user.toml`. Giles may create and edit `agent.toml` and `user.toml` files, for example
@@ -1394,11 +1412,7 @@ network = "libera.chat"
 nick = "jeeves"
 channels = ["#giles"]
 
-[toolset.github]                       # remote MCP server over streamable HTTP
-url = "https://api.githubcopilot.com/mcp/"
-auth = { bearer = { secret = "github" } }
-deadline = "2m"
-
+# Stdio toolsets only: remote MCP servers are stored in the database (section 7.10).
 [toolset.files]                        # stdio MCP server, launched under its own sandbox
 command = "/opt/homebrew/bin/mcp-server-filesystem"
 args = ["/Users/stephen/Documents"]
@@ -1412,8 +1426,9 @@ tools = ["*"]
 
 Keys at the instance level belong to the core: `component`, `address`, `auth`, `insecure`,
 `sandbox`, `unknown_senders`, `deadline`, `idle_stop`, `max_blob`, `unsandboxed`, and for toolsets
-`command`, `args`, `env`, `url`, `skills`, `parallel`. Only the `config` table goes to a provider or
-channel component.
+`command`, `args`, `env`, `skills`, `parallel`. Only the `config` table goes to a provider or
+channel component. A `[toolset.<instance>]` table with `url` is ignored whatever else it holds, and
+each start logs a warning naming it.
 
 A key in `giles.toml` that the core doesn't know is ignored with a startup warning; a known key with
 a value of the wrong type stops startup. The exceptions stay strict: `sandbox` tables (a typo would
@@ -1629,7 +1644,7 @@ still shipped and used by other agent CLIs). If the command disappears, the tram
 
 ### 12.4 Grants
 
-Per instance (in the current layout, in `giles.toml`; section 11.2):
+Per launched instance, in `giles.toml`, which only the operator writes (section 11.2):
 
 ```toml
 sandbox = { network = ["tcp:443"], read = ["/opt/homebrew"], write = [] }

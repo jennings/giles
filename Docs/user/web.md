@@ -273,7 +273,8 @@ the new list.
 
 A server that Giles runs on this machine, a stdio server, is a `[toolset.<name>]` table in
 `giles.toml`, which [Configuration](configuration.md#toolsets) describes. It shows in the list too,
-but you can only change it in the file.
+but you can only change it in the file. Giles ignores a `[toolset.<name>]` table with `url` and logs
+a warning at every start. Add that server here instead.
 
 ### Adding a remote server
 

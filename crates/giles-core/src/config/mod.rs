@@ -7,9 +7,11 @@
 //! key path, and the reason.
 //! Unknown keys in `giles.toml` are ignored and reported ([`Config::unknown_keys`]), except inside
 //! an instance's free-form `config` table, which belongs to the component; a recognized key with a
-//! value of the wrong type is an error, as is every key of `agent.toml`. Secret references are
-//! resolved during loading; resolved values are held as [`Secret`]s or in a [`PluginConfig`],
-//! whose `Debug` output is redacted.
+//! value of the wrong type is an error, as is every key of `agent.toml`. A `[toolset.<name>]`
+//! table with `url` is ignored whatever else it holds, and reported separately
+//! ([`Config::ignored_toolset_tables`]): remote toolsets are stored in the database. Secret
+//! references are resolved during loading; resolved values are held as [`Secret`]s or in a
+//! [`PluginConfig`], whose `Debug` output is redacted.
 
 mod agent;
 mod discovery;
@@ -23,6 +25,8 @@ mod names;
 mod plugin_config;
 mod sandbox;
 mod secrets;
+#[cfg(test)]
+pub(crate) mod test_toolsets;
 mod toolset;
 
 use std::cell::RefCell;
@@ -42,7 +46,7 @@ pub use agent::{
     DEFAULT_MAX_ITERATIONS_JOBS, DEFAULT_MEMORY_CAP, Job, JobPrompt, JobSession, parse_cron,
 };
 pub use discovery::{discover_plugin, find_program};
-pub use error::{ConfigError, KeyPath, Position, Segment, UnknownKey};
+pub use error::{ConfigError, IgnoredToolsetTable, KeyPath, Position, Segment, UnknownKey};
 pub use giles::{CoreConfig, DEFAULT_HTTP_LISTEN, Identity, OwnerConfig};
 pub use hash::ConfigHash;
 pub use instances::{
@@ -100,8 +104,12 @@ pub struct Config {
     pub providers: BTreeMap<InstanceName, ProviderInstance>,
     /// `[channel.<instance>]`, by instance name.
     pub channels: BTreeMap<InstanceName, ChannelInstance>,
-    /// `[toolset.<instance>]`, by instance name.
+    /// The toolsets: `[toolset.<instance>]` tables without `url` after [`load`](Self::load), and
+    /// the toolsets stored in the database, which the toolset manager adds through
+    /// [`LiveConfig`], by instance name.
     pub toolsets: BTreeMap<InstanceName, ToolsetInstance>,
+    /// Every `[toolset.<name>]` table of `giles.toml` with `url`, in file order.
+    ignored_toolsets: Vec<IgnoredToolsetTable>,
     /// Every key of `giles.toml` that Giles doesn't recognize. They are ignored; the daemon logs
     /// each once at startup.
     pub unknown_keys: Vec<UnknownKey>,
@@ -149,7 +157,8 @@ impl Config {
         file: &Path,
         source: &str,
     ) -> Result<Self, ConfigError> {
-        let (mut raw, unknown): (giles::RawGiles, Vec<KeyPath>) = parse_toml_lenient(file, source)?;
+        let (mut raw, mut unknown): (giles::RawGiles, Vec<KeyPath>) =
+            parse_toml_lenient(file, source)?;
         // The same document as plain TOML, for hashing each instance's table as written.
         let document: toml::Table =
             toml::from_str(source).map_err(|e| ConfigError::syntax(file, source, &e))?;
@@ -162,6 +171,23 @@ impl Config {
         };
         let core = raw.core(file)?;
         let owner = raw.owner(file)?;
+        // A table with `url` is a remote toolset, which is stored in the database now: the table
+        // is ignored whatever else it holds. The others are stdio servers.
+        let mut ignored_toolsets = Vec::new();
+        let mut toolset_specs = BTreeMap::new();
+        for (name, table) in std::mem::take(&mut raw.toolset) {
+            if giles::is_remote_toolset(&table) {
+                ignored_toolsets.push(IgnoredToolsetTable::new(file, source, name));
+                continue;
+            }
+            let path = KeyPath::root()
+                .key(Kind::Toolset.as_str())
+                .key(name.as_str());
+            let (spec, keys) = parse_value_lenient::<ToolsetSpec>(file, &path, table)?;
+            unknown.extend(keys);
+            toolset_specs.insert(name, spec);
+        }
+        ignored_toolsets.sort_by_key(IgnoredToolsetTable::order);
         let secrets = secrets::Secrets::load(&root.secrets_file())?;
         let resolver = secrets::Resolver {
             secrets: &secrets,
@@ -176,7 +202,7 @@ impl Config {
             .keys()
             .map(|n| (n, Kind::Provider))
             .chain(raw.channel.keys().map(|n| (n, Kind::Channel)))
-            .chain(raw.toolset.keys().map(|n| (n, Kind::Toolset)));
+            .chain(toolset_specs.keys().map(|n| (n, Kind::Toolset)));
         for (name, kind) in instances {
             if let Some((other, other_name)) = kinds.insert(name.to_ascii_lowercase(), (kind, name))
             {
@@ -206,7 +232,7 @@ impl Config {
             channels.insert(instance.name.clone(), instance);
         }
         let mut toolsets = BTreeMap::new();
-        for (name, instance) in std::mem::take(&mut raw.toolset) {
+        for (name, instance) in toolset_specs {
             let instance = ctx.toolset(&name, instance, hash(Kind::Toolset, &name))?;
             toolsets.insert(instance.name.clone(), instance);
         }
@@ -232,10 +258,17 @@ impl Config {
             providers,
             channels,
             toolsets,
+            ignored_toolsets,
             unknown_keys,
             legacy_routes: std::mem::take(&mut raw.routes),
             agents,
         })
+    }
+
+    /// The `[toolset.<name>]` tables of `giles.toml` with `url`, in file order. Loading ignores
+    /// them (remote toolsets are stored in the database); `giles serve` logs each at startup.
+    pub fn ignored_toolset_tables(&self) -> &[IgnoredToolsetTable] {
+        &self.ignored_toolsets
     }
 
     /// Validates `source` as the `agent.toml` of an agent `id` that would live in
@@ -346,6 +379,27 @@ fn parse_toml_lenient<T: DeserializeOwned>(
         &mut record,
     ))
     .map_err(|e| ConfigError::deserialize(file, source, &e))?;
+    Ok((value, unknown))
+}
+
+/// Like [`parse_toml_lenient`], for `value`, the value at `path` of `file`: errors and unknown
+/// keys are at their full path. An error has no position yet; loading fills it in from the path.
+fn parse_value_lenient<T: DeserializeOwned>(
+    file: &Path,
+    path: &KeyPath,
+    value: toml::Value,
+) -> Result<(T, Vec<KeyPath>), ConfigError> {
+    let mut unknown = Vec::new();
+    let mut record = |key: serde_ignored::Path<'_>| unknown.push(path.join(&KeyPath::from(&key)));
+    let value =
+        serde_path_to_error::deserialize(serde_ignored::Deserializer::new(value, &mut record))
+            .map_err(|e: serde_path_to_error::Error<toml::de::Error>| {
+                ConfigError::at(
+                    file,
+                    path.join(&KeyPath::from(e.path())),
+                    e.inner().message(),
+                )
+            })?;
     Ok((value, unknown))
 }
 
