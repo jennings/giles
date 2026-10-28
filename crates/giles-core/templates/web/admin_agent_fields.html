@@ -12,8 +12,8 @@
 <label class="tool"><input type="checkbox" name="tool:{{ tool.value }}"{% if tool.is_on() %} checked{% endif %}{% if tool.via().is_some() %} disabled{% endif %}> <code>{{ tool.value }}</code>: {{ tool.note }}{% if let Some(entry) = tool.via() %} Allowed by <code>{{ entry }}</code> in Other tools.{% endif %}</label>
 {%- endfor %}
 {%- if !picker.toolsets.is_empty() %}
-<span class="label">Toolsets</span>
-<p class="detail">Tick a toolset to allow all of its tools.</p>
+<span class="label">MCP servers</span>
+<p class="detail">Tick an MCP server to allow all of its tools.</p>
 {%- for tool in picker.toolsets %}
 <label class="tool"><input type="checkbox" name="tool:{{ tool.value }}"{% if tool.is_on() %} checked{% endif %}{% if tool.via().is_some() %} disabled{% endif %}> <code>{{ tool.value }}</code>{% if let Some(entry) = tool.via() %} Allowed by <code>{{ entry }}</code> in Other tools.{% endif %}</label>
 {%- endfor %}

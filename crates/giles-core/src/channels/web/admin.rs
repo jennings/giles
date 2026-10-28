@@ -81,7 +81,7 @@ pub(super) fn forbidden() -> Response {
 
 /// The answer to a failed admin call: the service's message for what the operator can act on, a
 /// logged 500 for anything else.
-fn call_failed(rpc: &str, title: &str, status: &tonic::Status) -> Response {
+pub(super) fn call_failed(rpc: &str, title: &str, status: &tonic::Status) -> Response {
     let code = match status.code() {
         Code::NotFound => StatusCode::NOT_FOUND,
         Code::FailedPrecondition => StatusCode::CONFLICT,
@@ -226,34 +226,34 @@ fn channel_row(channel: &pb::ChannelInstance) -> ChannelRow {
 
 /// A plugin instance, as the plugins page (and the summary on the status page) shows it.
 #[derive(Debug)]
-struct PluginRow {
-    instance: String,
-    kind: &'static str,
-    component: String,
+pub(super) struct PluginRow {
+    pub(super) instance: String,
+    pub(super) kind: &'static str,
+    pub(super) component: String,
     /// One word for the summary table.
-    state_word: &'static str,
+    pub(super) state_word: &'static str,
     /// The state with its details (pid, since, retry time, restarts).
-    state: String,
-    class: &'static str,
-    error: Option<String>,
+    pub(super) state: String,
+    pub(super) class: &'static str,
+    pub(super) error: Option<String>,
     /// A channel plugin's last status.
-    channel: Option<String>,
-    location: String,
-    version: Option<String>,
+    pub(super) channel: Option<String>,
+    pub(super) location: String,
+    pub(super) version: Option<String>,
     /// How many tools a toolset offers to new sessions.
-    tools: Option<u32>,
-    sandbox: String,
-    lacking: Vec<String>,
-    requests: Option<String>,
+    pub(super) tools: Option<u32>,
+    pub(super) sandbox: String,
+    pub(super) lacking: Vec<String>,
+    pub(super) requests: Option<String>,
     /// Whether plugin supervision knows the instance, so `RestartPlugin` can restart it.
-    restartable: bool,
+    pub(super) restartable: bool,
 }
 
-fn plugin_row(plugin: &pb::PluginInstance) -> PluginRow {
+pub(super) fn plugin_row(plugin: &pb::PluginInstance) -> PluginRow {
     let kind = match plugin.kind() {
         pb::InstanceKind::Provider => "provider",
         pb::InstanceKind::Channel => "channel",
-        pb::InstanceKind::Toolset => "toolset",
+        pb::InstanceKind::Toolset => "MCP server",
         pb::InstanceKind::Unspecified => "unknown kind",
     };
     let (state_word, class, mut state) = match plugin.state() {

@@ -1,0 +1,39 @@
+{% extends "layout.html" %}
+
+{% block title %}MCP servers - Giles{% endblock %}
+
+{% block content %}
+{% include "web/admin_nav.html" %}
+<div class="page-head">
+<h1>MCP servers</h1>
+<a class="button" href="/admin/mcp-servers/new">New MCP server</a>
+</div>
+<p>An MCP server gives agents more tools. Its tools are named <code>&lt;server&gt;__&lt;tool&gt;</code>, and an agent can use them once you tick the server in the agent's form. Here you add remote servers, and a change applies at once, without a restart. A server that Giles runs on this machine is configured in giles.toml and listed here read-only.</p>
+{%- if toolsets.is_empty() %}
+<p>No MCP servers yet. Add a remote server with <a href="/admin/mcp-servers/new">New MCP server</a>.</p>
+{%- else %}
+<table class="admin-table">
+<thead><tr><th>Name</th><th>Runs as</th><th>Location</th><th>State</th><th>Tools</th><th>Last error</th><th></th></tr></thead>
+<tbody>
+{%- for toolset in toolsets %}
+<tr id="toolset-{{ toolset.name }}">
+<td><a href="/admin/mcp-servers/{{ toolset.name }}">{{ toolset.name }}</a>{% if toolset.from_file %} <span class="detail">giles.toml</span>{% endif %}</td>
+<td>{{ toolset.transport }}</td>
+<td><code>{{ toolset.location }}</code></td>
+<td class="state-{{ toolset.class }}">{{ toolset.state }}</td>
+<td>{% if let Some(tools) = toolset.tools %}{{ tools }}{% else %}<span class="detail">unknown</span>{% endif %}</td>
+<td>{% if let Some(error) = toolset.error %}<span class="state-bad">{{ error }}</span>{% endif %}</td>
+<td>
+{%- if toolset.from_file %}
+<span class="detail">Edit it in giles.toml</span>
+{%- else %}
+<a href="/admin/mcp-servers/{{ toolset.name }}/edit">Edit</a>
+<a href="/admin/mcp-servers/{{ toolset.name }}/remove">Remove</a>
+{%- endif %}
+</td>
+</tr>
+{%- endfor %}
+</tbody>
+</table>
+{%- endif %}
+{% endblock %}

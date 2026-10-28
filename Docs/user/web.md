@@ -137,7 +137,7 @@ text.
   you type, and you can edit it. You can't change it once the agent exists.
 - **Models**: `<provider>/<model>`, several separated by commas.
 - **Tools**: tick the tools the agent may use. An agent can't use a tool you leave unticked, so a
-  new agent has none until you tick some. Each toolset from `giles.toml` is one box that allows all
+  new agent has none until you tick some. Each [MCP server](#mcp-servers) is one box that allows all
   of its tools.
 - **Other tools**: optional names or globs the boxes can't show, such as `github__create_*`,
   separated by commas or spaces. A box that one of these already allows is ticked and greyed out.
@@ -260,3 +260,61 @@ with a warning under it.
 
 Giles imports `[[routes]]` from an older `giles.toml` once. After that you can delete them from the
 file. See [Configuration](configuration.md#routes).
+
+## MCP servers
+
+**MCP servers** in the admin menu lists the MCP servers that give your agents more tools. Each row
+shows how the server runs, its state, how many tools it offers, and its last error. A server's page
+shows its settings and the name and description of each tool, and has a **Restart** button.
+
+Here you add, edit, and remove remote servers, and the change applies at once, without a restart. A
+conversation that is already going keeps the tools it started with. New conversations get the new
+list.
+
+A server that Giles runs on this machine, a stdio server, is a `[toolset.<name>]` table in
+`giles.toml`, which [Configuration](configuration.md#toolsets) describes. It shows in the list too,
+but you can only change it in the file.
+
+### Adding a remote server
+
+A remote server is one you reach over the network. Giles doesn't run or sandbox it.
+
+1. Put the server's token in [`secrets.toml`](configuration.md#secrets), such as
+   `github = "<token>"`, and keep the file private with `chmod 600 ~/.giles/secrets.toml`.
+2. Open **New MCP server** and enter a **Name**, such as `github`. Its tools are named
+   `github__<tool>`.
+3. Enter the **URL**, such as `https://api.githubcopilot.com/mcp/`.
+4. For **Authentication**, choose **A secret in secrets.toml** and enter `github`.
+5. Select **Add**.
+
+The server's page opens and shows its state and its tools. If Giles can't connect, the page shows
+why.
+
+The form never shows a token. It shows the name of the secret. Giles reads `secrets.toml` again each
+time it connects, so a secret you add later needs no restart.
+
+The form has more settings, all optional:
+
+- **Allow insecure connections** lets Giles reach another machine over plain `http://`. It shows
+  when the URL starts with `http:`. Giles accepts plain `http://` to this machine without it. Tick
+  it only on a network you trust.
+- **Deadline** limits how long one tool call may run. It defaults to `5m`.
+- **Tools may run in parallel** lets an agent's calls to the server run at the same time.
+- **Skills** lists directories of skills the server offers.
+
+If something is wrong, the form shows the setting and the reason, keeps what you typed, and stores
+nothing.
+
+### Editing and removing an MCP server
+
+**Edit** opens the form filled in. The name can't change. Saving restarts the server's connection
+with the new settings. If someone changed the server after you opened the form, saving is refused.
+Use the form's link to reload the current values.
+
+A server that failed to start, for example because its secret was missing, stays in the list with
+the reason. Fix the cause and select **Restart**, or change its settings and save.
+
+**Remove** opens a page that says what removing does. Nothing happens until you select
+**Remove MCP server**. Giles disconnects from the server and deletes its settings. The page lists
+the agents whose tools or ask-first list name the server's tools. Giles leaves those agents as they
+are.

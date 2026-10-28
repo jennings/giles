@@ -683,11 +683,11 @@ handlers don't assume it, and a test signs in as another user.
 
 ## Route pages
 
-In `routes.rs`: `web.install_routes(builder, Arc<routes::Routes>)`, which `serve` calls last, with
-the runtime's `Routes` (the object whose `RouteList` the router reads). Like the agent pages: the
-same authentication middleware, `may_administer` on every route including the POSTs, `no-store` on
-every answer, and `check_csrf` (header or field) on every POST. Every change is one `Routes` call,
-which validates, writes, and gives the router the new list before it returns
+In `routes.rs`: `web.install_routes(builder, Arc<routes::Routes>)`, which `serve` calls after the
+agent pages, with the runtime's `Routes` (the object whose `RouteList` the router reads). Like the
+agent pages: the same authentication middleware, `may_administer` on every route including the
+POSTs, `no-store` on every answer, and `check_csrf` (header or field) on every POST. Every change is
+one `Routes` call, which validates, writes, and gives the router the new list before it returns
 ([Identity and Routing](identity-and-routing.md#stored-routes)), so the next inbound message uses
 it.
 
@@ -711,18 +711,88 @@ it.
 - A move that would hide a route is refused with the reason, as is an edit; reordering therefore
   passes only through valid lists.
 
+## Toolset pages
+
+The web UI calls stored toolsets MCP servers: the admin menu entry, the pages, and their addresses
+(`/admin/mcp-servers`). The code and the rest of the docs keep the name toolset.
+
+In `toolsets.rs`: `web.install_toolsets(builder, manager, admin, registry)`, which `serve` calls
+last, with the `Arc<ToolsetManager>`, the `Arc<dyn AdminService>` the admin socket serves, and the
+runtime's `Arc<Registry>`. Like the route pages: the same authentication middleware,
+`may_administer` on every route including the POSTs, `no-store` on every answer, and `check_csrf`
+(header or field) on every POST. Every change is one `ToolsetManager` call, which validates the
+spec, stores it, and starts, restarts, or stops the server before it returns
+([Toolsets](toolsets.md)), so the next conversation has the new tool list. The agent form's tool
+picker reads the same `LiveConfig` and shows the new box at once. The pages take the admin service
+for what `ListPlugins` knows (state, last error, and tool count, built by the plugins page's
+`plugin_row`) and the registry for the tool list, because the manager has neither.
+
+| Route                                    | Does                                                    |
+| ---------------------------------------- | ------------------------------------------------------- |
+| `GET /admin/mcp-servers`                 | every toolset: name, transport, location, state, tools  |
+| `GET /admin/mcp-servers/new`             | the form                                                |
+| `POST /admin/mcp-servers`                | `ToolsetManager::add`, then 303 to the toolset's page   |
+| `GET /admin/mcp-servers/<name>`          | the settings, the tools (name and description), buttons |
+| `GET /admin/mcp-servers/<name>/edit`     | the form, filled in, with `updated_at`                  |
+| `POST /admin/mcp-servers/<name>/edit`    | `ToolsetManager::update`, then 303 to the page          |
+| `GET /admin/mcp-servers/<name>/remove`   | the confirmation                                        |
+| `POST /admin/mcp-servers/<name>/remove`  | `ToolsetManager::remove`, then 303 to the list          |
+| `POST /admin/mcp-servers/<name>/restart` | `RestartPlugin`, then 303 to the page                   |
+
+- **The list** has one row per `ToolsetManager::list` entry, with Edit and Remove for stored
+  toolsets only, which are remote servers. A toolset of `giles.toml` (`ToolsetSource::File`), such
+  as a stdio server, is listed with how it runs (from the running configuration), marked, and
+  read-only, and a page for editing or removing one is a 409 with the manager's `Unsupported`
+  message. The state and tool count come from `ListPlugins` by instance name; a stored toolset that
+  failed to start is there as `Failed` with its reason, because `serve` merges the manager into the
+  admin service's `PluginControl`. Where the service has nothing, the row shows the manager's
+  `failure`.
+- **The toolset page** shows the settings from the stored spec (a toolset of `giles.toml` has no
+  spec to show), the state, the tools new conversations get from the registry's tool index (prefixed
+  name and description), and a Restart form when the service knows the instance. The restart route
+  exists next to the others so it can return to this page; `RestartPlugin` is the same call as on
+  the plugins page. The route looks the name up in the manager first (any case) and answers 404 for
+  a name that isn't a toolset, so it can't restart a channel or a provider.
+- **The form** is one template for add and edit, and it describes a remote server only, because the
+  manager stores nothing else: name, `url`, `insecure`, the bearer token (none, or the name of a
+  secret in `secrets.toml`), `deadline`, `parallel`, and `skills` (one per line). The `insecure` box
+  ("Allow insecure connections") applies only to a URL that starts with `http:` (ASCII case
+  ignored): the page renders it `hidden` for any other URL, `mcp-server-form.js` shows and hides it
+  as the owner types, and `ToolsetForm::spec` drops it for any other URL, so a box left ticked
+  behind a changed URL stores nothing. The posted form is read as a map of names to text, and names
+  the form doesn't have are ignored, so a post shaped like a stdio server has no `url` and the
+  manager refuses it at `url`. `ToolsetForm::spec` turns the text into JSON with the keys of a
+  `[toolset.<name>]` table and parses it with `ToolsetSpec::from_json`, so a value of the wrong type
+  comes back with the key, as does everything the manager and `validate_toolset` find. The manager
+  refuses `new` as a toolset's name, because it is the address of the form.
+- **Errors** come back on the form with what was typed and `<key>: <reason>` from the manager or the
+  form: 400 for a value that isn't valid, 409 for a name that is taken (`Exists`, an instance of
+  `giles.toml`, a retired name) or a toolset the manager can't start as a whole, and 409 for a stale
+  edit. Anything else is logged and answered 500, and a toolset that is gone is a 404.
+- **Stale edits.** The edit form carries the `updated_at` the toolset had when the form was made.
+  The post gives it to `ToolsetManager::update` as `expected_updated_at`. A toolset changed
+  meanwhile gives `Stale`, shown as a 409 with the typed values, the old `updated_at`, and a link
+  that reloads the form, so submitting the same form again can't overwrite the change.
+- **Credentials.** A bearer token is the name of a secret, shown by name; nothing reads a secret's
+  value. A stored spec whose token isn't a secret reference (only an older database can hold one)
+  fills the form with no token, and its token is never shown.
+- **Removal.** The confirmation lists the agents whose `tools` or `ask` have an entry that starts
+  with `<name>__`. The manager leaves them alone, and the page says so. A stored toolset has no data
+  directory, so nothing else is removed.
+
 ## Templates and styles
 
 Templates are in `crates/giles-core/templates/web/`: pages `chats.html`, `chat.html`, `error.html`,
 `login_required.html`, `login.html`, `admin_status.html`, `admin_plugins.html`, `admin_agents.html`,
-`admin_agent.html`, `admin_agent_new.html`, `admin_routes.html`, `admin_route_form.html` (extending
-`layout.html`; `admin_nav.html` is included by the admin pages), and fragments `message.html`,
-`approval.html`, `compose.html`, `attachments.html` (rendered by `render.rs`). Nothing inline: no
-scripts, styles, or `hx-on` handlers (the CSP and `allowEval: false` forbid them). The chat page is
-`hx-ext="sse"` with `sse-connect`; `#messages` has `sse-swap="message"` and `hx-swap="beforeend"`.
-The compose form replaces itself (`hx-target="this"`, `hx-swap="outerHTML"`); approval forms use
-`hx-swap="none"`. Every form also works as a plain form post. Styles are classes in
-`assets/giles.css`.
+`admin_agent.html`, `admin_agent_new.html`, `admin_routes.html`, `admin_route_form.html`,
+`admin_toolsets.html`, `admin_toolset.html`, `admin_toolset_form.html`, `admin_toolset_remove.html`
+(extending `layout.html`; `admin_nav.html` is included by the admin pages), and fragments
+`message.html`, `approval.html`, `compose.html`, `attachments.html` (rendered by `render.rs`).
+Nothing inline: no scripts, styles, or `hx-on` handlers (the CSP and `allowEval: false` forbid
+them). The chat page is `hx-ext="sse"` with `sse-connect`; `#messages` has `sse-swap="message"` and
+`hx-swap="beforeend"`. The compose form replaces itself (`hx-target="this"`, `hx-swap="outerHTML"`);
+approval forms use `hx-swap="none"`. Every form also works as a plain form post. Styles are classes
+in `assets/giles.css`.
 
 ## Tests
 
@@ -789,3 +859,20 @@ plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`, `l
   stored; a duplicate, a shadowed route, and a route that would hide another are 409; edit, remove
   (not by `GET`), and move change which route wins in the router's list; a move that would hide a
   route is refused; ids that aren't numbers or routes are 404.
+- Toolset pages (`tests/toolsets.rs`, over the test configuration, a real `ToolsetManager` whose
+  remote servers never answer, and the admin tests' fake service): anonymous requests get 401 and a
+  non-owner 403 on every route including the POSTs, with nothing changed; every POST needs the CSRF
+  token (field or header); the list shows state, tool count, and error from the service, in order,
+  with escaped values, and the stdio toolset of `giles.toml` without Edit or Remove; the form has
+  only the settings of a remote server; creating stores the spec, adds the toolset to the running
+  configuration, and the agent form offers its box; a post shaped like a stdio server is a 400 at
+  `url` and stores nothing; an invalid form (a missing secret, a bad duration, a bad URL, plain
+  `http` to another machine) is a 400 on the form with the key and the typed values and stores
+  nothing; a stored name, a name of `giles.toml`, and a channel's name are 409, and `new` and an
+  invalid name are 400; an edit replaces the settings and one made from an older `updated_at` is a
+  409 with a reload link; editing or removing a toolset of `giles.toml` is a 409; the removal page
+  lists the agents that mention the toolset and removing takes the box away; values are escaped on
+  every page; a secret's value and a token stored as text never appear, and saving that toolset with
+  a secret starts it; Restart goes through the admin service and returns to the page, and refuses a
+  name that is not a toolset; a failed stored toolset shows its reason and starts when saved with a
+  working setting; a stored spec that can't be read gets an empty form and can be removed.

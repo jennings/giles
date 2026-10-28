@@ -1,0 +1,30 @@
+{% extends "layout.html" %}
+
+{% block title %}Remove {{ name }} - MCP servers - Giles{% endblock %}
+
+{% block content %}
+{% include "web/admin_nav.html" %}
+<h1>Remove {{ name }}?</h1>
+<p>Removing the MCP server <code>{{ name }}</code> does this:</p>
+<ul>
+<li>Stops it at once and takes its tools away from new conversations. A conversation that is already going can't call them any more.</li>
+<li>Deletes its settings from Giles. The server itself isn't touched.</li>
+<li>Leaves every agent's settings as they are.</li>
+</ul>
+{%- if agents.is_empty() %}
+<p>No agent's tools or ask-first list mentions <code>{{ name }}__</code>.</p>
+{%- else %}
+<p class="state-warn">{% if agents.len() == 1 %}This agent lists{% else %}These agents list{% endif %} tools of <code>{{ name }}</code>. The entries stay as written and do nothing until an MCP server with this name is added again:</p>
+<ul>
+{%- for agent in agents %}
+<li><a href="/admin/agents/{{ agent.id }}/edit">{{ agent.label }}</a>:
+{%- for entry in agent.entries %} <code>{{ entry }}</code>{% endfor %}</li>
+{%- endfor %}
+</ul>
+{%- endif %}
+<form class="inline-form" method="post" action="/admin/mcp-servers/{{ name }}/remove">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button type="submit">Remove MCP server</button>
+</form>
+<a href="/admin/mcp-servers/{{ name }}">Cancel</a>
+{% endblock %}

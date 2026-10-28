@@ -91,19 +91,20 @@ The home page (`index.html`) shows the version; it's `/` only when no web channe
 
 `http::assets` serves files embedded with `include_bytes!`, from memory, under `/static/`:
 
-| Path                                | File                                          | Content-Type                     |
-| ----------------------------------- | --------------------------------------------- | -------------------------------- |
-| `/static/htmx-2.0.11.min.js`        | `assets/vendor/htmx-2.0.11/htmx.min.js`       | `text/javascript; charset=utf-8` |
-| `/static/htmx-ext-sse-2.2.4.min.js` | `assets/vendor/htmx-ext-sse-2.2.4/sse.min.js` | `text/javascript; charset=utf-8` |
-| `/static/giles-<hash>.css`          | `assets/giles.css`                            | `text/css; charset=utf-8`        |
-| `/static/agent-form-<hash>.js`      | `assets/agent-form.js`                        | `text/javascript; charset=utf-8` |
+| Path                                 | File                                          | Content-Type                     |
+| ------------------------------------ | --------------------------------------------- | -------------------------------- |
+| `/static/htmx-2.0.11.min.js`         | `assets/vendor/htmx-2.0.11/htmx.min.js`       | `text/javascript; charset=utf-8` |
+| `/static/htmx-ext-sse-2.2.4.min.js`  | `assets/vendor/htmx-ext-sse-2.2.4/sse.min.js` | `text/javascript; charset=utf-8` |
+| `/static/giles-<hash>.css`           | `assets/giles.css`                            | `text/css; charset=utf-8`        |
+| `/static/agent-form-<hash>.js`       | `assets/agent-form.js`                        | `text/javascript; charset=utf-8` |
+| `/static/mcp-server-form-<hash>.js`  | `assets/mcp-server-form.js`                   | `text/javascript; charset=utf-8` |
 
 Each path changes whenever its content does: the vendored files carry their version, and our own
-files carry the first 16 hex digits of their SHA-256 (`assets::stylesheet_path()` and
-`assets::agent_form_script_path()`, computed once). So every asset is served with
-`Cache-Control: public, max-age=31536000, immutable`, and a browser never revalidates or keeps a
-stale copy across an upgrade. `HEAD` works on every asset; any other method is a 405, and an unknown
-path under `/static/` gets the 404 page.
+files carry the first 16 hex digits of their SHA-256 (`assets::stylesheet_path()`,
+`assets::agent_form_script_path()`, and `assets::mcp_server_form_script_path()`, computed once). So
+every asset is served with `Cache-Control: public, max-age=31536000, immutable`, and a browser never
+revalidates or keeps a stale copy across an upgrade. `HEAD` works on every asset; any other method
+is a 405, and an unknown path under `/static/` gets the 404 page.
 
 ### Vendored files
 
@@ -160,12 +161,13 @@ Why each part:
   leak data with no tool call. Images come only from this origin (`/blobs/<sha256>`) and `data:`
   URLs, the two kinds the renderer keeps.
 - `script-src 'self'` and `style-src 'self'`, no `'unsafe-inline'` or `'unsafe-eval'`: the only
-  scripts are the two vendored files and `agent-form.js` (only the new-agent form loads it, through
-  the layout's `head` block), and the only stylesheet is `giles.css`. Any injected `<script>`,
-  `on*=` handler, or `javascript:` URL is inert even if it got past the renderer. This also blocks
-  inline `style="..."` attributes, so pages style with classes. Note for 2.22: `pulldown-cmark`
-  writes table column alignment as `style="text-align: ..."`, which browsers drop (and log as a
-  violation) under this policy; tables still render, unaligned.
+  scripts are the two vendored files, `agent-form.js` (only the new-agent form loads it), and
+  `mcp-server-form.js` (only the MCP server form loads it), each through the layout's `head` block,
+  and the only stylesheet is `giles.css`. Any injected `<script>`, `on*=` handler, or `javascript:`
+  URL is inert even if it got past the renderer. This also blocks inline `style="..."` attributes,
+  so pages style with classes. Note for 2.22: `pulldown-cmark` writes table column alignment as
+  `style="text-align: ..."`, which browsers drop (and log as a violation) under this policy; tables
+  still render, unaligned.
 - `connect-src 'self'`: `htmx` requests and the SSE `EventSource` go to this origin only. Already
   implied by `default-src`, but stated because the SSE extension depends on it.
 - `default-src 'self'`: everything not named (fonts, media for audio attachments, manifests,

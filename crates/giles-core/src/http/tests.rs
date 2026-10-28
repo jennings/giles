@@ -63,6 +63,11 @@ async fn every_response_has_the_security_headers() {
             assets::agent_form_script_path(),
             StatusCode::OK,
         ),
+        (
+            Method::GET,
+            assets::mcp_server_form_script_path(),
+            StatusCode::OK,
+        ),
         (Method::GET, stylesheet, StatusCode::OK),
         (Method::GET, "/no/such/page", StatusCode::NOT_FOUND),
         (

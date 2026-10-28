@@ -525,6 +525,14 @@ async fn toolsets_of_giles_toml_are_read_only_and_keep_their_names() {
     assert!(key.is_root());
     assert!(reason.contains("retired_instances"), "{reason}");
 
+    // The address of the form for a new toolset is no toolset's name, in any case.
+    for name in ["new", "NEW", "New"] {
+        let (key, reason) = invalid(f.manager.add(name, &spec(FILES)).await.unwrap_err());
+        assert!(key.is_root(), "{name}");
+        assert!(reason.contains("can't be a toolset's name"), "{reason}");
+    }
+    assert!(f.stored().await.is_empty());
+
     // Stored names are unique ignoring case.
     f.manager.add("good", &spec(FILES)).await.unwrap();
     let err = f.manager.add("GOOD", &spec(FILES)).await.unwrap_err();

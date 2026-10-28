@@ -1,5 +1,5 @@
 //! Static assets compiled into the binary: the vendored `htmx` and its SSE extension, the
-//! stylesheet, and the new-agent form's script.
+//! stylesheet, and the scripts of the new-agent form and the MCP server form.
 //!
 //! Every asset's path changes whenever its content does (a version for the vendored files, a
 //! content hash for our own), so all of them are served as `immutable` for a year. Pages link them
@@ -87,9 +87,35 @@ pub fn agent_form_script() -> Asset {
     }
 }
 
+const MCP_SERVER_FORM_SCRIPT_BODY: &[u8] = include_bytes!("../../assets/mcp-server-form.js");
+
+static MCP_SERVER_FORM_SCRIPT_PATH: LazyLock<String> =
+    LazyLock::new(|| hashed_path("mcp-server-form", MCP_SERVER_FORM_SCRIPT_BODY, "js"));
+
+/// The URL path of the MCP server form's script: `/static/mcp-server-form-<hash>.js`.
+pub fn mcp_server_form_script_path() -> &'static str {
+    MCP_SERVER_FORM_SCRIPT_PATH.as_str()
+}
+
+/// The MCP server form's script, at [`mcp_server_form_script_path`]: it shows "Allow insecure
+/// connections" only while the URL starts with `http:`.
+pub fn mcp_server_form_script() -> Asset {
+    Asset {
+        path: mcp_server_form_script_path(),
+        content_type: JAVASCRIPT,
+        body: MCP_SERVER_FORM_SCRIPT_BODY,
+    }
+}
+
 /// Every asset.
-pub fn all() -> [Asset; 4] {
-    [HTMX, HTMX_SSE, stylesheet(), agent_form_script()]
+pub fn all() -> [Asset; 5] {
+    [
+        HTMX,
+        HTMX_SSE,
+        stylesheet(),
+        agent_form_script(),
+        mcp_server_form_script(),
+    ]
 }
 
 /// `/static/<stem>-<hash>.<extension>`, the hash being the first 16 hex digits of the SHA-256 of

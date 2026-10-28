@@ -270,8 +270,9 @@ One async lock spans each change, as `Routes` does for routes. A change:
    `update` also compares `expected_updated_at` with the row's (`Stale`).
 2. Validates the spec with `validate_toolset` ([Configuration](config.md#validating-one-toolset))
    against the running configuration, with `secrets.toml` read again: a secret added to the file is
-   found by the next save, with no restart. Before it, in this order, the manager refuses a name
-   that a `giles.toml` instance uses (the reason is
+   found by the next save, with no restart. Before it, in this order, the manager refuses the name
+   `new` (ignoring case), which is the address of the web form for a new toolset (an `Invalid` at
+   the root), a name that a `giles.toml` instance uses (the reason is
    ``the name is taken by `[<kind>.<name>]` in giles.toml``, whatever else is wrong with the spec),
    a name in `[core] retired_instances`, which lists names that are not configured, a spec without
    `url` (an `Invalid` at `url`: a stdio server goes in `giles.toml`), and an `auth.bearer` that

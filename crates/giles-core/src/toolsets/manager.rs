@@ -17,6 +17,7 @@
 //!
 //! The extra rules beyond `validate_toolset`:
 //!
+//! - the name `new` is reserved, because it is the address of the form for a new toolset;
 //! - a name that a `giles.toml` instance uses belongs to that instance;
 //! - a name in `[core] retired_instances` is for instances that are not configured;
 //! - the spec has `url` (`validate_toolset` then refuses the keys of a stdio server next to it);
@@ -61,6 +62,9 @@ use crate::config::{
     ToolsetContext, ToolsetError, ToolsetInstance, ToolsetSpec, validate_toolset,
 };
 use crate::paths::DataRoot;
+
+/// The name the web form for a new toolset has in its address, so no toolset can use it.
+pub const RESERVED_TOOLSET_NAME: &str = "new";
 
 /// What [`ToolsetManager::start`] needs.
 pub struct ToolsetManagerOptions {
@@ -504,6 +508,12 @@ impl ToolsetManager {
             key: KeyPath::root(),
             reason,
         };
+        if name.eq_ignore_ascii_case(RESERVED_TOOLSET_NAME) {
+            return Err(whole(format!(
+                "{RESERVED_TOOLSET_NAME:?} can't be a toolset's name: it is the address of the form for a \
+                 new toolset"
+            )));
+        }
         let config = self.config.get();
         // The names before the spec: a name `giles.toml` has is that instance's whatever the
         // spec says.

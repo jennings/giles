@@ -14,9 +14,9 @@ use super::*;
 /// The admin service's answers, from a state the test sets. `RestartPlugin` records the instance
 /// (`NOT_FOUND` for one `Status` doesn't list).
 #[derive(Default)]
-struct FakeAdmin {
-    status: Mutex<pb::StatusResponse>,
-    restarted: Mutex<Vec<String>>,
+pub(super) struct FakeAdmin {
+    pub(super) status: Mutex<pb::StatusResponse>,
+    pub(super) restarted: Mutex<Vec<String>>,
 }
 
 impl FakeAdmin {
@@ -30,7 +30,7 @@ impl FakeAdmin {
         channel.status = Some(PbStatus { state: Some(state) });
     }
 
-    fn restarted(&self) -> Vec<String> {
+    pub(super) fn restarted(&self) -> Vec<String> {
         self.restarted.lock().unwrap().clone()
     }
 }
@@ -406,7 +406,7 @@ async fn the_plugins_page_shows_each_plugin_and_restart_buttons_for_supervised_o
     ] {
         assert!(libera.contains(expected), "{expected}\n{libera}");
     }
-    assert!(search.contains("toolset"), "{search}");
+    assert!(search.contains("MCP server"), "{search}");
     assert!(search.contains("none (remote)"), "{search}");
     assert!(!search.contains("<form"), "{search}");
     assert!(!html.contains(XSS), "{html}");
@@ -428,7 +428,7 @@ async fn the_plugins_page_shows_a_toolsets_state_and_a_restart_form() {
     // A running toolset: state with its restarts, the binary found, the version, the tools it
     // offers, and no pid (stdio servers run under the sandbox trampoline).
     for expected in [
-        "toolset",
+        "MCP server",
         "running, since 2026-10-21 00:01:40 UTC; 1 restarts",
         "/usr/local/bin/mcp-files",
         "<dd>2.1.0</dd>",

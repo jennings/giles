@@ -21,6 +21,7 @@ mod proxy;
 mod qr;
 mod render;
 mod routes;
+mod toolsets;
 
 #[cfg(test)]
 mod tests;
