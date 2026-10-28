@@ -1,25 +1,33 @@
 //! The toolset manager with the fake connector of `tests.rs`: stored toolsets reach the registry
 //! and the host, specs are refused with their key and nothing stored (a stored toolset is remote,
-//! with a bearer token from `secrets.toml`), secrets are read again, and startup reports toolsets
-//! that fail.
+//! with a bearer token from `secrets.toml`), secrets are read again, startup reports toolsets
+//! that fail, and a rename changes the row, the agents' globs, and the running toolset together,
+//! or none of them.
 
 use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 use std::sync::Arc;
 
-use giles_store::Store;
+use giles_store::{JournalMode, Store};
+use giles_types::AgentId;
 
 use super::cache::ToolCache;
 use super::host::ToolsetHost;
 use super::manager::{
-    ToolsetManager, ToolsetManagerError, ToolsetManagerOptions, ToolsetSource, ToolsetView,
+    AgentGlobChange, GlobChange, ToolsetManager, ToolsetManagerError, ToolsetManagerOptions,
+    ToolsetSource, ToolsetView,
 };
 use super::tests::{FakeConnector, Script, settle};
 use crate::admin::{PluginControl, PluginRunState, PluginRuntime};
+use crate::agents::remove::FakeActivity;
+use crate::agents::{AgentEdit, AgentManager, AgentManagerOptions};
 use crate::config::{Config, InstanceName, KeyPath, LoadOptions, ToolsetSpec, ToolsetTransport};
+use crate::memory_dbs::MemoryDbs;
 use crate::paths::DataRoot;
 use crate::registry::Registry;
+use crate::routes::Routes;
+use crate::scheduler::JobChanges;
 
 const FILES: &str = r#"{ "url": "https://files.example.com/mcp" }"#;
 
@@ -54,6 +62,7 @@ struct Fixture {
     connector: Arc<FakeConnector>,
     host: Arc<ToolsetHost>,
     manager: Arc<ToolsetManager>,
+    agent_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Fixture {
@@ -64,6 +73,17 @@ impl Fixture {
         stored: &[(&str, &str)],
         scripts: Vec<(&'static str, Script)>,
     ) -> Self {
+        Self::start_with_agents(extra, stored, &[], scripts).await
+    }
+
+    /// [`start`](Self::start) with the agents `(id, agent.toml)`, which are loaded with the
+    /// configuration.
+    async fn start_with_agents(
+        extra: &str,
+        stored: &[(&str, &str)],
+        agents: &[(&str, &str)],
+        scripts: Vec<(&'static str, Script)>,
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = DataRoot::new(dir.path(), Path::new("/tmp")).unwrap();
         root.create_layout().unwrap();
@@ -72,6 +92,11 @@ impl Fixture {
             format!("[owner]\nidentities = [\"web:owner\"]\n{extra}"),
         )
         .unwrap();
+        for (id, toml) in agents {
+            let agent = root.agents_dir().join(id);
+            std::fs::create_dir_all(&agent).unwrap();
+            std::fs::write(agent.join("agent.toml"), toml).unwrap();
+        }
         let config = Config::load_with(&root, &load_options()).unwrap_or_else(|e| panic!("{e}"));
         let store = Store::open(root.database_file()).await.unwrap();
         for (name, json) in stored {
@@ -85,11 +110,13 @@ impl Fixture {
         let cache = ToolCache::new(root.cache_dir().join("toolsets"));
         let host = Arc::new(ToolsetHost::start_with(connector.clone(), &registry, cache).await);
         host.started().await;
+        let agent_lock = Arc::new(tokio::sync::Mutex::new(()));
         let manager = ToolsetManager::start(ToolsetManagerOptions {
             store: store.clone(),
             root: root.clone(),
             config: registry.live_config().clone(),
             host: host.clone(),
+            agent_lock: agent_lock.clone(),
         })
         .await
         .unwrap();
@@ -101,6 +128,7 @@ impl Fixture {
             connector,
             host,
             manager,
+            agent_lock,
         }
     }
 
@@ -670,4 +698,551 @@ async fn saving_a_running_toolset_the_configuration_lost_stops_it_and_shows_it_f
     assert_eq!(f.failures(), [("files".to_owned(), reason)]);
     assert_eq!(f.connector.live("files"), 0);
     assert_eq!(f.manager.list().await.unwrap().len(), 1);
+}
+
+// Renaming.
+
+const PROVIDER: &str = "[provider.anthropic]\n";
+
+const JEEVES: &str = "models = [\"anthropic/claude\"]\n\
+                      tools = [\"files__*\", \"memory*\"]\n\
+                      ask = [\"files__delete\"]\n";
+
+const BUNTER: &str = "models = [\"anthropic/claude\"]\ntools = [\"memory*\"]\n";
+
+fn glob(key: &'static str, from: &str, to: &str) -> GlobChange {
+    GlobChange {
+        key,
+        from: from.to_owned(),
+        to: to.to_owned(),
+    }
+}
+
+fn agent_toml(f: &Fixture, id: &str) -> String {
+    std::fs::read_to_string(f.root.agents_dir().join(id).join("agent.toml")).unwrap()
+}
+
+/// The stored toolset `files`, running, and the agents `jeeves` (whose globs name it) and
+/// `bunter` (whose don't). The fake connector also has a server for `notes`.
+async fn files_and_agents() -> Fixture {
+    Fixture::start_with_agents(
+        PROVIDER,
+        &[("files", FILES)],
+        &[("jeeves", JEEVES), ("bunter", BUNTER)],
+        vec![
+            ("files", Script::new(&["read"])),
+            ("notes", Script::new(&["read", "write"])),
+        ],
+    )
+    .await
+}
+
+#[tokio::test]
+async fn renaming_a_running_toolset_renames_its_tools_and_rewrites_the_agents_globs() {
+    let f = files_and_agents().await;
+    assert_eq!(f.offered().await, ["files__read"]);
+    let before = f.manager.get("files").await.unwrap();
+    let (created, updated) = stamps(&before);
+
+    // The preview says what changes and changes nothing.
+    let changes = vec![AgentGlobChange {
+        agent: "jeeves".to_owned(),
+        globs: vec![
+            glob("tools", "files__*", "notes__*"),
+            glob("ask", "files__delete", "notes__delete"),
+        ],
+    }];
+    let preview = f.manager.rename_preview("files", "notes").await.unwrap();
+    assert_eq!(preview.agents, changes);
+    assert_eq!(f.stored().await, ["files"]);
+    assert_eq!(agent_toml(&f, "jeeves"), JEEVES);
+    assert_eq!(f.supervised(), ["files"]);
+
+    // Any case finds the toolset.
+    let renamed = f.manager.rename("FILES", "notes").await.unwrap();
+    assert_eq!(renamed.agents, changes);
+    // `from` is the name as stored, not as asked for.
+    assert_eq!(renamed.from, "files");
+    assert_eq!(renamed.view.name, "notes");
+    assert_eq!(renamed.view.failure, None);
+    assert_eq!(renamed.view.spec, Some(spec(FILES)));
+    let (renamed_created, renamed_updated) = stamps(&renamed.view);
+    assert_eq!(renamed_created, created);
+    assert!(renamed_updated > updated);
+
+    // The row, the live configuration, the host, and the registry have the new name only, and
+    // new sessions get the tools under the new prefix.
+    assert_eq!(f.stored().await, ["notes"]);
+    assert_eq!(f.configured(), ["notes"]);
+    assert_eq!(f.supervised(), ["notes"]);
+    assert_eq!(f.offered().await, ["notes__read", "notes__write"]);
+    assert!(f.registry.toolset("files").is_none());
+    assert!(f.registry.toolset("notes").is_some());
+    assert_eq!(f.connector.live("files"), 0);
+    assert_eq!(f.connector.connects("notes"), 1);
+    assert!(f.manager.get("files").await.is_err());
+
+    // The agents' files and the live configuration say `notes__`; others are untouched.
+    assert_eq!(
+        agent_toml(&f, "jeeves"),
+        JEEVES.replace("files__", "notes__")
+    );
+    assert_eq!(agent_toml(&f, "bunter"), BUNTER);
+    let config = f.registry.config();
+    let jeeves = &config.agents[&AgentId::new("jeeves").unwrap()];
+    assert_eq!(jeeves.tools, ["notes__*", "memory*"]);
+    assert_eq!(jeeves.ask, ["notes__delete"]);
+    assert_eq!(
+        config.agents[&AgentId::new("bunter").unwrap()].tools,
+        ["memory*"]
+    );
+
+    // And back again.
+    let back = f.manager.rename("notes", "files").await.unwrap();
+    assert_eq!(back.agents.len(), 1);
+    assert_eq!(agent_toml(&f, "jeeves"), JEEVES);
+    assert_eq!(f.offered().await, ["files__read"]);
+}
+
+#[tokio::test]
+async fn a_toolset_no_agent_names_is_renamed_without_touching_the_agents() {
+    let f = Fixture::start_with_agents(
+        PROVIDER,
+        &[("files", FILES)],
+        &[("bunter", BUNTER)],
+        vec![
+            ("files", Script::new(&["read"])),
+            ("notes", Script::new(&["read"])),
+        ],
+    )
+    .await;
+    let preview = f.manager.rename_preview("files", "notes").await.unwrap();
+    assert!(preview.agents.is_empty());
+    let renamed = f.manager.rename("files", "notes").await.unwrap();
+    assert!(renamed.agents.is_empty());
+    assert_eq!(agent_toml(&f, "bunter"), BUNTER);
+    assert_eq!(f.offered().await, ["notes__read"]);
+}
+
+/// The rename rewrites agents' files, so it takes the lock that agent edits hold.
+#[tokio::test]
+async fn a_rename_waits_for_an_agent_change_and_holds_the_agents_lock() {
+    let f = Fixture::start_with_agents(
+        PROVIDER,
+        &[("files", FILES)],
+        &[("jeeves", JEEVES)],
+        vec![
+            ("files", Script::new(&["read"])),
+            ("notes", Script::new(&["read"])),
+        ],
+    )
+    .await;
+
+    // An agent change is in progress: the rename doesn't start, and nothing has changed.
+    let change = f.agent_lock.clone().lock_owned().await;
+    let renaming = tokio::spawn({
+        let manager = f.manager.clone();
+        async move { manager.rename("files", "notes").await }
+    });
+    settle().await;
+    assert!(!renaming.is_finished());
+    assert_eq!(f.stored().await, ["files"]);
+    assert_eq!(agent_toml(&f, "jeeves"), JEEVES);
+
+    // Once it is done the rename runs, and the lock is free again afterwards.
+    drop(change);
+    renaming.await.unwrap().unwrap();
+    assert_eq!(f.stored().await, ["notes"]);
+    assert!(agent_toml(&f, "jeeves").contains("notes__"));
+    drop(
+        f.agent_lock
+            .try_lock()
+            .expect("the rename released the lock"),
+    );
+}
+
+/// The other half of the shared lock: an agent edit waits for a toolset rename, and the other way
+/// round, because both rewrite `agent.toml` files.
+#[tokio::test]
+async fn an_agent_edit_waits_for_the_lock_the_toolset_manager_shares() {
+    let f = Fixture::start_with_agents(
+        PROVIDER,
+        &[("files", FILES)],
+        &[("jeeves", JEEVES)],
+        vec![("files", Script::new(&["read"]))],
+    )
+    .await;
+    let agents = Arc::new(AgentManager::new(AgentManagerOptions {
+        registry: f.registry.clone(),
+        store: f.store.clone(),
+        memory_dbs: MemoryDbs::new(f.root.clone(), JournalMode::Wal),
+        routes: Arc::new(
+            Routes::open(f.store.clone(), f.registry.live_config().clone())
+                .await
+                .unwrap(),
+        ),
+        jobs: JobChanges::default(),
+        activity: Arc::new(FakeActivity::default()),
+        lock: f.agent_lock.clone(),
+    }));
+    let form = agents.edit_form("jeeves").await.unwrap();
+    let edit = AgentEdit {
+        id: form.id,
+        name: "Jeeves".to_owned(),
+        models: form.models,
+        tools: form.tools,
+        ask: form.ask,
+        timezone: form.timezone,
+        soul: form.soul,
+        version: form.version,
+    };
+
+    // A change is in progress: the edit doesn't start, and nothing has changed.
+    let change = f.agent_lock.clone().lock_owned().await;
+    let editing = tokio::spawn({
+        let agents = agents.clone();
+        async move { agents.edit(&edit).await }
+    });
+    settle().await;
+    assert!(!editing.is_finished());
+    assert_eq!(agent_toml(&f, "jeeves"), JEEVES);
+
+    // Once it is done the edit runs, and the lock is free again afterwards.
+    drop(change);
+    editing.await.unwrap().unwrap();
+    assert!(agent_toml(&f, "jeeves").contains("Jeeves"));
+    drop(f.agent_lock.try_lock().expect("the edit released the lock"));
+}
+
+#[tokio::test]
+async fn a_name_that_is_taken_retired_or_reserved_is_refused() {
+    let giles_toml = "[core]\nretired_instances = [\"old\"]\n[provider.anthropic]\n\
+                      [channel.web]\n[toolset.docs]\ncommand = \"/nonexistent/docs\"\n";
+    let f = Fixture::start_with_agents(
+        giles_toml,
+        &[("files", FILES), ("other", FILES)],
+        &[("jeeves", JEEVES)],
+        vec![
+            ("files", Script::new(&["read"])),
+            ("other", Script::new(&["read"])),
+            ("docs", Script::new(&["search"])),
+            ("leftover", Script::new(&["read"])),
+        ],
+    )
+    .await;
+
+    // Another stored toolset has the name, in any case.
+    for new in ["other", "OTHER"] {
+        for err in [
+            f.manager.rename("files", new).await.unwrap_err(),
+            f.manager.rename_preview("files", new).await.unwrap_err(),
+        ] {
+            assert!(matches!(err, ToolsetManagerError::Exists), "{new}: {err:?}");
+            assert!(err.is_invalid_input());
+        }
+    }
+    // Every other refusal is about the name as a whole.
+    let cases = [
+        (
+            "docs",
+            "the name is taken by `[toolset.docs]` in giles.toml",
+        ),
+        (
+            "DOCS",
+            "the name is taken by `[toolset.docs]` in giles.toml",
+        ),
+        ("web", "the name is taken by `[channel.web]` in giles.toml"),
+        (
+            "anthropic",
+            "the name is taken by `[provider.anthropic]` in giles.toml",
+        ),
+        ("old", "retired_instances"),
+        ("new", "can't be a toolset's name"),
+        ("bad name", "invalid instance name"),
+        ("files", "already has that name"),
+    ];
+    for (new, fragment) in cases {
+        let err = f.manager.rename("files", new).await.unwrap_err();
+        assert!(err.is_invalid_input(), "{new}: {err:?}");
+        let (key, reason) = invalid(err);
+        assert!(key.is_root(), "{new}: {key}");
+        assert!(reason.contains(fragment), "{new}: {reason}");
+        // The preview refuses the same way.
+        let (key, same) = invalid(f.manager.rename_preview("files", new).await.unwrap_err());
+        assert!(key.is_root(), "{new}: {key}");
+        assert_eq!(same, reason, "{new}");
+    }
+
+    // Toolsets that aren't stored ones, and ones that aren't there, can't be renamed.
+    let err = f.manager.rename("docs", "notes").await.unwrap_err();
+    assert!(matches!(err, ToolsetManagerError::Unsupported), "{err:?}");
+    let err = f.manager.rename_preview("docs", "notes").await.unwrap_err();
+    assert!(matches!(err, ToolsetManagerError::Unsupported), "{err:?}");
+    let err = f.manager.rename("ghost", "notes").await.unwrap_err();
+    assert!(matches!(err, ToolsetManagerError::NotFound), "{err:?}");
+    assert!(!err.is_invalid_input());
+
+    // Nothing changed, and the toolset was never stopped.
+    assert_eq!(f.stored().await, ["files", "other"]);
+    assert_eq!(agent_toml(&f, "jeeves"), JEEVES);
+    assert_eq!(f.supervised(), ["docs", "files", "other"]);
+    assert_eq!(f.connector.connects("files"), 1);
+
+    // Data an earlier instance left under a name doesn't keep a remote toolset from taking it,
+    // as it doesn't keep a new one from being added: the toolset has no data of its own to merge.
+    let leftover = f.root.plugin_data_dir("leftover").unwrap();
+    std::fs::create_dir_all(&leftover).unwrap();
+    std::fs::write(leftover.join("state.db"), "kept").unwrap();
+    f.manager.rename("files", "leftover").await.unwrap();
+    assert_eq!(f.stored().await, ["leftover", "other"]);
+    assert_eq!(
+        std::fs::read_to_string(leftover.join("state.db")).unwrap(),
+        "kept"
+    );
+}
+
+#[tokio::test]
+async fn globs_that_match_by_the_old_name_refuse_the_rename_and_change_nothing() {
+    // `bunter` has globs that match `files__` tools without saying `files__`; `jeeves` has only
+    // globs that can be rewritten.
+    let ambiguous = "models = [\"anthropic/claude\"]\n\
+                     tools = [\"file*\", \"files__read\"]\n\
+                     ask = [\"*\", \"fil?s__delete\"]\n";
+    let f = Fixture::start_with_agents(
+        PROVIDER,
+        &[("files", FILES)],
+        &[("jeeves", JEEVES), ("bunter", ambiguous)],
+        vec![
+            ("files", Script::new(&["read"])),
+            ("notes", Script::new(&["read"])),
+        ],
+    )
+    .await;
+    let before = f.store.toolsets().await.unwrap();
+
+    for err in [
+        f.manager.rename("files", "notes").await.unwrap_err(),
+        f.manager
+            .rename_preview("files", "notes")
+            .await
+            .unwrap_err(),
+    ] {
+        assert!(err.is_invalid_input());
+        let ToolsetManagerError::Refused { reason } = err else {
+            panic!("expected Refused, got {err:?}");
+        };
+        assert!(reason.contains("`bunter`"), "{reason}");
+        assert!(reason.contains("tools entry \"file*\""), "{reason}");
+        assert!(reason.contains("ask entry \"fil?s__delete\""), "{reason}");
+        assert!(!reason.contains("jeeves"), "{reason}");
+        assert!(!reason.contains("files__read"), "{reason}");
+    }
+
+    // Nothing changed: not the row, the files, or the running toolset.
+    assert_eq!(f.store.toolsets().await.unwrap(), before);
+    assert_eq!(agent_toml(&f, "jeeves"), JEEVES);
+    assert_eq!(agent_toml(&f, "bunter"), ambiguous);
+    assert_eq!(f.configured(), ["files"]);
+    assert_eq!(f.supervised(), ["files"]);
+    assert_eq!(f.connector.connects("files"), 1);
+    assert_eq!(f.offered().await, ["files__read"]);
+
+    // Once the owner says what they mean, the rename goes through.
+    std::fs::write(
+        f.root.agents_dir().join("bunter/agent.toml"),
+        "models = [\"anthropic/claude\"]\ntools = [\"files__*\"]\n",
+    )
+    .unwrap();
+    let renamed = f.manager.rename("files", "notes").await.unwrap();
+    let agents: Vec<&str> = renamed.agents.iter().map(|a| a.agent.as_str()).collect();
+    assert_eq!(agents, ["bunter", "jeeves"]);
+}
+
+#[tokio::test]
+async fn an_agent_file_that_cannot_be_edited_refuses_the_rename() {
+    let f = files_and_agents().await;
+    std::fs::write(
+        f.root.agents_dir().join("bunter/agent.toml"),
+        "models = [\n",
+    )
+    .unwrap();
+    let err = f.manager.rename("files", "notes").await.unwrap_err();
+    let ToolsetManagerError::Refused { reason } = err else {
+        panic!("expected Refused, got {err:?}");
+    };
+    assert!(reason.contains("`bunter`"), "{reason}");
+    assert_eq!(agent_toml(&f, "jeeves"), JEEVES);
+    assert_eq!(f.supervised(), ["files"]);
+}
+
+#[tokio::test]
+async fn a_failed_step_is_undone_and_the_toolset_runs_again_under_its_old_name() {
+    // Both agents name the toolset. `bunter` is rewritten first, then `jeeves` can't be: the
+    // name of the temporary file the edit uses is taken by a directory.
+    let both = "models = [\"anthropic/claude\"]\ntools = [\"files__read\"]\n";
+    let f = Fixture::start_with_agents(
+        PROVIDER,
+        &[("files", FILES)],
+        &[("bunter", both), ("jeeves", JEEVES)],
+        vec![
+            ("files", Script::new(&["read"])),
+            ("notes", Script::new(&["read"])),
+        ],
+    )
+    .await;
+    let before = f.store.toolsets().await.unwrap();
+    std::fs::create_dir(f.root.agents_dir().join("jeeves/.agent.toml.edit.tmp")).unwrap();
+    assert_eq!(f.connector.connects("files"), 1);
+
+    let err = f.manager.rename("files", "notes").await.unwrap_err();
+    assert!(!err.is_invalid_input());
+    let ToolsetManagerError::Failed {
+        step, undo_errors, ..
+    } = &err
+    else {
+        panic!("expected Failed, got {err:?}");
+    };
+    assert!(step.contains("jeeves"), "{step}");
+    assert!(undo_errors.is_empty(), "{undo_errors:?}");
+    assert!(err.to_string().ends_with("Nothing was changed."), "{err}");
+
+    // The old state is back: the agents' files and their configuration, the row, and the running
+    // toolset.
+    assert_eq!(agent_toml(&f, "bunter"), both);
+    assert_eq!(agent_toml(&f, "jeeves"), JEEVES);
+    let config = f.registry.config();
+    assert_eq!(
+        config.agents[&AgentId::new("bunter").unwrap()].tools,
+        ["files__read"]
+    );
+    assert_eq!(f.store.toolsets().await.unwrap(), before);
+    assert_eq!(f.configured(), ["files"]);
+    assert_eq!(f.supervised(), ["files"]);
+    assert_eq!(f.offered().await, ["files__read"]);
+    assert_eq!(f.connector.connects("files"), 2, "it was started again");
+    assert_eq!(f.connector.live("files"), 1);
+    assert_eq!(f.connector.connects("notes"), 0);
+    assert_eq!(f.manager.get("files").await.unwrap().failure, None);
+}
+
+#[tokio::test]
+async fn a_failed_toolset_can_be_renamed_and_is_started_when_it_validates() {
+    let f = Fixture::start_with_agents(
+        PROVIDER,
+        &[("bad", NEEDS_SECRET)],
+        &[(
+            "jeeves",
+            "models = [\"anthropic/claude\"]\ntools = [\"bad__*\"]\n",
+        )],
+        vec![("later", Script::new(&["go"]))],
+    )
+    .await;
+    assert_eq!(f.failures().len(), 1);
+
+    // It isn't running, so only the name is checked, and it is renamed. It still can't start.
+    let renamed = f.manager.rename("bad", "later").await.unwrap();
+    assert_eq!(renamed.view.name, "later");
+    assert_eq!(renamed.agents.len(), 1);
+    let reason = renamed.view.failure.expect("still failed");
+    assert!(
+        reason.starts_with("auth.bearer: no secret \"bad-token\""),
+        "{reason}"
+    );
+    assert_eq!(f.stored().await, ["later"]);
+    assert_eq!(f.failures(), [("later".to_owned(), reason)]);
+    assert!(f.configured().is_empty());
+    assert_eq!(
+        agent_toml(&f, "jeeves"),
+        "models = [\"anthropic/claude\"]\ntools = [\"later__*\"]\n"
+    );
+    assert!(
+        f.manager
+            .plugins()
+            .iter()
+            .all(|p| p.instance.as_str() != "bad")
+    );
+
+    // The secret arrives, and it starts under its new name.
+    write_secrets(&f.root, "bad-token = \"bad-token-value\"\n");
+    let view = f.manager.retry("later").await.unwrap();
+    assert_eq!(view.failure, None);
+    assert_eq!(f.configured(), ["later"]);
+    assert_eq!(f.offered().await, ["later__go"]);
+
+    // A failed toolset that validates now is started by the rename itself.
+    let g = Fixture::start(
+        "",
+        &[("files", NEEDS_SECRET)],
+        vec![("notes", Script::new(&["read"]))],
+    )
+    .await;
+    assert_eq!(g.failures().len(), 1);
+    write_secrets(&g.root, "bad-token = \"bad-token-value\"\n");
+    let renamed = g.manager.rename("files", "notes").await.unwrap();
+    assert_eq!(renamed.view.failure, None);
+    assert_eq!(g.configured(), ["notes"]);
+    assert_eq!(g.offered().await, ["notes__read"]);
+    assert!(g.failures().is_empty());
+}
+
+#[tokio::test]
+async fn a_stored_toolset_that_lost_its_name_to_giles_toml_leaves_the_instances_globs_alone() {
+    // `Files` is stored, but `[toolset.files]` took the name at startup, so the agents' `files__`
+    // globs are the instance's.
+    let f = Fixture::start_with_agents(
+        "[provider.anthropic]\n[toolset.files]\ncommand = \"/nonexistent/files\"\n",
+        &[("Files", FILES)],
+        &[("jeeves", JEEVES)],
+        vec![
+            ("files", Script::new(&["read"])),
+            ("docs", Script::new(&["search"])),
+        ],
+    )
+    .await;
+    assert_eq!(f.failures().len(), 1);
+
+    let renamed = f.manager.rename("Files", "docs").await.unwrap();
+    assert!(renamed.agents.is_empty());
+    assert_eq!(renamed.view.name, "docs");
+    assert_eq!(renamed.view.failure, None);
+    assert_eq!(f.stored().await, ["docs"]);
+    assert_eq!(agent_toml(&f, "jeeves"), JEEVES);
+    assert_eq!(f.configured(), ["docs", "files"]);
+    assert_eq!(f.supervised(), ["docs", "files"]);
+    assert_eq!(f.offered().await, ["docs__search", "files__read"]);
+    assert!(f.failures().is_empty());
+}
+
+#[tokio::test]
+async fn the_case_of_a_toolset_name_can_change() {
+    let f = Fixture::start_with_agents(
+        PROVIDER,
+        &[("files", FILES)],
+        &[("jeeves", JEEVES)],
+        vec![
+            ("files", Script::new(&["read"])),
+            ("Files", Script::new(&["read"])),
+        ],
+    )
+    .await;
+
+    let err = f.manager.rename("files", "files").await.unwrap_err();
+    assert!(err.is_invalid_input(), "{err:?}");
+    let renamed = f.manager.rename("files", "Files").await.unwrap();
+    assert_eq!(renamed.from, "files");
+    assert_eq!(renamed.view.name, "Files");
+    assert_eq!(renamed.agents.len(), 1);
+    assert_eq!(f.stored().await, ["Files"]);
+    assert_eq!(f.configured(), ["Files"]);
+    assert_eq!(f.supervised(), ["Files"]);
+    assert_eq!(f.offered().await, ["Files__read"]);
+    assert_eq!(
+        agent_toml(&f, "jeeves"),
+        JEEVES.replace("files__", "Files__")
+    );
+
+    // And back.
+    f.manager.rename("FILES", "files").await.unwrap();
+    assert_eq!(f.stored().await, ["files"]);
+    assert_eq!(agent_toml(&f, "jeeves"), JEEVES);
 }

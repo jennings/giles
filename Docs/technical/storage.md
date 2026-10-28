@@ -497,13 +497,15 @@ case; the row keeps the spelling it was written with. Because the table is in `g
 | `toolset_update(name, spec, expected_updated_at, now)` | Replaces the spec and sets `updated_at`; `Error::NoSuchToolset` if absent, `Error::StaleToolset` on a stale expectation. |
 | `toolset_remove(name)`                         | Deletes a toolset; `false` if there is none.                  |
 | `toolset_rename(old, new, now)`                | Renames a row, keeping `created_at`; `Error::NoSuchToolset` if `old` is absent, `Error::ToolsetExists` if `new` is another toolset's name. A change of case alone is allowed. |
+| `toolset_restore(name, row)`                   | Writes a row it read before over the toolset called `name`: its name, spec, and both times, exactly. `Error::NoSuchToolset` if `name` is absent, `Error::ToolsetExists` if `row.name` is another toolset's name. |
 
 All of them return the stored row (`StoredToolset`: name, spec, `created_at`, `updated_at`) except
-`toolsets` and `toolset_remove`. `toolset_insert`, `toolset_update`, and `toolset_rename` take a
-`now` as their last argument, like the other methods that depend on the current time. Insert stamps
-both times with it. Update and rename stamp `updated_at` with it too, but never earlier than a
-millisecond past the stored value, so two changes in one millisecond, or after the clock stepped
-back, are told apart.
+`toolsets`, `toolset_remove`, and `toolset_restore`, which a caller uses to take back a change it
+made (a failed rename), leaving the row as it was, `updated_at` included. `toolset_insert`,
+`toolset_update`, and `toolset_rename` take a `now` as their last argument, like the other methods
+that depend on the current time. Insert stamps both times with it. Update and rename stamp
+`updated_at` with it too, but never earlier than a millisecond past the stored value, so two changes
+in one millisecond, or after the clock stepped back, are told apart.
 
 `updated_at` is the stale-update token, as it is for memories. A caller that loaded a toolset passes
 the `updated_at` it saw; if the stored value differs, someone changed the toolset in between, and

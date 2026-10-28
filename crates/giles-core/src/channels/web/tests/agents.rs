@@ -96,6 +96,7 @@ impl Env {
             routes: self.shared_routes().await,
             jobs: self.jobs.clone(),
             activity: self.activity.clone(),
+            lock: Arc::default(),
         }))
     }
 

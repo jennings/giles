@@ -441,6 +441,31 @@ fn write_edit(
     commit(dir, before, toml, soul, |from, to| fs::rename(from, to))
 }
 
+/// The text of the `agent.toml` of the agent whose directory is `dir`, read as the edit form reads
+/// it: a link, a file that isn't UTF-8, and one over [`MAX_EDIT_FILE_BYTES`] are
+/// [`EditError::Unsupported`], left to the owner to edit by hand.
+pub(crate) fn read_agent_toml(dir: &Path) -> Result<String, EditError> {
+    Ok(read_files(dir)?.toml)
+}
+
+/// Replaces the `agent.toml` in `dir` with `after`, if it still reads `before`, the way the edit
+/// form writes it (see the module docs): a temporary file in the directory with the mode of the
+/// file it replaces, fsynced, and renamed over it. The rest of the agent's files are untouched.
+/// A toolset rename uses this to rewrite an agent's tool globs, and to put them back.
+///
+/// # Errors
+///
+/// [`EditError::Stale`] if `agent.toml` or `SOUL.md` isn't what `before` was read from by the time
+/// of the write, which is the file changing underneath; [`EditError::Unsupported`] as for
+/// [`read_agent_toml`]; [`EditError::Io`]. Nothing is written in each case.
+pub(crate) fn replace_agent_toml(dir: &Path, before: &str, after: &str) -> Result<(), EditError> {
+    let files = read_files(dir)?;
+    if files.toml != before {
+        return Err(EditError::Stale);
+    }
+    write_edit(dir, &files, Some(after), None)
+}
+
 /// [`write_edit`] with the rename that puts a file in place as a parameter, for tests to fail.
 fn commit(
     dir: &Path,

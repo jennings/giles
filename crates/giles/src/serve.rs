@@ -77,12 +77,15 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     );
     // The toolsets stored in the database, validated and added beside the ones of `giles.toml`.
     // One that fails isn't started and shows as failed; startup never fails on one. The manager is
-    // also what changes them while Giles runs.
+    // also what changes them while Giles runs. A rename rewrites agents' files, so it holds the
+    // lock that the agent manager holds for a change to an agent.
+    let agent_lock = Arc::new(tokio::sync::Mutex::new(()));
     let toolset_manager = ToolsetManager::start(ToolsetManagerOptions {
         store: runtime.store.clone(),
         root: root.clone(),
         config: runtime.registry.live_config().clone(),
         host: toolsets.clone(),
+        agent_lock: agent_lock.clone(),
     })
     .await
     .context("cannot read the stored toolsets")?;
@@ -189,6 +192,7 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
                         sessions: sessions.clone(),
                         scheduler: scheduler.clone(),
                     }),
+                    lock: agent_lock.clone(),
                 },
             ));
             let builder = web.install_agents(

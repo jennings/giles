@@ -13,7 +13,7 @@
 //! replaces, and removes one toolset while Giles runs.
 //!
 //! [`ToolsetManager`] ([`manager`]) keeps the toolsets stored in `giles.db` and changes them: it
-//! validates a spec, stores it, and adds, replaces, or removes the toolset in the live
+//! validates a spec, stores it, and adds, replaces, renames, or removes the toolset in the live
 //! configuration and the host.
 
 mod cache;
@@ -33,6 +33,6 @@ pub use self::host::ToolsetHost;
 pub use self::launch::{ResolvedProgram, ToolsetLauncher};
 pub use self::lifecycle::{HEALTHY_RESET, RESTART_BACKOFF_MAX, RESTART_BACKOFF_MIN};
 pub use self::manager::{
-    RESERVED_TOOLSET_NAME, Removed, ToolsetManager, ToolsetManagerError, ToolsetManagerOptions,
-    ToolsetSource, ToolsetView,
+    AgentGlobChange, GlobChange, RESERVED_TOOLSET_NAME, Removed, RenamePreview, ToolsetManager,
+    ToolsetManagerError, ToolsetManagerOptions, ToolsetRenamed, ToolsetSource, ToolsetView,
 };

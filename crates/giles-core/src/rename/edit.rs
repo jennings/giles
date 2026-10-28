@@ -2,6 +2,7 @@
 //! `agent.toml` files while keeping everything else as the operator wrote it (comments, blank
 //! lines, key order, quoting). `toml_edit` does the editing; nothing here touches the file system.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use toml_edit::{DocumentMut, Item, Key, Table, TableLike, Value};
@@ -13,7 +14,7 @@ const KINDS: [Kind; 3] = [Kind::Provider, Kind::Channel, Kind::Toolset];
 
 /// A file can't be edited.
 #[derive(Debug, thiserror::Error)]
-pub(super) enum EditError {
+pub(crate) enum EditError {
     /// Not valid TOML.
     #[error("not valid TOML: {0}")]
     Syntax(String),
@@ -42,6 +43,22 @@ pub(super) fn configured(doc: &DocumentMut) -> BTreeMap<String, Kind> {
         }
     }
     names
+}
+
+/// The names in `[core] retired_instances`. Entries that aren't strings are skipped: the
+/// configuration loader refuses them when Giles starts.
+pub(super) fn retired(doc: &DocumentMut) -> Vec<String> {
+    doc.get("core")
+        .and_then(Item::as_table_like)
+        .and_then(|core| core.get("retired_instances"))
+        .and_then(Item::as_array)
+        .map(|names| {
+            names
+                .iter()
+                .filter_map(|name| name.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// What [`rename_in_giles_toml`] changed.
@@ -162,8 +179,8 @@ fn component_of(doc: &DocumentMut, kind: Kind, name: &str) -> Option<String> {
 /// Renames the references to the instance `old` in the text of an `agent.toml`: for a provider,
 /// the `<old>/<model id>` models (`models`, `compaction_model`, each job's `model`); for a
 /// toolset, the tool globs that start with `<old>__` (`tools`, `ask`), since a toolset's name is
-/// its tools' prefix. Channels aren't referenced from agents. Returns the new text and the
-/// number of changes, or `None` if there was nothing to change.
+/// its tools' prefix ([`rewrite_toolset_globs`]). Channels aren't referenced from agents. Returns
+/// the new text and the number of changes, or `None` if there was nothing to change.
 pub(super) fn rename_in_agent_toml(
     source: &str,
     kind: Kind,
@@ -193,37 +210,116 @@ pub(super) fn rename_in_agent_toml(
             }
         }
         _ => {
-            let (from, to) = (format!("{old}__"), format!("{new}__"));
-            let swap = |s: &str| s.strip_prefix(&from).map(|rest| format!("{to}{rest}"));
-            // A glob like `github*` matches the toolset's tools by the old name without saying
-            // `github__`: nothing can rewrite it safely, and leaving it would stop it matching
-            // (an `ask` entry then stops asking). The operator decides what it should say.
-            let mut ambiguous = Vec::new();
-            for key in ["tools", "ask"] {
-                if let Some(item) = doc.get(key) {
-                    for glob in strings_of(item) {
-                        if !glob.starts_with(&from) && depends_on_name(&glob, old, new) {
-                            ambiguous.push(format!("{key} entry {glob:?}"));
-                        }
-                    }
-                }
-            }
-            if !ambiguous.is_empty() {
-                return Err(EditError::Unsupported(format!(
+            return match rewrite_toolset_globs(source, old, new)? {
+                ToolsetGlobs::Unchanged => Ok(None),
+                ToolsetGlobs::Ambiguous(globs) => Err(EditError::Unsupported(format!(
                     "these globs match `{old}__` tools without starting with `{old}__`, so they \
                      would stop matching after the rename to {new:?}: {}; rewrite them by hand \
                      (for example to `{old}__*`), then run the command again",
-                    ambiguous.join(", ")
-                )));
-            }
-            for key in ["tools", "ask"] {
-                if let Some(item) = doc.get_mut(key) {
-                    count += map_strings(item, &swap);
+                    globs.join(", ")
+                ))),
+                ToolsetGlobs::Rewritten { text, changes } => Ok(Some((text, changes.len()))),
+            };
+        }
+    }
+    Ok((count > 0).then(|| (doc.to_string(), count)))
+}
+
+/// One tool glob of an `agent.toml` that a toolset rename rewrites.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobChange {
+    /// The list the glob is in: `tools` or `ask`.
+    pub key: &'static str,
+    /// The glob as written, which starts with `<old>__`.
+    pub from: String,
+    /// The glob after the rename, which starts with `<new>__`.
+    pub to: String,
+}
+
+/// What renaming a toolset does to the text of an `agent.toml`.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ToolsetGlobs {
+    /// No glob names the toolset.
+    Unchanged,
+    /// These globs match `<old>__` tools without starting with `<old>__` (a glob like `github*`):
+    /// nothing can rewrite them safely, and left alone they would stop matching (an `ask` entry
+    /// then stops asking), so the operator decides what each should say. Each is described as
+    /// `tools entry "github*"`.
+    Ambiguous(Vec<String>),
+    /// The file with every glob that starts with `<old>__` rewritten, and what changed, in file
+    /// order (`tools` first).
+    Rewritten {
+        /// The new text.
+        text: String,
+        /// The globs that changed.
+        changes: Vec<GlobChange>,
+    },
+}
+
+/// Rewrites the `<old>__` globs of the `tools` and `ask` lists of an `agent.toml` to `<new>__`,
+/// as a toolset rename needs, and keeps everything else as written (comments, key order). A file
+/// with CRLF line ends is edited as LF and written back with CRLF, as the agent edit form does.
+///
+/// # Errors
+///
+/// [`EditError::Syntax`] if `source` isn't valid TOML.
+pub(crate) fn rewrite_toolset_globs(
+    source: &str,
+    old: &str,
+    new: &str,
+) -> Result<ToolsetGlobs, EditError> {
+    let crlf = source.contains("\r\n");
+    let lf;
+    let text = if crlf {
+        lf = source.replace("\r\n", "\n");
+        lf.as_str()
+    } else {
+        source
+    };
+    let mut doc = parse(text)?;
+    let (from, to) = (format!("{old}__"), format!("{new}__"));
+    // A glob like `github*` matches the toolset's tools by the old name without saying
+    // `github__`: nothing can rewrite it safely, and leaving it would stop it matching.
+    let mut ambiguous = Vec::new();
+    for key in ["tools", "ask"] {
+        if let Some(item) = doc.get(key) {
+            for glob in strings_of(item) {
+                if !glob.starts_with(&from) && depends_on_name(&glob, old, new) {
+                    ambiguous.push(format!("{key} entry {glob:?}"));
                 }
             }
         }
     }
-    Ok((count > 0).then(|| (doc.to_string(), count)))
+    if !ambiguous.is_empty() {
+        return Ok(ToolsetGlobs::Ambiguous(ambiguous));
+    }
+    let changes = RefCell::new(Vec::new());
+    for key in ["tools", "ask"] {
+        let swap = |glob: &str| {
+            glob.strip_prefix(&from).map(|rest| {
+                let renamed = format!("{to}{rest}");
+                changes.borrow_mut().push(GlobChange {
+                    key,
+                    from: glob.to_owned(),
+                    to: renamed.clone(),
+                });
+                renamed
+            })
+        };
+        if let Some(item) = doc.get_mut(key) {
+            map_strings(item, &swap);
+        }
+    }
+    let changes = changes.into_inner();
+    if changes.is_empty() {
+        return Ok(ToolsetGlobs::Unchanged);
+    }
+    let text = if crlf {
+        doc.to_string().replace('\n', "\r\n")
+    } else {
+        doc.to_string()
+    };
+    Ok(ToolsetGlobs::Rewritten { text, changes })
 }
 
 /// The strings of a string or an array of strings.
@@ -627,5 +723,61 @@ prompt = "Hi"
             .unwrap()
             .is_none()
         );
+    }
+
+    #[test]
+    fn the_rewritten_globs_are_listed_with_their_old_and_new_text() {
+        let source = "# Jeeves\ntools = [\"github__*\", \"memory*\"]  # kept\nask = [\"github__create_issue\", \"x\"]\n";
+        let ToolsetGlobs::Rewritten { text, changes } =
+            rewrite_toolset_globs(source, "github", "gh").unwrap()
+        else {
+            panic!("nothing was rewritten");
+        };
+        assert_eq!(
+            text,
+            source.replace("github__", "gh__"),
+            "only the globs change"
+        );
+        let listed: Vec<(&str, &str, &str)> = changes
+            .iter()
+            .map(|c| (c.key, c.from.as_str(), c.to.as_str()))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("tools", "github__*", "gh__*"),
+                ("ask", "github__create_issue", "gh__create_issue"),
+            ]
+        );
+
+        // Nothing names it, or the globs can't be rewritten.
+        assert_eq!(
+            rewrite_toolset_globs("tools = [\"memory*\"]\n", "github", "gh").unwrap(),
+            ToolsetGlobs::Unchanged
+        );
+        assert_eq!(
+            rewrite_toolset_globs(
+                "tools = [\"git*\", \"x\"]\nask = [\"github*\"]\n",
+                "github",
+                "gh"
+            )
+            .unwrap(),
+            ToolsetGlobs::Ambiguous(vec![
+                "tools entry \"git*\"".to_owned(),
+                "ask entry \"github*\"".to_owned()
+            ])
+        );
+        assert!(rewrite_toolset_globs("tools = [", "github", "gh").is_err());
+    }
+
+    #[test]
+    fn crlf_line_ends_survive_a_glob_rewrite() {
+        let source = "models = [\"a/b\"]\r\ntools = [\"github__*\"]\r\n";
+        let ToolsetGlobs::Rewritten { text, .. } =
+            rewrite_toolset_globs(source, "github", "gh").unwrap()
+        else {
+            panic!("nothing was rewritten");
+        };
+        assert_eq!(text, "models = [\"a/b\"]\r\ntools = [\"gh__*\"]\r\n");
     }
 }
