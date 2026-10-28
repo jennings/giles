@@ -22,11 +22,12 @@ Every gRPC plugin serves `giles.plugin.v1.PluginService`, `grpc.health.v1.Health
 client.
 
 `giles.admin.v1` has the RPCs of v1: `Status`, `ListPlugins`, `RestartPlugin`, `ListSessions`,
-`ResetSession`, `CreateLoginLink`, `UsageReport`, and `Backup`. The user and pairing RPCs of PLAN
-section 8.7 belong to multi-user support and are added when it is built. Beyond PLAN section 8.7's
-sketch, `StatusResponse` also reports the host's sandbox (`SandboxHost`) and every configured
-channel with its last status (`ChannelInstance`), so built-in channels show up too. The core's side
-is described in [Admin service](admin.md).
+`ResetSession`, `CreateLoginLink`, `UsageReport`, `Backup`, and the toolset RPCs `ListToolsets`,
+`GetToolset`, `SetToolset`, and `RemoveToolset`. The user and pairing RPCs of PLAN section 8.7
+belong to multi-user support and are added when it is built. Beyond PLAN section 8.7's sketch,
+`StatusResponse` also reports the host's sandbox (`SandboxHost`) and every configured channel with
+its last status (`ChannelInstance`), so built-in channels show up too. The core's side is described
+in [Admin service](admin.md).
 
 ## Conventions
 

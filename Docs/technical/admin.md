@@ -56,8 +56,59 @@ token (after the socket answers, so it's the running core's). A missing socket, 
 | `CreateLoginLink` | `LoginLinks::create_login_link(&user, now)`; `UNAVAILABLE` without the web channel. `UnknownUser` maps to `NOT_FOUND`, `Refused` to `FAILED_PRECONDITION`. |
 | `UsageReport`     | `Store::usage_by_model(since, until)`: one row per agent, provider instance, and model. |
 | `Backup`          | `backup::create` into `dir` (absolute, existing): `VACUUM INTO` plus a tar of the files; answers the two paths written. See [Backups](backups.md). |
+| `ListToolsets`    | `ToolsetAdmin::list`: every stored toolset and every toolset of `giles.toml`, ordered by name ignoring case. See [Toolset RPCs](#toolset-rpcs). |
+| `GetToolset`      | `ToolsetAdmin::get`: one toolset, the name matched ignoring case. `NOT_FOUND` if there is none. |
+| `SetToolset`      | Creates a stored toolset or replaces the spec of the one with that name: `ToolsetAdmin::update`, or `add` when there is no such toolset and the call has no `expected_updated_at`. |
+| `RemoveToolset`   | `ToolsetAdmin::remove`: deletes a stored toolset and stops it. Answers the name the toolset has. |
 
 Store failures are logged and answered with `INTERNAL`.
+
+### Toolset RPCs
+
+The four toolset RPCs call `ToolsetManager` ([Toolsets](toolsets.md#stored-toolsets)) through the
+`ToolsetAdmin` trait, so validation, the live change, and the stored data are the manager's. They
+answer `UNAVAILABLE` when `AdminOptions::toolsets` is `None`. `RestartPlugin` is the restart: the
+manager is part of the `MergedControl` that handles it.
+
+A `Toolset` message has the name as it was written, the `source` (`STORED` or `GILES_TOML`), the
+spec as TOML text, `updated_at`, and `failure`. The spec is `ToolsetSpec::to_toml`: the keys of a
+`[toolset.<name>]` table at the top level, with the bearer token as the reference it was stored as
+(`{ secret = "name" }`), so no call ever resolves a secret or shows its value. Durations are whole
+milliseconds (`"300000ms"`), as in the stored JSON. A toolset of `giles.toml` has no `spec_toml` and
+no `updated_at`. A stored toolset whose JSON can't be read has no `spec_toml` either, and `failure`
+says why. `updated_at` is the stale-update token: the stored time, to the millisecond.
+
+`SetToolset` reads `spec_toml` with `ToolsetSpec::from_toml`, which refuses a key the spec doesn't
+have (`giles.toml` only warns about one), so a typo isn't dropped silently. It then calls `update`,
+which finds a stored name ignoring case, keeps its spelling, and compares `expected_updated_at` when
+the call has one. Only a name that isn't there, from a call without `expected_updated_at`, goes on
+to `add`. A call with `expected_updated_at` for a toolset that isn't there is `NOT_FOUND`, because
+the caller read a toolset that has since gone. The response carries the toolset as stored.
+
+The manager stores only remote servers. A spec without `url` (a stdio server, which belongs in
+`giles.toml`) is `Invalid` at `url`, and a bearer token that isn't `{ secret = "name" }` is
+`Invalid` at `auth.bearer`.
+
+| What happened                                              | Status                                                                 |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `spec_toml` isn't a spec, or the manager refuses it (`Invalid`) | `INVALID_ARGUMENT`. The message is `<key>: <reason>`, or the reason alone for the toolset as a whole. TOML syntax errors give their line and column. |
+| `expected_updated_at` isn't a time                          | `INVALID_ARGUMENT`                                                     |
+| Another call created the name between `update` and `add` (`Exists`) | `ALREADY_EXISTS`                                               |
+| No toolset has the name (`NotFound`)                        | `NOT_FOUND`                                                            |
+| The toolset changed since `expected_updated_at` (`Stale`)   | `FAILED_PRECONDITION`                                                  |
+| The name is a toolset of `giles.toml` (`Unsupported`)       | `FAILED_PRECONDITION`                                                  |
+| The database failed (`Store`)                               | `INTERNAL`, logged                                                     |
+| No toolset manager                                          | `UNAVAILABLE`                                                          |
+
+### `giles toolset`
+
+The CLI (`crates/giles/src/toolset.rs`) is a client of these RPCs. `show` prints the spec after an
+`# updated_at = <RFC 3339 time>` comment. `set` reads that comment from the file, wherever it is,
+and sends the time as `expected_updated_at`, so editing what `show` wrote can't overwrite a change
+made meanwhile. A file without the comment replaces whatever is there, or creates the toolset. When
+the daemon answers `NOT_FOUND` to a call that sent a time (a copy of another toolset's `show`
+output), `set` says to remove the comment. `restart` looks the toolset up with `GetToolset` and
+restarts it under the name that answers, so it restarts only toolsets and gets the spelling right.
 
 ### Plugin instances
 
@@ -106,6 +157,15 @@ pub trait LoginLinks: Send + Sync {
     fn create_login_link(&self, user: &UserId, now: Timestamp)
         -> Result<LoginLink, LoginLinkError>; // LoginLink { url, expires_at }
 }                                             // LoginLinkError::{UnknownUser, Refused}(message)
+
+pub trait ToolsetAdmin: Send + Sync {          // async, through `async_trait`
+    async fn list(&self) -> Result<Vec<ToolsetView>, ToolsetManagerError>;
+    async fn get(&self, name: &str) -> Result<ToolsetView, ToolsetManagerError>;
+    async fn add(&self, name: &str, spec: &ToolsetSpec) -> Result<ToolsetView, ToolsetManagerError>;
+    async fn update(&self, name: &str, spec: &ToolsetSpec, expected_updated_at: Option<Timestamp>)
+        -> Result<ToolsetView, ToolsetManagerError>;
+    async fn remove(&self, name: &str) -> Result<Removed, ToolsetManagerError>;
+}                                              // Implemented by `ToolsetManager`.
 ```
 
 The built-in web channel implements `LoginLinks` (its `UnknownUser` becomes `UnknownUser`,
@@ -121,3 +181,7 @@ the connection and starts again at once, with the backoff reset (a `Failed` tool
 try). `serve` passes both as one `PluginControl`, `MergedControl`: `plugins()` is the instances of
 every host, and `restart(instance)` goes to the first host that supervises the instance (names are
 unique across kinds). `RestartPlugin` therefore restarts channel plugins and toolsets alike.
+
+`ToolsetManager` implements `ToolsetAdmin` method for method, and `serve` passes it in
+`AdminOptions::toolsets`. The admin service tests plug in a fake that keeps the toolsets in a map,
+so each RPC and status code is tested without a database or a host.

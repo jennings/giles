@@ -451,6 +451,52 @@ mod tests {
     }
 
     #[test]
+    fn a_spec_round_trips_through_toml_text_with_references_as_written() {
+        let spec = ToolsetSpec::from_toml(
+            "url = \"https://files.example.com/mcp\"\ninsecure = true\ndeadline = \"90s\"\n\
+             parallel = true\nskills = [\"/skills/files\"]\n\
+             [auth]\nbearer = { secret = \"files\" }\n",
+        )
+        .unwrap();
+        let text = spec.to_toml().unwrap();
+        // The token is the reference, whatever it resolves to.
+        assert!(text.contains("secret = \"files\""), "{text}");
+        assert_eq!(ToolsetSpec::from_toml(&text).unwrap(), spec, "{text}");
+        // And the same spec as the JSON the database stores.
+        let json = serde_json::to_string(&spec).unwrap();
+        assert_eq!(ToolsetSpec::from_json(&json).unwrap(), spec);
+        assert_eq!(
+            ToolsetSpec::default().to_toml().unwrap(),
+            "",
+            "an empty spec is empty text"
+        );
+    }
+
+    #[test]
+    fn toml_text_that_is_not_a_spec_is_refused_at_the_key() {
+        for (text, key, reason) in [
+            ("url = \n", "", "invalid TOML at line 1, column "),
+            (
+                "url = \"https://x.example.com/mcp\"\nparallel = \"yes\"\n",
+                "parallel",
+                "invalid type",
+            ),
+            ("skills = [\"/a\", 2]\n", "skills[1]", "invalid type"),
+            ("ulr = \"x\"\n", "ulr", "unknown key"),
+            (
+                "[sandbox]\nredd = []\n",
+                "sandbox.redd",
+                "unknown field `redd`",
+            ),
+            ("deadline = \"soon\"\n", "deadline", ""),
+        ] {
+            let err = ToolsetSpec::from_toml(text).unwrap_err();
+            assert_eq!(err.key.to_string(), key, "{text:?}: {err}");
+            assert!(err.reason.contains(reason), "{text:?}: {err}");
+        }
+    }
+
+    #[test]
     fn credential_references_resolve() {
         let fixture = Fixture::new("", "files = \"s3cret\"\n");
         let github = fixture.assert_valid(

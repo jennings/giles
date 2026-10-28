@@ -91,6 +91,78 @@ is `owner`.
 The link works once, within 10 minutes. The expiry time is printed on standard error. Login links
 need the built-in `web` channel.
 
+## `giles toolset`
+
+Adds, changes, and removes the remote MCP servers your agents use as
+[toolsets](configuration.md#toolsets), with no restart. The [MCP servers](web.md#mcp-servers) admin
+page shows the same toolsets.
+
+- `giles toolset list` shows every toolset, where it's configured (`stored` or `giles.toml`), when
+  it last changed, and why it isn't running if it failed.
+- `giles toolset show <name>` prints a stored toolset's spec as TOML.
+- `giles toolset set <name> --file <spec.toml>` creates the toolset, or replaces the spec of the one
+  with that name. Give `-` as the file to read the spec from standard input.
+- `giles toolset remove <name>` stops a stored toolset and removes it.
+- `giles toolset restart <name>` restarts the toolset's server now, as the **Restart** button on the
+  admin pages does.
+
+```text
+$ giles toolset list
+NAME    SOURCE      UPDATED                  PROBLEM
+files   giles.toml  -
+github  stored      2026-10-27 14:03:12 PDT
+notes   stored      2026-10-27 14:05:40 PDT  auth.bearer: no secret "notes" in /Users/me/.giles/secrets.toml
+```
+
+A spec has the keys of a remote server's `[toolset.<name>]` table, without the table's header line:
+
+```toml
+url = "https://api.githubcopilot.com/mcp/"
+deadline = "2m"
+
+[auth]
+bearer = { secret = "github" }
+```
+
+The keys are `url`, `auth`, `insecure`, `deadline`, `parallel`, and `skills`.
+[Configuration](configuration.md#toolsets) describes each one. Put the token in
+[`secrets.toml`](configuration.md#secrets) and set `auth = { bearer = { secret = "<name>" } }`. A
+stored toolset takes no other form of token. `show` prints the secret's name, never the token. Giles
+reads `secrets.toml` again each time you run `set`, so a new secret needs no restart.
+
+A server that Giles runs on this machine, a stdio server, is a
+[`[toolset.<name>]` table](configuration.md#toolsets) in `giles.toml`. `set` refuses a spec without
+`url`.
+
+Giles checks the spec the way it checks `giles.toml`. If it refuses the spec, `set` prints the key
+with the problem and why, and changes nothing:
+
+```text
+$ giles toolset set docs --file docs.toml
+Error: url: a stored toolset is a remote server: set `url`. Configure a stdio server as `[toolset.<name>]` in giles.toml
+```
+
+### Edit a toolset
+
+To change a toolset, save its spec, edit the file, and set it again:
+
+```console
+$ giles toolset show github > github.toml
+$ $EDITOR github.toml
+$ giles toolset set github --file github.toml
+Saved toolset `github`.
+```
+
+The first line of the `show` output is a comment, `# updated_at = <time>`. Leave it in. If someone
+changes the toolset after your `show`, `set` refuses with `was changed since it was read`. Run
+`show` again and redo your edit.
+
+To make a new toolset from the spec of another, delete that line first. Without it, `set` creates
+the toolset, or replaces the spec of one that has the name.
+
+A toolset configured in `giles.toml` is listed, and `restart` works on it. `show`, `set`, and
+`remove` refuse it. Change it in `giles.toml`.
+
 ## `giles backup <dir>`
 
 Writes a snapshot of the data root into an existing directory while Giles runs. It writes the

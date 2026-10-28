@@ -1415,3 +1415,216 @@ fn an_agent_created_on_the_web_answers_in_a_web_chat_without_a_restart() {
     assert!(status.success(), "{status}\n{log}");
     assert!(log.contains("agent created"), "{log}");
 }
+
+/// Runs `giles <args>` to completion with `input` on its standard input.
+fn run_cli_with_stdin(env: &Env, args: &[&str], input: &str) -> (bool, String, String) {
+    let mut child = env
+        .command(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    (
+        output.status.success(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn toolset_commands_list_show_set_remove_and_restart_toolsets_of_the_running_daemon() {
+    let env = Env::new();
+    let home = env.path("home");
+    let home_arg = home.to_str().unwrap();
+    write_config(
+        &home,
+        &format!("{MINIMAL_CONFIG}\n[toolset.docs]\ncommand = \"/nonexistent/docs\"\n"),
+    );
+    // `giles toolset <args> --home <root>`: whether it succeeded, its stdout, and its stderr.
+    let toolset = |args: &[&str]| {
+        let mut all = vec!["toolset"];
+        all.extend_from_slice(args);
+        all.extend(["--home", home_arg]);
+        run_cli(&env, &all)
+    };
+    let write_spec = |name: &str, text: &str| {
+        let path = env.path(name);
+        fs::write(&path, text).unwrap();
+        path.to_str().unwrap().to_owned()
+    };
+
+    let (ok, _, stderr) = toolset(&["list"]);
+    assert!(!ok && stderr.contains("giles is not running"), "{stderr}");
+
+    let daemon = Daemon::start(env.command(&["serve", "--home", home_arg]));
+
+    // The toolset of giles.toml is listed and can't be shown, changed, or removed.
+    let (ok, stdout, stderr) = toolset(&["list"]);
+    assert!(ok, "{stderr}");
+    assert!(stdout.starts_with("NAME  SOURCE"), "{stdout}");
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.starts_with("docs") && line.contains("giles.toml")),
+        "{stdout}"
+    );
+    let docs = write_spec("docs.toml", "url = \"http://127.0.0.1:9/docs\"\n");
+    for args in [
+        &["show", "docs"][..],
+        &["set", "docs", "--file", docs.as_str()],
+        &["remove", "docs"],
+    ] {
+        let (ok, stdout, stderr) = toolset(args);
+        assert!(!ok && stdout.is_empty(), "{args:?}: {stdout}");
+        assert!(stderr.contains("giles.toml"), "{args:?}: {stderr}");
+    }
+
+    // A spec the daemon refuses is reported with its key, and nothing is stored.
+    let files_spec = "url = \"http://127.0.0.1:9/docs\"\ndeadline = \"90s\"\nparallel = true\n\n\
+                      [auth]\nbearer = { secret = \"files-token\" }\n";
+    let files = write_spec("files.toml", files_spec);
+    let (ok, stdout, stderr) = toolset(&["set", "files", "--file", files.as_str()]);
+    assert!(!ok && stdout.is_empty(), "{stdout}");
+    assert!(stderr.contains("auth.bearer: "), "{stderr}");
+    for (text, expected) in [
+        // A stdio server is configured in giles.toml, and a stored token is a secret.
+        (
+            "command = \"/nonexistent/files\"\n",
+            "url: a stored toolset is a remote server",
+        ),
+        (
+            "url = \"http://127.0.0.1:9/docs\"\n\n[auth]\nbearer = { env = \"HOME\" }\n",
+            "auth.bearer: must be { secret = \"<name>\" }",
+        ),
+        ("ulr = \"http://127.0.0.1:9/docs\"\n", "ulr: unknown key"),
+        ("url = \n", "invalid TOML at line 1"),
+        ("skills = [\"/a\", 2]\n", "skills[1]: "),
+    ] {
+        let bad = write_spec("bad.toml", text);
+        let (ok, stdout, stderr) = toolset(&["set", "files", "--file", bad.as_str()]);
+        assert!(!ok && stdout.is_empty(), "{text}: {stdout}");
+        assert!(stderr.contains(expected), "{text}: {stderr}");
+    }
+    let missing = env.path("missing.toml");
+    let (ok, _, stderr) = toolset(&["set", "files", "--file", missing.to_str().unwrap()]);
+    assert!(!ok && stderr.contains("cannot read"), "{stderr}");
+    let (ok, stdout, _) = toolset(&["list"]);
+    assert!(ok && !stdout.contains("files"), "{stdout}");
+
+    // Giles reads secrets.toml again, so the same spec is accepted once the secret exists.
+    fs::write(
+        home.join("secrets.toml"),
+        "files-token = \"s3cr3t-value-42\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(home.join("secrets.toml"), fs::Permissions::from_mode(0o600)).unwrap();
+    let (ok, stdout, stderr) = toolset(&["set", "files", "--file", files.as_str()]);
+    assert!(ok, "{stderr}");
+    assert_eq!(stdout, "Saved toolset `files`.\n");
+
+    // `show` prints the spec with the references as written, after the `updated_at` comment.
+    let (ok, shown, stderr) = toolset(&["show", "FILES"]);
+    assert!(ok, "{stderr}");
+    assert!(shown.starts_with("# updated_at = "), "{shown}");
+    for expected in [
+        "url = \"http://127.0.0.1:9/docs\"",
+        "parallel = true",
+        "secret = \"files-token\"",
+    ] {
+        assert!(shown.contains(expected), "{expected} in:\n{shown}");
+    }
+    assert!(!shown.contains("s3cr3t"), "{shown}");
+    let (ok, listed, stderr) = toolset(&["list"]);
+    assert!(ok, "{stderr}");
+    assert!(
+        listed
+            .lines()
+            .any(|line| line.starts_with("files") && line.contains("stored")),
+        "{listed}"
+    );
+
+    // show, edit, set: the file `show` wrote is a spec, and it carries the time it was read at.
+    let edited = shown.replace("/docs", "/other");
+    let edited_file = write_spec("edited.toml", &edited);
+    let (ok, stdout, stderr) = toolset(&["set", "files", "--file", edited_file.as_str()]);
+    assert!(ok, "{stderr}");
+    assert_eq!(stdout, "Saved toolset `files`.\n");
+    let (ok, after, stderr) = toolset(&["show", "files"]);
+    assert!(ok, "{stderr}");
+    assert!(
+        after.contains("url = \"http://127.0.0.1:9/other\""),
+        "{after}"
+    );
+    assert_ne!(after.lines().next(), shown.lines().next(), "{after}");
+
+    // The same file again is stale: the toolset changed since `show` printed it.
+    let (ok, stdout, stderr) = toolset(&["set", "files", "--file", edited_file.as_str()]);
+    assert!(!ok && stdout.is_empty(), "{stdout}");
+    assert!(stderr.contains("was changed since it was read"), "{stderr}");
+    let (_, unchanged, _) = toolset(&["show", "files"]);
+    assert_eq!(unchanged, after);
+    // A file without the comment replaces whatever is there.
+    let (ok, stdout, stderr) = toolset(&["set", "Files", "--file", files.as_str()]);
+    assert!(ok, "{stderr}");
+    assert_eq!(stdout, "Saved toolset `files`.\n");
+
+    // A new name creates a toolset, from standard input too. A spec that `show` printed names the
+    // time of the toolset it was copied from, which this one doesn't have.
+    let (ok, stdout, stderr) = run_cli_with_stdin(
+        &env,
+        &["toolset", "set", "notes", "--file", "-", "--home", home_arg],
+        "url = \"http://127.0.0.1:9/mcp\"\n",
+    );
+    assert!(ok, "{stderr}");
+    assert_eq!(stdout, "Saved toolset `notes`.\n");
+    let (ok, stdout, stderr) = run_cli_with_stdin(
+        &env,
+        &["toolset", "set", "copy", "--file", "-", "--home", home_arg],
+        &shown,
+    );
+    assert!(!ok && stdout.is_empty(), "{stdout}");
+    assert!(
+        stderr.contains("there is no toolset called `copy`")
+            && stderr.contains("remove the `# updated_at` comment"),
+        "{stderr}"
+    );
+    let (ok, listed, stderr) = toolset(&["list"]);
+    assert!(ok, "{stderr}");
+    let names: Vec<&str> = listed
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    assert_eq!(names, ["docs", "files", "notes"], "{listed}");
+
+    // Restart goes to the supervisor of the toolset.
+    let (ok, stdout, stderr) = toolset(&["restart", "NOTES"]);
+    assert!(ok, "{stderr}");
+    assert_eq!(stdout, "Restarting toolset `notes`.\n");
+    let (ok, _, stderr) = toolset(&["restart", "ghost"]);
+    assert!(!ok && stderr.contains("there is no toolset called `ghost`"));
+
+    // Removal frees the name, and names the toolset as it was stored.
+    let (ok, stdout, stderr) = toolset(&["remove", "FILES"]);
+    assert!(ok, "{stderr}");
+    assert_eq!(stdout, "Removed toolset `files`.\n");
+    let (ok, _, stderr) = toolset(&["show", "files"]);
+    assert!(!ok && stderr.contains("there is no toolset called `files`"));
+    let (ok, _, stderr) = toolset(&["remove", "files"]);
+    assert!(!ok && stderr.contains("there is no toolset called `files`"));
+    let (ok, stdout, stderr) = toolset(&["set", "files", "--file", files.as_str()]);
+    assert!(ok, "{stderr}");
+    assert_eq!(stdout, "Saved toolset `files`.\n");
+
+    let (status, log) = daemon.stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+    let (ok, _, stderr) = toolset(&["list"]);
+    assert!(!ok && stderr.contains("giles is not running"), "{stderr}");
+}

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use giles_core::admin::{
     AdminListener, AdminOptions, AdminService, InstanceLock, MergedControl, PluginControl,
+    ToolsetAdmin,
 };
 use giles_core::agent_loop::AgentLoop;
 use giles_core::approvals::{ApprovalBoard, ChannelPresenter};
@@ -164,6 +165,8 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
             toolset_manager.clone() as Arc<dyn PluginControl>,
         ]))),
         login_links,
+        // Every toolset RPC goes through the manager, as the web pages do.
+        toolsets: Some(toolset_manager.clone() as Arc<dyn ToolsetAdmin>),
         clock: Arc::new(SystemClock),
     }));
     let builder = http::RouterBuilder::new();

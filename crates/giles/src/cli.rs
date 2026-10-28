@@ -29,6 +29,8 @@ pub enum Command {
     Usage(UsageArgs),
     /// Administer the running daemon.
     Admin(AdminArgs),
+    /// Manage the MCP toolsets of the running daemon.
+    Toolset(ToolsetArgs),
     /// Write a consistent snapshot of the data root (database and files) to a directory.
     Backup(BackupArgs),
     /// Manage instances with the daemon stopped.
@@ -83,6 +85,50 @@ pub struct LoginLinkArgs {
     /// The user to log in, e.g. "owner".
     #[arg(long, value_name = "USER")]
     pub user: String,
+}
+
+/// Arguments to `giles toolset`.
+#[derive(Debug, Args)]
+pub struct ToolsetArgs {
+    /// What to do.
+    #[command(subcommand)]
+    pub command: ToolsetCommand,
+}
+
+/// The `giles toolset` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum ToolsetCommand {
+    /// List every toolset, stored and from giles.toml.
+    List,
+    /// Print a toolset's spec as TOML, for `set`.
+    Show(ToolsetNameArgs),
+    /// Create a remote toolset, or replace the spec of the one with that name, with no restart.
+    Set(SetToolsetArgs),
+    /// Remove a stored toolset.
+    Remove(ToolsetNameArgs),
+    /// Restart a toolset's server now.
+    Restart(ToolsetNameArgs),
+}
+
+/// A toolset's name, for the `giles toolset` commands that take only that.
+#[derive(Debug, Args)]
+pub struct ToolsetNameArgs {
+    /// The toolset name.
+    #[arg(value_name = "NAME")]
+    pub name: String,
+}
+
+/// Arguments to `giles toolset set`.
+#[derive(Debug, Args)]
+pub struct SetToolsetArgs {
+    /// The toolset name: letters, digits, and `-`.
+    #[arg(value_name = "NAME")]
+    pub name: String,
+
+    /// A TOML file with the keys of a remote server's `[toolset.<name>]` table (`url`, `auth`,
+    /// ...), or `-` for standard input. The output of `giles toolset show` is one.
+    #[arg(long, value_name = "FILE")]
+    pub file: PathBuf,
 }
 
 /// Arguments to `giles instance`.
@@ -211,6 +257,52 @@ mod tests {
         ));
         // The user is required.
         assert!(Cli::try_parse_from(["giles", "admin", "login-link"]).is_err());
+    }
+
+    #[test]
+    fn toolset_commands_parse() {
+        let toolset = |args: &[&str]| match Cli::try_parse_from(args).unwrap().command {
+            Command::Toolset(ToolsetArgs { command }) => command,
+            other => panic!("{other:?}"),
+        };
+        assert!(matches!(
+            toolset(&["giles", "toolset", "list"]),
+            ToolsetCommand::List
+        ));
+        assert!(matches!(
+            toolset(&["giles", "toolset", "show", "files"]),
+            ToolsetCommand::Show(args) if args.name == "files"
+        ));
+        assert!(matches!(
+            toolset(&["giles", "toolset", "remove", "files"]),
+            ToolsetCommand::Remove(args) if args.name == "files"
+        ));
+        assert!(matches!(
+            toolset(&["giles", "toolset", "restart", "files"]),
+            ToolsetCommand::Restart(args) if args.name == "files"
+        ));
+        let ToolsetCommand::Set(args) =
+            toolset(&["giles", "toolset", "set", "files", "--file", "-"])
+        else {
+            panic!("not set");
+        };
+        assert_eq!(args.name, "files");
+        assert_eq!(args.file, Path::new("-"));
+        let cli = Cli::try_parse_from(["giles", "toolset", "list", "--home", "/h"]).unwrap();
+        assert_eq!(cli.home.as_deref(), Some(Path::new("/h")));
+
+        for args in [
+            &["giles", "toolset"][..],
+            &["giles", "toolset", "show"],
+            &["giles", "toolset", "show", "a", "b"],
+            &["giles", "toolset", "list", "a"],
+            &["giles", "toolset", "set", "files"],
+            &["giles", "toolset", "set", "--file", "x.toml"],
+            &["giles", "toolset", "remove"],
+            &["giles", "toolset", "restart"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
+        }
     }
 
     #[test]

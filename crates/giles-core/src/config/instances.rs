@@ -18,7 +18,7 @@ use serde::Serialize;
 use serde::ser::Serializer;
 use url::{Host, Url};
 
-use super::error::{ConfigError, KeyPath};
+use super::error::{ConfigError, KeyPath, Position};
 use super::hash::ConfigHash;
 use super::names::{Builtins, Component, InstanceName, Kind, invalid_name_reason, is_valid_name};
 use super::plugin_config::PluginConfig;
@@ -298,6 +298,68 @@ impl ToolsetSpec {
             key: KeyPath::from(e.path()),
             reason: e.inner().to_string(),
         })
+    }
+
+    /// Parses a spec from TOML text: the keys of a `[toolset.<name>]` table, at the top level of
+    /// the text (as [`to_toml`](Self::to_toml) writes them). Unlike `giles.toml`, where an
+    /// unknown key is a warning, a key the spec doesn't have is an error, so a typo in a file
+    /// given to `giles toolset set` isn't silently dropped.
+    ///
+    /// # Errors
+    ///
+    /// The key whose value has the wrong type or that the spec doesn't have, or the syntax error
+    /// at the root, with its line and column. As for [`from_json`](Self::from_json), the reason
+    /// can quote values of the keys that aren't credentials.
+    pub fn from_toml(text: &str) -> Result<Self, ToolsetError> {
+        let position = |error: &toml::de::Error| {
+            error
+                .span()
+                .map(|span| Position::of_offset(text, span.start))
+                .map(|at| format!("line {}, column {}", at.line, at.column))
+        };
+        let deserializer = toml::Deserializer::parse(text).map_err(|error| ToolsetError {
+            key: KeyPath::root(),
+            reason: match position(&error) {
+                Some(at) => format!("invalid TOML at {at}: {}", error.message()),
+                None => format!("invalid TOML: {}", error.message()),
+            },
+        })?;
+        let mut unknown = Vec::new();
+        let mut record = |path: serde_ignored::Path<'_>| unknown.push(KeyPath::from(&path));
+        let spec = serde_path_to_error::deserialize(serde_ignored::Deserializer::new(
+            deserializer,
+            &mut record,
+        ))
+        .map_err(
+            |error: serde_path_to_error::Error<toml::de::Error>| ToolsetError {
+                key: KeyPath::from(error.path()),
+                reason: match position(error.inner()) {
+                    Some(at) => format!("{} (at {at})", error.inner().message()),
+                    None => error.inner().message().to_owned(),
+                },
+            },
+        )?;
+        match unknown.into_iter().next() {
+            Some(key) => Err(ToolsetError {
+                key,
+                reason: "unknown key".to_owned(),
+            }),
+            None => Ok(spec),
+        }
+    }
+
+    /// The spec as TOML text, the keys of a `[toolset.<name>]` table at the top level, with
+    /// credentials as references, as they were written ([`from_toml`](Self::from_toml) reads it
+    /// back as the same spec). Durations are whole milliseconds (`"300000ms"`).
+    ///
+    /// # Errors
+    ///
+    /// The spec can't be written as TOML: an `env` or `auth` that isn't a table with values TOML
+    /// can hold. A validated spec can.
+    pub fn to_toml(&self) -> Result<String, toml::ser::Error> {
+        // Through a table, which writes the values of each table before its sub-tables, however
+        // the spec's fields are ordered.
+        toml::to_string(&toml::Table::try_from(self)?)
     }
 
     /// The hash of the spec for the tool-list cache (PLAN section 7.9), over the spec's keys with

@@ -32,6 +32,20 @@ service AdminService {
   rpc UsageReport(UsageReportRequest) returns (UsageReportResponse);
   // Writes a consistent snapshot of the data root to a directory (PLAN section 11.4).
   rpc Backup(BackupRequest) returns (BackupResponse);
+  // Every toolset: the ones stored in the database and the ones in giles.toml, by name.
+  rpc ListToolsets(ListToolsetsRequest) returns (ListToolsetsResponse);
+  // One toolset, with its spec as TOML. NOT_FOUND if there is no such toolset.
+  rpc GetToolset(GetToolsetRequest) returns (GetToolsetResponse);
+  // Creates a stored toolset, a remote MCP server, or replaces the spec of the one with that name,
+  // with no Giles restart. Status codes: INVALID_ARGUMENT (the message starts with the key of the
+  // spec at fault, such as url for a stdio server), ALREADY_EXISTS (another call created the name
+  // first), NOT_FOUND (expected_updated_at is set and there is no such toolset),
+  // FAILED_PRECONDITION (the toolset changed since expected_updated_at, or it is configured in
+  // giles.toml), and UNAVAILABLE (no toolset management).
+  rpc SetToolset(SetToolsetRequest) returns (SetToolsetResponse);
+  // Removes a stored toolset. NOT_FOUND if there is none; FAILED_PRECONDITION if it is configured
+  // in giles.toml.
+  rpc RemoveToolset(RemoveToolsetRequest) returns (RemoveToolsetResponse);
 }
 
 message StatusRequest {}
@@ -264,4 +278,79 @@ message BackupRequest {
 message BackupResponse {
   // The absolute paths of the files written.
   repeated string paths = 1;
+}
+
+message ListToolsetsRequest {}
+
+message ListToolsetsResponse {
+  // Every toolset, ordered by name ignoring case.
+  repeated Toolset toolsets = 1;
+}
+
+// An MCP toolset (PLAN section 7.10): a remote server stored in the database, or a
+// [toolset.<name>] table of giles.toml.
+message Toolset {
+  // The name, as it was written. It is also the prefix of the toolset's tools.
+  string name = 1;
+  // Where the toolset is configured.
+  ToolsetSource source = 2;
+  // The spec as TOML text: the keys of a [toolset.<name>] table at the top level. The bearer token
+  // is a reference ({ secret = "name" }), as it was written, never resolved.
+  // Unset for a giles.toml toolset, and for a stored one whose spec can't be read (failure says
+  // why).
+  optional string spec_toml = 3;
+  // When the stored toolset was last changed. Send it back as SetToolsetRequest.expected_updated_at
+  // to replace the spec only if nothing changed meanwhile. Unset for a giles.toml toolset.
+  google.protobuf.Timestamp updated_at = 4;
+  // Why a stored toolset isn't running (it failed validation at startup, or the change that
+  // should have started it failed). Never contains a secret value. Unset otherwise.
+  optional string failure = 5;
+}
+
+// Where a toolset is configured.
+enum ToolsetSource {
+  TOOLSET_SOURCE_UNSPECIFIED = 0;
+  // A remote server in the database, made in the web UI or with SetToolset. Can be changed and
+  // removed.
+  TOOLSET_SOURCE_STORED = 1;
+  // A [toolset.<name>] table of giles.toml, which can only be changed there.
+  TOOLSET_SOURCE_GILES_TOML = 2;
+}
+
+message GetToolsetRequest {
+  // The toolset name, ignoring ASCII case.
+  string name = 1;
+}
+
+message GetToolsetResponse {
+  Toolset toolset = 1;
+}
+
+message SetToolsetRequest {
+  // The toolset name. Naming a stored toolset (ignoring ASCII case) replaces its spec; any other
+  // name creates a toolset.
+  string name = 1;
+  // The spec as TOML text, with the keys of a remote server's [toolset.<name>] table at the top
+  // level: url, auth, insecure, deadline, parallel, and skills. A stdio server (command) is refused:
+  // it is configured in giles.toml.
+  string spec_toml = 2;
+  // The updated_at of the toolset as the caller last read it. If set, the call is refused
+  // (FAILED_PRECONDITION) when the toolset has changed since, and NOT_FOUND when there is no such
+  // toolset. Unset: replace whatever is there, or create.
+  google.protobuf.Timestamp expected_updated_at = 3;
+}
+
+message SetToolsetResponse {
+  // The toolset as stored.
+  Toolset toolset = 1;
+}
+
+message RemoveToolsetRequest {
+  // The toolset name, ignoring ASCII case.
+  string name = 1;
+}
+
+message RemoveToolsetResponse {
+  // The toolset's name as it was stored, which can differ in case from the request's.
+  string name = 1;
 }

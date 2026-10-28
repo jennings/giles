@@ -107,6 +107,34 @@ impl AdminRpc for FakeAdmin {
     ) -> Result<RpcResponse<pb::BackupResponse>, Status> {
         Err(Status::unimplemented("not in this fake"))
     }
+
+    async fn list_toolsets(
+        &self,
+        _: Request<pb::ListToolsetsRequest>,
+    ) -> Result<RpcResponse<pb::ListToolsetsResponse>, Status> {
+        Err(Status::unimplemented("not in this fake"))
+    }
+
+    async fn get_toolset(
+        &self,
+        _: Request<pb::GetToolsetRequest>,
+    ) -> Result<RpcResponse<pb::GetToolsetResponse>, Status> {
+        Err(Status::unimplemented("not in this fake"))
+    }
+
+    async fn set_toolset(
+        &self,
+        _: Request<pb::SetToolsetRequest>,
+    ) -> Result<RpcResponse<pb::SetToolsetResponse>, Status> {
+        Err(Status::unimplemented("not in this fake"))
+    }
+
+    async fn remove_toolset(
+        &self,
+        _: Request<pb::RemoveToolsetRequest>,
+    ) -> Result<RpcResponse<pb::RemoveToolsetResponse>, Status> {
+        Err(Status::unimplemented("not in this fake"))
+    }
 }
 
 const XSS: &str = "<script>alert(1)</script>";
