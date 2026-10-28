@@ -75,14 +75,20 @@ work as well. After editing, the module parses the result and checks that the ne
 with the same kind and the old one is gone; if not, it refuses and changes nothing, so a form it
 cannot edit is never half-edited.
 
+A `[toolset.<name>]` table with `url` is ignored by config loading
+([Configuration](config.md#ignored-toolset-tables)), and `rename::edit::configured` skips it the
+same way: it configures no instance, takes no part in the checks of the steps below, and is never
+renamed. If the file already has a `[<kind>.<new>]` table when the renamed table would take that key
+(only an ignored `[toolset.<new>]` can be there), the rename is refused rather than overwriting it:
+`giles.toml already has a [toolset.<new>] table: remove it, then run the command again`.
+
 An instance with no `component` key runs the component named like the instance (`[channel.web]` is
-the built-in web channel, `[toolset.github]` without `command` or `url` runs
-`giles-toolset-github`), so a plain rename would change what runs, and for a channel also the
-identity namespace, which must start with the component's name. When the renamed table lacks
-`component` and the instance runs a component (providers and channels always; a toolset only without
-`url` and `command`, where `component` is an error), the edit adds `component = "<old>"`. The check
-after editing compares the component the old and the new table resolve to and refuses if they
-differ.
+the built-in web channel, `[toolset.github]` without `command` runs `giles-toolset-github`), so a
+plain rename would change what runs, and for a channel also the identity namespace, which must start
+with the component's name. When the renamed table lacks `component` and the instance runs a
+component (providers and channels always; a toolset only without `command`, since `component` next
+to `command` is an error), the edit adds `component = "<old>"`. The check after editing compares the
+component the old and the new table resolve to and refuses if they differ.
 
 ## The steps
 
@@ -157,6 +163,9 @@ from then on. What differs from an instance of `giles.toml`:
 - `giles.toml` isn't edited. `new` must not be configured there (`RenameError::NewIsConfigured`, or
   `RenameError::CaseCollision` when only the case differs) and must not be another stored toolset
   (`RenameError::StoredToolset`). The report has `stored_toolset` set and `config_table` clear.
+- An ignored `[toolset.*]` table (with `url`) doesn't configure its name. A stored toolset whose
+  name such a table also has is renamed as the row, and the table stays as it is; a stored toolset,
+  provider, or channel may be renamed to a name that only such a table has.
 - Only the case of the name may change (`Notes` to `notes`), which no other instance can do, because
   the row is looked up ignoring case.
 - A stored toolset is remote, so it has no data directory to move; what changes is the row and the
@@ -290,8 +299,8 @@ False positives and how each resolves:
 | An instance is removed, an unrelated one of the same kind is added | Refused | List the old name in `retired_instances` |
 | An instance is removed and a different kind is added          | Starts when no kind fits | |
 | A built-in or remote channel, or a provider, has never produced data and a removed instance of that kind had data | Refused | `retired_instances`, or use the instance once |
-| A remote toolset is configured and a stdio toolset's directory is left over | Starts |  |
-| A stdio toolset is added in the web UI while the data of a removed plugin instance is left over | Refused at the next start | `retired_instances` |
+| A remote toolset is stored and a stdio toolset's directory is left over | Starts |  |
+| A stdio toolset is added to `giles.toml` while the data of a removed plugin instance is left over | Refused | `retired_instances` |
 | `retired_instances` names a configured instance               | Config error | Remove one of them               |
 
 `retired_instances` (`[core]` in `giles.toml`) is the explicit "I know" list: names there are never

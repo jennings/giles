@@ -27,9 +27,9 @@ is the version the core targets, not a floor. Such a server just lacks the newer
 2025-06-18 there is no elicitation, no structured tool output (`structuredContent`), and no resource
 links, and 2024-11-05 also has no audio content or progress messages.
 
-`instance` is the `[toolset.<instance>]` name. It appears in every error message and as the field of
-the `mcp` tracing span around the connection. Tool names stay bare; the registry adds the
-`<instance>__` prefix (PLAN section 6.5).
+`instance` is the toolset's instance name. It appears in every error message and as the field of the
+`mcp` tracing span around the connection. Tool names stay bare; the registry adds the `<instance>__`
+prefix (PLAN section 6.5).
 
 **Secrets.** Each connection has the instance's secret values: a stdio server's `env` values (passed
 to `connect_stdio`) or a remote server's bearer token. They are replaced with `<redacted>` by

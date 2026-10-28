@@ -255,31 +255,31 @@ or sandboxes it, and the plugin keeps its own state.
 
 #### Toolsets
 
-A toolset is an MCP server. It runs one of three ways:
+A toolset is an MCP server. A `[toolset.<name>]` table configures a stdio server, which Giles
+launches and talks to over its standard input and output. It runs one of two ways:
 
-- `command`: a stdio server Giles launches, an absolute path or a program name looked up on `$PATH`,
-  with `args`.
-- `url`: a remote server over streamable HTTP. Giles doesn't run or sandbox it.
-- Neither: a stdio server from the first-party plugin `giles-toolset-<component>` (the component
-  defaults to the instance name).
+- `command`: an absolute path or a program name looked up on `$PATH`, with `args`.
+- No `command`: the first-party plugin `giles-toolset-<component>` (the component defaults to the
+  instance name).
 
-| Key           | Applies to | Default   | Meaning                                                       |
-| ------------- | ---------- | --------- | ------------------------------------------------------------- |
-| `command`     | stdio      |           | The program to run                                            |
-| `component`   | stdio      | name      | The plugin to run when there's no `command`                   |
-| `args`        | stdio      | `[]`      | Arguments                                                     |
-| `env`         | stdio      | `{}`      | Environment variables to set, name to credential              |
-| `idle_stop`   | stdio      | off       | Stop the server after this long without calls (a duration); its tools stay offered and it restarts on the next call |
-| `sandbox`     | stdio      |           | Extra sandbox grants ([Sandbox](#sandbox))                    |
-| `unsandboxed` | stdio      | `false`   | Run without a sandbox (logged as a warning at every launch)   |
-| `url`         | remote     |           | The server's `https://` (or `http://`) URL                    |
-| `auth`        | remote     | none      | `{ bearer = <credential> }`                                   |
-| `insecure`    | remote     | `false`   | Allow plain `http://` to a host other than this machine       |
-| `deadline`    | all        | `"5m"`    | How long one tool call may run; then it's cancelled and the model told it timed out |
-| `parallel`    | all        | `false`   | The toolset's tools may run in parallel with each other and with read-only core tools, up to 8 at once |
-| `skills`      | all        | `[]`      | Absolute paths of skill directories the toolset offers        |
+A remote server, one Giles reaches over the network, is added in the [web UI](web.md#mcp-servers) or
+with [`giles toolset set`](cli.md#giles-toolset). Giles ignores a `[toolset.<name>]` table that has
+`url`, and logs a warning naming it at every start.
 
-Toolsets have no `config` table. Configure a stdio server through its `args`.
+| Key           | Default   | Meaning                                                       |
+| ------------- | --------- | ------------------------------------------------------------- |
+| `command`     |           | The program to run                                            |
+| `component`   | name      | The plugin to run when there's no `command`                   |
+| `args`        | `[]`      | Arguments                                                     |
+| `env`         | `{}`      | Environment variables to set, name to credential              |
+| `idle_stop`   | off       | Stop the server after this long without calls (a duration); its tools stay offered and it restarts on the next call |
+| `sandbox`     |           | Extra sandbox grants ([Sandbox](#sandbox))                    |
+| `unsandboxed` | `false`   | Run without a sandbox (logged as a warning at every launch)   |
+| `deadline`    | `"5m"`    | How long one tool call may run; then it's cancelled and the model told it timed out |
+| `parallel`    | `false`   | The toolset's tools may run in parallel with each other and with read-only core tools, up to 8 at once |
+| `skills`      | `[]`      | Absolute paths of skill directories the toolset offers        |
+
+Toolsets have no `config` table. Configure a server through its `args`.
 
 No plugin may write to a `skills` directory. Giles refuses a `skills` path inside the plugins' data
 directories, and any `write` or `unix` sandbox grant that overlaps one.
@@ -309,15 +309,14 @@ interpreter.
   `/usr/bin:/bin`. `env` can't set `HOME`, `TMPDIR`, `PATH`, or `GILES_PLUGIN_DATA`.
 
 Giles starts every toolset when it starts, and [keeps it running](running.md#running-the-daemon). A
-stdio server's tools stay offered while the server is stopped. If a server changes its list of tools
-while it runs, conversations that start afterwards get the new list.
+server's tools stay offered while the server is stopped. If a server changes its list of tools while
+it runs, conversations that start afterwards get the new list.
 
 Images, audio, and files a tool returns are kept like attachments, up to 50 MiB each. The model sees
 them if its provider takes that type, and can send them on with `send_attachment`.
 
-The model can also give an attachment to a stdio toolset's tool. Giles copies it into the server's
-`TMPDIR` for the length of the call and passes the file's path. Remote toolsets don't get
-attachments.
+The model can also give an attachment to a toolset's tool. Giles copies it into the server's
+`TMPDIR` for the length of the call and passes the file's path.
 
 ```toml
 [toolset.files]
@@ -325,11 +324,6 @@ command = "/opt/homebrew/bin/mcp-server-filesystem"
 args = ["/Users/me/Documents"]
 sandbox = { read = ["/Users/me/Documents"] }
 idle_stop = "30m"
-
-[toolset.github]
-url = "https://api.githubcopilot.com/mcp/"
-auth = { bearer = { env = "GITHUB_TOKEN" } }
-deadline = "2m"
 ```
 
 ### Sandbox
@@ -415,8 +409,9 @@ use `{ env = "<VARIABLE>" }`. A reference works in these places:
 config = { api_key = { secret = "anthropic" } }
 
 [toolset.github]
-url = "https://api.githubcopilot.com/mcp/"
-auth = { bearer = { env = "GITHUB_TOKEN" } }
+command = "/opt/homebrew/bin/github-mcp-server"
+args = ["stdio"]
+env = { GITHUB_PERSONAL_ACCESS_TOKEN = { secret = "github" } }
 ```
 
 Giles refuses to start if a secret is missing or a variable is unset. Logs and error messages name
@@ -551,7 +546,7 @@ can't schedule more jobs.
 
 ## Full example
 
-This configuration needs `GITHUB_TOKEN` set in Giles' environment.
+The agent also uses `github`, a remote toolset added in the [web UI](web.md#adding-a-remote-server).
 
 ```toml
 # ~/.giles/giles.toml
@@ -582,11 +577,6 @@ network = "libera.chat"
 nick = "jeeves"
 channels = ["#giles"]
 sasl = { password = { secret = "libera" } }
-
-[toolset.github]
-url = "https://api.githubcopilot.com/mcp/"
-auth = { bearer = { env = "GITHUB_TOKEN" } }
-deadline = "2m"
 
 [toolset.files]
 command = "/opt/homebrew/bin/mcp-server-filesystem"

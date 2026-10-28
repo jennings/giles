@@ -382,8 +382,9 @@ bogus = true
 "#,
     );
     let config = home.load_ok();
-    // Each unknown key once, at its full path; nothing inside an unknown table, and nothing for
-    // the keys of a `[[routes]]` rule, which the one-time import handles.
+    // Each unknown key once, at its full path; nothing inside an unknown table, nothing inside an
+    // ignored toolset table (one with `url`), and nothing for the keys of a `[[routes]]` rule,
+    // which the one-time import handles.
     assert_eq!(
         unknown_keys(&config),
         [
@@ -396,7 +397,6 @@ bogus = true
             "provider.anthropic.api_key",
             "toolset.files.config",
             "toolset.files.max_blob",
-            "toolset.remote.auth.other",
             "typo",
         ]
     );
@@ -625,12 +625,12 @@ fn instance_names_and_components() {
             "`[provider.web]` also uses \"web\"",
         ),
         (
-            "[channel.github]\n[toolset.github]\nurl = \"https://x\"",
+            "[channel.github]\n[toolset.github]\ncommand = \"/x\"",
             "toolset.github",
             "unique across kinds",
         ),
         (
-            "[channel.Libera]\ncomponent = \"irc\"\n[toolset.libera]\nurl = \"https://x\"",
+            "[channel.Libera]\ncomponent = \"irc\"\n[toolset.libera]\ncommand = \"/x\"",
             "toolset.libera",
             "`[channel.Libera]` also uses \"libera\"",
         ),
@@ -808,23 +808,13 @@ fn channel_rules() {
 #[test]
 fn toolsets() {
     let config = Home::new(&format!(
-        "{MINIMAL}[toolset.github]\nurl = \"https://api.githubcopilot.com/mcp/\"\n\
-         deadline = \"2m\"\nparallel = true\n\
-         [toolset.files]\ncommand = \"/opt/homebrew/bin/mcp-server-filesystem\"\n\
+        "{MINIMAL}[toolset.files]\ncommand = \"/opt/homebrew/bin/mcp-server-filesystem\"\n\
          args = [\"/Users/me/Documents\"]\nidle_stop = \"30m\"\nskills = [\"/opt/skills\"]\n\
-         [toolset.fetch]\ncommand = \"uvx\"\n\
+         [toolset.fetch]\ncommand = \"uvx\"\ndeadline = \"2m\"\nparallel = true\n\
          [toolset.shell]\n\
          [toolset.sh2]\ncomponent = \"shell\"\n"
     ))
     .load_ok();
-
-    let github = &config.toolsets["github"];
-    assert_eq!(github.deadline, Duration::from_secs(120));
-    assert!(github.parallel);
-    let ToolsetTransport::Http(remote) = &github.transport else {
-        panic!("{:?}", github.transport)
-    };
-    assert_eq!(remote.url.as_str(), "https://api.githubcopilot.com/mcp/");
 
     let files = &config.toolsets["files"];
     assert_eq!(files.deadline, DEFAULT_TOOL_DEADLINE);
@@ -840,6 +830,10 @@ fn toolsets() {
     assert_eq!(stdio.args, ["/Users/me/Documents"]);
     assert_eq!(stdio.idle_stop, Some(Duration::from_secs(1800)));
 
+    let fetch = &config.toolsets["fetch"];
+    assert_eq!(fetch.deadline, Duration::from_secs(120));
+    assert!(fetch.parallel);
+
     let program = |name: &str| match &config.toolsets[name].transport {
         ToolsetTransport::Stdio(stdio) => stdio.program.clone(),
         other => panic!("{other:?}"),
@@ -851,33 +845,66 @@ fn toolsets() {
     };
     assert_eq!(program("shell"), plugin("shell"));
     assert_eq!(program("sh2"), plugin("shell"));
+    assert!(config.ignored_toolset_tables().is_empty());
+}
+
+#[test]
+fn a_toolset_table_with_url_is_ignored_whatever_it_holds_and_reported() {
+    // Remote toolsets are stored in the database. A table with `url` configures nothing: not
+    // even a wrong type, an unknown key, a stdio key, or a name another instance has stops
+    // loading, and the name stays free for a stored toolset.
+    let home = Home::new(&format!(
+        "{MINIMAL}[channel.web]\n\
+         [toolset.github]\nurl = \"https://api.githubcopilot.com/mcp/\"\n\
+         auth = {{ bearer = {{ env = \"UNSET\" }} }}\nparallel = \"yes\"\ntypo = 1\n\
+         [toolset.files]\ncommand = \"/x\"\n\
+         [toolset.Web]\nurl = 5\ncommand = \"relative/x\"\n"
+    ));
+    let mut config = home.load_ok();
+    assert_eq!(
+        config
+            .toolsets
+            .keys()
+            .map(InstanceName::as_str)
+            .collect::<Vec<_>>(),
+        ["files"]
+    );
+    assert!(config.unknown_keys.is_empty(), "{:?}", config.unknown_keys);
+
+    // Each ignored table, in file order, named in the warning `giles serve` logs.
+    let ignored = config.ignored_toolset_tables();
+    let names: Vec<&str> = ignored.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["github", "Web"]);
+    assert_eq!(ignored[0].file, home.path("giles.toml"));
+    assert_eq!(ignored[0].position.map(|p| p.line), Some(4));
+    assert_eq!(
+        ignored[0].to_string(),
+        "giles.toml: [toolset.github] is ignored: remote toolsets are managed in the web UI \
+         (Admin → MCP servers) or with giles toolset set"
+    );
+
+    // A stored toolset may take the name.
+    test_toolsets::add_toolsets(
+        &home.root,
+        &mut config,
+        [("github", "url = \"https://api.githubcopilot.com/mcp/\"\n")],
+    );
+    assert!(matches!(
+        config.toolsets["github"].transport,
+        ToolsetTransport::Http(_)
+    ));
+
+    // Nor is the name configured for `retired_instances`.
+    let home = Home::new(&format!(
+        "[core]\nretired_instances = [\"github\"]\n{MINIMAL}\
+         [toolset.github]\nurl = \"https://x\"\n"
+    ));
+    assert_eq!(home.load_ok().ignored_toolset_tables().len(), 1);
 }
 
 #[test]
 fn toolset_rules() {
     let cases = [
-        (
-            "url = \"https://x\"\ncommand = \"/bin/x\"",
-            "command",
-            "remote toolset",
-        ),
-        (
-            "url = \"https://x\"\ncomponent = \"x\"",
-            "component",
-            "remote toolset",
-        ),
-        ("url = \"https://x\"\nargs = []", "args", "remote toolset"),
-        (
-            "url = \"https://x\"\nidle_stop = \"1m\"",
-            "idle_stop",
-            "remote toolset",
-        ),
-        (
-            "url = \"https://x\"\nunsandboxed = true",
-            "unsandboxed",
-            "remote toolset",
-        ),
-        ("url = \"http://example.com/mcp\"", "url", "insecure = true"),
         ("insecure = true", "insecure", "without `url`"),
         (
             "command = \"/bin/x\"\ncomponent = \"x\"",
@@ -1079,15 +1106,20 @@ fn instance_name(name: &str) -> InstanceName {
     InstanceName::new(name).unwrap()
 }
 
-/// A configuration with a provider `anthropic`, a channel `web`, and toolsets `github` and
-/// `files`.
+/// A configuration with a provider `anthropic`, a channel `web`, a toolset `files` from
+/// `giles.toml`, and a stored toolset `github`.
 fn with_toolsets() -> Config {
-    Home::new(&format!(
+    let home = Home::new(&format!(
         "{MINIMAL}[provider.anthropic]\n[channel.web]\n\
-         [toolset.github]\nurl = \"https://api.githubcopilot.com/mcp/\"\n\
          [toolset.files]\ncommand = \"/opt/homebrew/bin/mcp-server-filesystem\"\n"
-    ))
-    .load_ok()
+    ));
+    let mut config = home.load_ok();
+    test_toolsets::add_toolsets(
+        &home.root,
+        &mut config,
+        [("github", "url = \"https://api.githubcopilot.com/mcp/\"\n")],
+    );
+    config
 }
 
 /// `toolset` under another name.
@@ -1578,10 +1610,6 @@ component = "irc"
 address = "https://relay.example.com"
 auth = { bearer = "literal-bearer" }
 
-[toolset.github]
-url = "https://api.githubcopilot.com/mcp/"
-auth = { bearer = { env = "GITHUB_TOKEN" } }
-
 [toolset.files]
 command = "/bin/files"
 env = { FILES_TOKEN = { secret = "files" }, MODE = "ro" }
@@ -1619,15 +1647,6 @@ fn secret_references_resolve() {
         relay.auth,
         Some(Auth::Bearer(Secret::new("literal-bearer")))
     );
-
-    let ToolsetTransport::Http(github) = &config.toolsets["github"].transport else {
-        panic!()
-    };
-    assert_eq!(
-        github.auth,
-        Some(Auth::Bearer(Secret::new("env-github-token")))
-    );
-
     let ToolsetTransport::Stdio(files) = &config.toolsets["files"].transport else {
         panic!()
     };
@@ -1636,13 +1655,7 @@ fn secret_references_resolve() {
 
     // Nothing that holds a credential shows it in `Debug`.
     let debug = format!("{config:?}");
-    for value in [
-        "sk-ant-1",
-        "mail-secret",
-        "files-secret",
-        "env-github-token",
-        "literal-bearer",
-    ] {
+    for value in ["sk-ant-1", "mail-secret", "files-secret", "literal-bearer"] {
         assert!(!debug.contains(value), "{value} in {debug}");
     }
     assert!(debug.contains("<redacted>"));
@@ -1668,11 +1681,6 @@ fn secret_resolution_errors() {
             "[provider.anthropic]\nconfig = { api_key = { secret = \"nope\" } }",
             "provider.anthropic.config.api_key",
             "no secret \"nope\" in",
-        ),
-        (
-            "[toolset.t]\nurl = \"https://x\"\nauth = { bearer = { env = \"UNSET\" } }",
-            "toolset.t.auth.bearer",
-            "environment variable UNSET is not set",
         ),
         (
             "[toolset.t]\ncommand = \"/x\"\nenv = { A = { secret = \"nope\" } }",
@@ -1720,21 +1728,6 @@ fn auth_and_env_rules() {
             "[toolset.t]\ncommand = \"/x\"\nauth = { bearer = \"t\" }",
             "toolset.t.auth",
             "without `url`",
-        ),
-        (
-            "[toolset.t]\nurl = \"https://x\"\nenv = { A = \"b\" }",
-            "toolset.t.env",
-            "remote toolset",
-        ),
-        (
-            "[toolset.t]\nurl = \"https://x\"\nauth = { oauth = {} }",
-            "toolset.t.auth.oauth",
-            "only `bearer`",
-        ),
-        (
-            "[toolset.t]\nurl = \"https://x\"\nauth = \"t\"",
-            "toolset.t.auth",
-            "must be { bearer = ... }",
         ),
         (
             &format!("{remote}\nauth = {{}}"),
@@ -1901,11 +1894,6 @@ fn sandbox_rules() {
             "[channel.x]\ncomponent = \"irc\"\naddress = \"https://x\"",
             "channel.x",
             "remote channel",
-        ),
-        (
-            "[toolset.t]\nurl = \"https://x\"",
-            "toolset.t",
-            "remote toolset",
         ),
         (
             "[toolset.t]\ncommand = \"/x\"\nunsandboxed = true",
@@ -2139,7 +2127,7 @@ fn toolset_skill_directories_must_not_be_writable_by_plugins() {
         skills.join("demo"),
     ] {
         write(&format!(
-            "[toolset.docs]\nurl = \"https://example.com/mcp\"\nskills = [{skills:?}]\n\
+            "[toolset.docs]\ncommand = \"/x\"\nskills = [{skills:?}]\n\
              [channel.irc]\nsandbox = {{ write = [{grant:?}] }}\n"
         ));
         assert_error(
@@ -2153,7 +2141,7 @@ fn toolset_skill_directories_must_not_be_writable_by_plugins() {
     // Skills inside the plugins' data directories.
     let data = home.root.plugin_data_dir("irc").unwrap().join("skills");
     write(&format!(
-        "[toolset.docs]\nurl = \"https://example.com/mcp\"\nskills = [{data:?}]\n"
+        "[toolset.docs]\ncommand = \"/x\"\nskills = [{data:?}]\n"
     ));
     assert_error(
         &home,
@@ -2164,7 +2152,7 @@ fn toolset_skill_directories_must_not_be_writable_by_plugins() {
 
     // Read grants are fine.
     write(&format!(
-        "[toolset.docs]\nurl = \"https://example.com/mcp\"\nskills = [{skills:?}]\n\
+        "[toolset.docs]\ncommand = \"/x\"\nskills = [{skills:?}]\n\
          [channel.irc]\nsandbox = {{ read = [{skills:?}] }}\n"
     ));
     home.load_ok();

@@ -31,14 +31,20 @@ pub(super) fn parse(source: &str) -> Result<DocumentMut, EditError> {
 }
 
 /// The instances `giles.toml` configures: every key of `[provider]`, `[channel]`, and
-/// `[toolset]`, with its kind. Names are unique across kinds in a valid configuration; if one
-/// isn't, the later kind in `provider`, `channel`, `toolset` order wins.
+/// `[toolset]`, with its kind, except a `[toolset.<name>]` with `url`, which the configuration
+/// loader ignores (remote toolsets are stored in the database). Names are unique across kinds in
+/// a valid configuration; if one isn't, the later kind in `provider`, `channel`, `toolset` order
+/// wins.
 pub(super) fn configured(doc: &DocumentMut) -> BTreeMap<String, Kind> {
     let mut names = BTreeMap::new();
     for kind in KINDS {
         if let Some(table) = doc.get(kind.as_str()).and_then(Item::as_table_like) {
-            for (name, _) in table.iter() {
-                names.insert(name.to_owned(), kind);
+            for (name, item) in table.iter() {
+                let remote = kind == Kind::Toolset
+                    && item.as_table_like().is_some_and(|t| t.contains_key("url"));
+                if !remote {
+                    names.insert(name.to_owned(), kind);
+                }
             }
         }
     }
@@ -75,7 +81,9 @@ pub(super) struct GilesEdit {
 
 /// Renames `[<kind>.<old>]` to `[<kind>.<new>]` (with its sub-tables, comments, and position),
 /// and for a channel every `[[routes]]` `channel` that names `old`. If the table is already
-/// `new` (the operator renamed it by hand), changes nothing but `routes`.
+/// `new` (the operator renamed it by hand), changes nothing but `routes`. A `[<kind>.<new>]` that
+/// is there too (a `[toolset.<new>]` with `url`, which loading ignores) is refused rather than
+/// overwritten.
 pub(super) fn rename_in_giles_toml(
     source: &str,
     kind: Kind,
@@ -88,6 +96,12 @@ pub(super) fn rename_in_giles_toml(
     if let Some(parent) = doc.get_mut(kind.as_str())
         && parent.as_table_like().is_some_and(|t| t.contains_key(old))
     {
+        if parent.as_table_like().is_some_and(|t| t.contains_key(new)) {
+            return Err(EditError::Unsupported(format!(
+                "giles.toml already has a [{kind}.{new}] table: remove it, then run the command \
+                 again"
+            )));
+        }
         // Without a `component` key an instance runs the component named like the instance, so
         // the new name would run another one (or none). Keep the old one.
         let pin = parent
@@ -154,10 +168,10 @@ pub(super) fn rename_in_giles_toml(
 }
 
 /// Whether the instance table `t` runs a component, which `component` then names. Providers and
-/// channels (remote ones too) always do; a toolset does only if it has neither `url` (a remote
-/// MCP server, where `component` is an error) nor `command` (an arbitrary program).
+/// channels (remote ones too) always do; a toolset does only if it has no `command` (an
+/// arbitrary program).
 fn runs_component(kind: Kind, t: &dyn TableLike) -> bool {
-    kind != Kind::Toolset || !(t.contains_key("url") || t.contains_key("command"))
+    kind != Kind::Toolset || !t.contains_key("command")
 }
 
 /// The component instance `name` of `kind` runs: its `component` key, else its own name. `None`
@@ -531,13 +545,25 @@ agent = "jeeves"
     }
 
     #[test]
-    fn configured_lists_every_kind() {
+    fn configured_lists_every_kind_but_ignored_toolset_tables() {
         let doc = parse(GILES).unwrap();
         let names = configured(&doc);
         assert_eq!(names["libera"], Kind::Channel);
         assert_eq!(names["web"], Kind::Channel);
         assert_eq!(names["files"], Kind::Toolset);
         assert_eq!(names.len(), 3);
+
+        // Loading ignores a toolset table with `url`, so it configures nothing.
+        let doc = parse(&format!("{GILES}[toolset.github]\nurl = \"https://x\"\n")).unwrap();
+        assert!(!configured(&doc).contains_key("github"));
+    }
+
+    #[test]
+    fn a_table_already_under_the_new_name_is_refused_not_overwritten() {
+        let source = format!("{GILES}[toolset.docs]\nurl = \"https://x\"\n");
+        let err = rename_in_giles_toml(&source, Kind::Toolset, "files", "docs").unwrap_err();
+        assert!(matches!(err, EditError::Unsupported(_)), "{err}");
+        assert!(err.to_string().contains("[toolset.docs]"), "{err}");
     }
 
     const AGENT: &str = r##"name = "Jeeves"
@@ -667,13 +693,9 @@ prompt = "Hi"
         let edit = rename_in_giles_toml(source, Kind::Channel, "libera", "oftc").unwrap();
         assert_eq!(edit.text, "[channel.oftc]\ncomponent = \"irc\"\n");
 
-        // `component` is an error on a remote toolset and next to `command`, and neither runs a
-        // component, so nothing is added there; a toolset with neither runs the first-party one.
-        for (body, pinned) in [
-            ("url = \"https://x\"\n", false),
-            ("command = \"/bin/x\"\n", false),
-            ("", true),
-        ] {
+        // `component` is an error next to `command`, which runs no component, so nothing is
+        // added there; a toolset without it runs the first-party one.
+        for (body, pinned) in [("command = \"/bin/x\"\n", false), ("", true)] {
             let source = format!("[toolset.github]\n{body}");
             let edit = rename_in_giles_toml(&source, Kind::Toolset, "github", "gh").unwrap();
             assert_eq!(edit.text.contains("component"), pinned, "{}", edit.text);

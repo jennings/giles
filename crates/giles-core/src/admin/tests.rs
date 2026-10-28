@@ -21,6 +21,7 @@ use tonic::Code;
 use tonic::transport::{Channel, Endpoint, Uri};
 
 use super::*;
+use crate::config::test_toolsets::add_toolsets;
 use crate::config::{Config, InstanceName, KeyPath, LiveConfig, LoadOptions, ToolsetSpec};
 use crate::paths::DataRoot;
 use crate::sandbox::HostReport;
@@ -47,10 +48,10 @@ address = "https://mail.example.com:7443"
 [toolset.files]
 command = "/bin/echo"
 unsandboxed = true
-
-[toolset.github]
-url = "https://api.example.com/mcp/"
 "#;
+
+/// The remote toolset of the running configuration, stored in the database in a real core.
+const GITHUB: (&str, &str) = ("github", "url = \"https://api.example.com/mcp/\"\n");
 
 fn at(secs: i64) -> Timestamp {
     Timestamp::from_second(1_800_000_000 + secs).unwrap()
@@ -423,7 +424,7 @@ impl Harness {
         let root = DataRoot::new(dir.path(), Path::new("/tmp")).unwrap();
         root.create_layout().unwrap();
         std::fs::write(root.config_file(), CONFIG).unwrap();
-        let config = Config::load_with(
+        let mut config = Config::load_with(
             &root,
             &LoadOptions {
                 env: &|_| None,
@@ -432,6 +433,7 @@ impl Harness {
             },
         )
         .unwrap_or_else(|e| panic!("{e}"));
+        add_toolsets(&root, &mut config, [GITHUB]);
         let store = Store::open(root.database_file()).await.unwrap();
         let blobs = BlobStore::open(root.blobs_dir(), store.clone())
             .await

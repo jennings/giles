@@ -3,6 +3,9 @@
 //! `Runtime::start_sessions`. Messages go in through the channel's event stream and replies come
 //! out of its `send`.
 
+#[path = "support/stored_toolsets.rs"]
+mod stored_toolsets;
+
 use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -25,6 +28,7 @@ use giles_types::{
     Toolset, Usage,
 };
 use serde_json::json;
+use stored_toolsets::add_toolsets;
 use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
 
@@ -192,7 +196,6 @@ async fn messages_are_answered_through_the_serve_wiring() {
         "[owner]\nidentities = [\"fake:owner\"]\ntimezone = \"Europe/London\"\n\
          [provider.anthropic]\nconfig = { api_key = \"sk-test\" }\n\
          [channel.fake]\n\
-         [toolset.met]\nurl = \"https://example.com/mcp\"\n\
          [[routes]]\nagent = \"jeeves\"\n",
     );
     write(
@@ -201,7 +204,7 @@ async fn messages_are_answered_through_the_serve_wiring() {
     );
     write("agents/jeeves/SOUL.md", "You are Jeeves.");
     write("users/owner/USER.md", "Stephen.");
-    let config = Config::load_with(
+    let mut config = Config::load_with(
         &root,
         &LoadOptions {
             env: &|_| None,
@@ -210,6 +213,11 @@ async fn messages_are_answered_through_the_serve_wiring() {
         },
     )
     .unwrap_or_else(|e| panic!("{e}"));
+    add_toolsets(
+        &root,
+        &mut config,
+        &[("met", "url = \"https://example.com/mcp\"\n")],
+    );
     let runtime = Runtime::start(root, Arc::new(config)).await.unwrap();
 
     let provider = Arc::new(FakeProvider::default());

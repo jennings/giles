@@ -12,6 +12,8 @@
 
 #[path = "support/mcp_server.rs"]
 mod mcp_server;
+#[path = "support/stored_toolsets.rs"]
+mod stored_toolsets;
 
 use std::ffi::OsString;
 use std::fs;
@@ -41,6 +43,7 @@ use rmcp::transport::{StreamableHttpServerConfig, StreamableHttpService};
 use serde_json::json;
 
 use self::mcp_server::{TOOLS, TestServer};
+use self::stored_toolsets::add_toolsets;
 
 /// Set (to the port to probe) in the server's configured `env`.
 const SERVER_ENV: &str = "GILES_TOOLSET_TEST_SERVER";
@@ -465,11 +468,30 @@ async fn remote_server_with_a_bearer_token(_log: &Log) {
     let url = format!("http://{}/mcp", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, router).await });
 
-    let home = Home::new(&format!(
-        "[toolset.remote]\nurl = \"{url}\"\nauth = {{ bearer = \"{BEARER}\" }}\n\n\
-         [toolset.wrong]\nurl = \"{url}\"\nauth = {{ bearer = \"not-the-token\" }}\n"
-    ));
-    let config = home.config();
+    // Remote toolsets are stored ones, with their tokens in `secrets.toml`.
+    let home = Home::new("");
+    let secrets = home.root.secrets_file();
+    fs::write(
+        &secrets,
+        format!("remote = \"{BEARER}\"\nwrong = \"not-the-token\"\n"),
+    )
+    .unwrap();
+    fs::set_permissions(&secrets, fs::Permissions::from_mode(0o600)).unwrap();
+    let mut config = home.config();
+    add_toolsets(
+        &home.root,
+        &mut config,
+        &[
+            (
+                "remote",
+                &format!("url = \"{url}\"\nauth = {{ bearer = {{ secret = \"remote\" }} }}\n"),
+            ),
+            (
+                "wrong",
+                &format!("url = \"{url}\"\nauth = {{ bearer = {{ secret = \"wrong\" }} }}\n"),
+            ),
+        ],
+    );
     let no_sandbox = Err("remote servers need no sandbox".to_owned());
     let launcher = home.launcher(no_sandbox, home.blobs().await);
     let toolset = launcher.connect(&config.toolsets["remote"]).await.unwrap();

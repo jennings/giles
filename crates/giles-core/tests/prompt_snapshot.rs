@@ -4,6 +4,9 @@
 //!
 //! To accept a change, run with `GILES_UPDATE_SNAPSHOTS=1` and review the diff.
 
+#[path = "support/stored_toolsets.rs"]
+mod stored_toolsets;
+
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,6 +21,7 @@ use giles_store::{
 };
 use giles_types::{AgentId, ConversationId, Timestamp, ToolSpec, UserId};
 use serde_json::json;
+use stored_toolsets::add_toolsets;
 use tempfile::TempDir;
 
 const GILES_TOML: &str = r#"
@@ -26,13 +30,13 @@ identities = ["web:owner"]
 
 [provider.anthropic]
 config = { api_key = "sk-test" }
-
-[toolset.github]
-url = "https://example.com/github"
-
-[toolset.fs]
-url = "https://example.com/fs"
 "#;
+
+/// The remote toolsets of the running configuration, as `(name, spec TOML)`.
+const TOOLSETS: [(&str, &str); 2] = [
+    ("github", "url = \"https://example.com/github\"\n"),
+    ("fs", "url = \"https://example.com/fs\"\n"),
+];
 
 struct Home {
     dir: TempDir,
@@ -95,7 +99,7 @@ impl Home {
     }
 
     fn registry(&self) -> Registry {
-        let config = Config::load_with(
+        let mut config = Config::load_with(
             &self.root,
             &LoadOptions {
                 env: &|_| None,
@@ -104,6 +108,7 @@ impl Home {
             },
         )
         .unwrap_or_else(|e| panic!("{e}"));
+        add_toolsets(&self.root, &mut config, &TOOLSETS);
         let registry = Registry::new(self.root.clone(), Arc::new(config));
         let tools = registry.tools();
         for name in [

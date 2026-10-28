@@ -2,8 +2,9 @@
 
 Code: `crates/giles-core/src/toolsets/` (`giles_core::toolsets`). Design: PLAN sections 7.5, 7.6,
 7.9, and 7.10. A toolset is an MCP server; the [MCP client](mcp.md) is the connection, and this
-module decides how to reach each configured `[toolset.<instance>]` (`ToolsetLauncher`) and keeps it
-going until it is removed or the daemon stops (`ToolsetHost`).
+module decides how to reach each toolset (`ToolsetLauncher`), a stdio `[toolset.<instance>]` table
+of `giles.toml` or a remote server [stored in the database](#stored-toolsets), and keeps it going
+until it is removed or the daemon stops (`ToolsetHost`).
 
 ## Connecting
 
@@ -19,8 +20,8 @@ for `PATH` lookups (tests).
 - **Stdio** (`command`, or the first-party plugin `giles-toolset-<component>`): `resolve` finds the
   program, then `launch` starts it in its sandbox (below) and hands the command to
   `McpToolset::connect_stdio` with the `env` values as the secrets to scrub.
-- **Remote** (`url`): `McpToolset::connect_http` with the bearer token from `auth`, if any. Config
-  loading accepts only bearer tokens for toolsets; OAuth client credentials are for remote channels.
+- **Remote** (`url`): `McpToolset::connect_http` with the bearer token from `auth`, if any. Toolset
+  validation accepts only bearer tokens; OAuth client credentials are for remote channels.
 
 Errors are `giles_types::Error`, prefixed `toolset <instance>:`. `InvalidRequest` means retrying
 won't help (the host can't sandbox, an invalid spec, the sandbox trampoline failing at launch with
@@ -242,7 +243,9 @@ the host. Both sources work side by side, and instance names stay unique across 
 A stored toolset is a remote server. A web login must not be able to choose a program for Giles to
 run on the host, its arguments, its environment, or its sandbox grants: installing and running code
 on the host is the operator's, so a stdio server is a `[toolset.<name>]` table of `giles.toml`.
-Connecting to a remote server is not.
+Connecting to a remote server is not, so a `[toolset.<name>]` table with `url` is ignored
+([Configuration](config.md#ignored-toolset-tables)): it isn't an instance, and a stored toolset may
+use its name. Nothing is migrated from such a table.
 
 `ToolsetManagerOptions` holds the store, the data root, the `LiveConfig`, and the `ToolsetHost`.
 `ToolsetManager::start(options)` loads the stored toolsets, and the operations are:

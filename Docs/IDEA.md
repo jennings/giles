@@ -24,15 +24,19 @@ This doc lists the features and explains roughly how each one works. The detaile
   hand.
 - Don't trust plugins by default. The core sandboxes every plugin it launches.
 - Settings belong in the web UI, not in config files. `giles.toml` holds only what Giles needs to
-  start: the address the web interface listens on, the default time zone for users who don't set
-  one, and security-model requirements such as whether a plugin may be configured to run
-  unsandboxed. The operator writes it and Giles never edits it. Giles manages everything else so it
-  can be changed in the web UI: users (an admin adds them), agents and their files (`agent.toml`,
-  `SOUL.md`, per-user memories), routes from channel identities to users and agents, and, once
-  designed, provider, channel, and toolset instances. Whether each kind of data lives in SQLite or
-  in Markdown, JSONL, or other text files is decided as it's built. Routes are already managed in
-  the web UI; v1 still reads the owner and instances from `giles.toml`, and they move out as their
-  web UI lands (`PLAN.md` section 11.2).
+  start and what makes Giles run a program on the host: the address the web interface listens on,
+  the default time zone for users who don't set one, security-model requirements such as whether a
+  plugin may be configured to run unsandboxed, and the programs Giles launches (stdio toolsets and
+  plugins) with their arguments, environment, and sandbox grants. Installing and running code on the
+  host is the operator's act, so a web login can't choose any of it. The operator writes the file
+  and Giles never edits it. Giles manages everything else so it can be changed in the web UI: users
+  (an admin adds them), agents and their files (`agent.toml`, `SOUL.md`, per-user memories), routes
+  from channel identities to users and agents, remote MCP servers (toolsets Giles connects to, not
+  runs), and, once designed, the provider and channel instances that launch no program. Whether each
+  kind of data lives in SQLite or in Markdown, JSONL, or other text files is decided as it's built.
+  Routes and remote toolsets are already managed in the web UI; v1 still reads the owner and the
+  provider and channel instances from `giles.toml`, and those that launch no program move out as
+  their web UI lands (`PLAN.md` section 11.2).
 
 ## v1 scope
 
@@ -234,7 +238,7 @@ The questions this doc used to leave open are settled in `PLAN.md`:
 | Plugin interface shape    | A shared base service plus one service per kind                                         | 8.2       |
 | Tool discovery            | Query at every start; cache keyed on the binary's hash, the reported version, and the instance config | 7.9 |
 | Identity mapping          | v1 declares the owner's identities in `giles.toml`; the multi-user design is deferred  | 1.1, 3    |
-| Config ownership          | `giles.toml` holds only startup settings and Giles never edits it; Giles manages the rest, edited in the web UI | 11.2 |
+| Config ownership          | `giles.toml` holds startup settings and what runs a program on the host (stdio toolsets, plugins, sandbox grants); Giles never edits it and manages the rest, remote MCP servers included, in the web UI | 11.2 |
 | Core sandboxing           | Landlock and seccomp on Linux, Seatbelt on macOS, mandatory by default                  | 12        |
 | Windows support           | Not in v1                                                                               | 12        |
 | Email receiving           | IMAP with IDLE                                                                          | 10        |

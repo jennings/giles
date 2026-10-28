@@ -10,7 +10,7 @@ use jiff::tz::TimeZone;
 use serde::Deserialize;
 
 use super::error::{ConfigError, KeyPath};
-use super::instances::{RawChannel, RawProvider, ToolsetSpec};
+use super::instances::{RawChannel, RawProvider};
 use super::names::InstanceName;
 
 /// The HTTP listener when `[core]` sets no `http_listen`: `127.0.0.1:8080`.
@@ -96,8 +96,10 @@ pub(crate) struct RawGiles {
     pub provider: BTreeMap<String, RawProvider>,
     #[serde(default)]
     pub channel: BTreeMap<String, RawChannel>,
+    /// `[toolset.<name>]` tables as written: one with `url` is ignored whatever else it holds
+    /// ([`is_remote_toolset`]), and the others are read as specs while loading.
     #[serde(default)]
-    pub toolset: BTreeMap<String, ToolsetSpec>,
+    pub toolset: BTreeMap<String, toml::Value>,
     #[serde(default)]
     /// Anything: the web UI manages routes, so these are only imported once, and
     /// then not even parsed.
@@ -131,7 +133,10 @@ impl RawGiles {
             }
             let configured = self.provider.contains_key(name.as_str())
                 || self.channel.contains_key(name.as_str())
-                || self.toolset.contains_key(name.as_str());
+                || self
+                    .toolset
+                    .get(name.as_str())
+                    .is_some_and(|table| !is_remote_toolset(table));
             if configured {
                 return Err(err(format!(
                     "{text:?} is configured, so it is not retired: remove it from `retired_instances`"
@@ -213,6 +218,15 @@ impl RawGiles {
             timezone,
         })
     }
+}
+
+/// Whether a `[toolset.<name>]` table has `url`: a remote toolset, which `giles.toml` no longer
+/// configures. Remote toolsets are stored in the database and managed in the web UI, so loading
+/// ignores the table and reports it.
+pub(crate) fn is_remote_toolset(table: &toml::Value) -> bool {
+    table
+        .as_table()
+        .is_some_and(|table| table.contains_key("url"))
 }
 
 /// Looks up an IANA time zone name, e.g. `America/Los_Angeles`, in the system time zone database

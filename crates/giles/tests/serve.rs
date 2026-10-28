@@ -401,6 +401,66 @@ fn unknown_config_keys_are_logged_once_and_do_not_stop_startup() {
     );
 }
 
+#[test]
+fn a_remote_toolset_table_is_ignored_with_a_warning_and_its_name_is_free() {
+    let env = Env::new();
+    let home = env.path("home");
+    let home_arg = home.to_str().unwrap();
+    // The table isn't validated: `parallel` has the wrong type, and `nmae` is made up.
+    write_config(
+        &home,
+        &format!(
+            "{MINIMAL_CONFIG}\n[toolset.x]\nurl = \"http://127.0.0.1:9/old\"\n\
+             parallel = \"yes\"\nnmae = 1\n"
+        ),
+    );
+    let expected = "giles.toml: [toolset.x] is ignored: remote toolsets are managed in the web UI \
+                    (Admin → MCP servers) or with giles toolset set";
+    let daemon = Daemon::start(env.command(&["serve", "--home", home_arg]));
+
+    // No toolset `x` runs.
+    let (ok, stdout, stderr) = run_cli(&env, &["toolset", "list", "--home", home_arg]);
+    assert!(ok, "{stderr}");
+    assert_eq!(stdout, "No toolsets.\n");
+
+    // A stored toolset may take the name.
+    let spec = env.path("x.toml");
+    fs::write(&spec, "url = \"http://127.0.0.1:9/mcp\"\n").unwrap();
+    let spec_arg = spec.to_str().unwrap();
+    let (ok, stdout, stderr) = run_cli(
+        &env,
+        &[
+            "toolset", "set", "x", "--file", spec_arg, "--home", home_arg,
+        ],
+    );
+    assert!(ok, "{stderr}");
+    assert_eq!(stdout, "Saved toolset `x`.\n");
+    let (ok, shown, stderr) = run_cli(&env, &["toolset", "show", "x", "--home", home_arg]);
+    assert!(ok, "{stderr}");
+    assert!(shown.contains("/mcp") && !shown.contains("/old"), "{shown}");
+
+    let (status, log) = daemon.stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+    // The warning names the table once, and nothing inside it is reported.
+    let warned = log.lines().filter(|line| line.contains(expected));
+    assert_eq!(warned.clone().count(), 1, "{log}");
+    assert!(
+        warned.into_iter().all(|line| line.contains("WARN")),
+        "{log}"
+    );
+    assert!(
+        !log.contains("nmae") && !log.contains("invalid type"),
+        "{log}"
+    );
+
+    // At every start.
+    let daemon = Daemon::start(env.command(&["serve", "--home", home_arg]));
+    let (status, log) = daemon.stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+    assert_eq!(log.matches(expected).count(), 1, "{log}");
+    assert!(!log.contains("a stored toolset is not started"), "{log}");
+}
+
 /// The HTTP address in the `giles started` line (`http=http://<addr>/`).
 fn http_addr(log: &[String]) -> SocketAddr {
     let line = log.iter().find(|l| l.contains("giles started")).unwrap();
@@ -998,13 +1058,17 @@ fn toolsets_that_fail_to_start_leave_giles_running_and_retrying() {
     )
     .unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    // The remote toolset is a stored one.
     write_config(
         &home,
         &format!(
-            "{MINIMAL_CONFIG}\n[toolset.broken]\ncommand = \"{}\"\nunsandboxed = true\n\n\
-             [toolset.remote]\nurl = \"http://127.0.0.1:9/mcp\"\n",
+            "{MINIMAL_CONFIG}\n[toolset.broken]\ncommand = \"{}\"\nunsandboxed = true\n",
             script.display()
         ),
+    );
+    store_toolsets(
+        &home,
+        &[("remote", r#"{ "url": "http://127.0.0.1:9/mcp" }"#)],
     );
     let daemon = Daemon::start(env.command(&["serve", "--home", home.to_str().unwrap()]));
     let (status, log) = daemon.stop("TERM");

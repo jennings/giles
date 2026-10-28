@@ -30,21 +30,25 @@ The steps:
    only the outermost key of an unknown table is reported. An instance's `config` and `env` tables
    and `[[routes]]` are raw `toml::Value`s that serde never skips, so they produce none. `auth`
    tables are checked by hand in `instances.rs` (they hold credentials, so serde never sees them)
-   and report their own unknown keys through `Ctx::unknown`.
+   and report their own unknown keys through `Ctx::unknown`. `[toolset.<name>]` tables are kept as
+   `toml::Value`s too (`RawGiles.toolset`): one with `url` is set aside
+   ([Ignored toolset tables](#ignored-toolset-tables)), and each other one is then deserialized into
+   a `ToolsetSpec` the same lenient way, its unknown keys and errors at their full key path.
 2. Validate `[core]` and `[owner]`. `core.retired_instances` holds valid instance names that appear
-   once and that no `[provider.*]`, `[channel.*]`, or `[toolset.*]` table uses; the core only stores
-   them, for the startup check in [Instance Rename](instance-rename.md#startup-check). A toolset
-   stored in the database can't be checked here, since loading reads no database: the toolset
-   manager refuses a stored toolset with a retired name when it is saved and at startup.
-   `core.journal_mode` is parsed with `giles_store::JournalMode::from_str` (case-insensitive;
-   `memory` and `off` and anything unknown are errors at `core.journal_mode`) and defaults to WAL
-   ([Storage](storage.md#journal-modes)); `Runtime::start` passes it to the store.
+   once and that no `[provider.*]`, `[channel.*]`, or `[toolset.*]` table uses (an ignored
+   `[toolset.*]` table doesn't count); the core only stores them, for the startup check in
+   [Instance Rename](instance-rename.md#startup-check). A toolset stored in the database can't be
+   checked here, since loading reads no database: the toolset manager refuses a stored toolset with
+   a retired name when it is saved and at startup. `core.journal_mode` is parsed with
+   `giles_store::JournalMode::from_str` (case-insensitive; `memory` and `off` and anything unknown
+   are errors at `core.journal_mode`) and defaults to WAL ([Storage](storage.md#journal-modes));
+   `Runtime::start` passes it to the store.
 3. Load `secrets.toml` ([Secrets](#secrets)).
 4. Check that instance names are unique across the three kinds, ignoring ASCII case (they share the
    data directory namespace, `data/plugins/<instance>/`, and pid files, and macOS file systems are
    case-insensitive by default), then validate each instance into its typed form, resolving secret
-   references. A toolset goes through `Ctx::toolset`, the same function
-   [`validate_toolset`](#validating-one-toolset) uses.
+   references. Ignored toolset tables take no part. A toolset goes through `Ctx::toolset`, the same
+   function [`validate_toolset`](#validating-one-toolset) uses.
 5. Load every agent: each directory in `agents/` not starting with `.` must have a valid name and an
    `agent.toml`. Models are checked against the configured provider instances.
 6. Keep `[[routes]]` as written (`Config::legacy_routes`, unvalidated). Routes are stored in the
@@ -146,7 +150,8 @@ core can pass the components its Cargo features compiled in; `Builtins::V1` list
 
 A stdio toolset's `command` is kept as written (an absolute path or a bare program name); resolving
 it on the operator's `$PATH` and adding its install prefix to the sandbox grants happens at launch
-(PLAN section 7.10).
+(PLAN section 7.10). Every toolset of `giles.toml` is a stdio one: a remote toolset (`url`) is
+stored in the database, and its table in the file is ignored.
 
 Remote URLs (`address`, `url`) are parsed with `url`, must be `http` or `https` with a host and no
 credentials, and plain `http` needs `insecure = true` unless the host is `localhost`, `127.0.0.0/8`,
@@ -154,6 +159,29 @@ or `::1` (PLAN section 7.6).
 
 The `config` table becomes a `PluginConfig`, a JSON object for `Configure` (PLAN section 7.7). TOML
 datetimes become their TOML text; infinite and NaN floats, which JSON can't carry, are errors.
+
+## Ignored toolset tables
+
+Remote toolsets are stored in the database and managed in the web UI, the admin RPCs, and
+`giles toolset`; `giles.toml` keeps the toolsets Giles runs as a process. A login to the web UI must
+not choose a program for Giles to run, its arguments, environment, or sandbox grants, while
+connecting to a remote server runs nothing on the host.
+
+Loading therefore ignores every `[toolset.<name>]` table that has `url`, whatever else it holds
+(`giles::is_remote_toolset`). It isn't deserialized, so nothing in it is checked: a wrong type or an
+unknown key inside doesn't stop startup and isn't reported as an unknown key. Each such table
+becomes an `IgnoredToolsetTable { file, position, name }`, the position found with `error::locate`
+at `toolset.<name>`, and `Config::ignored_toolset_tables` lists them in file order. `giles serve`
+logs one warning for each right after the load, after the unknown keys, at every start (it names the
+file, not the position):
+
+```text
+giles.toml: [toolset.github] is ignored: remote toolsets are managed in the web UI (Admin → MCP servers) or with giles toolset set
+```
+
+An ignored table's name isn't part of the unique-name check or of the `retired_instances` check, and
+the `Config` doesn't have it, so a stored toolset may use the name. Nothing is migrated: the owner
+adds each remote server again in the web UI or with `giles toolset set`.
 
 ## Validating one toolset
 
@@ -163,11 +191,11 @@ now. The pieces, all in `giles_core::config`:
 
 - `ToolsetSpec`: one toolset as written, with the keys of a `[toolset.<name>]` table (`component`,
   `command`, `args`, `env`, `url`, `auth`, `insecure`, `deadline`, `idle_stop`, `parallel`,
-  `skills`, `sandbox`, `unsandboxed`). `giles.toml` deserializes into it (it is the type of the
-  values of `RawGiles.toolset`), and `ToolsetSpec::from_json` reads the same keys from JSON; it also
-  serializes. Nothing is checked beyond each value's type. Credentials stay unresolved: `env` and
-  `auth` are raw values holding plain strings or `{ secret = ... }` / `{ env = ... }` references,
-  and its `Debug` leaves them out. `sandbox` is a `SandboxSpec`.
+  `skills`, `sandbox`, `unsandboxed`). Loading deserializes each `[toolset.<name>]` table without
+  `url` into it, and `ToolsetSpec::from_json` reads the same keys from JSON; it also serializes.
+  Nothing is checked beyond each value's type. Credentials stay unresolved: `env` and `auth` are raw
+  values holding plain strings or `{ secret = ... }` / `{ env = ... }` references, and its `Debug`
+  leaves them out. `sandbox` is a `SandboxSpec`.
 - `validate_toolset(name, &spec, &ToolsetContext) -> Result<ToolsetInstance, ToolsetError>`: the
   rules of `Ctx::toolset` (which keys fit a stdio or a remote toolset, `command`, `url`, `env`
   names, `auth`, durations, skill paths, grants against the data root and socket directory,
@@ -203,9 +231,11 @@ overlapping the plugin data root is checked for the toolset being validated only
 `ToolsetManager` ([Toolsets](toolsets.md#stored-toolsets)) is the caller for toolsets stored in the
 database. It reads `secrets.toml` for every validation and adds its own rules. A name that a
 `giles.toml` instance of any kind uses, or that `[core] retired_instances` lists, is refused, and so
-is `new`, the address of the web form for a new toolset. A stored toolset is a remote server: a spec
+is `new`, the address of the web form for a new toolset. A name only an
+[ignored table](#ignored-toolset-tables) has is free. A stored toolset is a remote server: a spec
 without `url` is refused as an `Invalid` at `url`, and an `auth.bearer` that isn't
-`{ secret = "<name>" }` at `auth.bearer`. `giles.toml` keeps accepting every credential form.
+`{ secret = "<name>" }` at `auth.bearer`. Stdio toolsets of `giles.toml` keep accepting every
+credential form in `env`.
 
 ## Secrets
 

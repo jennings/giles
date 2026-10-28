@@ -26,6 +26,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::approvals::ApprovalBoard;
+use crate::config::test_toolsets::add_toolsets;
 use crate::config::{BusyMode, Config, InstanceName, LoadOptions};
 use crate::paths::DataRoot;
 use crate::sessions::{Reply, Steering};
@@ -323,7 +324,6 @@ impl Harness {
              [provider.ollama]\ncomponent = \"openai\"\n\
              config = { base_url = \"http://127.0.0.1:11434/v1\", \
              models.\"qwen3:8b\" = { context_window = 2000 } }\n\
-             [toolset.github]\nurl = \"https://example.com/mcp\"\n\
              [channel.fake]\n",
         );
         write("secrets.toml", &format!("anthropic = \"{SECRET}\"\n"));
@@ -334,7 +334,7 @@ impl Harness {
         .unwrap();
         write(&format!("agents/{AGENT}/agent.toml"), agent_toml);
         write(&format!("agents/{AGENT}/SOUL.md"), "You are Jeeves.");
-        let config = Config::load_with(
+        let mut config = Config::load_with(
             &root,
             &LoadOptions {
                 env: &|_| None,
@@ -343,6 +343,11 @@ impl Harness {
             },
         )
         .unwrap_or_else(|e| panic!("{e}"));
+        add_toolsets(
+            &root,
+            &mut config,
+            [("github", "url = \"https://example.com/mcp\"\n")],
+        );
         let memory_dbs = MemoryDbs::new(root.clone(), JournalMode::Wal);
         let registry = Arc::new(Registry::new(root, Arc::new(config)));
         let provider = Arc::new(FakeProvider::default());

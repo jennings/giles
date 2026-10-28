@@ -116,7 +116,7 @@ github  stored      2026-10-27 14:03:12 PDT
 notes   stored      2026-10-27 14:05:40 PDT  auth.bearer: no secret "notes" in /Users/me/.giles/secrets.toml
 ```
 
-A spec has the keys of a remote server's `[toolset.<name>]` table, without the table's header line:
+A spec is a TOML file with the remote server's keys:
 
 ```toml
 url = "https://api.githubcopilot.com/mcp/"
@@ -126,11 +126,18 @@ deadline = "2m"
 bearer = { secret = "github" }
 ```
 
-The keys are `url`, `auth`, `insecure`, `deadline`, `parallel`, and `skills`.
-[Configuration](configuration.md#toolsets) describes each one. Put the token in
-[`secrets.toml`](configuration.md#secrets) and set `auth = { bearer = { secret = "<name>" } }`. A
-stored toolset takes no other form of token. `show` prints the secret's name, never the token. Giles
-reads `secrets.toml` again each time you run `set`, so a new secret needs no restart.
+| Key        | Default | Meaning                                                       |
+| ---------- | ------- | ------------------------------------------------------------- |
+| `url`      |         | The server's `https://` (or `http://`) URL                    |
+| `auth`     | none    | `{ bearer = { secret = "<name>" } }`                          |
+| `insecure` | `false` | Allow plain `http://` to a host other than this machine       |
+| `deadline` | `"5m"`  | How long one tool call may run                                |
+| `parallel` | `false` | The toolset's tools may run in parallel                       |
+| `skills`   | `[]`    | Absolute paths of skill directories the toolset offers        |
+
+Put the token in [`secrets.toml`](configuration.md#secrets) and name it in `auth`. A stored toolset
+takes no other form of token. `show` prints the secret's name, never the token. Giles reads
+`secrets.toml` again each time you run `set`, so a new secret needs no restart.
 
 A server that Giles runs on this machine, a stdio server, is a
 [`[toolset.<name>]` table](configuration.md#toolsets) in `giles.toml`. `set` refuses a spec without
@@ -232,7 +239,8 @@ Start giles again to use the new name.
 ```
 
 For a stored toolset, `<old>` can be in any case, and `<new>` can be the same name in another case
-(`Notes` to `notes`).
+(`Notes` to `notes`). The command ignores a `[toolset.<name>]` table with `url`, as Giles does, and
+leaves it in `giles.toml`.
 
 The command renames:
 
@@ -256,6 +264,8 @@ in case. The command changes nothing and refuses if:
 
 - `<old>` isn't configured and has no data.
 - `<new>` is also configured or already has data. Renaming never merges two instances.
+- `giles.toml` already has a `[<kind>.<new>]` table, such as an ignored `[toolset.<new>]` with
+  `url`. Remove it and run the command again.
 - `<old>` is a stored toolset and `<new>` is `new` (in any case) or listed in
   `core.retired_instances`.
 - `giles.toml` or an `agent.toml` can't be read or isn't valid TOML.

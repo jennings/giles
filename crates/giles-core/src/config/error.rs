@@ -334,6 +334,54 @@ impl fmt::Display for UnknownKey {
     }
 }
 
+/// A `[toolset.<name>]` table of `giles.toml` with `url`. Remote toolsets are stored in the
+/// database and managed in the web UI, so the table is ignored, whatever else it holds, and
+/// reported at every start.
+///
+/// Displayed as `giles.toml: [toolset.<name>] is ignored: remote toolsets are managed in the web
+/// UI (Admin → MCP servers) or with giles toolset set`: the file's name, not its position.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct IgnoredToolsetTable {
+    /// The file with the table.
+    pub file: PathBuf,
+    /// Where the table's name is in the file, if known.
+    pub position: Option<Position>,
+    /// The toolset's name, as the table writes it.
+    pub name: String,
+}
+
+impl IgnoredToolsetTable {
+    /// The table `[toolset.<name>]` in `file`, whose contents are `source`.
+    pub(crate) fn new(file: &Path, source: &str, name: String) -> Self {
+        let key = KeyPath::root().key("toolset").key(name.as_str());
+        Self {
+            file: file.to_path_buf(),
+            position: locate(source, &key),
+            name,
+        }
+    }
+
+    /// Where the table is in its file, for listing in file order. Tables without a position
+    /// come first.
+    pub(crate) fn order(&self) -> Option<(usize, usize)> {
+        self.position.map(|p| (p.line, p.column))
+    }
+}
+
+impl fmt::Display for IgnoredToolsetTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let file = self.file.file_name().map_or(self.file.as_path(), Path::new);
+        let key = KeyPath::root().key("toolset").key(self.name.as_str());
+        write!(
+            f,
+            "{}: [{key}] is ignored: remote toolsets are managed in the web UI (Admin → \
+             MCP servers) or with giles toolset set",
+            file.display()
+        )
+    }
+}
+
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.file.display())?;

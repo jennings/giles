@@ -624,6 +624,36 @@ mod tests {
                 "remote toolset",
             ),
             (
+                json!({ "url": "https://x", "command": "/bin/x" }),
+                "command",
+                "remote toolset",
+            ),
+            (
+                json!({ "url": "https://x", "component": "x" }),
+                "component",
+                "remote toolset",
+            ),
+            (
+                json!({ "url": "https://x", "idle_stop": "1m" }),
+                "idle_stop",
+                "remote toolset",
+            ),
+            (
+                json!({ "url": "https://x", "unsandboxed": true }),
+                "unsandboxed",
+                "remote toolset",
+            ),
+            (
+                json!({ "url": "https://x", "sandbox": {} }),
+                "sandbox",
+                "remote toolset",
+            ),
+            (
+                json!({ "url": "https://x", "auth": { "oauth": {} } }),
+                "auth.oauth",
+                "only `bearer`",
+            ),
+            (
                 json!({ "command": "/x", "component": "y" }),
                 "component",
                 "together with `command`",
@@ -699,7 +729,7 @@ mod tests {
     #[test]
     fn a_name_taken_by_another_kind_is_refused() {
         let fixture = Fixture::new(
-            "[provider.anthropic]\n[channel.web]\n[toolset.github]\nurl = \"https://x\"\n",
+            "[provider.anthropic]\n[channel.web]\n[toolset.github]\ncommand = \"/bin/github\"\n",
             "",
         );
         let spec = json!({ "url": "https://y" });
@@ -722,7 +752,7 @@ mod tests {
 
     #[test]
     fn adding_over_an_existing_name_is_refused() {
-        let fixture = Fixture::new("[toolset.github]\nurl = \"https://x\"\n", "");
+        let fixture = Fixture::new("[toolset.github]\ncommand = \"/bin/github\"\n", "");
         let spec = json!({ "url": "https://y" });
         // Without a toolset being replaced, even the toolset of exactly this name is a clash.
         fixture.assert_invalid("github", spec.clone(), "", "`[toolset.github]` also uses");
@@ -736,7 +766,7 @@ mod tests {
     #[test]
     fn renaming_needs_a_free_name_but_may_change_only_the_case() {
         let fixture = Fixture::new(
-            "[toolset.github]\nurl = \"https://x\"\n[toolset.files]\nurl = \"https://z\"\n\
+            "[toolset.github]\ncommand = \"/bin/github\"\n[toolset.files]\ncommand = \"/bin/files\"\n\
              [channel.web]\n",
             "",
         );
