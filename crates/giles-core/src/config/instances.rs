@@ -8,19 +8,23 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use giles_plugin_sdk::config::{ByteSize, HumanDuration};
 use serde::Deserialize;
+use serde::Serialize;
+use serde::ser::Serializer;
 use url::{Host, Url};
 
 use super::error::{ConfigError, KeyPath};
 use super::hash::ConfigHash;
 use super::names::{Builtins, Component, InstanceName, Kind, invalid_name_reason, is_valid_name};
 use super::plugin_config::PluginConfig;
-use super::sandbox::{self, Grants, Protected, RawSandbox};
-use super::secrets::{Resolver, Secret};
+use super::sandbox::{self, Grants, Protected, SandboxSpec};
+use super::secrets::{REDACTED, Resolver, Secret};
+use super::toolset::ToolsetError;
 use crate::paths::DataRoot;
 use crate::sandbox::DERIVED_ENV;
 
@@ -211,25 +215,148 @@ pub(crate) struct RawChannel {
     auth: Option<toml::Value>,
     insecure: Option<bool>,
     max_blob: Option<ByteSize>,
-    sandbox: Option<RawSandbox>,
+    sandbox: Option<SandboxSpec>,
     unsandboxed: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct RawToolset {
-    component: Option<String>,
-    command: Option<String>,
-    args: Option<Vec<String>>,
-    env: Option<toml::Value>,
-    url: Option<String>,
-    auth: Option<toml::Value>,
-    insecure: Option<bool>,
-    deadline: Option<HumanDuration>,
-    idle_stop: Option<HumanDuration>,
-    parallel: Option<bool>,
-    skills: Option<Vec<PathBuf>>,
-    sandbox: Option<RawSandbox>,
-    unsandboxed: Option<bool>,
+/// One toolset as written: the keys of a `[toolset.<name>]` table, deserializable from TOML and
+/// from JSON (the form the web UI stores) with the same keys.
+///
+/// Nothing is checked yet beyond each value's type. [`validate_toolset`](super::validate_toolset)
+/// turns it into a [`ToolsetInstance`], resolving credentials.
+///
+/// Credentials stay unresolved. `auth` is `{ bearer = <credential> }`, and the values of `env`
+/// are credentials; a credential is a plain string or a reference, `{ secret = "<name>" }` (from
+/// `secrets.toml`) or `{ env = "<VAR>" }`. `env` and `auth` are therefore raw values that
+/// validation checks by hand: serde's type errors quote the offending value. `Debug` leaves both
+/// out.
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ToolsetSpec {
+    /// `component`: the first-party plugin `giles-toolset-<component>` to run, when there is no
+    /// `command` or `url`. Defaults to the toolset's name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub component: Option<String>,
+    /// `command`: the stdio server to run, an absolute path or a program name on `$PATH`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// `args`: arguments for the stdio server, passed unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+    /// `env`: a table of environment variable names to credentials, for the stdio server.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env: Option<toml::Value>,
+    /// `url`: the address of a remote server, which makes the toolset remote.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// `auth`: how to authenticate to a remote server, `{ bearer = <credential> }`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth: Option<toml::Value>,
+    /// `insecure`: allow plain `http` to a host other than loopback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub insecure: Option<bool>,
+    /// `deadline`: how long one tool call may run, e.g. `"90s"`.
+    #[serde(
+        serialize_with = "serialize_duration",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub deadline: Option<HumanDuration>,
+    /// `idle_stop`: stop the stdio server after this long without calls.
+    #[serde(
+        serialize_with = "serialize_duration",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub idle_stop: Option<HumanDuration>,
+    /// `parallel`: every tool of the toolset is parallel-safe.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel: Option<bool>,
+    /// `skills`: absolute paths of skill directories the toolset offers.
+    #[serde(
+        serialize_with = "serialize_paths",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub skills: Option<Vec<PathBuf>>,
+    /// `sandbox`: what the stdio server may reach.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<SandboxSpec>,
+    /// `unsandboxed`: run the stdio server without a sandbox.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unsandboxed: Option<bool>,
+}
+
+impl ToolsetSpec {
+    /// Parses a spec from JSON, with the same keys as a `[toolset.<name>]` table. Keys the spec
+    /// doesn't have are ignored, as in `giles.toml`.
+    ///
+    /// # Errors
+    ///
+    /// The key whose value has the wrong type, or the syntax error at the root. The reason can
+    /// quote values of the keys that aren't credentials (`env` and `auth` take any value here,
+    /// and validation reports them without quoting).
+    pub fn from_json(json: &str) -> Result<Self, ToolsetError> {
+        let mut deserializer = serde_json::Deserializer::from_str(json);
+        serde_path_to_error::deserialize(&mut deserializer).map_err(|e| ToolsetError {
+            key: KeyPath::from(e.path()),
+            reason: e.inner().to_string(),
+        })
+    }
+
+    /// The hash of the spec for the tool-list cache (PLAN section 7.9), over the spec's keys with
+    /// credentials as written, as references, so it never depends on a resolved secret value.
+    ///
+    /// It doesn't depend on key order, or on how a duration is spelled (`"5m"` and `"300s"` hash
+    /// alike), but only on what the spec says: unlike the hash of a `giles.toml` table, it knows
+    /// no keys the spec lacks.
+    pub fn config_hash(&self) -> ConfigHash {
+        let table = toml::Table::try_from(self)
+            .expect("a spec serializes to a TOML table: durations and paths become strings");
+        ConfigHash::of(&table)
+    }
+}
+
+impl fmt::Debug for ToolsetSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ToolsetSpec")
+            .field("component", &self.component)
+            .field("command", &self.command)
+            .field("args", &self.args)
+            .field("env", &self.env.as_ref().map(|_| REDACTED))
+            .field("url", &self.url)
+            .field("auth", &self.auth.as_ref().map(|_| REDACTED))
+            .field("insecure", &self.insecure)
+            .field("deadline", &self.deadline)
+            .field("idle_stop", &self.idle_stop)
+            .field("parallel", &self.parallel)
+            .field("skills", &self.skills)
+            .field("sandbox", &self.sandbox)
+            .field("unsandboxed", &self.unsandboxed)
+            .finish()
+    }
+}
+
+/// A duration as whole milliseconds (`"300000ms"`), so equal durations serialize alike however
+/// they were spelled, and the result reads back as the same duration.
+fn serialize_duration<S: Serializer>(
+    duration: &Option<HumanDuration>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match duration {
+        Some(HumanDuration(duration)) => {
+            serializer.serialize_str(&format!("{}ms", duration.as_millis()))
+        }
+        None => serializer.serialize_none(),
+    }
+}
+
+/// Paths as strings. TOML and JSON carry only UTF-8, so the lossy conversion changes only a path
+/// built in code.
+fn serialize_paths<S: Serializer>(
+    paths: &Option<Vec<PathBuf>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match paths {
+        Some(paths) => serializer.collect_seq(paths.iter().map(|path| path.to_string_lossy())),
+        None => serializer.serialize_none(),
+    }
 }
 
 /// What instance validation needs to know besides the raw table.
@@ -378,7 +505,7 @@ impl Ctx<'_> {
     pub fn toolset(
         &self,
         name: &str,
-        raw: RawToolset,
+        raw: ToolsetSpec,
         config_hash: ConfigHash,
     ) -> Result<ToolsetInstance, ConfigError> {
         let (name, path) = self.name(Kind::Toolset, name)?;
@@ -460,7 +587,7 @@ impl Ctx<'_> {
         &self,
         path: &KeyPath,
         name: &InstanceName,
-        raw: Option<RawSandbox>,
+        raw: Option<SandboxSpec>,
         unsandboxed: Option<bool>,
         toolset: bool,
     ) -> Result<Sandbox, ConfigError> {

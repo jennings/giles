@@ -23,6 +23,7 @@ mod names;
 mod plugin_config;
 mod sandbox;
 mod secrets;
+mod toolset;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -47,14 +48,15 @@ pub use hash::ConfigHash;
 pub use instances::{
     Auth, ChannelInstance, ChannelRuntime, DEFAULT_MAX_BLOB, DEFAULT_TOOL_DEADLINE, Launch,
     OAuthClientCredentials, Program, ProviderInstance, Remote, Sandbox, StdioServer,
-    ToolsetInstance, ToolsetTransport,
+    ToolsetInstance, ToolsetSpec, ToolsetTransport,
 };
 pub use live::{AgentExists, LiveConfig, NoSuchAgent};
 pub use model::ModelRef;
 pub use names::{Builtins, Component, InstanceName, Kind, is_valid_name, plugin_binary};
 pub use plugin_config::PluginConfig;
-pub use sandbox::{Grants, NetworkGrant, check_grant};
-pub use secrets::{MIN_SCRUB_LEN, REDACTED, Secret, scrub};
+pub use sandbox::{Grants, NetworkGrant, SandboxSpec, check_grant};
+pub use secrets::{MIN_SCRUB_LEN, REDACTED, Secret, Secrets, scrub};
+pub use toolset::{ToolsetContext, ToolsetError, validate_toolset};
 
 /// What [`Config::load_with`] needs besides the data root.
 #[derive(Clone)]
@@ -179,10 +181,7 @@ impl Config {
                 return Err(ConfigError::at(
                     file,
                     KeyPath::root().key(kind.as_str()).key(name.as_str()),
-                    format!(
-                        "instance names must be unique across kinds, ignoring case, and \
-                         `[{other}.{other_name}]` also uses {name:?}"
-                    ),
+                    toolset::name_clash(other, other_name, name),
                 ));
             }
         }
@@ -211,66 +210,8 @@ impl Config {
         }
 
         // Directories holding binaries Giles runs may be read but not written by any plugin.
-        let mut binary_dirs = sandbox::BinaryDirs::default();
-        if let Some(exe) = &options.giles_exe {
-            binary_dirs.add(exe, "the giles binary".to_owned());
-        }
-        let mut sandboxes = Vec::new();
-        for channel in channels.values() {
-            if let ChannelRuntime::Plugin(launch) = &channel.runtime {
-                if let Some(binary) =
-                    discover_plugin(root, Kind::Channel, &channel.component, options.env)
-                {
-                    let what = format!("channel {}'s plugin, {}", channel.name, binary.display());
-                    binary_dirs.add(&binary, what);
-                }
-                sandboxes.push((Kind::Channel, &channel.name, &launch.sandbox));
-            }
-        }
-        for toolset in toolsets.values() {
-            if let ToolsetTransport::Stdio(stdio) = &toolset.transport {
-                let binary = match &stdio.program {
-                    Program::Command(command) => find_program(command, options.env),
-                    Program::Plugin { component, .. } => {
-                        discover_plugin(root, Kind::Toolset, component, options.env)
-                    }
-                };
-                if let Some(binary) = binary {
-                    let what = format!("toolset {}'s server, {}", toolset.name, binary.display());
-                    binary_dirs.add(&binary, what);
-                }
-                sandboxes.push((Kind::Toolset, &toolset.name, &stdio.sandbox));
-            }
-        }
-        // Toolset skill directories are read by the core for the model (PLAN section 6.6): no
-        // plugin may write there, so none can race those reads.
-        for toolset in toolsets.values() {
-            for (i, dir) in toolset.skills.iter().enumerate() {
-                if sandbox::overlaps(dir, &root.plugin_data_root()) {
-                    return Err(ConfigError::at(
-                        file,
-                        KeyPath::root()
-                            .key("toolset")
-                            .key(toolset.name.as_str())
-                            .key("skills")
-                            .index(i),
-                        format!(
-                            "{} overlaps the plugins' data directories, {}",
-                            dir.display(),
-                            root.plugin_data_root().display()
-                        ),
-                    ));
-                }
-                binary_dirs.add_dir(dir, format!("toolset {}'s skills", toolset.name));
-            }
-        }
-        for (kind, name, sandbox) in sandboxes {
-            let path = KeyPath::root()
-                .key(kind.as_str())
-                .key(name.as_str())
-                .key("sandbox");
-            binary_dirs.check(file, &path, &sandbox.grants)?;
-        }
+        let toolset_refs: Vec<&ToolsetInstance> = toolsets.values().collect();
+        toolset::check_binary_dirs(file, root, options, channels.values(), &toolset_refs, None)?;
 
         let provider_names: BTreeSet<&str> = providers.keys().map(InstanceName::as_str).collect();
         let agents = load_agents(root, &provider_names)?;

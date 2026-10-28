@@ -10,7 +10,7 @@ use jiff::tz::TimeZone;
 use serde::Deserialize;
 
 use super::error::{ConfigError, KeyPath};
-use super::instances::{RawChannel, RawProvider, RawToolset};
+use super::instances::{RawChannel, RawProvider, ToolsetSpec};
 use super::names::InstanceName;
 
 /// The HTTP listener when `[core]` sets no `http_listen`: `127.0.0.1:8080`.
@@ -97,7 +97,7 @@ pub(crate) struct RawGiles {
     #[serde(default)]
     pub channel: BTreeMap<String, RawChannel>,
     #[serde(default)]
-    pub toolset: BTreeMap<String, RawToolset>,
+    pub toolset: BTreeMap<String, ToolsetSpec>,
     #[serde(default)]
     /// Anything: the web UI manages routes, so these are only imported once, and
     /// then not even parsed.

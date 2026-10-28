@@ -83,9 +83,11 @@ pub fn scrub(text: &str, secrets: &[&Secret]) -> String {
     out
 }
 
-/// The contents of `secrets.toml`: a flat table of names to strings.
+/// The contents of `secrets.toml`: a flat table of names to strings, which `{ secret = "name" }`
+/// references resolve against. A value is read when the file is loaded, so loading again picks up
+/// a changed file.
 #[derive(Debug, Default)]
-pub(crate) struct Secrets {
+pub struct Secrets {
     file: PathBuf,
     exists: bool,
     values: BTreeMap<String, Secret>,
@@ -94,7 +96,11 @@ pub(crate) struct Secrets {
 impl Secrets {
     /// Loads `file` if it exists. It must be a regular file that neither group nor others can
     /// access (no bits of mode 0o077 set).
-    pub(crate) fn load(file: &Path) -> Result<Self, ConfigError> {
+    ///
+    /// # Errors
+    ///
+    /// The problem with the file, as a [`ConfigError`] naming `file`; never quotes a value.
+    pub fn load(file: &Path) -> Result<Self, ConfigError> {
         let meta = match fs::metadata(file) {
             Ok(meta) => meta,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {

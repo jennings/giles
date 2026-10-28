@@ -60,6 +60,13 @@ impl KeyPath {
         self.0.starts_with(&other.0)
     }
 
+    /// The rest of this path after `prefix`, or `None` if this path isn't `prefix` or inside it.
+    pub(crate) fn strip_prefix(&self, prefix: &KeyPath) -> Option<Self> {
+        self.0
+            .strip_prefix(prefix.0.as_slice())
+            .map(|rest| Self(rest.to_vec()))
+    }
+
     /// This path followed by `tail`.
     #[must_use]
     pub fn join(&self, tail: &KeyPath) -> Self {
