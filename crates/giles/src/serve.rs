@@ -169,7 +169,9 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     let builder = http::RouterBuilder::new();
     // The web channel's pages, the admin pages over the admin service, the agent pages, which
     // create, edit, and remove agents in the running configuration (the registry's, which the web
-    // app also reads), and the route pages, which change the routes the router reads.
+    // app also reads), the route pages, which change the routes the router reads, and the toolset
+    // pages, which change the stored toolsets through the manager and show how each is doing from
+    // the admin service.
     #[cfg(feature = "channel-web")]
     let builder = match &web {
         Some(web) => {
@@ -190,7 +192,13 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
                 web.install_admin(web.install(builder), admin.clone()),
                 manager,
             );
-            web.install_routes(builder, runtime.routes.clone())
+            let builder = web.install_routes(builder, runtime.routes.clone());
+            web.install_toolsets(
+                builder,
+                toolset_manager.clone(),
+                admin.clone(),
+                runtime.registry.clone(),
+            )
         }
         None => builder,
     };

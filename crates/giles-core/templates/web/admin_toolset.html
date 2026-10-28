@@ -1,0 +1,81 @@
+{% extends "layout.html" %}
+
+{% block title %}{{ name }} - MCP servers - Giles{% endblock %}
+
+{% block content %}
+{% include "web/admin_nav.html" %}
+<div class="page-head">
+<h1>{{ name }}</h1>
+<div class="actions">
+{%- if restartable %}
+<form class="inline-form" method="post" action="/admin/mcp-servers/{{ name }}/restart">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button type="submit">Restart</button>
+</form>
+{%- endif %}
+{%- if stored %}
+<a class="button" href="/admin/mcp-servers/{{ name }}/edit">Edit</a>
+<a class="button" href="/admin/mcp-servers/{{ name }}/remove">Remove</a>
+{%- endif %}
+</div>
+</div>
+{%- if !stored %}
+<p class="notice">This MCP server is configured in giles.toml, so it can only be changed there.</p>
+{%- endif %}
+<dl class="facts">
+<dt>Runs as</dt>
+<dd>{{ transport }}</dd>
+{%- if let Some(plugin) = plugin %}
+<dt>State</dt>
+<dd class="state-{{ plugin.class }}">{{ plugin.state }}</dd>
+{%- endif %}
+{%- if let Some(error) = error %}
+<dt>Last error</dt>
+<dd class="state-bad">{{ error }}</dd>
+{%- endif %}
+{%- if let Some(plugin) = plugin %}
+{%- if !plugin.location.is_empty() %}
+<dt>Location</dt>
+<dd><code>{{ plugin.location }}</code></dd>
+{%- endif %}
+{%- if let Some(version) = plugin.version %}
+<dt>Version</dt>
+<dd>{{ version }}</dd>
+{%- endif %}
+<dt>Sandbox</dt>
+<dd>{{ plugin.sandbox }}</dd>
+{%- endif %}
+{%- if let Some(created) = created %}
+<dt>Added</dt>
+<dd>{{ created }}</dd>
+{%- endif %}
+{%- if let Some(updated) = updated %}
+<dt>Changed</dt>
+<dd>{{ updated }}</dd>
+{%- endif %}
+{%- for setting in settings %}
+<dt>{{ setting.label }}</dt>
+<dd>
+{%- for value in setting.values %}
+<div><code>{{ value }}</code></div>
+{%- endfor %}
+</dd>
+{%- endfor %}
+</dl>
+<h2>Tools</h2>
+{%- if tools.is_empty() %}
+<p>No tools are offered to new conversations yet. A server that is still starting, or failed to start, offers none.</p>
+{%- else %}
+<table class="admin-table">
+<thead><tr><th>Name</th><th>Description</th></tr></thead>
+<tbody>
+{%- for tool in tools %}
+<tr>
+<td><code>{{ tool.name }}</code></td>
+<td>{{ tool.description }}</td>
+</tr>
+{%- endfor %}
+</tbody>
+</table>
+{%- endif %}
+{% endblock %}

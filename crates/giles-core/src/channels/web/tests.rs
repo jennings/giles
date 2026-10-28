@@ -44,6 +44,7 @@ mod agent_remove;
 mod agents;
 mod memory;
 mod routes;
+mod toolsets;
 
 const INSTANCE: &str = "web";
 const CSRF: &str = "csrf-token-for-tests";

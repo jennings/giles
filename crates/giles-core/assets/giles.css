@@ -301,3 +301,14 @@ button,
   margin: 0;
   padding-left: 1.2rem;
 }
+
+/* The toolset form: fields side by side, such as the bearer choice and the secret's name. */
+.agent-form .field-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.agent-form .field-row input {
+  flex: 1 1 8rem;
+  min-width: 0;
+}

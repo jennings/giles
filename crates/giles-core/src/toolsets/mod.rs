@@ -33,5 +33,6 @@ pub use self::host::ToolsetHost;
 pub use self::launch::{ResolvedProgram, ToolsetLauncher};
 pub use self::lifecycle::{HEALTHY_RESET, RESTART_BACKOFF_MAX, RESTART_BACKOFF_MIN};
 pub use self::manager::{
-    Removed, ToolsetManager, ToolsetManagerError, ToolsetManagerOptions, ToolsetSource, ToolsetView,
+    RESERVED_TOOLSET_NAME, Removed, ToolsetManager, ToolsetManagerError, ToolsetManagerOptions,
+    ToolsetSource, ToolsetView,
 };

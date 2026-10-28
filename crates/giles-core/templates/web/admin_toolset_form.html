@@ -1,0 +1,55 @@
+{% extends "layout.html" %}
+
+{% block title %}{{ title }} - MCP servers - Giles{% endblock %}
+
+{% block head %}
+<script src="{{ crate::http::assets::mcp_server_form_script_path() }}" defer></script>
+{% endblock %}
+
+{% block content %}
+{% include "web/admin_nav.html" %}
+<h1>{{ title }}</h1>
+{%- if let Some(error) = error %}
+<p class="error" role="alert">{{ error }}</p>
+{%- endif %}
+{%- if stale %}
+<p><a href="/admin/mcp-servers/{{ form.name }}/edit">Reload the current values</a>. What you typed here is not saved.</p>
+{%- endif %}
+{%- if let Some(notice) = notice %}
+<p class="notice">{{ notice }}</p>
+{%- endif %}
+<form class="agent-form" method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+{%- if editing %}
+<input type="hidden" name="updated_at" value="{{ form.updated_at }}">
+<span class="label">Name</span>
+<code>{{ form.name }}</code>
+<p class="detail">The name can't be changed here. It is the prefix of the MCP server's tools.</p>
+{%- else %}
+<label for="name">Name</label>
+<input id="name" name="name" value="{{ form.name }}" required>
+<p class="detail">Letters, digits, <code>-</code>, and <code>_</code>, such as <code>search</code>. It is the prefix of the MCP server's tools (<code>search__query</code>).</p>
+{%- endif %}
+<label for="url">URL</label>
+<input id="url" name="url" value="{{ form.url }}" placeholder="https://example.com/mcp" required>
+<label class="tool" id="insecure-field"{% if !form.plain_http() %} hidden{% endif %}><input type="checkbox" name="insecure"{% if form.insecure %} checked{% endif %}> Allow insecure connections</label>
+<span class="label">Authentication</span>
+<div class="field-row">
+<select name="bearer" aria-label="Whether the server needs a bearer token">
+<option value="none"{% if form.bearer == "none" %} selected{% endif %}>No authentication</option>
+<option value="secret"{% if form.bearer == "secret" %} selected{% endif %}>A secret in secrets.toml</option>
+</select>
+<input name="bearer_secret" value="{{ form.bearer_secret }}" aria-label="Name of the secret" placeholder="secret name">
+</div>
+<p class="detail">Name the secret in <code>secrets.toml</code> that holds the token. Giles reads it when it connects and never shows it.</p>
+<label for="deadline">Deadline</label>
+<input id="deadline" name="deadline" value="{{ form.deadline }}" placeholder="5m">
+<p class="detail">Optional. How long one tool call may run, such as <code>90s</code>. The default is <code>5m</code>.</p>
+<label class="tool"><input type="checkbox" name="parallel"{% if form.parallel %} checked{% endif %}> Tools may run in parallel</label>
+<label for="skills">Skills</label>
+<textarea id="skills" name="skills" rows="2">
+{{ form.skills }}</textarea>
+<p class="detail">Optional. Absolute paths of skill directories the MCP server offers, one per line.</p>
+<button type="submit">{{ submit }}</button>
+</form>
+{% endblock %}

@@ -202,10 +202,10 @@ overlapping the plugin data root is checked for the toolset being validated only
 
 `ToolsetManager` ([Toolsets](toolsets.md#stored-toolsets)) is the caller for toolsets stored in the
 database. It reads `secrets.toml` for every validation and adds its own rules. A name that a
-`giles.toml` instance of any kind uses, or that `[core] retired_instances` lists, is refused. A
-stored toolset is a remote server: a spec without `url` is refused as an `Invalid` at `url`, and an
-`auth.bearer` that isn't `{ secret = "<name>" }` at `auth.bearer`. `giles.toml` keeps accepting
-every credential form.
+`giles.toml` instance of any kind uses, or that `[core] retired_instances` lists, is refused, and so
+is `new`, the address of the web form for a new toolset. A stored toolset is a remote server: a spec
+without `url` is refused as an `Invalid` at `url`, and an `auth.bearer` that isn't
+`{ secret = "<name>" }` at `auth.bearer`. `giles.toml` keeps accepting every credential form.
 
 ## Secrets
 
