@@ -171,8 +171,8 @@ pub enum ToolsetTransport {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct StdioServer {
-    /// What to run.
-    pub program: Program,
+    /// `command`: an absolute path, or a bare name to look up on the operator's `$PATH`.
+    pub command: String,
     /// Arguments, passed unchanged.
     pub args: Vec<String>,
     /// Environment variables to add, by name. Values may come from secret references.
@@ -181,21 +181,6 @@ pub struct StdioServer {
     pub idle_stop: Option<Duration>,
     /// The sandbox it runs in.
     pub sandbox: Sandbox,
-}
-
-/// The program a stdio toolset runs.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Program {
-    /// `command`: an absolute path, or a bare name to look up on the operator's `$PATH`.
-    Command(String),
-    /// No `command`: the first-party plugin `giles-toolset-<component>`.
-    Plugin {
-        /// The component name.
-        component: String,
-        /// The binary name, `giles-toolset-<component>`.
-        binary: String,
-    },
 }
 
 // `config`, `auth`, and `env` may hold credentials, so they're taken as raw TOML values and
@@ -232,10 +217,6 @@ pub(crate) struct RawChannel {
 /// out.
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ToolsetSpec {
-    /// `component`: the first-party plugin `giles-toolset-<component>` to run, when there is no
-    /// `command` or `url`. Defaults to the toolset's name.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub component: Option<String>,
     /// `command`: the stdio server to run, an absolute path or a program name on `$PATH`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
@@ -378,7 +359,6 @@ impl ToolsetSpec {
 impl fmt::Debug for ToolsetSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ToolsetSpec")
-            .field("component", &self.component)
             .field("command", &self.command)
             .field("args", &self.args)
             .field("env", &self.env.as_ref().map(|_| REDACTED))
@@ -573,7 +553,6 @@ impl Ctx<'_> {
         let (name, path) = self.name(Kind::Toolset, name)?;
         let transport = if let Some(url) = raw.url {
             let why = "on a remote toolset (one with `url`)";
-            self.forbid(&path, "component", raw.component.is_some(), why)?;
             self.forbid(&path, "command", raw.command.is_some(), why)?;
             self.forbid(&path, "args", raw.args.is_some(), why)?;
             self.forbid(&path, "env", raw.env.is_some(), why)?;
@@ -592,31 +571,20 @@ impl Ctx<'_> {
             let why = "without `url`";
             self.forbid(&path, "auth", raw.auth.is_some(), why)?;
             self.forbid(&path, "insecure", raw.insecure.is_some(), why)?;
-            let program = match raw.command {
-                Some(command) => {
-                    let why = "together with `command`";
-                    self.forbid(&path, "component", raw.component.is_some(), why)?;
-                    self.command(&path, command)?
-                }
-                None => match self.component(Kind::Toolset, &path, &name, raw.component)? {
-                    Component::Plugin { name, binary } => Program::Plugin {
-                        component: name,
-                        binary,
-                    },
-                    Component::BuiltIn { name } => {
-                        return Err(self.err(
-                            path.key("component"),
-                            format!("{name:?} is a built-in toolset and can't be configured"),
-                        ));
-                    }
-                },
+            let Some(command) = raw.command else {
+                return Err(self.err(
+                    path,
+                    "missing `command`: set it to the MCP server's program, an absolute path or a \
+                     name to look up on $PATH",
+                ));
             };
+            let command = self.command(&path, command)?;
             let idle_stop = raw.idle_stop.map(|d| d.0);
             if idle_stop == Some(Duration::ZERO) {
                 return Err(self.err(path.key("idle_stop"), "must be longer than 0s"));
             }
             ToolsetTransport::Stdio(StdioServer {
-                program,
+                command,
                 args: raw.args.unwrap_or_default(),
                 env: self.env(&path.key("env"), raw.env)?,
                 idle_stop,
@@ -672,7 +640,7 @@ impl Ctx<'_> {
     }
 
     /// A stdio toolset's `command`: an absolute path or a bare program name.
-    fn command(&self, path: &KeyPath, command: String) -> Result<Program, ConfigError> {
+    fn command(&self, path: &KeyPath, command: String) -> Result<String, ConfigError> {
         let path = path.key("command");
         if command.is_empty() {
             return Err(self.err(path, "must not be empty"));
@@ -683,7 +651,7 @@ impl Ctx<'_> {
                 "must be an absolute path or a program name to look up on $PATH",
             ));
         }
-        Ok(Program::Command(command))
+        Ok(command)
     }
 
     /// A remote component's `address` or `url`, and `auth`. `oauth` says whether OAuth client

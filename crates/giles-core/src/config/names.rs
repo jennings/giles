@@ -114,7 +114,7 @@ pub struct Builtins {
 
 impl Builtins {
     /// Every built-in component v1 has (PLAN section 4.2): the `anthropic` and `openai`
-    /// providers and the `web` channel. There are no built-in toolsets.
+    /// providers and the `web` channel. Toolsets have no components.
     pub const V1: Builtins = Builtins {
         providers: &["anthropic", "openai"],
         channels: &["web"],
@@ -224,8 +224,8 @@ mod tests {
         // A built-in of one kind is a plugin name for another.
         assert_eq!(b.resolve(Kind::Channel, "anthropic").name(), "anthropic");
         assert!(matches!(
-            b.resolve(Kind::Toolset, "web"),
-            Component::Plugin { binary, .. } if binary == "giles-toolset-web"
+            b.resolve(Kind::Provider, "web"),
+            Component::Plugin { binary, .. } if binary == "giles-provider-web"
         ));
         let custom = Builtins {
             providers: &[],

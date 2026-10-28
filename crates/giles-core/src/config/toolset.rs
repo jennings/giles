@@ -14,8 +14,7 @@ use std::path::Path;
 use super::discovery::{discover_plugin, find_program};
 use super::error::{ConfigError, KeyPath};
 use super::instances::{
-    ChannelInstance, ChannelRuntime, Ctx, Program, Sandbox, ToolsetInstance, ToolsetSpec,
-    ToolsetTransport,
+    ChannelInstance, ChannelRuntime, Ctx, Sandbox, ToolsetInstance, ToolsetSpec, ToolsetTransport,
 };
 use super::names::{InstanceName, Kind};
 use super::sandbox::{self, BinaryDirs};
@@ -229,13 +228,7 @@ pub(super) fn check_binary_dirs<'a>(
     }
     for toolset in toolsets {
         if let ToolsetTransport::Stdio(stdio) = &toolset.transport {
-            let binary = match &stdio.program {
-                Program::Command(command) => find_program(command, env),
-                Program::Plugin { component, .. } => {
-                    discover_plugin(root, Kind::Toolset, component, env)
-                }
-            };
-            if let Some(binary) = binary {
+            if let Some(binary) = find_program(&stdio.command, env) {
                 let what = format!("toolset {}'s server, {}", toolset.name, binary.display());
                 if is_focus(&toolset.name) {
                     focus_dirs.add(&binary, what.clone());
@@ -411,17 +404,11 @@ mod tests {
         assert_eq!(remote.skills, [PathBuf::from("/srv/skills")]);
         assert!(matches!(remote.transport, ToolsetTransport::Http(_)));
 
-        let shell = fixture.assert_valid("shell", json!({}));
+        let shell = fixture.assert_valid("shell", json!({ "command": "/bin/shell" }));
         let ToolsetTransport::Stdio(stdio) = &shell.transport else {
             panic!("{shell:?}");
         };
-        assert_eq!(
-            stdio.program,
-            Program::Plugin {
-                component: "shell".to_owned(),
-                binary: "giles-toolset-shell".to_owned(),
-            }
-        );
+        assert_eq!(stdio.command, "/bin/shell");
     }
 
     #[test]
@@ -629,11 +616,6 @@ mod tests {
                 "remote toolset",
             ),
             (
-                json!({ "url": "https://x", "component": "x" }),
-                "component",
-                "remote toolset",
-            ),
-            (
                 json!({ "url": "https://x", "idle_stop": "1m" }),
                 "idle_stop",
                 "remote toolset",
@@ -652,11 +634,6 @@ mod tests {
                 json!({ "url": "https://x", "auth": { "oauth": {} } }),
                 "auth.oauth",
                 "only `bearer`",
-            ),
-            (
-                json!({ "command": "/x", "component": "y" }),
-                "component",
-                "together with `command`",
             ),
             (
                 json!({ "url": "https://x", "deadline": "0s" }),

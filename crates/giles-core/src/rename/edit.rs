@@ -102,13 +102,15 @@ pub(super) fn rename_in_giles_toml(
                  again"
             )));
         }
-        // Without a `component` key an instance runs the component named like the instance, so
-        // the new name would run another one (or none). Keep the old one.
-        let pin = parent
-            .as_table_like()
-            .and_then(|t| t.get(old))
-            .and_then(Item::as_table_like)
-            .is_some_and(|t| runs_component(kind, t) && !t.contains_key("component"));
+        // Without a `component` key a provider or channel runs the component named like the
+        // instance, so the new name would run another one (or none). Keep the old one. A toolset
+        // runs no component.
+        let pin = kind != Kind::Toolset
+            && parent
+                .as_table_like()
+                .and_then(|t| t.get(old))
+                .and_then(Item::as_table_like)
+                .is_some_and(|t| !t.contains_key("component"));
         match parent {
             Item::Table(table) => rekey_table(table, old, new),
             Item::Value(Value::InlineTable(table)) => {
@@ -167,27 +169,23 @@ pub(super) fn rename_in_giles_toml(
     })
 }
 
-/// Whether the instance table `t` runs a component, which `component` then names. Providers and
-/// channels (remote ones too) always do; a toolset does only if it has no `command` (an
-/// arbitrary program).
-fn runs_component(kind: Kind, t: &dyn TableLike) -> bool {
-    kind != Kind::Toolset || !t.contains_key("command")
-}
-
 /// The component instance `name` of `kind` runs: its `component` key, else its own name. `None`
-/// if the instance doesn't run a component.
+/// for a toolset, which runs no component, and if there is no such instance.
 fn component_of(doc: &DocumentMut, kind: Kind, name: &str) -> Option<String> {
+    if kind == Kind::Toolset {
+        return None;
+    }
     let table = doc
         .get(kind.as_str())
         .and_then(Item::as_table_like)
         .and_then(|t| t.get(name))
         .and_then(Item::as_table_like)?;
-    runs_component(kind, table).then(|| {
+    Some(
         table
             .get("component")
             .and_then(Item::as_str)
-            .map_or_else(|| name.to_owned(), str::to_owned)
-    })
+            .map_or_else(|| name.to_owned(), str::to_owned),
+    )
 }
 
 /// Renames the references to the instance `old` in the text of an `agent.toml`: for a provider,
@@ -688,22 +686,15 @@ prompt = "Hi"
     }
 
     #[test]
-    fn a_component_that_is_written_stays_as_written_and_other_forms_are_not_pinned() {
+    fn a_component_that_is_written_stays_as_written_and_toolsets_get_none() {
         let source = "[channel.libera]\ncomponent = \"irc\"\n";
         let edit = rename_in_giles_toml(source, Kind::Channel, "libera", "oftc").unwrap();
         assert_eq!(edit.text, "[channel.oftc]\ncomponent = \"irc\"\n");
 
-        // `component` is an error next to `command`, which runs no component, so nothing is
-        // added there; a toolset without it runs the first-party one.
-        for (body, pinned) in [("command = \"/bin/x\"\n", false), ("", true)] {
-            let source = format!("[toolset.github]\n{body}");
-            let edit = rename_in_giles_toml(&source, Kind::Toolset, "github", "gh").unwrap();
-            assert_eq!(edit.text.contains("component"), pinned, "{}", edit.text);
-            assert_eq!(
-                component(&edit.text, Kind::Toolset, "gh").as_deref(),
-                pinned.then_some("github")
-            );
-        }
+        // A toolset runs no component, so nothing is added.
+        let source = "[toolset.github]\ncommand = \"/bin/x\"\n";
+        let edit = rename_in_giles_toml(source, Kind::Toolset, "github", "gh").unwrap();
+        assert_eq!(edit.text, "[toolset.gh]\ncommand = \"/bin/x\"\n");
     }
 
     #[test]

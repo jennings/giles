@@ -12,8 +12,8 @@ use tracing::{info, warn};
 
 use super::grants::{self, Plan, Protect};
 use crate::config::{
-    Auth, InstanceName, Kind, NetworkGrant, Program, Remote, StdioServer, ToolsetInstance,
-    ToolsetTransport, discover_plugin, find_program,
+    Auth, InstanceName, NetworkGrant, Remote, StdioServer, ToolsetInstance, ToolsetTransport,
+    find_program,
 };
 use crate::mcp::{HttpServer, McpMedia, McpToolset};
 use crate::paths::DataRoot;
@@ -47,8 +47,7 @@ impl std::fmt::Debug for ToolsetLauncher {
 /// A stdio server's program, found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedProgram {
-    /// Where it was found: `command` as given if absolute, else on the operator's `PATH`; or
-    /// the plugin binary in `<root>/plugins/` or on `PATH`.
+    /// Where it was found: `command` as given if absolute, else on the operator's `PATH`.
     pub found: PathBuf,
     /// The same with symbolic links resolved: the file that runs, and whose SHA-256 keys the
     /// tool-list cache (PLAN section 7.9).
@@ -88,8 +87,8 @@ impl ToolsetLauncher {
         &self.root
     }
 
-    /// Finds the program of the stdio server `server` of `instance`: `command` with the
-    /// operator's `PATH`, or the first-party plugin `giles-toolset-<component>`.
+    /// Finds the program of the stdio server `server` of `instance`: its `command`, with the
+    /// operator's `PATH`.
     ///
     /// # Errors
     ///
@@ -100,27 +99,13 @@ impl ToolsetLauncher {
         instance: &InstanceName,
         server: &StdioServer,
     ) -> Result<ResolvedProgram> {
-        let found = match &server.program {
-            Program::Command(command) => find_program(command, &*self.env).ok_or_else(|| {
-                unavailable(
-                    instance,
-                    format_args!("command {command:?} not found (or not executable) on PATH"),
-                )
-            })?,
-            Program::Plugin { component, binary } => {
-                discover_plugin(&self.root, Kind::Toolset, component, &*self.env).ok_or_else(
-                    || {
-                        unavailable(
-                            instance,
-                            format_args!(
-                                "plugin {binary} not found in {} or on PATH",
-                                self.root.plugins_dir().display()
-                            ),
-                        )
-                    },
-                )?
-            }
-        };
+        let command = &server.command;
+        let found = find_program(command, &*self.env).ok_or_else(|| {
+            unavailable(
+                instance,
+                format_args!("command {command:?} not found (or not executable) on PATH"),
+            )
+        })?;
         let program = fs::canonicalize(&found).map_err(|error| {
             unavailable(
                 instance,
@@ -308,7 +293,7 @@ mod tests {
 
     fn server(env: &[(&str, &str)], grants: Grants) -> StdioServer {
         StdioServer {
-            program: Program::Command("x".into()),
+            command: "x".into(),
             args: Vec::new(),
             env: env
                 .iter()

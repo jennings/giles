@@ -130,11 +130,11 @@ printed with the daemon's reason.
 
 Each `PluginInstance` combines three sources:
 
-- The configuration: kind, component (empty for a toolset that runs a command or a URL), location
-  (the program as configured, or the URL), and the sandbox. For a sandboxed local instance,
-  `SandboxStatus.missing` is `HostReport::lacking` for its grants (Landlock ABI shortfalls on Linux;
-  nothing on macOS), or one entry with the host's error when the host can't sandbox at all.
-  Unsandboxed instances have `enabled = false`; remote ones no sandbox.
+- The configuration: kind, component (empty for a toolset, which has none), location (the program as
+  configured, or the URL), and the sandbox. For a sandboxed local instance, `SandboxStatus.missing`
+  is `HostReport::lacking` for its grants (Landlock ABI shortfalls on Linux; nothing on macOS), or
+  one entry with the host's error when the host can't sandbox at all. Unsandboxed instances have
+  `enabled = false`; remote ones no sandbox.
 - The channel statuses recorded since startup (`channel_status`, channels only).
 - Supervision, through `PluginControl::plugins()`: state (`Running` sets `pid` and `started_at`,
   `BackingOff` sets `retry_at`), the binary found (replaces the location), restarts, the last error,

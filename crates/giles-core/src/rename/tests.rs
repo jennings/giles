@@ -1583,7 +1583,7 @@ mod startup_check {
         // A launched toolset that has not started yet is a candidate, though.
         home.write(
             "giles.toml",
-            "[owner]\nidentities = [\"web:owner\"]\n[toolset.docs]\n",
+            "[owner]\nidentities = [\"web:owner\"]\n[toolset.docs]\ncommand = \"/bin/docs\"\n",
         );
         let err = check(&home).await.unwrap_err().to_string();
         assert!(err.contains("giles instance rename files docs"), "{err}");

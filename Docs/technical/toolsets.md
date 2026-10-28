@@ -17,9 +17,9 @@ for `PATH` lookups (tests).
 
 `connect(&ToolsetInstance)` returns an `McpToolset` once the server has answered `initialize`:
 
-- **Stdio** (`command`, or the first-party plugin `giles-toolset-<component>`): `resolve` finds the
-  program, then `launch` starts it in its sandbox (below) and hands the command to
-  `McpToolset::connect_stdio` with the `env` values as the secrets to scrub.
+- **Stdio** (`command`): `resolve` finds the program, then `launch` starts it in its sandbox (below)
+  and hands the command to `McpToolset::connect_stdio` with the `env` values as the secrets to
+  scrub.
 - **Remote** (`url`): `McpToolset::connect_http` with the bearer token from `auth`, if any. Toolset
   validation accepts only bearer tokens; OAuth client credentials are for remote channels.
 
@@ -31,10 +31,10 @@ that fails to start or answer, an unreachable URL).
 ## Finding the program
 
 `command` is an absolute path or a name looked up on the operator's `PATH` (`config::find_program`,
-the same lookup config loading uses to protect binary directories). Without `command`, the plugin
-`giles-toolset-<component>` is found in `<root>/plugins/`, then on `PATH`
-(`config::discover_plugin`). `ResolvedProgram` keeps both the path as found (`found`) and with links
-resolved (`program`). The trampoline runs `program`, so the file granted is the file run, and the
+the same lookup config loading uses to protect binary directories). A toolset has no component and
+no `<root>/plugins/` lookup: a first-party server is configured with `command` like any other.
+`ResolvedProgram` keeps both the path as found (`found`) and with links resolved (`program`). The
+trampoline runs `program`, so the file granted is the file run, and the
 [tool-list cache](#tool-list-cache) is keyed on its SHA-256.
 
 ## Grants
@@ -58,8 +58,8 @@ PLAN section 7.10). Most servers are scripts installed by a package manager:
    not be the operator's home directory or contain it (the launcher's `HOME`, compared as written
    and with links resolved), whatever the data root: `~/bin/server` would otherwise grant all of
    `~`, including `~/.ssh`. A prefix that fails narrows to the program's directory, then to the file
-   itself. A bundled plugin inside the data root gets no grant at all; the backends always let the
-   command itself run.
+   itself. A program inside the data root gets no grant at all; the backends always let the command
+   itself run.
 4. Grants inside another grant are dropped; the rest are sorted.
 
 The server's `PATH` is the directory of `found`, then that of a program found through `env`, then
@@ -283,9 +283,8 @@ One async lock spans each change, as `Routes` does for routes. A change:
    a name in `[core] retired_instances`, which lists names that are not configured, a spec without
    `url` (an `Invalid` at `url`: a stdio server goes in `giles.toml`), and an `auth.bearer` that
    isn't `{ secret = "<name>" }` (an `{ env = ... }` reference or a plain token). `validate_toolset`
-   then refuses the keys of a stdio server (`command`, `component`, `args`, `env`, `idle_stop`,
-   `sandbox`, `unsandboxed`) next to `url`, each at its key. Nothing is stored when any of these
-   fails.
+   then refuses the keys of a stdio server (`command`, `args`, `env`, `idle_stop`, `sandbox`,
+   `unsandboxed`) next to `url`, each at its key. Nothing is stored when any of these fails.
 3. Writes the row. The store checks the stale token too, so a write can't overwrite a change that
    isn't the one the caller read.
 4. Changes the `LiveConfig` (`add_toolset` or `replace_toolset`), then the host (`add` or
@@ -390,9 +389,9 @@ failed write is logged.
 
 - Unit: shebang parsing, install prefixes, the plan for a linked script run by `env`, an interpreter
   link into another prefix, a prefix containing the data root, the home directory (never granted,
-  also through a link and with the data root elsewhere), and a bundled plugin; the spec built from a
-  plan (credentials named, not written); the cache (hit only for the stored source and config hash,
-  replaced by each store, 0600, damaged or foreign files ignored, the digest).
+  also through a link and with the data root elsewhere), and a program inside the data root; the
+  spec built from a plan (credentials named, not written); the cache (hit only for the stored source
+  and config hash, replaced by each store, 0600, damaged or foreign files ignored, the digest).
 - Lifecycle (`toolsets/tests.rs`), with a fake connector and fake servers on paused time: boot
   starts and registers every toolset and `stop` drops every connection; a cache hit is offered
   before the server answers, then refreshed with the reported version; a changed binary or config

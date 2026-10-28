@@ -37,7 +37,7 @@ use super::admin::{PluginRow, call_failed, forbidden, may_administer, plugin_row
 use super::auth::{WebUser, check_csrf};
 use super::pages::{WebApp, agent_label, error_page, no_store};
 use crate::config::{
-    Config, InstanceName, KeyPath, LiveConfig, Program, ToolsetError, ToolsetInstance, ToolsetSpec,
+    Config, InstanceName, KeyPath, LiveConfig, ToolsetError, ToolsetInstance, ToolsetSpec,
     ToolsetTransport,
 };
 use crate::http::{self, RouterBuilder};
@@ -153,14 +153,11 @@ fn when(at: Timestamp) -> String {
 }
 
 /// How a toolset runs, as the list says it, and where.
-fn describe_spec(name: &str, spec: &ToolsetSpec) -> (&'static str, String) {
-    if let Some(url) = &spec.url {
-        ("remote URL", url.clone())
-    } else if let Some(command) = &spec.command {
-        ("command", command.clone())
-    } else {
-        let component = spec.component.as_deref().unwrap_or(name);
-        ("first-party plugin", format!("giles-toolset-{component}"))
+fn describe_spec(spec: &ToolsetSpec) -> (&'static str, String) {
+    match (&spec.url, &spec.command) {
+        (Some(url), _) => ("remote URL", url.clone()),
+        (None, Some(command)) => ("command", command.clone()),
+        (None, None) => ("unknown", String::new()),
     }
 }
 
@@ -168,17 +165,14 @@ fn describe_spec(name: &str, spec: &ToolsetSpec) -> (&'static str, String) {
 fn describe_instance(toolset: &ToolsetInstance) -> (&'static str, String) {
     match &toolset.transport {
         ToolsetTransport::Http(remote) => ("remote URL", remote.url.to_string()),
-        ToolsetTransport::Stdio(server) => match &server.program {
-            Program::Command(command) => ("command", command.clone()),
-            Program::Plugin { binary, .. } => ("first-party plugin", binary.clone()),
-        },
+        ToolsetTransport::Stdio(server) => ("command", server.command.clone()),
     }
 }
 
 /// How `view` runs and where: from its spec if it has one, else from the running configuration.
 fn describe(view: &ToolsetView, config: &Config) -> (&'static str, String) {
     if let Some(spec) = &view.spec {
-        return describe_spec(&view.name, spec);
+        return describe_spec(spec);
     }
     match config
         .toolsets

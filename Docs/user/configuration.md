@@ -141,9 +141,10 @@ instance's data directory are keyed by the name. To change it, use
 
 Names are unique across all three kinds, ignoring case. `Libera` and `libera` clash.
 
-`component` says what runs the instance, and defaults to the instance name. Giles uses its built-in
-component of that kind and name, if it has one. Otherwise the instance runs the plugin
-`giles-<kind>-<component>`, found in `<data root>/plugins/` or on `$PATH`.
+A provider or channel's `component` says what runs the instance, and defaults to the instance name.
+Giles uses its built-in component of that kind and name, if it has one. Otherwise the instance runs
+the plugin `giles-<kind>-<component>`, found in `<data root>/plugins/` or on `$PATH`. A toolset has
+no component. It runs its `command`.
 
 Two IRC networks are two instances of one component:
 
@@ -256,11 +257,8 @@ or sandboxes it, and the plugin keeps its own state.
 #### Toolsets
 
 A toolset is an MCP server. A `[toolset.<name>]` table configures a stdio server, which Giles
-launches and talks to over its standard input and output. It runs one of two ways:
-
-- `command`: an absolute path or a program name looked up on `$PATH`, with `args`.
-- No `command`: the first-party plugin `giles-toolset-<component>` (the component defaults to the
-  instance name).
+launches and talks to over its standard input and output. Set `toolset.<name>.command` to the
+server's program, as an absolute path or a program name Giles looks up on `$PATH`.
 
 A remote server, one Giles reaches over the network, is added in the [web UI](web.md#mcp-servers) or
 with [`giles toolset set`](cli.md#giles-toolset). Giles ignores a `[toolset.<name>]` table that has
@@ -268,8 +266,7 @@ with [`giles toolset set`](cli.md#giles-toolset). Giles ignores a `[toolset.<nam
 
 | Key           | Default   | Meaning                                                       |
 | ------------- | --------- | ------------------------------------------------------------- |
-| `command`     |           | The program to run                                            |
-| `component`   | name      | The plugin to run when there's no `command`                   |
+| `command`     | required  | The program to run                                            |
 | `args`        | `[]`      | Arguments                                                     |
 | `env`         | `{}`      | Environment variables to set, name to credential              |
 | `idle_stop`   | off       | Stop the server after this long without calls (a duration); its tools stay offered and it restarts on the next call |

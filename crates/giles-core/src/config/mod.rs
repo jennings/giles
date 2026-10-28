@@ -51,8 +51,8 @@ pub use giles::{CoreConfig, DEFAULT_HTTP_LISTEN, Identity, OwnerConfig};
 pub use hash::ConfigHash;
 pub use instances::{
     Auth, ChannelInstance, ChannelRuntime, DEFAULT_MAX_BLOB, DEFAULT_TOOL_DEADLINE, Launch,
-    OAuthClientCredentials, Program, ProviderInstance, Remote, Sandbox, StdioServer,
-    ToolsetInstance, ToolsetSpec, ToolsetTransport,
+    OAuthClientCredentials, ProviderInstance, Remote, Sandbox, StdioServer, ToolsetInstance,
+    ToolsetSpec, ToolsetTransport,
 };
 pub use live::{
     AgentExists, InstanceExists, LiveConfig, NoSuchAgent, NoSuchToolset, RenameToolsetError,
@@ -183,6 +183,18 @@ impl Config {
             let path = KeyPath::root()
                 .key(Kind::Toolset.as_str())
                 .key(name.as_str());
+            // A toolset ran a plugin named by `component` before `command` was required.
+            if let Some(component) = table.get("component") {
+                let binary = format!("giles-toolset-{}", component.as_str().unwrap_or(&name));
+                return Err(ConfigError::at(
+                    file,
+                    path.key("component"),
+                    format!(
+                        "a toolset has no component: set `command` to the MCP server's program \
+                         instead, e.g. {binary:?} on $PATH or its absolute path"
+                    ),
+                ));
+            }
             let (spec, keys) = parse_value_lenient::<ToolsetSpec>(file, &path, table)?;
             unknown.extend(keys);
             toolset_specs.insert(name, spec);
