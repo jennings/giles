@@ -18,6 +18,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 
+use crate::config::Kind;
+
 /// The environment variable that selects the data root.
 pub const GILES_HOME_ENV: &str = "GILES_HOME";
 
@@ -306,13 +308,13 @@ impl DataRoot {
         self.data_dir().join("plugins")
     }
 
-    /// `data/plugins/<instance>/`: the instance's data directory, its only writable directory
-    /// (section 11.6).
+    /// `data/plugins/<instance>/`: the data directory of the `kind` instance `instance`, its only
+    /// writable directory (section 11.6).
     ///
     /// # Errors
     ///
     /// [`PathsError::InvalidName`] if `instance` is not a valid name ([`is_valid_name`]).
-    pub fn plugin_data_dir(&self, instance: &str) -> Result<PathBuf, PathsError> {
+    pub fn plugin_data_dir(&self, _kind: Kind, instance: &str) -> Result<PathBuf, PathsError> {
         Ok(self.plugin_data_root().join(checked_name(instance)?))
     }
 
@@ -350,12 +352,12 @@ impl DataRoot {
         self.run_dir().join("pids")
     }
 
-    /// `run/pids/<instance>.pid`.
+    /// `run/pids/<instance>.pid`, for the `kind` instance `instance`.
     ///
     /// # Errors
     ///
     /// [`PathsError::InvalidName`] if `instance` is not a valid name ([`is_valid_name`]).
-    pub fn pid_file(&self, instance: &str) -> Result<PathBuf, PathsError> {
+    pub fn pid_file(&self, _kind: Kind, instance: &str) -> Result<PathBuf, PathsError> {
         let instance = checked_name(instance)?;
         Ok(self.pids_dir().join(format!("{instance}.pid")))
     }
@@ -365,12 +367,12 @@ impl DataRoot {
         self.run_dir().join("sandbox")
     }
 
-    /// `run/sandbox/<instance>.json`, mode 0600.
+    /// `run/sandbox/<instance>.json`, mode 0600, for the `kind` instance `instance`.
     ///
     /// # Errors
     ///
     /// [`PathsError::InvalidName`] if `instance` is not a valid name ([`is_valid_name`]).
-    pub fn sandbox_spec_file(&self, instance: &str) -> Result<PathBuf, PathsError> {
+    pub fn sandbox_spec_file(&self, _kind: Kind, instance: &str) -> Result<PathBuf, PathsError> {
         let instance = checked_name(instance)?;
         Ok(self.sandbox_specs_dir().join(format!("{instance}.json")))
     }
@@ -677,16 +679,19 @@ mod tests {
         assert_eq!(r.database_file(), Path::new("/g/data/giles.db"));
         assert_eq!(r.blobs_dir(), Path::new("/g/data/blobs"));
         assert_eq!(
-            r.plugin_data_dir("irc").unwrap(),
+            r.plugin_data_dir(Kind::Channel, "irc").unwrap(),
             Path::new("/g/data/plugins/irc")
         );
         assert_eq!(r.backups_dir(), Path::new("/g/backups"));
         assert_eq!(r.trash_dir(), Path::new("/g/trash"));
         assert_eq!(r.admin_token_file(), Path::new("/g/run/admin.token"));
         assert_eq!(r.lock_file(), Path::new("/g/run/giles.lock"));
-        assert_eq!(r.pid_file("irc").unwrap(), Path::new("/g/run/pids/irc.pid"));
         assert_eq!(
-            r.sandbox_spec_file("irc").unwrap(),
+            r.pid_file(Kind::Channel, "irc").unwrap(),
+            Path::new("/g/run/pids/irc.pid")
+        );
+        assert_eq!(
+            r.sandbox_spec_file(Kind::Channel, "irc").unwrap(),
             Path::new("/g/run/sandbox/irc.json")
         );
         assert_eq!(r.cache_dir(), Path::new("/g/cache"));
@@ -714,8 +719,8 @@ mod tests {
                 "{res:?}"
             );
         };
-        invalid(r.plugin_data_dir("../../etc"), "../../etc");
-        invalid(r.pid_file(".."), "..");
+        invalid(r.plugin_data_dir(Kind::Channel, "../../etc"), "../../etc");
+        invalid(r.pid_file(Kind::Channel, ".."), "..");
         invalid(r.agent_dir("a/b"), "a/b");
         invalid(r.user_dir(""), "");
     }

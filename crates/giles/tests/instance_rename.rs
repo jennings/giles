@@ -6,6 +6,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use giles_core::admin::InstanceLock;
+use giles_core::config::Kind;
 use giles_core::paths::DataRoot;
 use giles_store::{JournalMode, OpenOptions, SessionKey, SessionKind, Store};
 use giles_types::{AgentId, ConversationId, UserId};
@@ -39,7 +40,7 @@ async fn populated(dir: &Path) -> DataRoot {
     let agent = dir.join("agents/jeeves");
     fs::create_dir_all(&agent).unwrap();
     fs::write(agent.join("agent.toml"), AGENT_TOML).unwrap();
-    let plugin_data = root.plugin_data_dir("libera").unwrap();
+    let plugin_data = root.plugin_data_dir(Kind::Channel, "libera").unwrap();
     fs::create_dir_all(&plugin_data).unwrap();
     fs::write(plugin_data.join("state.json"), "{\"cursor\": 7}").unwrap();
 
@@ -106,11 +107,16 @@ async fn rename_moves_the_data_and_prints_what_it_did() {
     );
     assert!(config.contains("channel = \"libera-chat\""), "{config}");
     let moved = root
-        .plugin_data_dir("libera-chat")
+        .plugin_data_dir(Kind::Channel, "libera-chat")
         .unwrap()
         .join("state.json");
     assert_eq!(fs::read_to_string(moved).unwrap(), "{\"cursor\": 7}");
-    assert!(!root.plugin_data_dir("libera").unwrap().exists());
+    assert!(
+        !root
+            .plugin_data_dir(Kind::Channel, "libera")
+            .unwrap()
+            .exists()
+    );
 
     let store = Store::open(root.database_file()).await.unwrap();
     let rows = store.instance_rows().await.unwrap();
@@ -191,7 +197,11 @@ async fn a_failed_rename_exits_nonzero_and_changes_nothing() {
             .replace("[provider.anthropic]\n", ""),
         GILES_TOML
     );
-    assert!(root.plugin_data_dir("libera").unwrap().is_dir());
+    assert!(
+        root.plugin_data_dir(Kind::Channel, "libera")
+            .unwrap()
+            .is_dir()
+    );
 }
 
 #[tokio::test]

@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use giles_core::commands::NoPendingApprovals;
-use giles_core::config::{Builtins, ChannelInstance, Config, LoadOptions};
+use giles_core::config::{Builtins, ChannelInstance, Config, Kind, LoadOptions};
 use giles_core::paths::DataRoot;
 use giles_core::plugin_host::{ChannelWiring, Launcher, PluginHost};
 use giles_core::runtime::Runtime;
@@ -140,7 +140,7 @@ impl Home {
 
     /// The data directory of instance `instance`.
     pub fn data_dir(&self, instance: &str) -> PathBuf {
-        self.root.plugin_data_dir(instance).unwrap()
+        self.root.plugin_data_dir(Kind::Channel, instance).unwrap()
     }
 
     /// Makes the echo plugin of `instance` emit `injection` (an `inject/*.json` document), as

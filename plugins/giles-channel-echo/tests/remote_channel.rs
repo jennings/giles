@@ -8,6 +8,7 @@ mod support;
 
 use std::fs;
 
+use giles_core::config::Kind;
 use giles_core::plugin_host::PluginState;
 use giles_plugin_sdk::giles_types::{
     ChannelStatus, ConversationId, MediaId, OutboundMessage, SendTarget,
@@ -164,7 +165,7 @@ async fn the_host_registers_what_it_launches_and_stops_everything() {
         .map(|p| p.name.to_string())
         .collect();
     assert_eq!(pending, ["missing"]);
-    let pid_file = home.root.pid_file("echo").unwrap();
+    let pid_file = home.root.pid_file(Kind::Channel, "echo").unwrap();
     let pid: i32 = fs::read_to_string(&pid_file)
         .unwrap()
         .lines()

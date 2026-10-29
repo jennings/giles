@@ -34,7 +34,7 @@ environment.
     giles.db          DataRoot::database_file()
     blobs/            DataRoot::blobs_dir()
     plugins/          DataRoot::plugin_data_root()
-      <instance>/     DataRoot::plugin_data_dir(name)
+      <instance>/     DataRoot::plugin_data_dir(kind, name)
   backups/            DataRoot::backups_dir()
   trash/              DataRoot::trash_dir()         not in the layout: made at the first removal
     agents/           removed agents: <agent>-<UTC time>/
@@ -44,9 +44,9 @@ environment.
     giles.lock        DataRoot::lock_file()         flock held by the running core
     proxy.sock        DataRoot::proxy_socket()      unless it falls back (below)
     pids/             DataRoot::pids_dir()
-      <instance>.pid  DataRoot::pid_file(name)
+      <instance>.pid  DataRoot::pid_file(kind, name)
     sandbox/          DataRoot::sandbox_specs_dir()
-      <instance>.json DataRoot::sandbox_spec_file(name)
+      <instance>.json DataRoot::sandbox_spec_file(kind, name)
   cache/              DataRoot::cache_dir()
 ```
 

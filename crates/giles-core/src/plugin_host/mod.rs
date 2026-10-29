@@ -396,7 +396,7 @@ impl Launcher {
             source,
         })?;
 
-        let pid_file = self.root.pid_file(name)?;
+        let pid_file = self.root.pid_file(Kind::Channel, name)?;
         match orphans::cleanup(&pid_file, &binary).await {
             Ok(orphans::Cleanup::Killed(pid)) => {
                 warn!(pid, binary = %binary.display(), "killed an orphaned plugin process");
@@ -411,7 +411,7 @@ impl Launcher {
             }
         }
 
-        let data_dir = self.root.plugin_data_dir(name)?;
+        let data_dir = self.root.plugin_data_dir(Kind::Channel, name)?;
         prepare_data_dir(&data_dir)?;
         let spec = launch_spec(&data_dir, &binary, sandbox);
         spec.validate()?;
@@ -432,7 +432,7 @@ impl Launcher {
 
         let spec_file;
         let (program, args, env) = if sandboxed {
-            spec_file = self.root.sandbox_spec_file(name)?;
+            spec_file = self.root.sandbox_spec_file(Kind::Channel, name)?;
             write_private(&spec_file, spec.to_json()?.as_bytes()).map_err(|source| {
                 LaunchError::Prepare {
                     action: "write the sandbox spec",

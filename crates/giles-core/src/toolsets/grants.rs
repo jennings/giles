@@ -11,7 +11,7 @@ use std::fs::File;
 use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 
-use crate::config::{InstanceName, check_grant};
+use crate::config::{InstanceName, Kind, check_grant};
 use crate::paths::DataRoot;
 use crate::sandbox::DEFAULT_PATH;
 
@@ -108,7 +108,7 @@ impl Protect<'_> {
                 return false;
             }
         }
-        check_grant(self.root, self.instance, path).is_ok()
+        check_grant(self.root, Kind::Toolset, self.instance, path).is_ok()
     }
 }
 

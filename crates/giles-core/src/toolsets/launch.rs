@@ -12,7 +12,7 @@ use tracing::{info, warn};
 
 use super::grants::{self, Plan, Protect};
 use crate::config::{
-    Auth, InstanceName, NetworkGrant, Remote, StdioServer, ToolsetInstance, ToolsetTransport,
+    Auth, InstanceName, Kind, NetworkGrant, Remote, StdioServer, ToolsetInstance, ToolsetTransport,
     find_program,
 };
 use crate::mcp::{HttpServer, McpMedia, McpToolset};
@@ -166,7 +166,7 @@ impl ToolsetLauncher {
         });
         let data_dir = self
             .root
-            .plugin_data_dir(name)
+            .plugin_data_dir(Kind::Toolset, name)
             .map_err(|error| invalid(instance, error))?;
         prepare_data_dir(&data_dir).map_err(|error| unavailable(instance, error))?;
         let spec = stdio_spec(&data_dir, &plan, server);
@@ -176,7 +176,7 @@ impl ToolsetLauncher {
         let command = if sandboxed {
             let spec_file = self
                 .root
-                .sandbox_spec_file(name)
+                .sandbox_spec_file(Kind::Toolset, name)
                 .map_err(|error| invalid(instance, error))?;
             write_private(&spec_file, json.as_bytes()).map_err(|error| {
                 unavailable(

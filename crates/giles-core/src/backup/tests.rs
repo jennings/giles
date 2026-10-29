@@ -10,6 +10,8 @@ use giles_store::{
 use giles_types::{AgentId, ConversationId, UserId};
 use tempfile::TempDir;
 
+use crate::config::Kind;
+
 use super::*;
 
 fn at(secs: i64) -> Timestamp {
@@ -56,7 +58,10 @@ fn populate(root: &DataRoot) {
     put(&root.blobs_dir().join("sha256/tmp/partial"), "half a put");
     put(&root.plugins_dir().join("giles-channel-irc"), "binary");
     put(
-        &root.plugin_data_dir("irc").unwrap().join("state.json"),
+        &root
+            .plugin_data_dir(Kind::Channel, "irc")
+            .unwrap()
+            .join("state.json"),
         "{}",
     );
     put(&root.backups_dir().join("old.tar"), "an earlier backup");

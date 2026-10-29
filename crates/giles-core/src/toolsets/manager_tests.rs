@@ -22,7 +22,9 @@ use super::tests::{FakeConnector, Script, settle};
 use crate::admin::{PluginControl, PluginRunState, PluginRuntime};
 use crate::agents::remove::FakeActivity;
 use crate::agents::{AgentEdit, AgentManager, AgentManagerOptions};
-use crate::config::{Config, InstanceName, KeyPath, LoadOptions, ToolsetSpec, ToolsetTransport};
+use crate::config::{
+    Config, InstanceName, KeyPath, Kind, LoadOptions, ToolsetSpec, ToolsetTransport,
+};
 use crate::memory_dbs::MemoryDbs;
 use crate::paths::DataRoot;
 use crate::registry::Registry;
@@ -984,7 +986,7 @@ async fn a_name_that_is_taken_or_reserved_is_refused() {
 
     // Data an earlier instance left under a name doesn't keep a remote toolset from taking it,
     // as it doesn't keep a new one from being added: the toolset has no data of its own to merge.
-    let leftover = f.root.plugin_data_dir("leftover").unwrap();
+    let leftover = f.root.plugin_data_dir(Kind::Toolset, "leftover").unwrap();
     std::fs::create_dir_all(&leftover).unwrap();
     std::fs::write(leftover.join("state.db"), "kept").unwrap();
     f.manager.rename("files", "leftover").await.unwrap();

@@ -526,7 +526,13 @@ impl Ctx<'_> {
                 self.forbid(&path, "insecure", raw.insecure.is_some(), why)?;
                 ChannelRuntime::Plugin(Launch {
                     binary: binary.clone(),
-                    sandbox: self.sandbox(&path, &name, raw.sandbox, raw.unsandboxed, false)?,
+                    sandbox: self.sandbox(
+                        Kind::Channel,
+                        &path,
+                        &name,
+                        raw.sandbox,
+                        raw.unsandboxed,
+                    )?,
                 })
             }
         };
@@ -588,7 +594,7 @@ impl Ctx<'_> {
                 args: raw.args.unwrap_or_default(),
                 env: self.env(&path.key("env"), raw.env)?,
                 idle_stop,
-                sandbox: self.sandbox(&path, &name, raw.sandbox, raw.unsandboxed, true)?,
+                sandbox: self.sandbox(Kind::Toolset, &path, &name, raw.sandbox, raw.unsandboxed)?,
             })
         };
         let deadline = raw.deadline.map_or(DEFAULT_TOOL_DEADLINE, |d| d.0);
@@ -615,11 +621,11 @@ impl Ctx<'_> {
     /// except the instance's own data directory, nor the socket directory.
     fn sandbox(
         &self,
+        kind: Kind,
         path: &KeyPath,
         name: &InstanceName,
         raw: Option<SandboxSpec>,
         unsandboxed: Option<bool>,
-        toolset: bool,
     ) -> Result<Sandbox, ConfigError> {
         let unsandboxed = unsandboxed.unwrap_or(false);
         if unsandboxed && raw.is_some() {
@@ -630,12 +636,18 @@ impl Ctx<'_> {
         }
         let own = self
             .root
-            .plugin_data_dir(name.as_str())
+            .plugin_data_dir(kind, name.as_str())
             .map_err(|e| self.err(path.clone(), e.to_string()))?;
         let protected = Protected::new(self.root.root(), self.root.socket_dir(), &own);
         Ok(Sandbox {
             unsandboxed,
-            grants: sandbox::grants(self.file, &path.key("sandbox"), raw, toolset, &protected)?,
+            grants: sandbox::grants(
+                self.file,
+                &path.key("sandbox"),
+                raw,
+                kind == Kind::Toolset,
+                &protected,
+            )?,
         })
     }
 
