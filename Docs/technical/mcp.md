@@ -179,10 +179,12 @@ any running request, as the transport spec says, and is declined. Over stdio and
 declined (logged) when there is none or there are several: guessing could show one person another
 conversation's question and let them answer it. Every call registers in the connection's
 `CallRouter` before its request goes out and records the request id once it's sent; a question
-carrying the id of a call still being sent waits for it. Answers have no timeout of their own: the
-approval's `approval_timeout` denies an unanswered one, and the call's deadline (which an
-elicitation wait counts against, unlike an `ask` approval) ends the call, which cancels the
-question.
+carrying the id of a call still being sent waits for it. A call unregisters before its last event
+goes out, so a caller that starts its next call on seeing that event is the only one running. A call
+whose events the caller dropped unregisters as soon as its task notices, before
+`notifications/cancelled` is sent. Answers have no timeout of their own: the approval's
+`approval_timeout` denies an unanswered one, and the call's deadline (which an elicitation wait
+counts against, unlike an `ask` approval) ends the call, which cancels the question.
 
 **Skills.** MCP has no skills, so a bare `McpToolset`'s `list_skills` is empty and `get_skill` is
 `NotFound`. A toolset's `skills = [...]` directories come from its configuration: the toolset host's
