@@ -638,7 +638,7 @@ needed beyond that, because of how plugins start:
 - The plugin has no configuration of its own outside `giles.toml`: a missing or malformed `token`
   fails `Configure` and the instance stays down with the message in the log and in `giles status`.
 - Its one file, `discord-state.json`, lives in the instance's data directory
-  (`data/plugins/<instance>/`, which is on the `/data` volume), next to the SDK's own state
+  (`data/channel/<instance>/`, which is on the `/data` volume), next to the SDK's own state
   (`giles-sdk/`).
 
 The image itself was not built when this was written (the development machine has no Docker); CI's

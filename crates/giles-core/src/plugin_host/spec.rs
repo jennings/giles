@@ -68,11 +68,11 @@ mod tests {
             ..Grants::default()
         };
         let spec = launch_spec(
-            Path::new("/g/data/plugins/irc"),
+            Path::new("/g/data/channel/irc"),
             Path::new("/opt/bin/giles-channel-irc"),
             &sandbox(false, grants),
         );
-        let mut expected = Spec::new("/g/data/plugins/irc");
+        let mut expected = Spec::new("/g/data/channel/irc");
         expected.read = vec![PathBuf::from("/opt/bin/giles-channel-irc")];
         expected.network = Network::All;
         expected.env = [
@@ -94,7 +94,7 @@ mod tests {
             min_abi: Some(4),
         };
         let spec = launch_spec(
-            Path::new("/g/data/plugins/irc"),
+            Path::new("/g/data/channel/irc"),
             Path::new("/b/giles-channel-irc"),
             &sandbox(false, grants),
         );

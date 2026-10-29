@@ -319,7 +319,7 @@ mod tests {
             ..Grants::default()
         };
         let server = server(&[("GITHUB_TOKEN", "ghp_secret")], grants);
-        let spec = stdio_spec(Path::new("/g/data/plugins/files"), &plan, &server);
+        let spec = stdio_spec(Path::new("/g/data/toolset/files"), &plan, &server);
         assert_eq!(
             spec.read,
             [Path::new("/opt/homebrew"), Path::new("/Users/me/Documents")]

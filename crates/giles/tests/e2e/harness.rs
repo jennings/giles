@@ -144,7 +144,7 @@ impl Home {
     }
 
     fn echo_dir(&self) -> PathBuf {
-        self.root().join("data/plugins").join(CHANNEL)
+        self.root().join("data/channel").join(CHANNEL)
     }
 
     /// The agent's directory.

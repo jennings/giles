@@ -23,7 +23,7 @@ span. Any failure after the spawn kills the plugin's whole process group before 
    loader used, so the binary checked is the binary run. The path is then resolved (`canonicalize`):
    the file granted in the spec, recorded in the pid file, and run is one file.
 3. Orphan cleanup (below).
-4. The data directory `data/plugins/<instance>/` and its `tmp/` are created with mode 0700. A data
+4. The data directory `data/channel/<instance>/` and its `tmp/` are created with mode 0700. A data
    directory that is a symbolic link is refused, as the trampoline does.
 5. The sandbox spec (below), validated.
 6. A per-launch token: 32 bytes from the OS (`getrandom`), as 64 hex digits.
@@ -77,11 +77,11 @@ arrived.
 ## Spawning
 
 The program is the trampoline,
-`<giles exe> sandbox-exec run/sandbox/<instance>.json -- <binary> socket`. The trampoline inherits
-the core's environment and builds the plugin's scrubbed one itself. With `unsandboxed = true` the
-host skips the trampoline, logs `running the plugin unsandboxed` at warn level on every launch, and
-runs `<binary> socket` itself with exactly the environment the trampoline would give it
-(`sandbox::scrubbed_env`) and the data directory as working directory.
+`<giles exe> sandbox-exec run/sandbox/channel/<instance>.json -- <binary> socket`. The trampoline
+inherits the core's environment and builds the plugin's scrubbed one itself. With
+`unsandboxed = true` the host skips the trampoline, logs `running the plugin unsandboxed` at warn
+level on every launch, and runs `<binary> socket` itself with exactly the environment the trampoline
+would give it (`sandbox::scrubbed_env`) and the data directory as working directory.
 
 `socket` (`giles_proto::handshake::SOCKET_COMMAND`) is the plugin's only argument. It tells a plugin
 built on `ChannelPlugin::run` that the core launched it and that fd 3 is its socket; the same binary
@@ -100,12 +100,12 @@ The pid survives both `exec`s, so the spawned process is the plugin.
 
 ## The sandbox spec
 
-Written with `Spec::to_json` to `run/sandbox/<instance>.json`, mode 0600 (via a temporary file and a
-rename), outside every plugin's grants. From PLAN section 12.4:
+Written with `Spec::to_json` to `run/sandbox/channel/<instance>.json`, mode 0600 (via a temporary
+file and a rename), outside every plugin's grants. From PLAN section 12.4:
 
 | Field | Value |
 | ----- | ----- |
-| `data_dir` | `data/plugins/<instance>/` |
+| `data_dir` | `data/channel/<instance>/` |
 | `read` | the resolved plugin binary, then the `sandbox.read` grants |
 | `write`, `unix`, `min_abi` | the grants as configured |
 | `network` | the grant; the config loader already applied the channel default (on) |
@@ -145,8 +145,8 @@ plugin's descendants needs more (a cgroup on Linux), as [Plugin sandbox](sandbox
 
 ## Pid files and orphans
 
-`run/pids/<instance>.pid`, mode 0600, written right after the spawn: the pid and the resolved binary
-path, one per line. A clean stop or a failed launch removes it.
+`run/pids/channel/<instance>.pid`, mode 0600, written right after the spawn: the pid and the
+resolved binary path, one per line. A clean stop or a failed launch removes it.
 
 If the core dies without stopping its plugins, each plugin sees stdin close and exits. For a plugin
 that doesn't, the next launch of the instance first reads the pid file and kills the recorded
@@ -158,6 +158,10 @@ process (its group, if it leads one, else just it) only if both:
 
 So a pid reused by an unrelated program is never touched. The host then waits up to 5 s for the
 orphan to go, so two copies never share the data directory, and removes the file either way.
+
+The path includes the instance's kind, so a channel and a toolset with the same name have separate
+pid files. A pid file an earlier release left in `run/pids/<instance>.pid` is never read, so a
+plugin that outlived a core of that release isn't found.
 
 ## gRPC
 
@@ -416,14 +420,15 @@ shares one `Arc<PluginHost>` between the two.
 ### The Describe cache
 
 `DescribeCache` (PLAN section 7.9) keeps what each instance's binary reported in `Describe`, as
-`DescribeInfo`, in `<root>/cache/describe/<instance>.json` (mode 0600, written atomically): the
-binary's SHA-256, the instance's config hash (`ChannelInstance::config_hash`, taken before secrets
-are resolved), and the answer with its version. Each launch rewrites it. Before each launch, and at
-each binary check, supervision looks up the entry for the binary and config at hand and shows it in
-`PluginStatus::describe` (with `describe_cached`) until the plugin is up, so `giles status` can show
-capabilities and requested grants of a plugin that is failing or backing off. The lookup can't know
-the version before a launch, so it matches the binary and the config and returns the version
-recorded with them. A damaged file is a miss.
+`DescribeInfo`, in `<root>/cache/describe/channel/<instance>.json` (mode 0600, written atomically):
+the binary's SHA-256, the instance's config hash (`ChannelInstance::config_hash`, taken before
+secrets are resolved), and the answer with its version. Each launch rewrites it. Before each launch,
+and at each binary check, supervision looks up the entry for the binary and config at hand and shows
+it in `PluginStatus::describe` (with `describe_cached`) until the plugin is up, so `giles status`
+can show capabilities and requested grants of a plugin that is failing or backing off. The lookup
+can't know the version before a launch, so it matches the binary and the config and returns the
+version recorded with them. A damaged file is a miss. The cache keeps one directory per kind, so
+instances of different kinds with one name never share a file.
 
 ## Startup and shutdown
 

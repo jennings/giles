@@ -79,7 +79,7 @@ pub enum RenameError {
     /// Neither name is configured and the old one has no data.
     #[error(
         "no instance named {old:?}: it is not configured in giles.toml and has no data (no \
-         database rows or routes, no directory under data/plugins/ or agents/*/groups/)"
+         database rows or routes, no directory under data/<kind>/ or agents/*/groups/)"
     )]
     UnknownInstance {
         /// The old name.
@@ -381,7 +381,8 @@ pub async fn rename_instance(
     // directories already at their new path ours. While `old` is still configured, a directory
     // named `new` belongs to something else.
     let resuming = rows.contains_key(old) && !configured.contains_key(old);
-    if let (Some(found), false) = (dirs.get(new), resuming) {
+    let kind_dirs = dirs::of_kind(&dirs, kind);
+    if let (Some(found), false) = (kind_dirs.get(new), resuming) {
         return Err(RenameError::NewHasData {
             new: new.to_owned(),
             what: describe_dirs(found),
@@ -394,7 +395,7 @@ pub async fn rename_instance(
         new,
         kind,
         (!stored_toolset).then_some(config_text.as_str()),
-        &dirs,
+        &kind_dirs,
     )?;
     // A stored toolset that already has `new` is only a rename to finish if something is left
     // under `old`: data, or agents that still name it. Otherwise `old` is no instance.
@@ -667,7 +668,10 @@ impl Plan {
             if to.symlink_metadata().is_ok() {
                 return Err(RenameError::NewHasData {
                     new: new.to_owned(),
-                    what: describe_dirs(&[dirs::DataDir { path: to }]),
+                    what: describe_dirs(&[dirs::DataDir {
+                        path: to,
+                        kind: dir.kind,
+                    }]),
                 });
             }
             moves.push(Move {
@@ -676,29 +680,22 @@ impl Plan {
             });
         }
         // Disposable files named after the instance: moved if present, never a conflict.
-        let soft = [
-            (
-                root.cache_dir()
-                    .join("describe")
-                    .join(format!("{old}.json")),
-                root.cache_dir()
-                    .join("describe")
-                    .join(format!("{new}.json")),
-            ),
-            (
-                root.cache_dir()
-                    .join("toolsets")
-                    .join(format!("{old}.json")),
-                root.cache_dir()
-                    .join("toolsets")
-                    .join(format!("{new}.json")),
-            ),
-        ];
-        let pids = (root.pid_file(kind, old).ok(), root.pid_file(kind, new).ok());
-        let soft = soft.into_iter().chain(match pids {
-            (Some(from), Some(to)) => Some((from, to)),
-            _ => None,
-        });
+        let cache = root.cache_dir();
+        let describe = cache.join("describe").join(kind.as_str());
+        let mut soft = vec![(
+            describe.join(format!("{old}.json")),
+            describe.join(format!("{new}.json")),
+        )];
+        if kind == Kind::Toolset {
+            let tools = cache.join("toolsets");
+            soft.push((
+                tools.join(format!("{old}.json")),
+                tools.join(format!("{new}.json")),
+            ));
+        }
+        if let (Ok(from), Ok(to)) = (root.pid_file(kind, old), root.pid_file(kind, new)) {
+            soft.push((from, to));
+        }
         for (from, to) in soft {
             if from.symlink_metadata().is_ok() && to.symlink_metadata().is_err() {
                 moves.push(Move { from, to });

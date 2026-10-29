@@ -8,6 +8,7 @@ use giles_types::OutputMode;
 use tokio::sync::mpsc;
 
 use super::*;
+use crate::config::Kind;
 use crate::paths::DataRoot;
 use crate::plugin_host::describe_cache::RequestedGrants;
 
@@ -160,7 +161,7 @@ impl Harness {
             pids: AtomicU32::new(0),
         });
         Self {
-            supervision: Supervision::new(DescribeCache::new(&root)),
+            supervision: Supervision::new(DescribeCache::new(&root, Kind::Channel)),
             fake,
             launched,
             stopped,
@@ -423,7 +424,12 @@ async fn the_describe_cache_shows_capabilities_while_the_plugin_is_down() {
         Some(std::path::Path::new("/plugins/giles-channel-irc"))
     );
     h.supervision.stop_all().await;
-    assert!(h.root.cache_dir().join("describe/irc.json").is_file());
+    assert!(
+        h.root
+            .cache_dir()
+            .join("describe/channel/irc.json")
+            .is_file()
+    );
 
     // The next start fails, but the cache for this binary and config fills in.
     let Harness { root, _dir, .. } = h;

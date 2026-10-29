@@ -40,8 +40,8 @@ A backup leaves out:
 
 - `secrets.toml`. Keep your own copy of it.
 - The plugin binaries in `plugins/`. Install them again.
-- The state plugins keep in `data/plugins/`, such as a WhatsApp session. A plugin that loses it asks
-  you to link or log in again.
+- The state plugins keep in `data/channel/` and `data/toolset/`, such as a WhatsApp session. A
+  plugin that loses it asks you to link or log in again.
 - [Agents you removed](web.md#removing-an-agent), which are kept in `trash/`. Copy that directory
   yourself if you want them kept elsewhere.
 - Symbolic links. If `giles.toml` or an agent's `memory.db` is a link, as a dotfiles manager makes,

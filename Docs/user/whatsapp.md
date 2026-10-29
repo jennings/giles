@@ -95,8 +95,13 @@ The code is good for about three minutes. WhatsApp may also send a notification 
 The status turns to `connected`, and the phone lists the new device under **Linked devices** with
 the name from `device_name`.
 
-The plugin keeps its session in `data/plugins/<instance>/whatsapp.db`. It's included in
-[backups](backups.md). **Anyone who can read that file can act as the linked device.**
+The plugin keeps its session in `data/channel/<instance>/whatsapp.db`. It isn't included in
+[backups](backups.md), so link the device again after a restore.
+**Anyone who can read that file can act as the linked device.**
+
+An earlier release kept the session in `data/plugins/<instance>/`. Giles doesn't move it, so link
+the device again after you upgrade. Then remove the old device under **Linked devices** on your
+phone and delete `data/plugins/`.
 
 ### If linking fails
 

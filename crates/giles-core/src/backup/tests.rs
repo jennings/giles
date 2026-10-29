@@ -64,6 +64,15 @@ fn populate(root: &DataRoot) {
             .join("state.json"),
         "{}",
     );
+    for kind in [Kind::Provider, Kind::Toolset] {
+        put(
+            &root
+                .plugin_data_dir(kind, "irc")
+                .unwrap()
+                .join("state.json"),
+            "{}",
+        );
+    }
     put(&root.backups_dir().join("old.tar"), "an earlier backup");
     put(&root.cache_dir().join("describe.json"), "{}");
     put(

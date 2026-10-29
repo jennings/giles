@@ -85,16 +85,16 @@ impl Home {
         let home = Self::new(GILES_TOML).await;
         home.write("agents/jeeves/agent.toml", JEEVES);
         home.write("agents/bunter/agent.toml", BUNTER);
-        home.write("data/plugins/libera/state.json", "{\"cursor\": 7}");
-        home.write("data/plugins/github/token-cache", "x");
+        home.write("data/channel/libera/state.json", "{\"cursor\": 7}");
+        home.write("data/toolset/github/token-cache", "x");
         home.write("agents/jeeves/groups/libera/%23giles/MEMORY.md", "quiet");
         home.write(
             "agents/bunter/groups/web/chat-1/MEMORY.md",
             "other instance",
         );
-        home.write("cache/describe/libera.json", "{}");
+        home.write("cache/describe/channel/libera.json", "{}");
         home.write("cache/toolsets/github.json", "{}");
-        home.write("run/pids/libera.pid", "123\n");
+        home.write("run/pids/channel/libera.pid", "123\n");
         home.seed("libera", "ollama").await;
         home
     }
@@ -261,10 +261,10 @@ async fn renaming_a_channel_moves_the_rows_the_directories_and_the_config_table(
 
     // Directories and disposable per-instance files moved; other instances' didn't.
     assert_eq!(
-        home.read("data/plugins/libera-chat/state.json"),
+        home.read("data/channel/libera-chat/state.json"),
         "{\"cursor\": 7}"
     );
-    assert!(!home.path("data/plugins/libera").exists());
+    assert!(!home.path("data/channel/libera").exists());
     assert_eq!(
         home.read("agents/jeeves/groups/libera-chat/%23giles/MEMORY.md"),
         "quiet"
@@ -274,9 +274,12 @@ async fn renaming_a_channel_moves_the_rows_the_directories_and_the_config_table(
         home.read("agents/bunter/groups/web/chat-1/MEMORY.md"),
         "other instance"
     );
-    assert!(home.path("data/plugins/github/token-cache").is_file());
-    assert!(home.path("cache/describe/libera-chat.json").is_file());
-    assert_eq!(home.read("run/pids/libera-chat.pid"), "123\n");
+    assert!(home.path("data/toolset/github/token-cache").is_file());
+    assert!(
+        home.path("cache/describe/channel/libera-chat.json")
+            .is_file()
+    );
+    assert_eq!(home.read("run/pids/channel/libera-chat.pid"), "123\n");
     assert!(report.moved.len() >= 4, "{:?}", report.moved);
 
     // Rows: the renamed instance has all of them; `web` and the providers kept theirs.
@@ -471,7 +474,7 @@ async fn renaming_a_toolset_rewrites_the_tool_globs_and_moves_its_directory() {
         home.read("agents/jeeves/agent.toml"),
         JEEVES.replace("github__", "gh__")
     );
-    assert!(home.path("data/plugins/gh/token-cache").is_file());
+    assert!(home.path("data/toolset/gh/token-cache").is_file());
     assert!(home.path("cache/toolsets/gh.json").is_file());
     let config = home.load();
     assert!(config.toolsets.contains_key("gh"));
@@ -490,14 +493,14 @@ async fn a_table_renamed_by_hand_gets_its_data_moved() {
         .replace("irc:libera-chat:", "irc:libera:");
     let home = Home::new(&hand_edited).await;
     home.write("agents/jeeves/agent.toml", JEEVES);
-    home.write("data/plugins/libera/state.json", "{}");
+    home.write("data/channel/libera/state.json", "{}");
     home.seed("libera", "ollama").await;
 
     let report = home.rename("libera", "libera-chat").await.unwrap();
     assert!(!report.config_table);
     assert_eq!(report.legacy_routes, 0);
     assert_eq!(home.read("giles.toml"), hand_edited);
-    assert!(home.path("data/plugins/libera-chat/state.json").is_file());
+    assert!(home.path("data/channel/libera-chat/state.json").is_file());
     assert_eq!(home.rows().await["libera-chat"].sessions, 2);
     home.load();
 }
@@ -514,12 +517,12 @@ async fn a_rename_that_stopped_part_way_can_be_run_again() {
             .replace("channel = \"libera\"", "channel = \"libera-chat\""),
     );
     fs::rename(
-        home.path("data/plugins/libera"),
-        home.path("data/plugins/libera-chat"),
+        home.path("data/channel/libera"),
+        home.path("data/channel/libera-chat"),
     )
     .unwrap();
     home.rename("libera", "libera-chat").await.unwrap();
-    assert!(home.path("data/plugins/libera-chat/state.json").is_file());
+    assert!(home.path("data/channel/libera-chat/state.json").is_file());
     assert!(home.path("agents/jeeves/groups/libera-chat").is_dir());
     assert_eq!(home.rows().await["libera-chat"].sessions, 2);
     home.load();
@@ -725,7 +728,7 @@ async fn a_stored_toolset_cannot_take_the_name_of_another_instance() {
         );
     }
     // And a name that has data: this command never gives an instance a name with data.
-    home.write("data/plugins/leftover/x", "1");
+    home.write("data/toolset/leftover/x", "1");
     let err = refused(&home, "notes", "leftover").await;
     assert!(matches!(err, RenameError::NewHasData { .. }), "{err}");
     assert_eq!(home.store.toolsets().await.unwrap(), before);
@@ -897,7 +900,7 @@ async fn a_new_name_that_already_has_data_is_refused() {
     assert!(err.to_string().contains("never merges"), "{err}");
 
     // Only a directory under the new name.
-    home.write("data/plugins/leftover/x", "1");
+    home.write("data/channel/leftover/x", "1");
     let err = refused(&home, "libera", "leftover").await;
     assert!(
         matches!(&err, RenameError::NewHasData { what, .. } if what.contains("leftover")),
@@ -913,7 +916,7 @@ async fn a_directory_at_the_target_of_a_move_is_refused() {
     // `libera` is mid-way through a previous rename (rows still old), but this time the same
     // directory exists on both sides: moving would overwrite or merge.
     let home = Home::populated().await;
-    home.write("data/plugins/libera-chat/other.json", "{}");
+    home.write("data/channel/libera-chat/other.json", "{}");
     let err = refused(&home, "libera", "libera-chat").await;
     assert!(matches!(err, RenameError::NewHasData { .. }), "{err}");
 }
@@ -972,7 +975,7 @@ fn a_commit_failure_is_a_failed_step_unless_nothing_was_done() {
 #[tokio::test]
 async fn unconfigured_data_needs_the_new_name_configured() {
     let home = Home::new("[owner]\nidentities = [\"web:owner\"]\n").await;
-    home.write("data/plugins/gone/x", "1");
+    home.write("data/channel/gone/x", "1");
     let err = refused(&home, "gone", "fresh").await;
     assert!(matches!(err, RenameError::NotConfigured { .. }), "{err}");
     assert!(err.to_string().contains("[<kind>.fresh]"), "{err}");
@@ -1409,7 +1412,7 @@ mod memory {
         );
         assert_eq!(home.read("giles.toml"), GILES_TOML);
         assert_eq!(home.rows().await["libera"].sessions, 2);
-        assert!(home.path("data/plugins/libera/state.json").is_file());
+        assert!(home.path("data/channel/libera/state.json").is_file());
         assert!(home.path("agents/jeeves/groups/libera").is_dir());
     }
 }
@@ -1423,11 +1426,41 @@ async fn the_runtime_starts_when_an_unconfigured_name_still_has_data() {
     let by_hand = "[owner]\nidentities = [\"web:owner\"]\n[channel.libera-chat]\n\
                    component = \"irc\"\nunsandboxed = true\n";
     let home = Home::new(by_hand).await;
-    home.write("data/plugins/libera/state.json", "{}");
+    home.write("data/channel/libera/state.json", "{}");
     home.seed("libera", "anthropic").await;
     Runtime::start(home.root.clone(), Arc::new(home.load()))
         .await
         .unwrap();
     assert_eq!(home.rows().await["libera"].sessions, 2);
-    assert!(home.path("data/plugins/libera/state.json").is_file());
+    assert!(home.path("data/channel/libera/state.json").is_file());
+}
+
+/// Per-instance state is keyed by kind: renaming a channel moves its own files and leaves a
+/// toolset's or provider's files of the same name where they are.
+#[tokio::test]
+async fn a_rename_leaves_the_files_other_kinds_keep_under_the_same_name() {
+    let home = Home::populated().await;
+    home.write("data/toolset/libera/x", "1");
+    home.write("data/provider/libera/y", "2");
+    home.write("cache/describe/provider/libera.json", "{}");
+    home.write("cache/toolsets/libera.json", "{}");
+    home.write("run/pids/toolset/libera.pid", "9\n");
+
+    home.rename("libera", "libera-chat").await.unwrap();
+
+    assert!(home.path("data/channel/libera-chat/state.json").is_file());
+    assert!(
+        home.path("cache/describe/channel/libera-chat.json")
+            .is_file()
+    );
+    assert!(home.path("run/pids/channel/libera-chat.pid").is_file());
+    for kept in [
+        "data/toolset/libera/x",
+        "data/provider/libera/y",
+        "cache/describe/provider/libera.json",
+        "cache/toolsets/libera.json",
+        "run/pids/toolset/libera.pid",
+    ] {
+        assert!(home.path(kept).is_file(), "{kept}");
+    }
 }

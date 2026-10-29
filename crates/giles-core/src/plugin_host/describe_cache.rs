@@ -1,10 +1,10 @@
 //! The `Describe` cache (PLAN section 7.9): what a plugin binary reported, so `giles status` can
 //! show a plugin's capabilities and requested grants while it isn't running.
 //!
-//! One file per instance, `<root>/cache/describe/<instance>.json`, rewritten at every launch. Its
-//! key is the binary's SHA-256, the version the plugin reported, and the instance's config hash
-//! (taken before secrets are resolved). A lookup before a launch knows only the binary and the
-//! config, so it matches those two and returns the version recorded with them.
+//! One file per instance, `<root>/cache/describe/<kind>/<instance>.json`, rewritten at every
+//! launch. Its key is the binary's SHA-256, the version the plugin reported, and the instance's
+//! config hash (taken before secrets are resolved). A lookup before a launch knows only the binary
+//! and the config, so it matches those two and returns the version recorded with them.
 
 use std::fs;
 use std::io;
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use super::grpc::hex;
 use super::write_private;
-use crate::config::{ConfigHash, InstanceName};
+use crate::config::{ConfigHash, InstanceName, Kind};
 use crate::paths::DataRoot;
 
 /// What a channel plugin reported in `Describe`, for `giles status`.
@@ -82,17 +82,17 @@ struct Entry {
     describe: DescribeInfo,
 }
 
-/// The `Describe` cache in `<root>/cache/describe/`.
+/// The `Describe` cache of one kind, in `<root>/cache/describe/<kind>/`.
 #[derive(Debug, Clone)]
 pub struct DescribeCache {
     dir: PathBuf,
 }
 
 impl DescribeCache {
-    /// The cache of `root`.
-    pub fn new(root: &DataRoot) -> Self {
+    /// The cache of the `kind` instances of `root`.
+    pub fn new(root: &DataRoot, kind: Kind) -> Self {
         Self {
-            dir: root.cache_dir().join("describe"),
+            dir: root.cache_dir().join("describe").join(kind.as_str()),
         }
     }
 
@@ -208,7 +208,7 @@ mod tests {
     fn entries_match_the_binary_and_the_config() {
         let dir = tempfile::tempdir().unwrap();
         let root = DataRoot::new(dir.path().join("home"), dir.path()).unwrap();
-        let cache = DescribeCache::new(&root);
+        let cache = DescribeCache::new(&root, Kind::Channel);
         let instance = InstanceName::new("libera").unwrap();
         let other = InstanceName::new("oftc").unwrap();
         let (binary, config) = ([1; 32], config_hash("network = \"libera\""));
@@ -229,7 +229,7 @@ mod tests {
             .store(&instance, &binary, &config, &info("1.1"))
             .unwrap();
         assert_eq!(cache.load(&instance, &binary, &config), Some(info("1.1")));
-        let path = root.cache_dir().join("describe/libera.json");
+        let path = root.cache_dir().join("describe/channel/libera.json");
         let mode =
             std::os::unix::fs::PermissionsExt::mode(&fs::metadata(&path).unwrap().permissions());
         assert_eq!(mode & 0o777, 0o600);
@@ -237,5 +237,35 @@ mod tests {
         // A damaged file is a miss, not an error.
         fs::write(&path, "{").unwrap();
         assert_eq!(cache.load(&instance, &binary, &config), None);
+    }
+
+    #[test]
+    fn kinds_keep_separate_entries_for_one_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = DataRoot::new(dir.path().join("home"), dir.path()).unwrap();
+        let channels = DescribeCache::new(&root, Kind::Channel);
+        let providers = DescribeCache::new(&root, Kind::Provider);
+        let instance = InstanceName::new("aperture").unwrap();
+        let (binary, config) = ([1; 32], config_hash("a = 1"));
+
+        channels
+            .store(&instance, &binary, &config, &info("1.0"))
+            .unwrap();
+        assert_eq!(
+            channels.load(&instance, &binary, &config),
+            Some(info("1.0"))
+        );
+        assert_eq!(providers.load(&instance, &binary, &config), None);
+        assert!(
+            root.cache_dir()
+                .join("describe/channel/aperture.json")
+                .is_file()
+        );
+        assert!(
+            !root
+                .cache_dir()
+                .join("describe/provider/aperture.json")
+                .exists()
+        );
     }
 }

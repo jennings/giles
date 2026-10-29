@@ -23,11 +23,16 @@ rename must move each of them.
 | `outbox.instance`                            | The channel a proactive send routes to         | Updates in the transaction     |
 | `usage.provider`                             | The provider instance of a request             | Updates in the transaction     |
 | `messages.meta` `$.provider`                 | The provider that wrote an assistant message   | Updates in the transaction     |
-| `data/plugins/<name>/`                       | The plugin's only writable directory           | Moves (`rename(2)`)            |
+| `data/<kind>/<name>/`                        | The plugin's only writable directory           | Moves (`rename(2)`)            |
 | `agents/<agent>/groups/<name>/`              | Per-group `MEMORY.md` files of the old memory design | Moves                   |
 | `agents/<agent>/memory.db`, `memories.owner_instance` | The channel instance of a group that owns a memory (also a shared memory's author) | Updates in the hook, one transaction per database |
-| `cache/describe/<name>.json`, `cache/toolsets/<name>.json` | Discovery caches                 | Moves if present; they are disposable |
-| `run/pids/<name>.pid`                        | The launched plugin's pid, killed at the next start | Moves if present, so a plugin that outlived the core is still found |
+| `cache/describe/<kind>/<name>.json`, `cache/toolsets/<name>.json` | Discovery caches    | Moves if present; they are disposable |
+| `run/pids/<kind>/<name>.pid`                 | The launched plugin's pid, killed at the next start | Moves if present, so a plugin that outlived the core is still found |
+
+The files under `data/`, `cache/describe/`, `run/pids/`, and `run/sandbox/` are keyed by kind too.
+The rename looks only in the directories of the renamed instance's kind (`cache/toolsets/` is the
+toolsets'), so a toolset or provider with the old name keeps its files. A directory that an earlier
+release left in `data/plugins/` isn't looked for.
 
 Routes are a setting, not data. The rename moves `routes.channel` (in the same transaction, keeping
 the order; `RenamedRows::routes` counts them), and a name that only routes use still counts as
@@ -43,7 +48,7 @@ Things that look like they carry a name and don't:
 - `inbox.payload`, `outbox.payload`, `jobs.spec`, and `job_runs` hold no instance name.
 - Identities (`irc:libera:account:me`) use the namespace the channel reports, not the instance name
   (PLAN section 3.2), so users' identity links and `[owner] identities` are untouched.
-- `run/sandbox/<name>.json` is rewritten at every launch; it is left as it is and goes stale.
+- `run/sandbox/<kind>/<name>.json` is rewritten at every launch; it is left as it is and goes stale.
 
 Not rewritten, by design:
 
@@ -106,7 +111,7 @@ socket probing is needed and a core that starts mid-rename is refused instead.
      `old` is moved to match. `old` must have data.
    - If neither is configured, it is refused: with no data it is an unknown instance, and with data
      the kind can't be known, so the message says to configure `new` first.
-   - `new` must have no data: no database rows, no `data/plugins/<new>`, no `groups/<new>` (routes
+   - `new` must have no data: no database rows, no `data/<kind>/<new>`, no `groups/<new>` (routes
      that name `new` don't count). The memory databases aren't checked: nothing in their schema is
      unique over the owner, and an interrupted run (below) legitimately leaves some of them already
      renamed. The exception is an interrupted rename run again (below): `giles.toml` already names
@@ -189,7 +194,7 @@ database transaction:
 1. The checks, with nothing changed. The new name must be valid and free among every kind of
    instance (another stored toolset is `ToolsetManagerError::Exists`, an instance of `giles.toml` is
    `Invalid` at the root key), as for a new toolset. The old name is exempt, so the case of a name
-   can change. Data under `data/plugins/<new>/`, left by an earlier instance, doesn't refuse the
+   can change. Data under `data/toolset/<new>/`, left by an earlier instance, doesn't refuse the
    name, as it doesn't refuse a new stored toolset: a stored toolset is remote and has no data to
    merge with it. Then every agent's `agent.toml` is read and its `tools` and `ask` globs are
    checked with the same function the command uses (`rename::rewrite_toolset_globs`): a glob that
@@ -250,6 +255,6 @@ The window is the few system calls of step 3. Giles doesn't notice an unfinished
 command again before the next start. If the daemon is started in between (`giles.toml` renamed, rows
 still under `old`), it starts a new, empty instance under the new name and leaves the old name's
 sessions, inbox, and directories where they are. Launching a plugin instance creates
-`data/plugins/<new>/`, and once the daemon has done that, or written rows under the new name, the
+`data/<kind>/<new>/`, and once the daemon has done that, or written rows under the new name, the
 command refuses (the new name has data). If nothing else exists under the new name, removing
-`data/plugins/<new>` lets the command run; otherwise merging by hand is the only way back.
+`data/<kind>/<new>` lets the command run; otherwise merging by hand is the only way back.

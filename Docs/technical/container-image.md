@@ -70,13 +70,13 @@ and it is also the working directory. A fresh named volume copies that ownership
 The WhatsApp plugin is in the image but inert until an instance of component `whatsapp` is
 configured: the core launches a plugin only for a configured instance, so the smoke test (which
 configures none) never starts it, never opens a connection to WhatsApp, and only checks that the
-binary is there. A configured instance keeps its session in `/data/data/plugins/<instance>/`, on the
+binary is there. A configured instance keeps its session in `/data/data/channel/<instance>/`, on the
 volume, and needs outbound HTTPS only.
 
 The Discord plugin is the same: in the image, inert until an instance of component `discord` is
 configured, so the smoke test only checks that the binary is there and never connects to Discord. A
 configured instance keeps its catch-up state (`discord-state.json`) in
-`/data/data/plugins/<instance>/` and needs outbound TCP 443 only (REST, the Gateway, and the CDN).
+`/data/data/channel/<instance>/` and needs outbound TCP 443 only (REST, the Gateway, and the CDN).
 
 `EXPOSE 8080` documents the web port; `giles.toml` must still set `http_listen = "0.0.0.0:8080"`,
 since the default listens on loopback only. The entrypoint is `tini -- giles` with `serve` as the

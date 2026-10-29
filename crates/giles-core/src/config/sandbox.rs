@@ -428,7 +428,7 @@ mod tests {
         Protected::new(
             Path::new("/srv/giles"),
             Path::new("/srv/giles/run"),
-            Path::new("/srv/giles/data/plugins/files"),
+            Path::new("/srv/giles/data/toolset/files"),
         )
     }
 
@@ -436,8 +436,8 @@ mod tests {
     fn overlap_with_the_data_root_in_either_direction() {
         let p = protected();
         for ok in [
-            "/srv/giles/data/plugins/files",
-            "/srv/giles/data/plugins/files/sub",
+            "/srv/giles/data/toolset/files",
+            "/srv/giles/data/toolset/files/sub",
             "/srv/other",
             "/srv/giles-other",
             "/srv/gile",
@@ -455,9 +455,11 @@ mod tests {
             "/srv/giles/plugins",
             "/srv/giles/plugins/giles-channel-irc",
             "/srv/giles/data",
-            "/srv/giles/data/plugins",
-            "/srv/giles/data/plugins/files-other",
-            "/srv/giles/data/plugins/other",
+            "/srv/giles/data/toolset",
+            "/srv/giles/data/toolset/files-other",
+            "/srv/giles/data/toolset/other",
+            "/srv/giles/data/channel/files",
+            "/srv/giles/data/provider/files",
             "/srv/giles/run/admin.sock",
         ] {
             let err = p.check(Path::new(bad)).unwrap_err();
@@ -465,7 +467,7 @@ mod tests {
                 err.contains("overlaps the data root, /srv/giles"),
                 "{bad}: {err}"
             );
-            assert!(err.contains("/srv/giles/data/plugins/files"), "{err}");
+            assert!(err.contains("/srv/giles/data/toolset/files"), "{err}");
         }
     }
 
@@ -474,7 +476,7 @@ mod tests {
         let p = Protected::new(
             Path::new("/srv/giles"),
             Path::new("/tmp/giles-0123456789abcdef"),
-            Path::new("/srv/giles/data/plugins/x"),
+            Path::new("/srv/giles/data/toolset/x"),
         );
         assert_eq!(p.check(Path::new("/tmp/other")), Ok(()));
         for bad in [
@@ -494,7 +496,7 @@ mod tests {
     fn symlinks_are_resolved_when_they_exist() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("root");
-        let own = root.join("data/plugins/files");
+        let own = root.join("data/toolset/files");
         fs::create_dir_all(&own).unwrap();
         fs::create_dir_all(dir.path().join("outside")).unwrap();
         let link_to_root = dir.path().join("link");

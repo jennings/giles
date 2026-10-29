@@ -86,6 +86,9 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// Every kind.
+    pub const ALL: [Kind; 3] = [Kind::Provider, Kind::Channel, Kind::Toolset];
+
     /// The kind as written in config and plugin binary names.
     pub fn as_str(self) -> &'static str {
         match self {

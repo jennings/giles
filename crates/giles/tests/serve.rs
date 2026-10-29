@@ -193,11 +193,17 @@ fn assert_layout(root: &Path) {
         "plugins",
         "data",
         "data/blobs",
-        "data/plugins",
+        "data/channel",
+        "data/provider",
+        "data/toolset",
         "backups",
         "run",
-        "run/pids",
-        "run/sandbox",
+        "run/pids/channel",
+        "run/pids/provider",
+        "run/pids/toolset",
+        "run/sandbox/channel",
+        "run/sandbox/provider",
+        "run/sandbox/toolset",
         "cache",
     ] {
         assert!(root.join(dir).is_dir(), "missing {dir}");
@@ -1043,8 +1049,8 @@ fn plugins_that_fail_to_launch_are_supervised_and_giles_runs() {
             && line.contains("supervisor{instance=boxed}")
     });
     assert!(boxed.is_some(), "{log}");
-    assert!(!home.join("run/pids/flaky.pid").exists());
-    assert!(!home.join("run/pids/boxed.pid").exists());
+    assert!(!home.join("run/pids/channel/flaky.pid").exists());
+    assert!(!home.join("run/pids/channel/boxed.pid").exists());
 }
 
 #[test]
@@ -1237,7 +1243,7 @@ fn a_shutdown_during_plugin_launch_kills_the_plugin_and_exits_promptly() {
         assert!(Instant::now() < deadline, "the plugin {pid} still runs");
         thread::sleep(Duration::from_millis(20));
     }
-    assert!(!home.join("run/pids/mute.pid").exists());
+    assert!(!home.join("run/pids/channel/mute.pid").exists());
 }
 
 /// `GET <path>` over `stream`, with `headers`; the whole response.

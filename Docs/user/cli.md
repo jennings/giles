@@ -221,7 +221,7 @@ Renamed channel instance "libera" to "libera-chat".
   giles.toml: [channel.libera] -> [channel.libera-chat]
   giles.toml: 1 [[routes]] rule(s) updated (Giles no longer reads them once they are imported)
   agents/jeeves/memory.db: 2 group memories moved to "libera-chat"
-  moved data/plugins/libera -> data/plugins/libera-chat
+  moved data/channel/libera -> data/channel/libera-chat
 Start giles again to use the new name.
 ```
 
@@ -265,8 +265,9 @@ is. To move the data to the renamed table, run the command before you start Gile
 the table already being renamed.
 
 Once Giles has run the renamed instance, the command refuses, because `<new>` already has data. If
-the instance has no sessions or other data of its own yet, remove `data/plugins/<new>` and run the
-command. Otherwise you have to merge the two by hand.
+the instance has no sessions or other data of its own yet, remove `data/<kind>/<new>` (`<kind>` is
+`channel`, `provider`, or `toolset`) and run the command. Otherwise you have to merge the two by
+hand.
 
 Names use only letters, digits, and `-`. `<new>` must not differ from another instance's name only
 in case. The command changes nothing and refuses if:

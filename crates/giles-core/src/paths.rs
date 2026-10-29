@@ -303,19 +303,21 @@ impl DataRoot {
         self.data_dir().join("blobs")
     }
 
-    /// `data/plugins/`: the parent of every instance's data directory.
-    pub fn plugin_data_root(&self) -> PathBuf {
-        self.data_dir().join("plugins")
+    /// `data/<kind>/`: the parent of the data directory of every instance of `kind`, in its own
+    /// directory per kind (`channel`, `provider`, `toolset`), so a channel and a toolset with the
+    /// same name don't share one.
+    pub fn plugin_data_root(&self, kind: Kind) -> PathBuf {
+        self.data_dir().join(kind.as_str())
     }
 
-    /// `data/plugins/<instance>/`: the data directory of the `kind` instance `instance`, its only
+    /// `data/<kind>/<instance>/`: the data directory of the `kind` instance `instance`, its only
     /// writable directory (section 11.6).
     ///
     /// # Errors
     ///
     /// [`PathsError::InvalidName`] if `instance` is not a valid name ([`is_valid_name`]).
-    pub fn plugin_data_dir(&self, _kind: Kind, instance: &str) -> Result<PathBuf, PathsError> {
-        Ok(self.plugin_data_root().join(checked_name(instance)?))
+    pub fn plugin_data_dir(&self, kind: Kind, instance: &str) -> Result<PathBuf, PathsError> {
+        Ok(self.plugin_data_root(kind).join(checked_name(instance)?))
     }
 
     /// `backups/`: `giles backup` output and pre-migration snapshots (section 11.4).
@@ -347,34 +349,37 @@ impl DataRoot {
         self.run_dir().join("giles.lock")
     }
 
-    /// `run/pids/`: plugin pid files (section 7.4).
-    pub fn pids_dir(&self) -> PathBuf {
-        self.run_dir().join("pids")
+    /// `run/pids/<kind>/`: the pid files of the instances of `kind` (section 7.4).
+    pub fn pids_dir(&self, kind: Kind) -> PathBuf {
+        self.run_dir().join("pids").join(kind.as_str())
     }
 
-    /// `run/pids/<instance>.pid`, for the `kind` instance `instance`.
+    /// `run/pids/<kind>/<instance>.pid`, for the `kind` instance `instance`.
     ///
     /// # Errors
     ///
     /// [`PathsError::InvalidName`] if `instance` is not a valid name ([`is_valid_name`]).
-    pub fn pid_file(&self, _kind: Kind, instance: &str) -> Result<PathBuf, PathsError> {
+    pub fn pid_file(&self, kind: Kind, instance: &str) -> Result<PathBuf, PathsError> {
         let instance = checked_name(instance)?;
-        Ok(self.pids_dir().join(format!("{instance}.pid")))
+        Ok(self.pids_dir(kind).join(format!("{instance}.pid")))
     }
 
-    /// `run/sandbox/`: the sandbox specs the plugin host writes for the trampoline (section 12.1).
-    pub fn sandbox_specs_dir(&self) -> PathBuf {
-        self.run_dir().join("sandbox")
+    /// `run/sandbox/<kind>/`: the sandbox specs the plugin host writes for the trampoline for the
+    /// instances of `kind` (section 12.1).
+    pub fn sandbox_specs_dir(&self, kind: Kind) -> PathBuf {
+        self.run_dir().join("sandbox").join(kind.as_str())
     }
 
-    /// `run/sandbox/<instance>.json`, mode 0600, for the `kind` instance `instance`.
+    /// `run/sandbox/<kind>/<instance>.json`, mode 0600, for the `kind` instance `instance`.
     ///
     /// # Errors
     ///
     /// [`PathsError::InvalidName`] if `instance` is not a valid name ([`is_valid_name`]).
-    pub fn sandbox_spec_file(&self, _kind: Kind, instance: &str) -> Result<PathBuf, PathsError> {
+    pub fn sandbox_spec_file(&self, kind: Kind, instance: &str) -> Result<PathBuf, PathsError> {
         let instance = checked_name(instance)?;
-        Ok(self.sandbox_specs_dir().join(format!("{instance}.json")))
+        Ok(self
+            .sandbox_specs_dir(kind)
+            .join(format!("{instance}.json")))
     }
 
     /// `cache/`: the Describe and tool-list cache (section 7.9).
@@ -419,7 +424,7 @@ impl DataRoot {
     pub fn create_layout(&self) -> Result<(), PathsError> {
         let mut builder = DirBuilder::new();
         builder.recursive(true).mode(PRIVATE_DIR_MODE);
-        for dir in [
+        let shared = [
             self.root.clone(),
             self.agents_dir(),
             self.users_dir(),
@@ -427,13 +432,18 @@ impl DataRoot {
             self.plugins_dir(),
             self.data_dir(),
             self.blobs_dir(),
-            self.plugin_data_root(),
             self.backups_dir(),
             self.run_dir(),
-            self.pids_dir(),
-            self.sandbox_specs_dir(),
             self.cache_dir(),
-        ] {
+        ];
+        let per_kind = Kind::ALL.into_iter().flat_map(|kind| {
+            [
+                self.plugin_data_root(kind),
+                self.pids_dir(kind),
+                self.sandbox_specs_dir(kind),
+            ]
+        });
+        for dir in shared.into_iter().chain(per_kind) {
             builder.create(&dir).map_err(|source| PathsError::Io {
                 action: "create directory",
                 path: dir,
@@ -680,7 +690,7 @@ mod tests {
         assert_eq!(r.blobs_dir(), Path::new("/g/data/blobs"));
         assert_eq!(
             r.plugin_data_dir(Kind::Channel, "irc").unwrap(),
-            Path::new("/g/data/plugins/irc")
+            Path::new("/g/data/channel/irc")
         );
         assert_eq!(r.backups_dir(), Path::new("/g/backups"));
         assert_eq!(r.trash_dir(), Path::new("/g/trash"));
@@ -688,16 +698,38 @@ mod tests {
         assert_eq!(r.lock_file(), Path::new("/g/run/giles.lock"));
         assert_eq!(
             r.pid_file(Kind::Channel, "irc").unwrap(),
-            Path::new("/g/run/pids/irc.pid")
+            Path::new("/g/run/pids/channel/irc.pid")
         );
         assert_eq!(
             r.sandbox_spec_file(Kind::Channel, "irc").unwrap(),
-            Path::new("/g/run/sandbox/irc.json")
+            Path::new("/g/run/sandbox/channel/irc.json")
         );
         assert_eq!(r.cache_dir(), Path::new("/g/cache"));
         assert_eq!(r.admin_socket(), Path::new("/g/run/admin.sock"));
         assert_eq!(r.proxy_socket(), Path::new("/g/run/proxy.sock"));
         assert!(!r.uses_socket_fallback());
+    }
+
+    #[test]
+    fn the_kinds_share_no_per_instance_path() {
+        let r = DataRoot::new("/g", Path::new("/tmp")).unwrap();
+        let paths = |kind| {
+            [
+                r.plugin_data_dir(kind, "aperture").unwrap(),
+                r.pid_file(kind, "aperture").unwrap(),
+                r.sandbox_spec_file(kind, "aperture").unwrap(),
+            ]
+        };
+        let expected = |kind: &str| {
+            [
+                PathBuf::from(format!("/g/data/{kind}/aperture")),
+                PathBuf::from(format!("/g/run/pids/{kind}/aperture.pid")),
+                PathBuf::from(format!("/g/run/sandbox/{kind}/aperture.json")),
+            ]
+        };
+        assert_eq!(paths(Kind::Provider), expected("provider"));
+        assert_eq!(paths(Kind::Channel), expected("channel"));
+        assert_eq!(paths(Kind::Toolset), expected("toolset"));
     }
 
     #[test]
@@ -770,7 +802,7 @@ mod tests {
         assert_eq!(r.proxy_socket(), Path::new(&dir).join("proxy.sock"));
         // Only the sockets move.
         assert_eq!(r.admin_token_file(), root.join("run/admin.token"));
-        assert_eq!(r.pids_dir(), root.join("run/pids"));
+        assert_eq!(r.pids_dir(Kind::Channel), root.join("run/pids/channel"));
     }
 
     #[test]
@@ -825,7 +857,14 @@ mod tests {
         r.create_layout().unwrap();
         r.create_layout().unwrap();
 
-        for dir in [
+        let per_kind = Kind::ALL.into_iter().flat_map(|kind| {
+            [
+                r.plugin_data_root(kind),
+                r.pids_dir(kind),
+                r.sandbox_specs_dir(kind),
+            ]
+        });
+        let dirs = [
             r.root().to_owned(),
             r.agents_dir(),
             r.users_dir(),
@@ -833,13 +872,13 @@ mod tests {
             r.plugins_dir(),
             r.data_dir(),
             r.blobs_dir(),
-            r.plugin_data_root(),
             r.backups_dir(),
             r.run_dir(),
-            r.pids_dir(),
-            r.sandbox_specs_dir(),
+            r.run_dir().join("pids"),
+            r.run_dir().join("sandbox"),
             r.cache_dir(),
-        ] {
+        ];
+        for dir in dirs.into_iter().chain(per_kind) {
             assert!(dir.is_dir(), "{}", dir.display());
             assert_eq!(mode(&dir), 0o700, "{}", dir.display());
         }

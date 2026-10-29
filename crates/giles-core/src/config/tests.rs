@@ -1815,7 +1815,7 @@ fn errors_never_show_credential_values() {
 #[test]
 fn sandbox_grants() {
     let home = Home::new(MINIMAL);
-    let own = home.path("data/plugins/files");
+    let own = home.path("data/toolset/files");
     home.write(
         "giles.toml",
         &format!(
@@ -1919,9 +1919,13 @@ fn grants_must_not_overlap_the_data_root() {
         root.join("plugins"),
         root.join("agents/jeeves"),
         root.join("data"),
-        root.join("data/plugins"),
-        root.join("data/plugins/other"),
-        root.join("data/plugins/t-other"),
+        root.join("data/toolset"),
+        root.join("data/toolset/other"),
+        root.join("data/toolset/t-other"),
+        // Another kind's directory of the same name isn't the toolset's own.
+        root.join("data/channel"),
+        root.join("data/channel/t"),
+        root.join("data/provider/t"),
         root.join("run/admin.sock"),
         parent.clone(),
         PathBuf::from("/"),
@@ -1948,7 +1952,7 @@ fn grants_must_not_overlap_the_data_root() {
         }
     }
     // The instance's own data directory, and anything in it, may be granted.
-    let own = root.join("data/plugins/t");
+    let own = root.join("data/toolset/t");
     grant("write", &[&own, &own.join("cache")]);
     home.load_ok();
     // A sibling of the root that shares a name prefix is not inside it.
@@ -1983,7 +1987,7 @@ fn check_grant_applies_the_same_rule() {
             &home.root,
             Kind::Toolset,
             &name,
-            &home.path("data/plugins/files/x")
+            &home.path("data/toolset/files/x")
         )
         .is_ok()
     );
