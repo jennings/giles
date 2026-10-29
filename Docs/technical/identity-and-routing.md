@@ -147,12 +147,13 @@ per core, `Runtime::routes`) owns them:
   required. A route that no earlier route hides is required too: `Unreachable` if earlier routes
   match everything it does (one route, or for a route with no kind, one covering direct and one
   covering group conversations), `Duplicate` if one matches exactly the same, `Hides` if the change
-  would leave a later route unusable. Hiding is judged against the list before the change, so a
-  route that was already unreachable (one imported from `giles.toml`, which never checked this)
-  doesn't block unrelated changes; `view()` flags it, as it flags a route whose channel instance or
-  agent is no longer configured, and `Routes::open` logs both at startup. Refusing is a deliberate
-  choice over a warning: a route that can't match is almost always a mistake, and reordering keeps
-  every step valid.
+  would leave a later route unusable (naming the other earlier route when the changed one hides it
+  together with another). Hiding is judged against the list before the change, so a route that was
+  already unreachable (one imported from `giles.toml`, which never checked this) doesn't block
+  unrelated changes; `view()` flags it, as it flags a route whose channel instance or agent is no
+  longer configured, and `Routes::open` logs both at startup. Refusing is a deliberate choice over a
+  warning: a route that can't match is almost always a mistake, and reordering keeps every step
+  valid.
 - **Import.** `giles.toml`'s `[[routes]]` stay in `Config::legacy_routes`, as written and
   unvalidated. `Routes::open` runs at `Runtime::start`: if the database hasn't recorded the import
   (`routes_imported`), it validates each rule like a route made in the web UI (shadowed routes are
