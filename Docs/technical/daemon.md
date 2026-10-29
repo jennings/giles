@@ -10,9 +10,12 @@ subcommand, each carrying its own `clap::Args` struct (`Serve(ServeArgs)`,
 `SandboxExec(SandboxExecArgs)`, ...). `status`, `usage`, `backup`, and `admin login-link` call the
 running daemon's admin service ([Admin service](admin.md)) through `admin_client::call`, which
 builds a current-thread Tokio runtime and words connection and token errors for the operator.
-`instance rename` is the opposite: it works on the data root with the core stopped, taking the same
-single-instance lock `serve` takes ([Instance rename](instance-rename.md)). Later subcommands
-(`pair`) are added as variants with their own argument structs and modules, dispatched from `main`.
+`channel rename` and `provider rename` are the opposite: they work on the data root with the core
+stopped, taking the same single-instance lock `serve` takes ([Instance rename](instance-rename.md)).
+`toolset rename` takes the lock to find out which it is: if it gets it, no core runs and the command
+does the same offline rename; if a core holds it, the command asks the core's admin service. Later
+subcommands (`pair`) are added as variants with their own argument structs and modules, dispatched
+from `main`.
 
 `giles sandbox-exec <SPEC> -- <COMMAND>...` is the internal plugin sandbox trampoline (see
 [Plugin sandbox](sandbox.md)); `--home` is accepted there but unused. Its failures exit 125 to 127

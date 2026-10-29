@@ -5,8 +5,10 @@ Besides [`giles serve`](running.md), the `giles` command has these commands for 
 Run them as the user Giles runs as. They take the same `--home <DIR>` option and `GILES_HOME`
 variable as `giles serve`.
 
-All of them except `giles instance rename` need Giles to be running. If it isn't, they fail with
-`giles is not running (nothing listens on <data root>/run/admin.sock)`.
+Most of them need Giles to be running. If it isn't, they fail with
+`giles is not running (nothing listens on <data root>/run/admin.sock)`. The commands that rename an
+instance work differently. `giles channel rename` and `giles provider rename` need Giles stopped.
+`giles toolset rename` works either way.
 
 ## `giles status`
 
@@ -103,8 +105,9 @@ page shows the same toolsets.
 - `giles toolset set <name> --file <spec.toml>` creates the toolset, or replaces the spec of the one
   with that name. Give `-` as the file to read the spec from standard input.
 - `giles toolset remove <name>` stops a stored toolset and removes it.
-- `giles toolset rename <old> <new>` renames a stored toolset and its tool names. Giles rewrites the
-  agents' `tools` and `ask` globs to match.
+- `giles toolset rename <old> <new>` renames a toolset and its tool names. Giles rewrites the
+  agents' `tools` and `ask` globs to match. With Giles stopped, it renames toolsets configured in
+  `giles.toml` too.
 - `giles toolset restart <name>` restarts the toolset's server now, as the **Restart** button on the
   admin pages does.
 
@@ -169,14 +172,17 @@ changes the toolset after your `show`, `set` refuses with `was changed since it 
 To make a new toolset from the spec of another, delete that line first. Without it, `set` creates
 the toolset, or replaces the spec of one that has the name.
 
-A toolset configured in `giles.toml` is listed, and `restart` works on it. `show`, `set`, `remove`,
-and `rename` refuse it. Change it in `giles.toml`.
+A toolset configured in `giles.toml` is listed, and `restart` works on it. `show`, `set`, and
+`remove` refuse it. Change it in `giles.toml`. `rename` refuses it while Giles runs. With Giles
+stopped, [it renames the table](#rename-a-toolset).
 
 ### Rename a toolset
 
 A toolset's name is the prefix of its tools (`files__read`), so rename it with `rename` instead of
 removing it and setting it again. Each agent's `tools` and `ask` globs that start with `<old>__`
-change to `<new>__`, and the command lists them:
+change to `<new>__`, and the command lists them.
+
+While Giles runs, `rename` renames a stored toolset, with no restart:
 
 ```console
 $ giles toolset rename files documents
@@ -190,14 +196,46 @@ A session that is running keeps the old tool names, and its calls to them fail w
 `tool unavailable`. New sessions use the new names. The [admin pages](web.md#admin-pages) rename a
 toolset too.
 
+A toolset configured in `giles.toml` can't be renamed while Giles runs. The command refuses and
+tells you to stop Giles first.
+
+With Giles stopped, `rename` renames a stored toolset or the `[toolset.<old>]` table in
+`giles.toml`, which keeps its comments and formatting. It also moves the toolset's data directory
+and prints what it changed:
+
+```console
+$ giles toolset rename github gh
+Renamed toolset instance "github" to "gh".
+  giles.toml: [toolset.github] -> [toolset.gh]
+  agents/jeeves/agent.toml: 2 reference(s) updated
+  moved data/toolset/github -> data/toolset/gh
+Start giles again to use the new name.
+```
+
+For a stored toolset, the command renames it in the database, leaves `giles.toml` alone, and says so
+on a `database: the stored toolset ... is now ...` line. `<old>` can be in any case, and `<new>` can
+be the same name in another case (`Notes` to `notes`). The command ignores a `[toolset.<name>]`
+table with `url`, as Giles does, and leaves it in `giles.toml`.
+
+If you rename a `[toolset.<name>]` table without the command, run it before you start Giles again.
+It accepts the table already being renamed and moves the data, as
+[`giles channel rename`](#giles-channel-rename-old-new) does for a channel.
+
 Names use only letters, digits, and `-`. The command changes nothing and prints the reason if:
 
 - `<new>` is the name of another toolset or instance.
+- `<new>` already has data. Renaming never merges two instances.
+- `<new>` is `new` (in any case), for a stored toolset.
+- `giles.toml` already has an ignored `[toolset.<new>]` table with `url`, and you rename a toolset
+  configured in `giles.toml`. Remove the ignored table and run the command again.
+- `<old>` is a channel or a provider. The error names the command that renames it.
 - An agent has a glob that matches the toolset's tools without starting with `<old>__`, such as
   `files*`. The error lists them. Change them (to `files__*`, say) and run the command again.
+- `giles.toml` or an `agent.toml` can't be read or isn't valid TOML.
 
 If a step fails, the command undoes the earlier ones and says what failed. If undoing a step fails
-too, the error lists what to fix by hand.
+too, the error lists what to fix by hand. If the command is interrupted, for example by a power
+loss, run it again to finish.
 
 ## `giles backup <dir>`
 
@@ -206,16 +244,16 @@ database (`giles-<time>.db`) and a tar of the configuration, Markdown files, and
 (`giles-<time>.tar`), then prints the two paths. See [Backups](backups.md) for what's included and
 how to restore.
 
-## `giles instance rename <old> <new>`
+## `giles channel rename <old> <new>`
 
-Renames an instance, such as `libera` in `[channel.libera]`. Sessions, history, memory, and plugin
-data are stored under the instance's name. Renaming the table in `giles.toml` alone would leave them
-behind, so use this command instead.
+Renames a channel, such as `libera` in `[channel.libera]`, with Giles stopped. Sessions, history,
+memory, and the plugin's data are stored under the channel's name. Renaming the table in
+`giles.toml` alone would leave them behind, so use this command instead.
 
 Stop Giles first. Otherwise the command fails with `giles is already running ... stop it first`.
 
 ```console
-$ giles instance rename libera libera-chat
+$ giles channel rename libera libera-chat
 Renamed channel instance "libera" to "libera-chat".
   database: 3 sessions, 10 inbox rows, 0 outbox rows, 0 usage rows, 0 messages, 2 routes
   giles.toml: [channel.libera] -> [channel.libera-chat]
@@ -225,63 +263,75 @@ Renamed channel instance "libera" to "libera-chat".
 Start giles again to use the new name.
 ```
 
-A toolset made in the web UI or with `giles toolset` is a remote server stored in the database, with
-no table in `giles.toml`. The command renames the stored toolset and the globs that name its tools,
-leaves `giles.toml` alone, and says so on a `database: the stored toolset ... is now ...` line:
-
-```console
-$ giles instance rename files documents
-Renamed toolset instance "files" to "documents".
-  database: 0 sessions, 0 inbox rows, 0 outbox rows, 0 usage rows, 0 messages, 0 routes
-  database: the stored toolset "files" is now "documents"
-  agents/jeeves/agent.toml: 2 reference(s) updated
-Start giles again to use the new name.
-```
-
-For a stored toolset, `<old>` can be in any case, and `<new>` can be the same name in another case
-(`Notes` to `notes`). The command ignores a `[toolset.<name>]` table with `url`, as Giles does, and
-leaves it in `giles.toml`.
-
 The command renames:
 
-- the instance's database rows and stored [routes](configuration.md#routes)
+- the channel's database rows and stored [routes](configuration.md#routes)
 - the group memories in each agent's `memory.db`
-- the instance's directories, including the per-group `MEMORY.md` files
-- the `[<kind>.<old>]` table in `giles.toml`, keeping its comments and formatting, or the stored
-  toolset
-- references in each agent's `agent.toml`: model names starting with `<old>/` for a provider, and
-  `tools` and `ask` globs starting with `<old>__` for a toolset
+- the channel's directories, including the per-group `MEMORY.md` files
+- the `[channel.<old>]` table in `giles.toml`, keeping its comments and formatting
 
-If the table has no `component` key, the command adds `component = "<old>"`, so the instance keeps
+If the table has no `component` key, the command adds `component = "<old>"`, so the channel keeps
 running the same component. You don't need to change `[owner] identities`, because they're named
-after the network, not the instance. [Instance rename](../technical/instance-rename.md) lists
+after the network, not the channel. [Instance rename](../technical/instance-rename.md) lists
 everything the command touches.
 
-To rename a stored toolset while Giles runs, use [`giles toolset rename`](#rename-a-toolset).
+The command renames a channel and nothing else. A provider or toolset with the same name keeps its
+own data. If `<old>` is a provider or a toolset, the command refuses and tells you to run
+`giles provider rename` or `giles toolset rename` instead.
 
-If you rename a table in `giles.toml` without this command, `giles serve` starts the renamed
-instance with no sessions, inbox, or directories of its own, and leaves the old name's data where it
-is. To move the data to the renamed table, run the command before you start Giles again. It accepts
-the table already being renamed.
+If you rename a table in `giles.toml` without this command, `giles serve` starts the renamed channel
+with no sessions, inbox, or directories of its own, and leaves the old name's data where it is. To
+move the data to the renamed table, run the command before you start Giles again. It accepts the
+table already being renamed.
 
-Once Giles has run the renamed instance, the command refuses, because `<new>` already has data. If
-the instance has no sessions or other data of its own yet, remove `data/<kind>/<new>` (`<kind>` is
-`channel`, `provider`, or `toolset`) and run the command. Otherwise you have to merge the two by
-hand.
+Once Giles has run the renamed channel, the command refuses, because `<new>` already has data. If
+the channel has no sessions or other data of its own yet, remove `data/channel/<new>` and run the
+command. Otherwise you have to merge the two by hand.
 
 Names use only letters, digits, and `-`. `<new>` must not differ from another instance's name only
 in case. The command changes nothing and refuses if:
 
-- `<old>` isn't configured and has no data.
+- `<old>` isn't a channel, and has no channel data.
 - `<new>` is also configured or already has data. Renaming never merges two instances.
-- `giles.toml` already has a `[<kind>.<new>]` table, such as an ignored `[toolset.<new>]` with
-  `url`. Remove it and run the command again.
-- `<old>` is a stored toolset and `<new>` is `new` (in any case).
+- `<new>` is the name of a toolset stored in Giles.
 - `giles.toml` or an `agent.toml` can't be read or isn't valid TOML.
-- A renamed toolset's `tools` or `ask` globs match its tools without starting with `<old>__`, such
-  as `github*` or `git*`. The command lists them. Change them (to `github__*`, say) and run it
-  again. Globs such as `*`, `memory*` and `*__create_issue` are fine.
 
 If a step fails, the command undoes the earlier ones and says what failed. If it's interrupted, for
 example by a power loss, run the same command again to finish. If undoing a failed rename also
 fails, the error lists what to fix by hand.
+
+## `giles provider rename <old> <new>`
+
+Renames a provider, such as `anthropic` in `[provider.anthropic]`, with Giles stopped. Usage records
+and the provider's data are stored under the provider's name, and your agents' files name its models
+(`anthropic/claude`). Use this command instead of renaming the table in `giles.toml`.
+
+Stop Giles first. Otherwise the command fails with `giles is already running ... stop it first`.
+
+```console
+$ giles provider rename anthropic claude
+Renamed provider instance "anthropic" to "claude".
+  database: 0 sessions, 0 inbox rows, 0 outbox rows, 212 usage rows, 1840 messages, 0 routes
+  giles.toml: [provider.anthropic] -> [provider.claude]
+  agents/jeeves/agent.toml: 2 reference(s) updated
+Start giles again to use the new name.
+```
+
+The command renames:
+
+- the provider's usage rows, and the provider named in the history of its replies
+- the provider's directories
+- the `[provider.<old>]` table in `giles.toml`, keeping its comments and formatting
+- references in each agent's `agent.toml` to models starting with `<old>/`
+
+It renames a provider and nothing else. These work as they do for
+[`giles channel rename`](#giles-channel-rename-old-new):
+
+- the `component` key
+- a table you renamed by hand
+- the names the command accepts
+- what makes the command refuse
+- what the command does when a step fails
+
+If `<old>` is a channel or a toolset, the command tells you to run `giles channel rename` or
+`giles toolset rename`.

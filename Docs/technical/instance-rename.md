@@ -1,9 +1,10 @@
 # Instance rename
 
 Instance names are permanent ids (PLAN section 7.2). `giles_core::rename` renames one,
-`rename_instance`, which `giles instance rename <old> <new>` calls. `ToolsetManager::rename` renames
-a toolset stored in the database while Giles runs. This page covers what a name keys, the order of
-the steps, and what a failure leaves behind.
+`rename_instance`, which `giles channel rename <old> <new>`, `giles provider rename <old> <new>`,
+and `giles toolset rename <old> <new>` (with Giles stopped) call, each for its own kind.
+`ToolsetManager::rename` renames a toolset stored in the database while Giles runs. This page covers
+what a name keys, the order of the steps, and what a failure leaves behind.
 
 ## What a name keys
 
@@ -29,14 +30,15 @@ rename must move each of them.
 | `cache/describe/<kind>/<name>.json`, `cache/toolsets/<name>.json` | Discovery caches    | Moves if present; they are disposable |
 | `run/pids/<kind>/<name>.pid`                 | The launched plugin's pid, killed at the next start | Moves if present, so a plugin that outlived the core is still found |
 
-A rename is scoped to one kind: the database half (`Store::instance_rows` and
-`Store::rename_instance` both take the kind) reads and updates only the columns marked above for
+A rename is scoped to one kind, which the command gives: the database half (`Store::instance_rows`
+and `Store::rename_instance` both take the kind) reads and updates only the columns marked above for
 that kind, and the memory databases and the `groups/` directories, which hold channels' data, are
 left alone when the instance isn't a channel. A toolset has no rows to update; its stored row is
 renamed separately. The files under `data/`, `cache/describe/`, `run/pids/`, and `run/sandbox/` are
 keyed by kind too. The rename looks only in the directories of the renamed instance's kind
 (`cache/toolsets/` is the toolsets'), so a toolset or provider with the old name keeps its files. A
-directory that an earlier release left in `data/plugins/` isn't looked for.
+directory that an earlier release left in `data/plugins/` isn't looked for. Names are still unique
+across kinds, so a name that `giles.toml` configures as another kind isn't renamed by this command.
 
 Routes are a setting, not data. The rename moves `routes.channel` (in the same transaction, keeping
 the order; `RenamedRows::routes` counts them), and a name that only routes use still counts as
@@ -96,33 +98,41 @@ toolset runs its `command` and has no component, so its table is renamed as writ
 
 ## The steps
 
-`rename_instance(root, store, lock, old, new)` takes the data root's `InstanceLock` as an argument:
-the caller proves the core is stopped by holding the same `flock` `giles serve` holds, so no admin
-socket probing is needed and a core that starts mid-rename is refused instead.
+`rename_instance(root, store, lock, kind, old, new)` takes the data root's `InstanceLock` as an
+argument: the caller proves the core is stopped by holding the same `flock` `giles serve` holds, so
+no admin socket probing is needed and a core that starts mid-rename is refused instead. The kind
+comes from the command (`giles channel rename`, `giles provider rename`, `giles toolset rename`),
+not from the name, so one driver (`rename::run` in the `giles` crate) serves all three.
 
 1. **Validate, read-only.** Both names must be `[a-zA-Z0-9-]+`, and different ignoring case unless
    `old` is a stored toolset (see [Stored toolsets](#stored-toolsets)). `new` must not differ only
    in case from another configured instance. When `giles.toml` doesn't configure `new` yet, it must
    not be the name of a toolset stored in the database, ignoring case
-   (`RenameError::StoredToolset`): `giles.toml` would take the name at the next start. When
-   `giles.toml` doesn't configure `old`, a stored toolset with that name, ignoring case, is the
-   instance to rename: its row is renamed instead of a table. `giles.toml` and every `agent.toml`
-   are read and parsed, the database's names are listed (`instance_rows`), and the data directories
-   are scanned.
+   (`RenameError::StoredToolset`): `giles.toml` would take the name at the next start. When the kind
+   is toolset and `giles.toml` doesn't configure `old`, a stored toolset with that name, ignoring
+   case, is the instance to rename: its row is renamed instead of a table. `giles.toml` and every
+   `agent.toml` are read and parsed, the database's names for the kind are listed
+   (`instance_rows(kind)`), and the data directories are scanned.
+   - If `old` is configured as another kind, the rename is refused (`RenameError::WrongKind`), and
+     the message names the command that renames it. So is `old` when it is not configured and a
+     toolset is stored with that name, for a channel or provider command. The one exception is the
+     hand-renamed table below.
    - If both names are configured the rename is refused: instances are never merged.
    - If only `old` is configured, that table is renamed.
-   - If only `new` is configured, the operator already renamed the table by hand and the data under
-     `old` is moved to match. `old` must have data.
-   - If neither is configured, it is refused: with no data it is an unknown instance, and with data
-     the kind can't be known, so the message says to configure `new` first.
-   - `new` must have no data: no database rows, no `data/<kind>/<new>`, and, for a channel, no
-     `groups/<new>` (routes that name `new` don't count; a group directory is a channel's, so it
-     doesn't keep a provider or toolset from taking the name). The memory databases aren't checked:
-     nothing in their schema is unique over the owner, and an interrupted run (below) legitimately
-     leaves some of them already renamed. The exception is an interrupted rename run again (below):
-     `giles.toml` already names `new`, so `old` is no longer configured, and rows still exist under
-     `old`. While `old` is still configured, a directory called `new` belongs to something else and
-     is refused.
+   - If only `new` is configured as the command's kind, the operator already renamed the table by
+     hand and the data of that kind under `old` is moved to match. `old` must have data of that
+     kind. If `new` is configured as another kind, it is refused (`RenameError::NewIsConfigured`):
+     the data can't move to another kind's name.
+   - If neither is configured, it is refused: with no data of that kind it is an unknown instance
+     (`RenameError::UnknownInstance`), and with data the message says to configure `new` first.
+   - `new` must have no data of the command's kind: no database rows, no `data/<kind>/<new>`, and,
+     for a channel, no `groups/<new>` (routes that name `new` don't count; a group directory is a
+     channel's, so it doesn't keep a provider or toolset from taking the name). The memory databases
+     aren't checked: nothing in their schema is unique over the owner, and an interrupted run
+     (below) legitimately leaves some of them already renamed. The exception is an interrupted
+     rename run again (below): `giles.toml` already names `new`, so `old` is no longer configured,
+     and rows still exist under `old`. While `old` is still configured, a directory called `new`
+     belongs to something else and is refused.
 2. **Stage.** Every file's new text is computed in memory: the `agent.toml` files that name the
    instance, then `giles.toml`; and the list of directory and file moves is computed. The memory
    databases to update are listed, for a channel: every `agents/<agent>/memory.db` that exists (a
@@ -164,9 +174,10 @@ match), which makes it safe to repeat after a crash.
 ## Stored toolsets
 
 A toolset made in the web UI or with `giles toolset` is a remote MCP server with a row in `giles.db`
-and no table in `giles.toml`. `rename_instance` renames it when `giles.toml` doesn't configure `old`
-and the database has a toolset with that name, ignoring case. The name as stored is the old name
-from then on. What differs from an instance of `giles.toml`:
+and no table in `giles.toml`. `rename_instance` renames it when `kind` is `Kind::Toolset`,
+`giles.toml` doesn't configure `old` as any kind, and the database has a toolset with that name,
+ignoring case. The name as stored is the old name from then on. What differs from an instance of
+`giles.toml`:
 
 - `giles.toml` isn't edited. `new` must not be configured there (`RenameError::NewIsConfigured`, or
   `RenameError::CaseCollision` when only the case differs) and must not be another stored toolset
@@ -192,10 +203,16 @@ from then on. What differs from an instance of `giles.toml`:
 
 ## Renaming while Giles runs
 
+`giles toolset rename` chooses its path by the data root's lock. If it can take the lock, no core
+runs, and it does the offline rename above for any toolset, whether `giles.toml` or the database has
+it. If a core holds the lock, it calls the admin service's `RenameToolset`, which renames a stored
+toolset as described here and refuses a toolset of `giles.toml` (`ToolsetManagerError::Unsupported`)
+with a message that says to stop Giles first.
+
 `ToolsetManager::rename` renames a stored toolset in the running core, for the web UI and the admin
-socket ([Toolsets](toolsets.md#renaming)). It is the same rename as the command, with the difference
-that the core is running, so the toolset is stopped and started again and nothing is done in one
-database transaction:
+socket ([Toolsets](toolsets.md#renaming)). It is the same rename as the offline one, with the
+difference that the core is running, so the toolset is stopped and started again and nothing is done
+in one database transaction:
 
 1. The checks, with nothing changed. The new name must be valid and free among every kind of
    instance (another stored toolset is `ToolsetManagerError::Exists`, an instance of `giles.toml` is

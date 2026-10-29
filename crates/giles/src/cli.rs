@@ -29,12 +29,14 @@ pub enum Command {
     Usage(UsageArgs),
     /// Administer the running daemon.
     Admin(AdminArgs),
-    /// Manage the MCP toolsets of the running daemon.
+    /// Manage MCP toolsets: of the running daemon, and, for `rename`, with it stopped.
     Toolset(ToolsetArgs),
     /// Write a consistent snapshot of the data root (database and files) to a directory.
     Backup(BackupArgs),
-    /// Manage instances with the daemon stopped.
-    Instance(InstanceArgs),
+    /// Manage channels with the daemon stopped.
+    Channel(ChannelArgs),
+    /// Manage providers with the daemon stopped.
+    Provider(ProviderArgs),
     /// Run a command in the plugin sandbox (internal: the daemon launches plugins through it).
     SandboxExec(SandboxExecArgs),
 }
@@ -106,8 +108,9 @@ pub enum ToolsetCommand {
     Set(SetToolsetArgs),
     /// Remove a stored toolset.
     Remove(ToolsetNameArgs),
-    /// Rename a stored toolset, with its tool prefix and the agents' globs.
-    Rename(RenameToolsetArgs),
+    /// Rename a toolset, with its tool prefix and the agents' globs. A stored toolset can be
+    /// renamed while Giles runs; a `giles.toml` toolset needs Giles stopped.
+    Rename(RenameArgs),
     /// Restart a toolset's server now.
     Restart(ToolsetNameArgs),
 }
@@ -120,10 +123,10 @@ pub struct ToolsetNameArgs {
     pub name: String,
 }
 
-/// Arguments to `giles toolset rename`.
+/// Arguments to `giles channel rename`, `giles provider rename`, and `giles toolset rename`.
 #[derive(Debug, Args)]
-pub struct RenameToolsetArgs {
-    /// The toolset's name now.
+pub struct RenameArgs {
+    /// The name now.
     #[arg(value_name = "OLD")]
     pub old: String,
 
@@ -145,31 +148,34 @@ pub struct SetToolsetArgs {
     pub file: PathBuf,
 }
 
-/// Arguments to `giles instance`.
+/// Arguments to `giles channel`.
 #[derive(Debug, Args)]
-pub struct InstanceArgs {
+pub struct ChannelArgs {
     /// What to do.
     #[command(subcommand)]
-    pub command: InstanceCommand,
+    pub command: ChannelCommand,
 }
 
-/// The `giles instance` subcommands.
+/// The `giles channel` subcommands.
 #[derive(Debug, Subcommand)]
-pub enum InstanceCommand {
-    /// Rename an instance: its database rows, directories, and config. Stop the daemon first.
+pub enum ChannelCommand {
+    /// Rename a channel: its database rows, directories, and config. Stop the daemon first.
     Rename(RenameArgs),
 }
 
-/// Arguments to `giles instance rename`.
+/// Arguments to `giles provider`.
 #[derive(Debug, Args)]
-pub struct RenameArgs {
-    /// The current name of the instance.
-    #[arg(value_name = "OLD")]
-    pub old: String,
+pub struct ProviderArgs {
+    /// What to do.
+    #[command(subcommand)]
+    pub command: ProviderCommand,
+}
 
-    /// The new name: letters, digits, and `-`.
-    #[arg(value_name = "NEW")]
-    pub new: String,
+/// The `giles provider` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum ProviderCommand {
+    /// Rename a provider: its database rows, directories, and config. Stop the daemon first.
+    Rename(RenameArgs),
 }
 
 /// Arguments to `giles sandbox-exec`.
@@ -339,22 +345,38 @@ mod tests {
     }
 
     #[test]
-    fn instance_rename_takes_two_names() {
-        let cli = Cli::try_parse_from(["giles", "instance", "rename", "libera", "oftc"]).unwrap();
-        let Command::Instance(InstanceArgs {
-            command: InstanceCommand::Rename(args),
+    fn channel_and_provider_rename_take_two_names() {
+        let cli = Cli::try_parse_from(["giles", "channel", "rename", "libera", "oftc"]).unwrap();
+        let Command::Channel(ChannelArgs {
+            command: ChannelCommand::Rename(args),
         }) = cli.command
         else {
             panic!("{:?}", cli.command);
         };
         assert_eq!((args.old.as_str(), args.new.as_str()), ("libera", "oftc"));
-        for args in [
-            &["giles", "instance"][..],
-            &["giles", "instance", "rename"],
-            &["giles", "instance", "rename", "a"],
-            &["giles", "instance", "rename", "a", "b", "c"],
-        ] {
-            assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
+        let cli = Cli::try_parse_from(["giles", "provider", "rename", "ollama", "local"]).unwrap();
+        let Command::Provider(ProviderArgs {
+            command: ProviderCommand::Rename(args),
+        }) = cli.command
+        else {
+            panic!("{:?}", cli.command);
+        };
+        assert_eq!((args.old.as_str(), args.new.as_str()), ("ollama", "local"));
+        for kind in ["channel", "provider"] {
+            for args in [
+                &["giles", kind][..],
+                &["giles", kind, "rename"],
+                &["giles", kind, "rename", "a"],
+                &["giles", kind, "rename", "a", "b", "c"],
+            ] {
+                assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
+            }
         }
+    }
+
+    #[test]
+    fn there_is_no_instance_command() {
+        let args = ["giles", "instance", "rename", "libera", "oftc"];
+        assert!(Cli::try_parse_from(args).is_err());
     }
 }

@@ -341,4 +341,4 @@ that matches the server's tools without starting with `<old name>__`, such as `g
 lists those globs. Rewrite them, for example to `github__*`, and try again.
 
 You can't rename a server that you configure in `giles.toml` here. Stop Giles and run
-[`giles instance rename`](cli.md#giles-instance-rename-old-new) for that.
+[`giles toolset rename`](cli.md#rename-a-toolset) for that.

@@ -1,4 +1,5 @@
-//! `giles instance rename`, against temporary data roots and databases.
+//! The per-kind instance renames (`giles channel rename` and the others), against temporary data
+//! roots and databases.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -172,8 +173,8 @@ impl Home {
         }
     }
 
-    async fn rename(&self, old: &str, new: &str) -> Result<RenameReport, RenameError> {
-        rename_instance(&self.root, &self.store, &self.lock, old, new).await
+    async fn rename(&self, kind: Kind, old: &str, new: &str) -> Result<RenameReport, RenameError> {
+        rename_instance(&self.root, &self.store, &self.lock, kind, old, new).await
     }
 
     fn load(&self) -> Config {
@@ -189,7 +190,7 @@ impl Home {
     }
 
     async fn rows(&self) -> BTreeMap<String, InstanceRows> {
-        instance_rows(&self.store).await.unwrap()
+        all_instance_rows(&self.store).await.unwrap()
     }
 
     /// Everything a failed rename must leave alone: the file tree with contents, and the rows.
@@ -223,11 +224,31 @@ impl Home {
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Every name the database's rows use, whatever the kind, with how many rows use it.
+async fn all_instance_rows(
+    store: &Store,
+) -> Result<BTreeMap<String, InstanceRows>, giles_store::Error> {
+    let mut names: BTreeMap<String, InstanceRows> = BTreeMap::new();
+    for kind in Kind::ALL {
+        for (name, rows) in store.instance_rows(kind).await? {
+            let entry = names.entry(name).or_default();
+            entry.sessions += rows.sessions;
+            entry.inbox += rows.inbox;
+            entry.outbox += rows.outbox;
+            entry.usage += rows.usage;
+        }
+    }
+    Ok(names)
+}
+
 #[tokio::test]
 async fn renaming_a_channel_moves_the_rows_the_directories_and_the_config_table() {
     let home = Home::populated().await;
     fs::set_permissions(home.path("giles.toml"), fs::Permissions::from_mode(0o600)).unwrap();
-    let report = home.rename("libera", "libera-chat").await.unwrap();
+    let report = home
+        .rename(Kind::Channel, "libera", "libera-chat")
+        .await
+        .unwrap();
 
     assert_eq!(report.kind, Kind::Channel);
     assert_eq!(
@@ -340,7 +361,10 @@ async fn route_channels(home: &Home) -> Vec<Option<String>> {
 async fn renaming_a_channel_moves_its_stored_routes_in_place() {
     let home = Home::populated().await;
     seed_routes(&home, "libera").await;
-    let report = home.rename("libera", "libera-chat").await.unwrap();
+    let report = home
+        .rename(Kind::Channel, "libera", "libera-chat")
+        .await
+        .unwrap();
     assert_eq!(report.rows.routes, 2);
     // Same order, the other channel's route and the any-channel route untouched.
     assert_eq!(
@@ -366,7 +390,10 @@ async fn a_name_that_only_routes_use_can_be_renamed_once_its_new_name_is_configu
     )
     .await;
     seed_routes(&home, "libera").await;
-    let report = home.rename("libera", "libera-chat").await.unwrap();
+    let report = home
+        .rename(Kind::Channel, "libera", "libera-chat")
+        .await
+        .unwrap();
     assert_eq!(report.rows.routes, 2);
     assert!(!report.config_table);
     assert_eq!(
@@ -389,7 +416,10 @@ async fn a_failing_rename_leaves_the_stored_routes_where_they_were() {
         fs::set_permissions(home.dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         return;
     }
-    let err = home.rename("libera", "libera-chat").await.unwrap_err();
+    let err = home
+        .rename(Kind::Channel, "libera", "libera-chat")
+        .await
+        .unwrap_err();
     fs::set_permissions(home.dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
     assert!(matches!(err, RenameError::Failed { .. }), "{err}");
     assert_eq!(route_channels(&home).await, before);
@@ -399,7 +429,10 @@ async fn a_failing_rename_leaves_the_stored_routes_where_they_were() {
 #[tokio::test]
 async fn renaming_a_provider_rewrites_the_models_that_use_it() {
     let home = Home::populated().await;
-    let report = home.rename("ollama", "local").await.unwrap();
+    let report = home
+        .rename(Kind::Provider, "ollama", "local")
+        .await
+        .unwrap();
 
     assert_eq!(report.kind, Kind::Provider);
     assert_eq!(report.rows.usage, 1);
@@ -438,7 +471,10 @@ async fn an_agent_removed_in_the_web_ui_is_left_alone_by_a_rename() {
     fs::create_dir_all(trashed.parent().unwrap()).unwrap();
     fs::rename(home.path("agents/jeeves"), &trashed).unwrap();
 
-    let report = home.rename("ollama", "local").await.unwrap();
+    let report = home
+        .rename(Kind::Provider, "ollama", "local")
+        .await
+        .unwrap();
     assert!(report.agent_files.is_empty(), "{:?}", report.agent_files);
     assert_eq!(
         fs::read_to_string(trashed.join("agent.toml")).unwrap(),
@@ -453,20 +489,20 @@ async fn an_agent_removed_in_the_web_ui_is_left_alone_by_a_rename() {
     );
 
     // The channel's group memory in the trash stays where it is; the live agent's moves.
-    home.rename("libera", "oftc").await.unwrap();
+    home.rename(Kind::Channel, "libera", "oftc").await.unwrap();
     assert!(trashed.join("groups/libera/%23giles/MEMORY.md").is_file());
     assert!(!trashed.join("groups/oftc").exists());
 
     // Nothing in `agents/` at all is fine too.
     fs::remove_dir_all(home.path("agents")).unwrap();
-    home.rename("github", "gh").await.unwrap();
+    home.rename(Kind::Toolset, "github", "gh").await.unwrap();
     assert!(trashed.join("agent.toml").is_file());
 }
 
 #[tokio::test]
 async fn renaming_a_toolset_rewrites_the_tool_globs_and_moves_its_directory() {
     let home = Home::populated().await;
-    let report = home.rename("github", "gh").await.unwrap();
+    let report = home.rename(Kind::Toolset, "github", "gh").await.unwrap();
 
     assert_eq!(report.kind, Kind::Toolset);
     assert_eq!(report.agent_files[0].1, 2);
@@ -496,7 +532,10 @@ async fn a_table_renamed_by_hand_gets_its_data_moved() {
     home.write("data/channel/libera/state.json", "{}");
     home.seed("libera", "ollama").await;
 
-    let report = home.rename("libera", "libera-chat").await.unwrap();
+    let report = home
+        .rename(Kind::Channel, "libera", "libera-chat")
+        .await
+        .unwrap();
     assert!(!report.config_table);
     assert_eq!(report.legacy_routes, 0);
     assert_eq!(home.read("giles.toml"), hand_edited);
@@ -521,18 +560,52 @@ async fn a_rename_that_stopped_part_way_can_be_run_again() {
         home.path("data/channel/libera-chat"),
     )
     .unwrap();
-    home.rename("libera", "libera-chat").await.unwrap();
+    home.rename(Kind::Channel, "libera", "libera-chat")
+        .await
+        .unwrap();
     assert!(home.path("data/channel/libera-chat/state.json").is_file());
     assert!(home.path("agents/jeeves/groups/libera-chat").is_dir());
     assert_eq!(home.rows().await["libera-chat"].sessions, 2);
     home.load();
 }
 
+/// An interrupted rename is finished when `old` has since been configured as another kind: the
+/// rows and directories of the channel are the channel's, whatever a provider `libera` is.
+#[tokio::test]
+async fn an_interrupted_rename_is_finished_when_the_old_name_is_now_another_kind() {
+    let home = Home::populated().await;
+    home.write(
+        "giles.toml",
+        &GILES_TOML
+            .replace("[channel.libera]", "[channel.libera-chat]")
+            .replace("channel = \"libera\"", "channel = \"libera-chat\"")
+            .replace(
+                "[provider.anthropic]",
+                "[provider.anthropic]\n\n[provider.libera]",
+            ),
+    );
+    fs::rename(
+        home.path("data/channel/libera"),
+        home.path("data/channel/libera-chat"),
+    )
+    .unwrap();
+
+    home.rename(Kind::Channel, "libera", "libera-chat")
+        .await
+        .unwrap();
+
+    assert!(home.path("data/channel/libera-chat/state.json").is_file());
+    assert!(home.path("agents/jeeves/groups/libera-chat").is_dir());
+    assert!(!home.path("agents/jeeves/groups/libera").exists());
+    assert_eq!(home.rows().await["libera-chat"].sessions, 2);
+    assert!(!home.rows().await.contains_key("libera"));
+}
+
 #[tokio::test]
 async fn an_instance_without_data_is_just_renamed_in_the_config() {
     let home = Home::new(GILES_TOML).await;
     home.write("agents/jeeves/agent.toml", JEEVES);
-    let report = home.rename("web", "chat").await.unwrap();
+    let report = home.rename(Kind::Channel, "web", "chat").await.unwrap();
     assert!(report.moved.is_empty());
     assert_eq!(report.rows.total(), 0);
     assert!(home.read("giles.toml").contains("[channel.chat]"));
@@ -545,8 +618,10 @@ async fn renaming_keeps_the_component_an_instance_was_named_after() {
     // called `web` and `anthropic` only because of their own names.
     let home = Home::new(GILES_TOML).await;
     home.write("agents/jeeves/agent.toml", JEEVES);
-    home.rename("web", "chat").await.unwrap();
-    home.rename("anthropic", "claude").await.unwrap();
+    home.rename(Kind::Channel, "web", "chat").await.unwrap();
+    home.rename(Kind::Provider, "anthropic", "claude")
+        .await
+        .unwrap();
 
     let config = home.load();
     let chat = &config.channels["chat"];
@@ -564,9 +639,9 @@ async fn renaming_keeps_the_component_an_instance_was_named_after() {
 }
 
 /// Runs a rename that must be refused and checks that it changed nothing.
-async fn refused(home: &Home, old: &str, new: &str) -> RenameError {
+async fn refused(home: &Home, kind: Kind, old: &str, new: &str) -> RenameError {
     let before = home.snapshot().await;
-    let err = home.rename(old, new).await.unwrap_err();
+    let err = home.rename(kind, old, new).await.unwrap_err();
     assert_eq!(home.snapshot().await, before, "{err}");
     err
 }
@@ -576,34 +651,34 @@ async fn bad_requests_are_refused_without_changing_anything() {
     let home = Home::populated().await;
 
     for name in ["", "a b", "a/b", "..", "a_b", "é"] {
-        let err = refused(&home, "libera", name).await;
+        let err = refused(&home, Kind::Channel, "libera", name).await;
         assert!(
             matches!(err, RenameError::InvalidName { .. }),
             "{name:?}: {err}"
         );
-        let err = refused(&home, name, "fresh").await;
+        let err = refused(&home, Kind::Channel, name, "fresh").await;
         assert!(
             matches!(err, RenameError::InvalidName { .. }),
             "{name:?}: {err}"
         );
     }
 
-    let err = refused(&home, "libera", "libera").await;
+    let err = refused(&home, Kind::Channel, "libera", "libera").await;
     assert!(matches!(err, RenameError::SameName { .. }), "{err}");
-    let err = refused(&home, "libera", "Libera").await;
+    let err = refused(&home, Kind::Channel, "libera", "Libera").await;
     assert!(matches!(err, RenameError::SameName { .. }), "{err}");
 
-    let err = refused(&home, "nothing", "fresh").await;
+    let err = refused(&home, Kind::Channel, "nothing", "fresh").await;
     assert!(matches!(err, RenameError::UnknownInstance { .. }), "{err}");
     assert!(
-        err.to_string().contains("no instance named \"nothing\""),
+        err.to_string().contains("no channel named \"nothing\""),
         "{err}"
     );
 
     // Both configured: never a merge, even across kinds.
-    let err = refused(&home, "libera", "web").await;
+    let err = refused(&home, Kind::Channel, "libera", "web").await;
     assert!(matches!(err, RenameError::BothConfigured { .. }), "{err}");
-    let err = refused(&home, "libera", "github").await;
+    let err = refused(&home, Kind::Channel, "libera", "github").await;
     assert!(
         matches!(
             err,
@@ -616,8 +691,85 @@ async fn bad_requests_are_refused_without_changing_anything() {
     );
 
     // A new name that is another configured instance in a different case.
-    let err = refused(&home, "libera", "WEB").await;
+    let err = refused(&home, Kind::Channel, "libera", "WEB").await;
     assert!(matches!(err, RenameError::CaseCollision { .. }), "{err}");
+}
+
+/// The command gives the kind: a name that is another kind's, in `giles.toml` or stored in the
+/// database, is refused with the command that renames it.
+#[tokio::test]
+async fn a_name_of_another_kind_is_refused_with_the_command_that_renames_it() {
+    let home = Home::populated().await;
+    add_stored(&home, "notes", NOTES).await;
+
+    for (kind, old, actual) in [
+        (Kind::Provider, "libera", Kind::Channel),
+        (Kind::Toolset, "libera", Kind::Channel),
+        (Kind::Channel, "ollama", Kind::Provider),
+        (Kind::Toolset, "ollama", Kind::Provider),
+        (Kind::Channel, "github", Kind::Toolset),
+        (Kind::Provider, "github", Kind::Toolset),
+        (Kind::Channel, "notes", Kind::Toolset),
+        (Kind::Provider, "NOTES", Kind::Toolset),
+    ] {
+        let err = refused(&home, kind, old, "fresh").await;
+        assert!(
+            matches!(&err, RenameError::WrongKind { requested, actual: found, .. }
+                if *requested == kind && *found == actual),
+            "{kind} {old}: {err}"
+        );
+        assert!(
+            err.to_string()
+                .contains(&format!("run `giles {actual} rename {old} fresh`")),
+            "{err}"
+        );
+    }
+}
+
+/// Data a removed instance left behind is moved by the command of its kind, whatever another
+/// kind has made of the name since: only that kind's table, rows and directories are looked at.
+#[tokio::test]
+async fn left_behind_data_follows_the_kind_of_the_command_not_the_name() {
+    let by_hand = "[owner]\nidentities = [\"web:owner\"]\n[provider.libera]\n\
+                   [channel.libera-chat]\ncomponent = \"irc\"\nunsandboxed = true\n";
+    let home = Home::new(by_hand).await;
+    home.write("data/channel/libera/state.json", "{\"cursor\": 7}");
+    home.seed("libera", "anthropic").await;
+
+    let report = home
+        .rename(Kind::Channel, "libera", "libera-chat")
+        .await
+        .unwrap();
+
+    assert_eq!(report.kind, Kind::Channel);
+    assert!(!report.config_table);
+    assert_eq!(report.rows.sessions, 2);
+    assert_eq!(home.rows().await["libera-chat"].sessions, 2);
+    assert!(home.path("data/channel/libera-chat/state.json").is_file());
+    assert_eq!(home.read("giles.toml"), by_hand);
+}
+
+/// Left-behind data can't move to a name that another kind's table has.
+#[tokio::test]
+async fn left_behind_data_cannot_move_to_the_name_of_another_kind() {
+    let home = Home::new(
+        "[owner]\nidentities = [\"web:owner\"]\n[provider.libera-chat]\ncomponent = \"openai\"\n",
+    )
+    .await;
+    home.write("data/channel/libera/state.json", "{}");
+
+    let err = refused(&home, Kind::Channel, "libera", "libera-chat").await;
+    assert!(
+        matches!(
+            &err,
+            RenameError::NewIsConfigured {
+                kind: Kind::Channel,
+                new_kind: Kind::Provider,
+                ..
+            }
+        ),
+        "{err}"
+    );
 }
 
 /// A toolset stored in the database is an instance: its name can't be given to a table of
@@ -634,14 +786,16 @@ async fn a_new_name_that_a_stored_toolset_has_is_refused() {
         .await
         .unwrap();
     for new in ["notes", "Notes", "NOTES"] {
-        let err = refused(&home, "libera", new).await;
+        let err = refused(&home, Kind::Channel, "libera", new).await;
         assert!(
             matches!(&err, RenameError::StoredToolset { existing, .. } if existing == "Notes"),
             "{new}: {err}"
         );
     }
     // Another name still works.
-    home.rename("libera", "libera-chat").await.unwrap();
+    home.rename(Kind::Channel, "libera", "libera-chat")
+        .await
+        .unwrap();
 }
 
 const NOTES: &str = r#"{ "url": "https://notes.example.com/mcp" }"#;
@@ -671,7 +825,7 @@ async fn a_stored_toolset_is_renamed_with_its_row_and_agent_globs() {
     home.write("agents/jeeves/agent.toml", NOTES_AGENT);
     let before = home.store.toolsets().await.unwrap();
 
-    let report = home.rename("notes", "memos").await.unwrap();
+    let report = home.rename(Kind::Toolset, "notes", "memos").await.unwrap();
 
     assert_eq!(report.kind, Kind::Toolset);
     assert!(report.stored_toolset);
@@ -708,7 +862,7 @@ async fn a_stored_toolset_cannot_take_the_name_of_another_instance() {
         ("libera", Kind::Channel),
         ("ollama", Kind::Provider),
     ] {
-        let err = refused(&home, "notes", new).await;
+        let err = refused(&home, Kind::Toolset, "notes", new).await;
         assert!(
             matches!(&err, RenameError::NewIsConfigured { old, new_kind, .. }
                 if old == "notes" && *new_kind == kind),
@@ -716,12 +870,12 @@ async fn a_stored_toolset_cannot_take_the_name_of_another_instance() {
         );
     }
     for new in ["GITHUB", "Libera"] {
-        let err = refused(&home, "notes", new).await;
+        let err = refused(&home, Kind::Toolset, "notes", new).await;
         assert!(matches!(err, RenameError::CaseCollision { .. }), "{err}");
     }
     // So does another stored toolset, ignoring case.
     for new in ["memos", "MEMOS"] {
-        let err = refused(&home, "notes", new).await;
+        let err = refused(&home, Kind::Toolset, "notes", new).await;
         assert!(
             matches!(&err, RenameError::StoredToolset { existing, .. } if existing == "memos"),
             "{new}: {err}"
@@ -729,7 +883,7 @@ async fn a_stored_toolset_cannot_take_the_name_of_another_instance() {
     }
     // And a name that has data: this command never gives an instance a name with data.
     home.write("data/toolset/leftover/x", "1");
-    let err = refused(&home, "notes", "leftover").await;
+    let err = refused(&home, Kind::Toolset, "notes", "leftover").await;
     assert!(matches!(err, RenameError::NewHasData { .. }), "{err}");
     assert_eq!(home.store.toolsets().await.unwrap(), before);
 }
@@ -748,7 +902,7 @@ async fn an_ignored_remote_toolset_table_is_not_an_instance() {
 
     // The stored toolset is renamed, to the name another ignored table has, and `giles.toml`
     // stays as it is.
-    let report = home.rename("notes", "memos").await.unwrap();
+    let report = home.rename(Kind::Toolset, "notes", "memos").await.unwrap();
     assert!(report.stored_toolset);
     assert!(!report.config_table);
     assert_eq!(stored_names(&home).await, ["memos"]);
@@ -759,12 +913,12 @@ async fn an_ignored_remote_toolset_table_is_not_an_instance() {
     );
 
     // Without a stored toolset, the name of an ignored table is no instance.
-    let err = refused(&home, "notes", "docs").await;
+    let err = refused(&home, Kind::Toolset, "notes", "docs").await;
     assert!(matches!(err, RenameError::UnknownInstance { .. }), "{err}");
 
     // A table of `giles.toml` can't be renamed onto an ignored table: one would overwrite the
     // other.
-    let err = refused(&home, "github", "notes").await;
+    let err = refused(&home, Kind::Toolset, "github", "notes").await;
     assert!(
         matches!(&err, RenameError::Edit { reason, .. }
             if reason.contains("already has a [toolset.notes] table")),
@@ -785,17 +939,17 @@ async fn a_stored_toolset_is_found_in_any_case_and_its_name_can_change_case() {
 
     // The name it has is no new name, in whatever case it is given.
     for old in ["Notes", "NOTES"] {
-        let err = refused(&home, old, "Notes").await;
+        let err = refused(&home, Kind::Toolset, old, "Notes").await;
         assert!(matches!(err, RenameError::SameName { .. }), "{old}: {err}");
     }
 
-    let report = home.rename("NOTES", "notes").await.unwrap();
+    let report = home.rename(Kind::Toolset, "NOTES", "notes").await.unwrap();
     assert!(report.stored_toolset);
     assert_eq!(stored_names(&home).await, ["notes"]);
     assert_eq!(home.read("agents/jeeves/agent.toml"), NOTES_AGENT);
 
     // Now it has the name, so the same request is the same name.
-    let err = refused(&home, "NOTES", "notes").await;
+    let err = refused(&home, Kind::Toolset, "NOTES", "notes").await;
     assert!(matches!(err, RenameError::SameName { .. }), "{err}");
 }
 
@@ -808,7 +962,7 @@ async fn globs_that_match_a_stored_toolset_by_its_old_name_are_refused() {
         "models = [\"anthropic/claude\"]\ntools = [\"not*\"]\n",
     );
     let before = home.store.toolsets().await.unwrap();
-    let err = refused(&home, "notes", "memos").await;
+    let err = refused(&home, Kind::Toolset, "notes", "memos").await;
     assert!(matches!(err, RenameError::Edit { .. }), "{err}");
     assert!(err.to_string().contains("tools entry \"not*\""), "{err}");
     assert_eq!(home.store.toolsets().await.unwrap(), before);
@@ -832,7 +986,10 @@ async fn a_failing_stored_rename_puts_the_row_back_exactly() {
         fs::set_permissions(&zed, fs::Permissions::from_mode(0o700)).unwrap();
         return;
     }
-    let err = home.rename("notes", "memos").await.unwrap_err();
+    let err = home
+        .rename(Kind::Toolset, "notes", "memos")
+        .await
+        .unwrap_err();
     fs::set_permissions(&zed, fs::Permissions::from_mode(0o700)).unwrap();
 
     assert!(
@@ -853,7 +1010,7 @@ async fn a_stored_rename_that_stopped_after_the_row_is_finished_by_running_it_ag
     add_stored(&home, "memos", NOTES).await;
     home.write("agents/jeeves/agent.toml", NOTES_AGENT);
 
-    let report = home.rename("notes", "memos").await.unwrap();
+    let report = home.rename(Kind::Toolset, "notes", "memos").await.unwrap();
 
     assert!(report.stored_toolset);
     assert!(report.moved.is_empty(), "{:?}", report.moved);
@@ -864,7 +1021,7 @@ async fn a_stored_rename_that_stopped_after_the_row_is_finished_by_running_it_ag
     );
 
     // With nothing left under the old name there is nothing to finish: it is no instance.
-    let err = refused(&home, "notes", "memos").await;
+    let err = refused(&home, Kind::Toolset, "notes", "memos").await;
     assert!(matches!(err, RenameError::UnknownInstance { .. }), "{err}");
 }
 
@@ -875,7 +1032,7 @@ async fn a_stored_toolset_cannot_be_renamed_to_a_reserved_name() {
     add_stored(&home, "notes", NOTES).await;
 
     for new in ["new", "New", "NEW"] {
-        let err = refused(&home, "notes", new).await;
+        let err = refused(&home, Kind::Toolset, "notes", new).await;
         assert!(
             matches!(&err, RenameError::StoredToolsetName { .. }),
             "{new}: {err}"
@@ -884,7 +1041,7 @@ async fn a_stored_toolset_cannot_be_renamed_to_a_reserved_name() {
     }
 
     // A table of `giles.toml` can still be named `new`: only a stored toolset can't.
-    home.rename("libera", "new").await.unwrap();
+    home.rename(Kind::Channel, "libera", "new").await.unwrap();
 }
 
 #[tokio::test]
@@ -892,7 +1049,7 @@ async fn a_new_name_that_already_has_data_is_refused() {
     let home = Home::populated().await;
     // Database rows under the new name, from an instance that was removed.
     home.seed("old-irc", "other-provider").await;
-    let err = refused(&home, "libera", "old-irc").await;
+    let err = refused(&home, Kind::Channel, "libera", "old-irc").await;
     assert!(
         matches!(&err, RenameError::NewHasData { what, .. } if what.contains("sessions")),
         "{err}"
@@ -901,13 +1058,13 @@ async fn a_new_name_that_already_has_data_is_refused() {
 
     // Only a directory under the new name.
     home.write("data/channel/leftover/x", "1");
-    let err = refused(&home, "libera", "leftover").await;
+    let err = refused(&home, Kind::Channel, "libera", "leftover").await;
     assert!(
         matches!(&err, RenameError::NewHasData { what, .. } if what.contains("leftover")),
         "{err}"
     );
     home.write("agents/jeeves/groups/leftover2/c/MEMORY.md", "1");
-    let err = refused(&home, "libera", "leftover2").await;
+    let err = refused(&home, Kind::Channel, "libera", "leftover2").await;
     assert!(matches!(err, RenameError::NewHasData { .. }), "{err}");
 }
 
@@ -917,7 +1074,7 @@ async fn a_directory_at_the_target_of_a_move_is_refused() {
     // directory exists on both sides: moving would overwrite or merge.
     let home = Home::populated().await;
     home.write("data/channel/libera-chat/other.json", "{}");
-    let err = refused(&home, "libera", "libera-chat").await;
+    let err = refused(&home, Kind::Channel, "libera", "libera-chat").await;
     assert!(matches!(err, RenameError::NewHasData { .. }), "{err}");
 }
 
@@ -927,7 +1084,7 @@ async fn directories_of_an_unrelated_instance_are_not_taken_over() {
     // directory called `libera-chat` is somebody else's (a removed instance's group memory).
     let home = Home::populated().await;
     home.write("agents/bunter/groups/libera-chat/c/MEMORY.md", "not yours");
-    let err = refused(&home, "libera", "libera-chat").await;
+    let err = refused(&home, Kind::Channel, "libera", "libera-chat").await;
     assert!(
         matches!(&err, RenameError::NewHasData { what, .. } if what.contains("libera-chat")),
         "{err}"
@@ -945,7 +1102,7 @@ async fn globs_that_depend_on_the_old_toolset_name_stop_the_rename() {
         "agents/jeeves/agent.toml",
         "models = [\"anthropic/claude\"]\ntools = [\"*\"]\nask = [\"github*\"]\n",
     );
-    let err = refused(&home, "github", "gh").await;
+    let err = refused(&home, Kind::Toolset, "github", "gh").await;
     assert!(
         matches!(&err, RenameError::Edit { path, .. } if path.ends_with("agents/jeeves/agent.toml")),
         "{err}"
@@ -976,27 +1133,27 @@ fn a_commit_failure_is_a_failed_step_unless_nothing_was_done() {
 async fn unconfigured_data_needs_the_new_name_configured() {
     let home = Home::new("[owner]\nidentities = [\"web:owner\"]\n").await;
     home.write("data/channel/gone/x", "1");
-    let err = refused(&home, "gone", "fresh").await;
+    let err = refused(&home, Kind::Channel, "gone", "fresh").await;
     assert!(matches!(err, RenameError::NotConfigured { .. }), "{err}");
-    assert!(err.to_string().contains("[<kind>.fresh]"), "{err}");
+    assert!(err.to_string().contains("[channel.fresh]"), "{err}");
 }
 
 #[tokio::test]
 async fn a_missing_or_broken_giles_toml_is_refused() {
     let home = Home::populated().await;
     home.write("giles.toml", "[channel.libera");
-    let err = refused(&home, "libera", "libera-chat").await;
+    let err = refused(&home, Kind::Channel, "libera", "libera-chat").await;
     assert!(matches!(err, RenameError::Edit { .. }), "{err}");
     assert!(err.to_string().contains("giles.toml"), "{err}");
 
     fs::remove_file(home.path("giles.toml")).unwrap();
-    let err = refused(&home, "libera", "libera-chat").await;
+    let err = refused(&home, Kind::Channel, "libera", "libera-chat").await;
     assert!(matches!(err, RenameError::Io { .. }), "{err}");
 
     // An agent.toml that isn't TOML blocks a provider rename before anything moves.
     let home = Home::populated().await;
     home.write("agents/bunter/agent.toml", "models = [");
-    let err = refused(&home, "ollama", "local").await;
+    let err = refused(&home, Kind::Provider, "ollama", "local").await;
     assert!(
         matches!(&err, RenameError::Edit { path, .. } if path.ends_with("agents/bunter/agent.toml")),
         "{err}"
@@ -1015,7 +1172,10 @@ async fn a_quoted_table_key_and_its_sub_tables_are_renamed() {
         ),
     );
     // Quoted keys are fine and must still rename; the check is about the result, not the form.
-    let report = home.rename("libera", "libera-chat").await.unwrap();
+    let report = home
+        .rename(Kind::Channel, "libera", "libera-chat")
+        .await
+        .unwrap();
     assert!(report.config_table);
     assert!(
         home.read("giles.toml")
@@ -1039,7 +1199,10 @@ async fn a_failing_step_undoes_the_steps_before_it() {
     }
 
     let before = home.snapshot().await;
-    let err = home.rename("ollama", "local").await.unwrap_err();
+    let err = home
+        .rename(Kind::Provider, "ollama", "local")
+        .await
+        .unwrap_err();
     fs::set_permissions(&zed, fs::Permissions::from_mode(0o700)).unwrap();
     assert!(
         matches!(&err, RenameError::Failed { undo_errors, .. } if undo_errors.is_empty()),
@@ -1210,7 +1373,7 @@ mod memory {
         let home = Home::populated().await;
         let s = seed_memories(&home).await;
 
-        let report = home.rename("libera", "oftc").await.unwrap();
+        let report = home.rename(Kind::Channel, "libera", "oftc").await.unwrap();
         // Agents in name order; the count is the memories whose group owner changed.
         assert_eq!(
             report.memory_dbs,
@@ -1300,7 +1463,7 @@ mod memory {
         fs::create_dir_all(trashed.parent().unwrap()).unwrap();
         fs::rename(home.path("agents/jeeves"), &trashed).unwrap();
 
-        let report = home.rename("libera", "oftc").await.unwrap();
+        let report = home.rename(Kind::Channel, "libera", "oftc").await.unwrap();
         assert_eq!(report.memory_dbs, [(db(&home, "bunter"), 1)]);
         // The trashed copy keeps the old name, so restoring the agent restores what it had.
         let trashed_db = trashed.join("memory.db");
@@ -1325,7 +1488,7 @@ mod memory {
     #[tokio::test]
     async fn agents_without_a_memory_database_are_skipped_and_none_is_created() {
         let home = Home::populated().await;
-        let report = home.rename("libera", "oftc").await.unwrap();
+        let report = home.rename(Kind::Channel, "libera", "oftc").await.unwrap();
         assert!(report.memory_dbs.is_empty(), "{:?}", report.memory_dbs);
         for agent in ["jeeves", "bunter"] {
             assert!(!db(&home, agent).exists(), "{agent}");
@@ -1348,7 +1511,7 @@ mod memory {
         assert_eq!(done.rename_instance("libera", "oftc").await.unwrap(), 1);
         drop(done);
 
-        let report = home.rename("libera", "oftc").await.unwrap();
+        let report = home.rename(Kind::Channel, "libera", "oftc").await.unwrap();
         // Only what was left is counted: bunter's database has nothing under `libera` any more.
         assert_eq!(report.memory_dbs, [(db(&home, "jeeves"), 2)]);
         assert!(
@@ -1377,7 +1540,10 @@ mod memory {
         // `zed` sorts after the other agents, so theirs are renamed first.
         home.write("agents/zed/memory.db", &"not a database. ".repeat(40));
 
-        let err = home.rename("libera", "oftc").await.unwrap_err();
+        let err = home
+            .rename(Kind::Channel, "libera", "oftc")
+            .await
+            .unwrap_err();
         assert!(
             matches!(&err, RenameError::Failed { step, undo_errors, .. }
                 if step.contains("zed") && undo_errors.is_empty()),
@@ -1446,7 +1612,9 @@ async fn a_rename_leaves_the_files_other_kinds_keep_under_the_same_name() {
     home.write("cache/toolsets/libera.json", "{}");
     home.write("run/pids/toolset/libera.pid", "9\n");
 
-    home.rename("libera", "libera-chat").await.unwrap();
+    home.rename(Kind::Channel, "libera", "libera-chat")
+        .await
+        .unwrap();
 
     assert!(home.path("data/channel/libera-chat/state.json").is_file());
     assert!(
@@ -1494,7 +1662,10 @@ async fn a_provider_rename_leaves_the_groups_and_memories_of_a_channel_of_that_n
     let memory = memories.add(&viewer, new, 2200, now).await.unwrap();
     drop(memories);
 
-    let report = home.rename("ollama", "local").await.unwrap();
+    let report = home
+        .rename(Kind::Provider, "ollama", "local")
+        .await
+        .unwrap();
 
     assert_eq!(report.kind, Kind::Provider);
     assert!(report.memory_dbs.is_empty(), "{:?}", report.memory_dbs);
@@ -1526,9 +1697,15 @@ async fn a_group_directory_of_the_new_name_does_not_stop_a_provider_or_toolset_r
     let home = Home::populated().await;
     home.write("agents/x/groups/local/c/MEMORY.md", "a channel's");
 
-    let report = home.rename("ollama", "local").await.unwrap();
+    let report = home
+        .rename(Kind::Provider, "ollama", "local")
+        .await
+        .unwrap();
     assert_eq!(report.kind, Kind::Provider);
-    let report = home.rename("github", "local-tools").await.unwrap();
+    let report = home
+        .rename(Kind::Toolset, "github", "local-tools")
+        .await
+        .unwrap();
     assert_eq!(report.kind, Kind::Toolset);
 
     assert!(home.path("agents/x/groups/local/c/MEMORY.md").is_file());

@@ -1,20 +1,38 @@
-//! `giles instance rename`: renames an instance in the database, the data directories, and the
-//! configuration, with the core stopped (PLAN section 7.2).
+//! The renames done with Giles stopped: `giles channel rename`, `giles provider rename`, and
+//! `giles toolset rename` (when no daemon runs). One driver serves them all; the command gives the
+//! kind. It renames an instance in the database, the data directories, and the configuration
+//! (PLAN section 7.2).
 
 use std::fmt::Write as _;
 use std::path::Path;
 
 use anyhow::{Context, bail};
-use giles_core::admin::InstanceLock;
+use giles_core::admin::{InstanceLock, LockError};
+use giles_core::config::Kind;
 use giles_core::paths::DataRoot;
 use giles_core::rename::{RenameReport, rename_instance};
 use giles_store::{OpenOptions, Store};
 
 use crate::cli::RenameArgs;
 
-/// Takes the data root's lock, which proves no daemon runs on it and keeps one from starting,
-/// renames, and prints what changed.
-pub fn run(home: Option<&Path>, args: &RenameArgs) -> anyhow::Result<()> {
+/// A data root no daemon runs on. Holding it holds the data root's lock, which proves that and
+/// keeps a daemon from starting meanwhile.
+pub struct Stopped {
+    root: DataRoot,
+    lock: InstanceLock,
+}
+
+/// Whether a daemon runs on the data root.
+pub enum Core {
+    /// None does, and the caller holds the lock.
+    Stopped(Stopped),
+    /// One does: the lock is held, as the error says.
+    Running(LockError),
+}
+
+/// Finds out whether a daemon runs on the data root (`--home`, `GILES_HOME`, or `~/.giles`) by
+/// taking its lock. A mistyped data root, with no `giles.toml`, is an error that creates nothing.
+pub fn lock(home: Option<&Path>) -> anyhow::Result<Core> {
     let root = DataRoot::from_env(home)?;
     if !root.config_file().is_file() {
         bail!(
@@ -23,24 +41,46 @@ pub fn run(home: Option<&Path>, args: &RenameArgs) -> anyhow::Result<()> {
         );
     }
     root.create_layout()?;
-    let lock = InstanceLock::acquire(&root)?;
-    let report = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("cannot start the async runtime")?
-        .block_on(async {
-            // The configuration isn't loaded here (it may be half renamed), so leave the journal
-            // mode the daemon chose as it is.
-            let store =
-                Store::open_with(root.database_file(), OpenOptions::new().keep_journal_mode())
+    match InstanceLock::acquire(&root) {
+        Ok(lock) => Ok(Core::Stopped(Stopped { root, lock })),
+        Err(err @ LockError::Held { .. }) => Ok(Core::Running(err)),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// Renames a `kind` instance with Giles stopped: refuses, with the lock's error, if a daemon
+/// runs.
+pub fn run(home: Option<&Path>, kind: Kind, args: &RenameArgs) -> anyhow::Result<()> {
+    match lock(home)? {
+        Core::Stopped(stopped) => stopped.rename(kind, args),
+        Core::Running(err) => Err(err.into()),
+    }
+}
+
+impl Stopped {
+    /// Renames the `kind` instance and prints what changed.
+    pub fn rename(&self, kind: Kind, args: &RenameArgs) -> anyhow::Result<()> {
+        let root = &self.root;
+        let report = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("cannot start the async runtime")?
+            .block_on(async {
+                // The configuration isn't loaded here (it may be half renamed), so leave the
+                // journal mode the daemon chose as it is.
+                let store =
+                    Store::open_with(root.database_file(), OpenOptions::new().keep_journal_mode())
+                        .await
+                        .with_context(|| {
+                            format!("cannot open {}", root.database_file().display())
+                        })?;
+                rename_instance(root, &store, &self.lock, kind, &args.old, &args.new)
                     .await
-                    .with_context(|| format!("cannot open {}", root.database_file().display()))?;
-            rename_instance(&root, &store, &lock, &args.old, &args.new)
-                .await
-                .map_err(anyhow::Error::new)
-        })?;
-    print!("{}", format_report(&root, &args.old, &args.new, &report));
-    Ok(())
+                    .map_err(anyhow::Error::new)
+            })?;
+        print!("{}", format_report(root, &args.old, &args.new, &report));
+        Ok(())
+    }
 }
 
 /// What was renamed, one line per kind of change, with paths relative to the data root.
@@ -53,12 +93,15 @@ fn format_report(root: &DataRoot, old: &str, new: &str, report: &RenameReport) -
     };
     let rows = &report.rows;
     let mut text = format!("Renamed {} instance {old:?} to {new:?}.\n", report.kind);
-    let _ = writeln!(
-        text,
-        "  database: {} sessions, {} inbox rows, {} outbox rows, {} usage rows, {} messages, {} \
-         routes",
-        rows.sessions, rows.inbox, rows.outbox, rows.usage, rows.messages, rows.routes
-    );
+    // A toolset has no rows.
+    if report.kind != Kind::Toolset {
+        let _ = writeln!(
+            text,
+            "  database: {} sessions, {} inbox rows, {} outbox rows, {} usage rows, {} messages, \
+             {} routes",
+            rows.sessions, rows.inbox, rows.outbox, rows.usage, rows.messages, rows.routes
+        );
+    }
     if report.stored_toolset {
         let _ = writeln!(
             text,
@@ -178,6 +221,7 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("giles.toml"), "{text}");
+        assert!(!text.contains("sessions"), "a toolset has no rows: {text}");
         assert!(
             text.contains("agent.toml: 2 reference(s) updated"),
             "{text}"
@@ -192,13 +236,16 @@ mod tests {
             old: "a".into(),
             new: "b".into(),
         };
-        let err = run(Some(&home), &args).unwrap_err();
+        let err = run(Some(&home), Kind::Channel, &args).unwrap_err();
+        assert!(err.to_string().contains("no giles.toml"), "{err}");
+        assert!(!home.exists(), "a mistyped --home must not be created");
+        let err = lock(Some(&home)).map(|_| ()).unwrap_err();
         assert!(err.to_string().contains("no giles.toml"), "{err}");
         assert!(!home.exists(), "a mistyped --home must not be created");
     }
 
-    #[test]
-    fn a_running_daemon_blocks_the_rename() {
+    /// A data root with a `giles.toml`, a `run/` directory, and the lock of a running daemon.
+    fn running_home() -> (tempfile::TempDir, InstanceLock) {
         let dir = tempfile::tempdir().unwrap();
         let root = DataRoot::new(dir.path(), Path::new("/tmp")).unwrap();
         fs::write(
@@ -207,12 +254,31 @@ mod tests {
         )
         .unwrap();
         fs::create_dir_all(root.run_dir()).unwrap();
-        let _daemon = InstanceLock::acquire(&root).unwrap();
+        let daemon = InstanceLock::acquire(&root).unwrap();
+        (dir, daemon)
+    }
+
+    #[test]
+    fn a_running_daemon_blocks_the_rename() {
+        let (dir, _daemon) = running_home();
         let args = RenameArgs {
             old: "a".into(),
             new: "b".into(),
         };
-        let err = run(Some(dir.path()), &args).unwrap_err();
-        assert!(err.to_string().contains("already running"), "{err}");
+        for kind in Kind::ALL {
+            let err = run(Some(dir.path()), kind, &args).unwrap_err();
+            assert!(err.to_string().contains("already running"), "{err}");
+        }
+    }
+
+    #[test]
+    fn the_lock_tells_a_running_daemon_from_a_stopped_one() {
+        let (dir, daemon) = running_home();
+        assert!(matches!(
+            lock(Some(dir.path())).unwrap(),
+            Core::Running(LockError::Held { .. })
+        ));
+        drop(daemon);
+        assert!(matches!(lock(Some(dir.path())).unwrap(), Core::Stopped(_)));
     }
 }

@@ -1,5 +1,5 @@
 //! Instance names in the database (PLAN 7.2): which names the rows use, and moving them all to a
-//! new name for `giles instance rename`.
+//! new name for `giles <kind> rename`.
 //!
 //! The kinds of instance have separate namespaces, so every operation here takes the [`Kind`] and
 //! touches only the places that kind is named in. A provider and a channel that share a name

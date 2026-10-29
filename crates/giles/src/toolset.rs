@@ -1,6 +1,7 @@
 //! `giles toolset`: list, show, set, remove, rename, and restart the MCP toolsets of the running
 //! daemon, over the admin service's `ListToolsets`, `GetToolset`, `SetToolset`, `RemoveToolset`,
-//! `RenameToolset`, and `RestartPlugin` (PLAN section 7.10).
+//! `RenameToolset`, and `RestartPlugin` (PLAN section 7.10). With Giles stopped, `rename` works on
+//! the data root instead, like `giles channel rename` ([`crate::rename`]).
 //!
 //! `show` prints a spec as TOML with an `# updated_at = <time>` comment, and `set` sends that time
 //! back as `expected_updated_at`, so `show`, an edit, and `set` can't overwrite a change made
@@ -11,6 +12,8 @@ use std::io::Read as _;
 use std::path::Path;
 
 use anyhow::{Context, anyhow, bail};
+use giles_core::admin::LockError;
+use giles_core::config::Kind;
 use giles_plugin_sdk::convert::{timestamp_from_proto, timestamp_to_proto};
 use giles_proto::admin::v1 as pb;
 use jiff::Timestamp;
@@ -18,7 +21,8 @@ use jiff::tz::TimeZone;
 use tonic::{Code, Status};
 
 use crate::admin_client::{self, proto_time};
-use crate::cli::{ToolsetArgs, ToolsetCommand};
+use crate::cli::{RenameArgs, ToolsetArgs, ToolsetCommand};
+use crate::rename::{self, Core};
 
 /// The comment key that carries the time of the last change.
 const UPDATED_AT: &str = "updated_at";
@@ -30,7 +34,7 @@ pub fn run(home: Option<&Path>, args: &ToolsetArgs) -> anyhow::Result<()> {
         ToolsetCommand::Show(args) => show(home, &args.name),
         ToolsetCommand::Set(args) => set(home, &args.name, &args.file),
         ToolsetCommand::Remove(args) => remove(home, &args.name),
-        ToolsetCommand::Rename(args) => rename(home, &args.old, &args.new),
+        ToolsetCommand::Rename(args) => rename(home, args),
         ToolsetCommand::Restart(args) => restart(home, &args.name),
     }
 }
@@ -99,14 +103,30 @@ fn remove(home: Option<&Path>, name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Renames a stored toolset and says which agents' globs were rewritten. A toolset that couldn't
-/// start under its new name is reported on standard error: the rename is done.
-fn rename(home: Option<&Path>, old: &str, new: &str) -> anyhow::Result<()> {
+/// Renames a toolset. With Giles stopped, that is the offline rename of any toolset, `giles.toml`'s
+/// or stored, as `giles channel rename` does for a channel. With Giles running, the daemon renames
+/// a stored toolset and says which agents' globs were rewritten (a toolset that couldn't start
+/// under its new name is reported on standard error: the rename is done), and refuses a
+/// `giles.toml` toolset. Whether it runs is whether it holds the data root's lock.
+fn rename(home: Option<&Path>, args: &RenameArgs) -> anyhow::Result<()> {
+    match rename::lock(home)? {
+        Core::Stopped(stopped) => stopped.rename(Kind::Toolset, args),
+        Core::Running(held) => rename_running(home, &held, &args.old, &args.new),
+    }
+}
+
+/// The rename through the running daemon's admin service.
+fn rename_running(
+    home: Option<&Path>,
+    held: &LockError,
+    old: &str,
+    new: &str,
+) -> anyhow::Result<()> {
     let request = pb::RenameToolsetRequest {
         old: old.to_owned(),
         new: new.to_owned(),
     };
-    let renamed = admin_client::call(home, async |mut client| {
+    let renamed = admin_client::call_locked(home, held, async |mut client| {
         Ok(client.rename_toolset(request).await?.into_inner())
     })?;
     print!("{}", format_renamed(old, new, &renamed));
@@ -359,6 +379,31 @@ mod tests {
         damaged.failure = Some("the stored spec can't be read: url: invalid type".into());
         let err = format_show(&damaged).unwrap_err().to_string();
         assert!(err.contains("can't be read: url"), "{err}");
+    }
+
+    #[test]
+    fn a_held_lock_with_no_admin_socket_is_not_reported_as_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = giles_core::paths::DataRoot::new(dir.path(), Path::new("/tmp")).unwrap();
+        std::fs::write(
+            root.config_file(),
+            "[owner]\nidentities = [\"web:owner\"]\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.run_dir()).unwrap();
+        // A daemon that took the lock and hasn't bound the admin socket yet.
+        let _daemon = giles_core::admin::InstanceLock::acquire(&root).unwrap();
+        assert!(!root.admin_socket().exists());
+
+        let args = RenameArgs {
+            old: "files".into(),
+            new: "notes".into(),
+        };
+        let err = rename(Some(dir.path()), &args).unwrap_err().to_string();
+        assert!(err.contains("is locked (pid"), "{err}");
+        assert!(err.contains("nothing answers"), "{err}");
+        assert!(err.contains("starting or stopping"), "{err}");
+        assert!(!err.contains("giles serve"), "{err}");
     }
 
     #[test]

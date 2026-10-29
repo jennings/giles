@@ -253,9 +253,9 @@ impl ToolsetManager {
     }
 
     /// The rewrite of every agent's `agent.toml` that names the toolset `old`. Reads the files
-    /// as the agent edit form does, with the rules `giles instance rename` has for its globs, and
-    /// refuses, naming every glob, if some glob can't be rewritten safely or some file can't be
-    /// edited.
+    /// as the agent edit form does, with the rules `giles toolset rename` has for its globs when
+    /// Giles is stopped, and refuses, naming every glob, if some glob can't be rewritten safely or
+    /// some file can't be edited.
     async fn plan_agents(
         &self,
         config: &Config,

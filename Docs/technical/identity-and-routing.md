@@ -81,7 +81,7 @@ Memory ([Skills and Memory](skills-and-memory.md#memory)) uses identity in three
 - **A group's private scope is keyed by channel instance and conversation**
   (`MemoryOwner::Group { instance, conversation }`), taken from the session, not from whoever
   speaks: every participant shares it, and none of their own memories is in it. The conversation id
-  alone isn't enough, since the same id can exist on two instances; `giles instance rename` rewrites
+  alone isn't enough, since the same id can exist on two instances; `giles channel rename` rewrites
   the instance part of these keys ([Instance rename](instance-rename.md)). v1 drops group messages
   at `classify` (above), so no group session exists yet.
 

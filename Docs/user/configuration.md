@@ -131,8 +131,11 @@ Providers, channels, and toolsets are configured as instances, one table each:
 - `[toolset.<name>]`
 
 **Choose instance names with care.** Sessions, history, tool names (`<instance>__<tool>`), and the
-instance's data directory are keyed by the name. To change it, use
-[`giles instance rename`](cli.md#giles-instance-rename-old-new).
+instance's data directory are keyed by the name. To change it, use the rename command for its kind:
+
+- [`giles channel rename`](cli.md#giles-channel-rename-old-new)
+- [`giles provider rename`](cli.md#giles-provider-rename-old-new)
+- [`giles toolset rename`](cli.md#rename-a-toolset)
 
 Names are unique across all three kinds, ignoring case. `Libera` and `libera` clash.
 

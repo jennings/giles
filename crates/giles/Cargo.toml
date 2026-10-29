@@ -25,7 +25,7 @@ giles-core.workspace = true
 # Timestamp conversions for the admin CLI commands.
 giles-plugin-sdk = { workspace = true, default-features = false }
 giles-proto.workspace = true
-# The database, for `giles instance rename`.
+# The database, for `giles <kind> rename`.
 giles-store.workspace = true
 giles-types.workspace = true
 jiff = { workspace = true, features = ["tz-system"] }
