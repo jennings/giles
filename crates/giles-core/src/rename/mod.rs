@@ -694,7 +694,7 @@ impl Plan {
                     .join(format!("{new}.json")),
             ),
         ];
-        let pids = (root.pid_file(old).ok(), root.pid_file(new).ok());
+        let pids = (root.pid_file(kind, old).ok(), root.pid_file(kind, new).ok());
         let soft = soft.into_iter().chain(match pids {
             (Some(from), Some(to)) => Some((from, to)),
             _ => None,

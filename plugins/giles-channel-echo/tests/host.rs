@@ -9,6 +9,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::PathBuf;
 
+use giles_core::config::Kind;
 use giles_core::plugin_host::{LaunchError, STOP_GRACE};
 use giles_proto::plugin::v1::PluginKind;
 use tonic_health::pb::HealthCheckRequest;
@@ -44,7 +45,7 @@ async fn launches_describes_and_configures_with_resolved_secrets() {
     assert_eq!(plugin.binary, binary);
 
     // The per-instance data directory, private, with its TMPDIR.
-    let data = home.root.plugin_data_dir("echo").unwrap();
+    let data = home.root.plugin_data_dir(Kind::Channel, "echo").unwrap();
     assert_eq!(
         fs::metadata(&data).unwrap().permissions().mode() & 0o777,
         0o700
@@ -57,7 +58,7 @@ async fn launches_describes_and_configures_with_resolved_secrets() {
 
     // The pid file records the process and its binary.
     let pid = plugin.process.pid();
-    let pid_file = home.root.pid_file("echo").unwrap();
+    let pid_file = home.root.pid_file(Kind::Channel, "echo").unwrap();
     assert_eq!(
         fs::read_to_string(&pid_file).unwrap(),
         format!("{pid}\n{}\n", binary.display())
@@ -105,7 +106,7 @@ async fn a_rejected_config_is_scrubbed_and_not_retryable() {
     assert!(message.contains("<redacted>"), "{message}");
     assert!(!error.to_string().contains("not-echo-secret-ns"), "{error}");
     assert!(!error.is_retryable());
-    assert!(!home.root.pid_file("echo").unwrap().exists());
+    assert!(!home.root.pid_file(Kind::Channel, "echo").unwrap().exists());
 }
 
 #[tokio::test]

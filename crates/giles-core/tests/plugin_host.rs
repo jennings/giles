@@ -11,7 +11,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use giles_core::config::{Builtins, ChannelInstance, Config, LoadOptions};
+use giles_core::config::{Builtins, ChannelInstance, Config, Kind, LoadOptions};
 use giles_core::paths::DataRoot;
 use giles_core::plugin_host::{LaunchError, Launcher};
 use giles_core::sandbox::Spec;
@@ -174,7 +174,7 @@ async fn no_handshake_line_times_out_and_kills_the_plugin() {
     assert!(error.to_string().ends_with(": waiting"), "{error}");
     let pid: u32 = fs::read_to_string(started).unwrap().trim().parse().unwrap();
     wait_gone(pid).await;
-    assert!(!home.root.pid_file("mute").unwrap().exists());
+    assert!(!home.root.pid_file(Kind::Channel, "mute").unwrap().exists());
 }
 
 #[tokio::test]
@@ -259,7 +259,7 @@ async fn an_early_exit_logs_scrubbed_stderr_under_the_instance_span() {
         "{line}"
     );
     // The scrubbed environment of PLAN section 12.4, nothing from the core's.
-    let data = home.root.plugin_data_dir("leaky").unwrap();
+    let data = home.root.plugin_data_dir(Kind::Channel, "leaky").unwrap();
     let data = data.display();
     let mut expected = vec![
         format!("GILES_PLUGIN_DATA={data}"),
@@ -325,7 +325,7 @@ async fn a_failing_trampoline_is_a_non_retryable_sandbox_error() {
     );
 
     let binary = plugin.canonicalize().unwrap();
-    let spec_file = home.root.sandbox_spec_file("boxed").unwrap();
+    let spec_file = home.root.sandbox_spec_file(Kind::Channel, "boxed").unwrap();
     assert_eq!(
         fs::read_to_string(format!("{}.args", out.display())).unwrap(),
         format!("sandbox-exec|--|{}|socket|5\n", binary.display())
@@ -338,7 +338,10 @@ async fn a_failing_trampoline_is_a_non_retryable_sandbox_error() {
     let spec =
         Spec::parse(&fs::read_to_string(format!("{}.spec", out.display())).unwrap()).unwrap();
     assert_eq!(spec, Spec::load(&spec_file).unwrap());
-    assert_eq!(spec.data_dir, home.root.plugin_data_dir("boxed").unwrap());
+    assert_eq!(
+        spec.data_dir,
+        home.root.plugin_data_dir(Kind::Channel, "boxed").unwrap()
+    );
     assert_eq!(spec.read, [binary, PathBuf::from("/opt")]);
     assert_eq!(spec.network, giles_core::sandbox::Network::All);
     assert!(!spec.unsandboxed);
@@ -359,8 +362,14 @@ async fn sandboxed_instances_wait_for_a_working_sandbox() {
     );
     assert!(!error.is_retryable());
     // Nothing was started or written.
-    assert!(!home.root.pid_file("boxed").unwrap().exists());
-    assert!(!home.root.sandbox_spec_file("boxed").unwrap().exists());
+    assert!(!home.root.pid_file(Kind::Channel, "boxed").unwrap().exists());
+    assert!(
+        !home
+            .root
+            .sandbox_spec_file(Kind::Channel, "boxed")
+            .unwrap()
+            .exists()
+    );
 }
 
 #[tokio::test]
@@ -401,7 +410,7 @@ async fn a_failed_launch_kills_the_plugins_whole_process_group() {
     );
     let child: u32 = fs::read_to_string(child).unwrap().trim().parse().unwrap();
     wait_gone(child).await;
-    assert!(!home.root.pid_file("forky").unwrap().exists());
+    assert!(!home.root.pid_file(Kind::Channel, "forky").unwrap().exists());
 }
 
 #[tokio::test]
@@ -412,7 +421,7 @@ async fn orphans_running_the_plugin_binary_are_killed_and_others_left_alone() {
     let binary = home.root.plugins_dir().join("giles-channel-sleepy");
     fs::copy("/bin/sleep", &binary).unwrap();
     let binary = binary.canonicalize().unwrap();
-    let pid_file = home.root.pid_file("sleepy").unwrap();
+    let pid_file = home.root.pid_file(Kind::Channel, "sleepy").unwrap();
     let record = |pid: u32| fs::write(&pid_file, format!("{pid}\n{}\n", binary.display())).unwrap();
 
     // An unrelated process (a different executable) under a recorded pid survives.

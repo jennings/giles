@@ -29,7 +29,7 @@ use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use futures::StreamExt as _;
-use giles_core::config::{Builtins, Config, LoadOptions};
+use giles_core::config::{Builtins, Config, Kind, LoadOptions};
 use giles_core::paths::DataRoot;
 use giles_core::sandbox::{self, SandboxError, Spec};
 use giles_core::toolsets::ToolsetLauncher;
@@ -308,7 +308,11 @@ async fn media_reaches_the_server(
     let (path, contents) = text.split_once('\n').unwrap();
     assert_eq!(contents, "attached notes");
     let path = Path::new(path);
-    let tmp = home.root.plugin_data_dir(instance).unwrap().join("tmp");
+    let tmp = home
+        .root
+        .plugin_data_dir(Kind::Toolset, instance)
+        .unwrap()
+        .join("tmp");
     assert_eq!(path.parent(), Some(tmp.as_path()));
     let name = path.file_name().unwrap().to_str().unwrap();
     assert!(
@@ -371,13 +375,16 @@ async fn sandboxed_stdio_server(log: &Log) {
 
     // The spec: private, the instance's data directory, the server's directories granted, and
     // the credential's name but not its value.
-    let spec_file = home.root.sandbox_spec_file("probe").unwrap();
+    let spec_file = home.root.sandbox_spec_file(Kind::Toolset, "probe").unwrap();
     let mode = fs::metadata(&spec_file).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600);
     let json = fs::read_to_string(&spec_file).unwrap();
     assert!(!json.contains(TOKEN), "{json}");
     let spec = Spec::parse(&json).unwrap();
-    assert_eq!(spec.data_dir, home.root.plugin_data_dir("probe").unwrap());
+    assert_eq!(
+        spec.data_dir,
+        home.root.plugin_data_dir(Kind::Toolset, "probe").unwrap()
+    );
     assert!(!spec.unsandboxed);
     assert!(spec.inherit_env.contains(TOKEN_ENV));
     // Found as `<tmp>/tools/bin/<name>`: the install prefix `<tmp>/tools` is granted, and the
@@ -426,11 +433,21 @@ async fn unsandboxed_stdio_server(log: &Log) {
     assert_eq!(log.report("loose", "network").await, "connected");
     log.wait_for("running the toolset unsandboxed (`unsandboxed = true`) toolset=loose")
         .await;
-    assert!(!home.root.sandbox_spec_file("loose").unwrap().exists());
+    assert!(
+        !home
+            .root
+            .sandbox_spec_file(Kind::Toolset, "loose")
+            .unwrap()
+            .exists()
+    );
     drop(toolset);
 
     // A copy a crash left behind is removed at the next start; the server's own files stay.
-    let tmp = home.root.plugin_data_dir("loose").unwrap().join("tmp");
+    let tmp = home
+        .root
+        .plugin_data_dir(Kind::Toolset, "loose")
+        .unwrap()
+        .join("tmp");
     fs::write(tmp.join("giles-media-0123-left.txt"), "left").unwrap();
     fs::write(tmp.join("server.txt"), "mine").unwrap();
     let toolset = launcher.connect(&config.toolsets["loose"]).await.unwrap();

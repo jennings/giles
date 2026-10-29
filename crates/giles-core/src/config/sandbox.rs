@@ -16,7 +16,7 @@ use serde::de::{self, Deserializer, SeqAccess, Visitor};
 use serde::ser::Serializer;
 
 use super::error::{ConfigError, KeyPath};
-use super::names::InstanceName;
+use super::names::{InstanceName, Kind};
 use crate::paths::DataRoot;
 
 /// What a sandboxed plugin may reach beyond the defaults (PLAN section 12.4).
@@ -238,7 +238,7 @@ fn grant_path(text: &str) -> Result<PathBuf, String> {
     Ok(path.components().collect())
 }
 
-/// Checks a path the core is about to grant `instance` (e.g. a stdio server's install prefix,
+/// Checks a path the core is about to grant the `kind` instance `instance` (e.g. a stdio server's install prefix,
 /// PLAN section 7.10) by the same rule as configured grants: it must not overlap `root`'s data
 /// root or socket directory, except inside the instance's own data directory. Symlinks are
 /// resolved for paths that exist.
@@ -246,9 +246,14 @@ fn grant_path(text: &str) -> Result<PathBuf, String> {
 /// # Errors
 ///
 /// The reason, naming the directory it overlaps.
-pub fn check_grant(root: &DataRoot, instance: &InstanceName, grant: &Path) -> Result<(), String> {
+pub fn check_grant(
+    root: &DataRoot,
+    kind: Kind,
+    instance: &InstanceName,
+    grant: &Path,
+) -> Result<(), String> {
     let own = root
-        .plugin_data_dir(instance.as_str())
+        .plugin_data_dir(kind, instance.as_str())
         .map_err(|e| e.to_string())?;
     Protected::new(root.root(), root.socket_dir(), &own).check(grant)
 }

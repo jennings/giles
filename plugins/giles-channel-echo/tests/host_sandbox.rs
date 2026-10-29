@@ -15,6 +15,7 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::process::ExitCode;
 
+use giles_core::config::Kind;
 use giles_core::plugin_host::{LaunchError, STOP_GRACE};
 use giles_core::sandbox::{self, SandboxError, Spec};
 use tonic_health::pb::HealthCheckRequest;
@@ -69,9 +70,13 @@ async fn sandboxed_echo_launch() {
             .into_inner()
             .status();
         assert_eq!(status, ServingStatus::Serving);
-        let spec = Spec::load(&home.root.sandbox_spec_file("echo").unwrap()).unwrap();
+        let spec =
+            Spec::load(&home.root.sandbox_spec_file(Kind::Channel, "echo").unwrap()).unwrap();
         assert!(!spec.unsandboxed);
-        assert_eq!(spec.data_dir, home.root.plugin_data_dir("echo").unwrap());
+        assert_eq!(
+            spec.data_dir,
+            home.root.plugin_data_dir(Kind::Channel, "echo").unwrap()
+        );
         let status = tokio::time::timeout(WAIT, plugin.stop(STOP_GRACE))
             .await
             .unwrap()
@@ -89,6 +94,6 @@ async fn sandboxed_echo_launch() {
             message.contains("Error: cannot sandbox the command on this host, so it was not run"),
             "{message}"
         );
-        assert!(!home.root.pid_file("echo").unwrap().exists());
+        assert!(!home.root.pid_file(Kind::Channel, "echo").unwrap().exists());
     }
 }

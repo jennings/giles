@@ -1977,9 +1977,17 @@ fn grants_through_a_symlink_into_the_data_root_are_rejected() {
 fn check_grant_applies_the_same_rule() {
     let home = Home::new(MINIMAL);
     let name = InstanceName::new("files").unwrap();
-    assert!(check_grant(&home.root, &name, Path::new("/opt/homebrew")).is_ok());
-    assert!(check_grant(&home.root, &name, &home.path("data/plugins/files/x")).is_ok());
-    let err = check_grant(&home.root, &name, &home.path("plugins")).unwrap_err();
+    assert!(check_grant(&home.root, Kind::Toolset, &name, Path::new("/opt/homebrew")).is_ok());
+    assert!(
+        check_grant(
+            &home.root,
+            Kind::Toolset,
+            &name,
+            &home.path("data/plugins/files/x")
+        )
+        .is_ok()
+    );
+    let err = check_grant(&home.root, Kind::Toolset, &name, &home.path("plugins")).unwrap_err();
     assert!(err.contains("overlaps the data root"), "{err}");
 }
 
@@ -2119,7 +2127,11 @@ fn toolset_skill_directories_must_not_be_writable_by_plugins() {
     }
 
     // Skills inside the plugins' data directories.
-    let data = home.root.plugin_data_dir("irc").unwrap().join("skills");
+    let data = home
+        .root
+        .plugin_data_dir(Kind::Channel, "irc")
+        .unwrap()
+        .join("skills");
     write(&format!(
         "[toolset.docs]\ncommand = \"/x\"\nskills = [{data:?}]\n"
     ));
