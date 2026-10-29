@@ -150,7 +150,7 @@ impl ToolsetHost {
         lock(&self.controls).insert(instance.name.clone(), managed.control);
         let (started_tx, started_rx) = oneshot::channel();
         let (ended_tx, ended) = oneshot::channel();
-        let span = tracing::info_span!("toolset", instance = %instance.name);
+        let span = tracing::info_span!("toolset", name = %instance.name);
         let supervisor = managed.supervisor.run(started_tx).instrument(span);
         {
             let mut tasks = lock(&self.tasks);

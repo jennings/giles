@@ -52,11 +52,12 @@ builds its own `Command` instead, running the server through the sandbox trampol
 (`giles sandbox-exec <spec> -- <command>`), and passes it to the same constructor with the
 instance's `env` values ([Toolsets](toolsets.md)).
 
-- **Stderr** is read line by line, scrubbed, and logged at `info` with target
-  `giles_core::mcp::stderr` inside the `mcp{instance=...}` span, so
-  `GILES_LOG=giles_core::mcp::stderr=warn` silences chatty servers. Lines are cut at 4 KiB (marked
-  `…`); a cut line that ends in the first bytes of a secret has that end redacted too. Invalid UTF-8
-  is replaced.
+- **Stderr** is read line by line, scrubbed, and logged with target `giles_core::mcp::stderr` inside
+  the `mcp{toolset=<name>}` span, at the level the line carries if it starts with a timestamp and a
+  level, else `info` (the same rule as for plugins, see [Plugin host](plugin-host.md)).
+  `GILES_LOG=info,giles_core::mcp::stderr=warn` silences chatty servers. Lines are cut at 4 KiB
+  (marked `…`); a cut line that ends in the first bytes of a secret has that end redacted too.
+  Invalid UTF-8 is replaced.
 - **The child** runs as the leader of its own process group and is owned by a supervisor task. If
   the server exits by itself the task logs and publishes the exit status (`closed()` returns it);
   when the `McpToolset` is dropped it kills the server right away, without waiting for it to notice

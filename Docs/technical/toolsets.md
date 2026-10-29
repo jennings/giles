@@ -119,7 +119,7 @@ Like a plugin launch ([Plugin host](plugin-host.md)), without the gRPC parts:
 2. Registers a `ManagedToolset` with `Registry::register_toolset`. It stays registered until the
    toolset is [replaced or removed](#changing-toolsets-while-giles-runs), so the dispatcher needs
    nothing beyond the registry.
-3. Spawns the instance's supervisor task (`toolsets/lifecycle.rs`, under a `toolset{instance}`
+3. Spawns the instance's supervisor task (`toolsets/lifecycle.rs`, under a `toolset{name=<name>}`
    span), which owns the connection and makes the first start.
 
 `started()` waits for every first start to succeed or fail; `serve` waits for it alongside the

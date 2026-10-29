@@ -15,7 +15,8 @@ use crate::process_group;
 use crate::stderr_lines;
 
 /// The `tracing` target of a stdio server's stderr lines, so an operator can filter them
-/// (`GILES_LOG=giles_core::mcp::stderr=warn`).
+/// (`GILES_LOG=info,giles_core::mcp::stderr=warn`). The level is the one the line itself carries if
+/// it is a log message, else `info`.
 pub const STDERR_TARGET: &str = "giles_core::mcp::stderr";
 
 /// A stdio MCP server run directly, unsandboxed.
@@ -177,7 +178,7 @@ fn kill_group(pid: u32) {
 async fn log_stderr(stderr: ChildStderr, secrets: Arc<[Secret]>) {
     let secrets: Vec<&Secret> = secrets.iter().collect();
     stderr_lines::forward(stderr, &secrets, |line| {
-        tracing::info!(target: STDERR_TARGET, "{line}");
+        stderr_lines::log_line!(STDERR_TARGET, &line);
     })
     .await;
 }

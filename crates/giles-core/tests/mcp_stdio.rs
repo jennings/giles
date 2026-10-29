@@ -238,14 +238,14 @@ async fn lists_calls_and_logs_stderr(log: &Log) {
     assert_eq!(names, TOOLS);
     let echo = call(&toolset, "echo", json!({"text": "over stdio"})).await;
     assert_eq!(result_text(echo).await, "over stdio");
-    // The fmt layer prints the span and target: `mcp{instance=child}: <target>: <line>`.
+    // The fmt layer prints the span and target: `mcp{toolset=child}: <target>: <line>`.
     log.wait_for(&format!(
-        "mcp{{instance=child}}: {STDERR_TARGET}: test server ready"
+        "mcp{{toolset=child}}: {STDERR_TARGET}: test server ready"
     ))
     .await;
     // The env secret the child echoed is scrubbed.
     log.wait_for(&format!(
-        "mcp{{instance=child}}: {STDERR_TARGET}: the secret is <redacted>"
+        "mcp{{toolset=child}}: {STDERR_TARGET}: the secret is <redacted>"
     ))
     .await;
     assert!(!log.contents().contains(SECRET), "{}", log.contents());
@@ -282,8 +282,10 @@ async fn a_crashed_server_is_unavailable(log: &Log) {
         toolset.list_tools().await,
         Err(Error::Unavailable { .. })
     ));
-    log.wait_for("mcp{instance=child-crash}: giles_core::mcp::stdio: MCP server exited status=exit status: 3")
-        .await;
+    log.wait_for(
+        "mcp{toolset=child-crash}: giles_core::mcp::stdio: MCP server exited status=exit status: 3",
+    )
+    .await;
     let status = tokio::time::timeout(WAIT, toolset.closed())
         .await
         .expect("closed() never resolved");
@@ -312,7 +314,7 @@ async fn wait_gone(pid: &str, what: &str) {
 
 /// The pid of the `sleep` child that the `with-sleeper` server of `instance` logged.
 async fn sleeper_pid(log: &Log, instance: &str) -> String {
-    let prefix = format!("mcp{{instance={instance}}}: {STDERR_TARGET}: sleeper pid ");
+    let prefix = format!("mcp{{toolset={instance}}}: {STDERR_TARGET}: sleeper pid ");
     log.wait_for(&prefix).await;
     let contents = log.contents();
     let start = contents.find(&prefix).unwrap() + prefix.len();

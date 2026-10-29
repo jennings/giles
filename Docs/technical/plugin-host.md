@@ -14,8 +14,8 @@ to it instead ([Remote plugins](#remote-plugins)), and supervises the connection
 
 ## Launch
 
-`Launcher::launch_channel(&ChannelInstance)` runs these steps under a
-`plugin{kind=channel instance=<name>}` span. Any failure after the spawn kills the plugin's whole
+`Launcher::launch_channel(&ChannelInstance)` runs these steps under a `launch` span, inside the
+supervisor's `channel{name=<name>}` span. Any failure after the spawn kills the plugin's whole
 process group before the error returns.
 
 1. Sandboxed instances are refused at once if the startup host check failed (`Launcher::new` takes
@@ -121,10 +121,13 @@ whole directory. The trampoline adds `GILES_PLUGIN_DATA`, `HOME`, `TMPDIR`, `PAT
 
 `PluginProcess` owns the child, its stdin, its pid file, and the stderr task:
 
-- stderr is read line by line (lines cut at 4 KiB), scrubbed, and logged at info level with target
-  `giles_core::plugin_host::stderr` under the instance's span, e.g.
-  `INFO plugin{kind=channel instance=irc}: giles_core::plugin_host::stderr: connected`. The last 20
-  lines are kept for error messages (`stderr_tail`).
+- stderr is read line by line (lines cut at 4 KiB), scrubbed, and logged with target
+  `giles_core::plugin_host::stderr` under the launch's span, so the target marks the line as the
+  plugin's text. A line that starts with a timestamp and a level
+  (`2026-10-29T16:04:17.522027Z  WARN giles_core::x: text`) is logged at that level with the
+  timestamp dropped, e.g.
+  `WARN channel{name=irc}:launch: giles_core::plugin_host::stderr: giles_core::x: text`. Any other
+  line is logged at `info`. The last 20 lines are kept for error messages (`stderr_tail`).
 - `wait()` and `exit_status()`: when the plugin has exited, `SIGKILL` to the rest of its process
   group, then reap it. Children can outlive the plugin, and this is the only moment the group can be
   signalled safely after the plugin is gone: the exit is observed without reaping (`waitid` with
@@ -191,7 +194,7 @@ pub struct LaunchedPlugin {
     pub connection: PluginConnection,
     pub process: PluginProcess,
     pub secrets: Arc<[Secret]>,       // the instance's secrets and the token, for `scrub`
-    pub span: tracing::Span,          // plugin{kind=channel instance=...}
+    pub span: tracing::Span,          // launch
 }
 ```
 
@@ -207,8 +210,8 @@ loopback unless `insecure = true`) and `auth` ([Configuration](config.md)). The 
 `ChannelPlugin::serve_remote` ([Plugin SDK](plugin-sdk.md#remote-plugins)), which every shipped
 plugin's `serve` subcommand calls ([Command line](plugin-sdk.md#command-line)).
 
-`Launcher::connect_remote(&ChannelInstance)` (module `remote`), under a
-`plugin{kind=channel instance=<name>}` span:
+`Launcher::connect_remote(&ChannelInstance)` (module `remote`), under a `launch` span inside the
+supervisor's `channel{name=<name>}` span:
 
 1. Credentials. `auth = { bearer = ... }`: `authorization: Bearer <token>` (marked sensitive) on
    every call. `auth = { oauth = ... }`: a token request first (`oauth::TokenClient`, below), whose
@@ -361,11 +364,10 @@ event refers to at startup, so a release lost to a crash or a restart leaks noth
 ## Supervision
 
 `plugin_host::supervisor` runs one task per plugin channel (PLAN section 7.5), under a
-`supervisor{kind=channel instance=<name>}` span (each launch adds its own
-`plugin{kind=channel instance=<name>}` span inside it). A launch is `Launcher::launch_channel`
-followed by `ChannelWiring::attach` (below), so every launch, the first and each relaunch, registers
-its new `RemoteChannel` and attaches it to the session manager, replacing the old one and its event
-pump. Remote plugins differ as described under
+`channel{name=<name>}` span (each launch adds its own `launch` span inside it). A launch is
+`Launcher::launch_channel` followed by `ChannelWiring::attach` (below), so every launch, the first
+and each relaunch, registers its new `RemoteChannel` and attaches it to the session manager,
+replacing the old one and its event pump. Remote plugins differ as described under
 [Supervision of remote plugins](#supervision-of-remote-plugins).
 
 While the plugin runs, the task waits for the first of:

@@ -191,8 +191,9 @@ A plugin that is killed loses nothing. Events not yet acknowledged are already o
 
 ## Logging
 
-Log to stderr, for example with `tracing-subscriber`. Giles records each line under the instance's
-name and discards anything written to stdout.
+Log to stderr, for example with `tracing-subscriber`. Giles logs each line under the instance's name
+and discards anything written to stdout. A line that starts with a timestamp and a level, as
+`tracing-subscriber` writes them, is logged at that level. Any other line is logged at `info`.
 
 ## Running a plugin remotely
 

@@ -1013,7 +1013,8 @@ fn plugins_that_fail_to_launch_are_supervised_and_giles_runs() {
     install_script_plugin(
         &home,
         "flaky",
-        "echo 'flaky: cannot reach the network' >&2; exit 1",
+        "echo '2026-10-29T16:04:17.522027Z  WARN plugin::net: no route' >&2; \
+         echo 'flaky: cannot reach the network' >&2; exit 1",
     );
     // Sandboxed, through the real trampoline, which refuses: on Linux no kernel has Landlock
     // ABI 1000 (or Landlock is missing), and on macOS (which ignores `min_abi`) the sandbox has
@@ -1022,23 +1023,30 @@ fn plugins_that_fail_to_launch_are_supervised_and_giles_runs() {
     let daemon = Daemon::start(env.command(&["serve", "--home", home.to_str().unwrap()]));
     let (status, log) = daemon.stop("TERM");
     assert!(status.success(), "{status}\n{log}");
-    // The plugin's stderr under the instance's span, the unsandboxed warning, and the failure.
+    // The plugin's stderr (a log line keeps its level), the unsandboxed warning, and the failure,
+    // under the instance's span.
     assert!(
         log.contains(
-            "plugin{kind=channel instance=flaky}: giles_core::plugin_host::stderr: flaky: cannot reach the network"
+            "WARN channel{name=flaky}:launch: giles_core::plugin_host::stderr: plugin::net: no route"
         ),
         "{log}"
     );
     assert!(
         log.contains(
-            "plugin{kind=channel instance=flaky}: giles_core::plugin_host: running the plugin unsandboxed"
+            "INFO channel{name=flaky}:launch: giles_core::plugin_host::stderr: flaky: cannot reach the network"
+        ),
+        "{log}"
+    );
+    assert!(
+        log.contains(
+            "channel{name=flaky}:launch: giles_core::plugin_host: running the plugin unsandboxed"
         ),
         "{log}"
     );
     // A plugin that exits is relaunched with backoff; a sandbox failure waits for a new binary.
     let flaky = log.lines().find(|line| {
         line.contains("cannot launch the plugin; retrying after a delay")
-            && line.contains("supervisor{kind=channel instance=flaky}")
+            && line.contains("channel{name=flaky}")
     });
     assert!(
         flaky.is_some_and(|line| line.contains("retry_in=1s")),
@@ -1046,7 +1054,7 @@ fn plugins_that_fail_to_launch_are_supervised_and_giles_runs() {
     );
     let boxed = log.lines().find(|line| {
         line.contains("cannot launch the plugin; not retrying until its binary changes")
-            && line.contains("supervisor{kind=channel instance=boxed}")
+            && line.contains("channel{name=boxed}")
     });
     assert!(boxed.is_some(), "{log}");
     assert!(!home.join("run/pids/channel/flaky.pid").exists());
@@ -1080,12 +1088,12 @@ fn toolsets_that_fail_to_start_leave_giles_running_and_retrying() {
     let (status, log) = daemon.stop("TERM");
     assert!(status.success(), "{status}\n{log}");
     assert!(
-        log.contains("mcp{instance=broken}: giles_core::mcp::stderr: broken: no configuration"),
+        log.contains("mcp{toolset=broken}: giles_core::mcp::stderr: broken: no configuration"),
         "{log}"
     );
     for instance in ["broken", "remote"] {
         let failed = log.lines().find(|line| {
-            line.contains(&format!("toolset{{instance={instance}}}"))
+            line.contains(&format!("toolset{{name={instance}}}"))
                 && line.contains("cannot start the toolset; retrying")
         });
         assert!(failed.is_some(), "{instance}\n{log}");
@@ -1152,7 +1160,7 @@ fn stored_toolsets_start_or_are_reported_failed_and_giles_runs() {
     // before the summary (nothing is pending), and is started and retried.
     let mut daemon = Daemon::start(env.command(&["serve", "--home", home_arg]));
     daemon.wait_for_line(&[
-        "toolset{instance=stored-ok}",
+        "toolset{name=stored-ok}",
         "cannot start the toolset; retrying",
     ]);
     let (ok, stdout, stderr) = run_cli(&env, &["status", "--home", home_arg]);
@@ -1228,10 +1236,7 @@ fn a_provider_a_channel_and_a_toolset_with_one_name_run_with_state_of_their_own(
     // Never prints a handshake line, so the channel stays launching and its pid file stays.
     install_script_plugin(&home, "aperture", "exec sleep 300");
     let mut daemon = Daemon::spawn(env.command(&["serve", "--home", home_arg]));
-    daemon.wait_for_line(&[
-        "plugin{kind=channel instance=aperture}",
-        "plugin process started",
-    ]);
+    daemon.wait_for_line(&["channel{name=aperture}", "plugin process started"]);
     let deadline = Instant::now() + TIMEOUT;
     while !home.join("data/toolset/aperture").is_dir() {
         assert!(Instant::now() < deadline, "the toolset was never launched");
