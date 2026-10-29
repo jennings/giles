@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use giles_channel_discord::client::{Discord, RestError};
 use loopback::rest::{Response, RestServer};
-use loopback::{TOKEN, WAIT, rest_client};
+use loopback::{TOKEN, WAIT, refused_address, rest_client};
 use serde_json::{Value, json};
 
 const CHANNEL: u64 = 319_674_150_115_610_528;
@@ -184,12 +184,8 @@ async fn a_message_the_library_cannot_read_costs_only_itself() {
 
 #[tokio::test]
 async fn a_server_that_is_not_there_is_a_transport_error() {
-    // Bind a port and drop the listener: nothing answers there.
-    let host = {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        listener.local_addr().unwrap().to_string()
-    };
-    let client = rest_client(&host);
+    let (_reserved, addr) = refused_address();
+    let client = rest_client(&addr.to_string());
     assert_eq!(history(&client, 1, 100).await, Err(RestError::Transport));
 }
 

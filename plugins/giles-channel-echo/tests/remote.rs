@@ -308,10 +308,13 @@ async fn a_wrong_bearer_token_is_refused_and_retried() {
 #[tokio::test]
 async fn an_unreachable_plugin_is_retried_until_it_comes_up_and_after_it_goes_away() {
     let home = Home::serving("");
-    let addr = {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.local_addr().unwrap()
-    };
+    // Bound but not listening: connects are refused, and nothing else can take the port.
+    let reserved =
+        socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+    reserved
+        .bind(&std::net::SocketAddr::from(([127, 0, 0, 1], 0)).into())
+        .unwrap();
+    let addr = reserved.local_addr().unwrap().as_socket().unwrap();
     home.add_channels(&format!("[channel.echo]\naddress = \"http://{addr}\""));
     let core = home.start_core().await;
     let error = backing_off(&core).await;
@@ -319,6 +322,7 @@ async fn an_unreachable_plugin_is_retried_until_it_comes_up_and_after_it_goes_aw
 
     // It comes up: the next attempt (after 1 s, then 2 s) connects.
     let data = home.data_dir("echo");
+    drop(reserved);
     let plugin = Remote::start(&addr.to_string(), &data, None, None).await;
     running(&core).await;
     round_trip(&home, &core, "up", 1).await;

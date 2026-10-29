@@ -39,6 +39,8 @@ twilight-model = "0.17.1"
 # router, and the outbox, the code that adds the identity namespace and strips it again.
 giles-core = { workspace = true, features = ["provider-anthropic"] }
 giles-proto.workspace = true
+# Ports held closed for the "nothing is there" tests (`tests/loopback`).
+socket2 = "0.6.5"
 tempfile.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "test-util"] }
 tonic.workspace = true
