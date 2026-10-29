@@ -106,8 +106,8 @@ async fn attachments_travel_both_ways() {
         .find(|line| line["message_id"] == message_id.as_str())
         .unwrap();
     assert_eq!(record["attachment_texts"][0], "inbound bytes");
-    // The plugin's handle lived only as long as the `Send`.
-    assert!(home.sdk_files("echo", "outbound").is_empty());
+    // The plugin's handle lived only as long as the `Send`; the SDK deletes it in the background.
+    wait_until(|| home.sdk_files("echo", "outbound").is_empty().then_some(())).await;
     core.stop().await;
 }
 
