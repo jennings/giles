@@ -2,11 +2,69 @@
 //! stdio MCP servers ([`crate::mcp`]) and launched plugins ([`crate::plugin_host`]).
 
 use tokio::io::{AsyncRead, AsyncReadExt};
+use tracing::Level;
 
 use crate::config::{MIN_SCRUB_LEN, REDACTED, Secret, scrub};
 
 /// Longest line passed on; the rest of a longer line is cut off.
 pub(crate) const MAX_LINE: usize = 4096;
+
+/// Splits a line that looks like a log message, a timestamp followed by a level
+/// (`2026-10-29T16:04:17.522027Z  WARN giles_core::x: text`), into its level and the text after
+/// it. Any other line is `info` and kept whole. The timestamp is dropped: the core stamps the line
+/// itself.
+pub(crate) fn parse_log_line(line: &str) -> (Level, &str) {
+    split_log_line(line).unwrap_or((Level::INFO, line))
+}
+
+fn split_log_line(line: &str) -> Option<(Level, &str)> {
+    let (timestamp, rest) = line.split_once(' ')?;
+    if !is_timestamp(timestamp) {
+        return None;
+    }
+    let rest = rest.trim_start_matches(' ');
+    let (level, text) = rest.split_once(' ').unwrap_or((rest, ""));
+    // Not `Level::from_str`, which also takes lower case and digits.
+    let level = match level {
+        "TRACE" => Level::TRACE,
+        "DEBUG" => Level::DEBUG,
+        "INFO" => Level::INFO,
+        "WARN" => Level::WARN,
+        "ERROR" => Level::ERROR,
+        _ => return None,
+    };
+    Some((level, text))
+}
+
+/// An RFC 3339 timestamp, like `2026-10-29T16:04:17.522027Z`, which is what `tracing-subscriber`
+/// writes.
+fn is_timestamp(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    bytes.len() >= 19
+        && bytes[..4].iter().all(u8::is_ascii_digit)
+        && bytes[4] == b'-'
+        && bytes[10] == b'T'
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_digit() || b"-:.TZ+".contains(b))
+}
+
+/// Logs `$line`, a stderr line from [`forward`], at the level it carries (see [`parse_log_line`])
+/// with target `$target`. Tracing needs the level and the target to be constants, so the level
+/// picks one of five calls.
+macro_rules! log_line {
+    ($target:expr, $line:expr) => {{
+        let (level, text) = $crate::stderr_lines::parse_log_line($line);
+        match level {
+            tracing::Level::TRACE => tracing::trace!(target: $target, "{text}"),
+            tracing::Level::DEBUG => tracing::debug!(target: $target, "{text}"),
+            tracing::Level::INFO => tracing::info!(target: $target, "{text}"),
+            tracing::Level::WARN => tracing::warn!(target: $target, "{text}"),
+            _ => tracing::error!(target: $target, "{text}"),
+        }
+    }};
+}
+pub(crate) use log_line;
 
 /// Reads `stderr` to its end and hands each line, with `secrets` scrubbed, to `emit`. A read error
 /// ends it like end-of-file (logged at debug level).
@@ -203,5 +261,43 @@ mod tests {
         })
         .await;
         assert_eq!(lines, ["one <redacted>", "two"]);
+    }
+
+    #[test]
+    fn a_log_line_gives_its_level_and_text_without_the_timestamp() {
+        let line = "2026-10-29T16:04:17.522027Z  WARN giles_core::sandbox::linux: lacking=signal";
+        assert_eq!(
+            parse_log_line(line),
+            (Level::WARN, "giles_core::sandbox::linux: lacking=signal")
+        );
+        for (word, level) in [
+            ("TRACE", Level::TRACE),
+            ("DEBUG", Level::DEBUG),
+            ("INFO", Level::INFO),
+            ("ERROR", Level::ERROR),
+        ] {
+            let line = format!("2026-10-29T16:04:17Z {word} x: y");
+            assert_eq!(parse_log_line(&line), (level, "x: y"), "{word}");
+        }
+        assert_eq!(
+            parse_log_line("2026-10-29T16:04:17.5Z  INFO"),
+            (Level::INFO, "")
+        );
+    }
+
+    #[test]
+    fn any_other_line_is_info_and_kept_whole() {
+        for line in [
+            "connected",
+            "",
+            "WARN something",
+            "2026-10-29 WARN not a timestamp",
+            "2026-10-29T16:04:17Z NOTICE unknown level",
+            "2026-10-29T16:04:17Z warn lower case",
+            "2026-10-29T16:04:17Z",
+            "Error: cannot start: 2026-10-29T16:04:17Z WARN later",
+        ] {
+            assert_eq!(parse_log_line(line), (Level::INFO, line), "{line:?}");
+        }
     }
 }

@@ -25,7 +25,8 @@ use crate::process_group::{exited_unreaped, signal_group, wait_exited};
 use crate::stderr_lines;
 
 /// The `tracing` target of a plugin's stderr lines, so an operator can filter them
-/// (`GILES_LOG=giles_core::plugin_host::stderr=warn`).
+/// (`GILES_LOG=info,giles_core::plugin_host::stderr=warn`). The level is the one the line itself
+/// carries if it is a log message, else `info`.
 pub const STDERR_TARGET: &str = "giles_core::plugin_host::stderr";
 
 /// How many of the latest stderr lines a [`PluginProcess`] keeps for error messages.
@@ -341,7 +342,7 @@ impl StderrTail {
 async fn log_stderr(stderr: tokio::process::ChildStderr, secrets: Arc<[Secret]>, tail: StderrTail) {
     let secrets: Vec<&Secret> = secrets.iter().collect();
     stderr_lines::forward(stderr, &secrets, |line| {
-        tracing::info!(target: STDERR_TARGET, "{line}");
+        stderr_lines::log_line!(STDERR_TARGET, &line);
         tail.push(line);
     })
     .await;

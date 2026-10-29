@@ -229,7 +229,7 @@ impl Log {
     /// Waits for the server of `instance` to report `what` (e.g. `network`) and returns the rest
     /// of that line.
     async fn report(&self, instance: &str, what: &str) -> String {
-        let prefix = format!("mcp{{instance={instance}}}: giles_core::mcp::stderr: {what}: ");
+        let prefix = format!("mcp{{toolset={instance}}}: giles_core::mcp::stderr: {what}: ");
         self.wait_for(&prefix).await;
         let contents = self.contents();
         let start = contents.find(&prefix).unwrap() + prefix.len();

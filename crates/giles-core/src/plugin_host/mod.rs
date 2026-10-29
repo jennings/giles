@@ -354,7 +354,7 @@ impl Launcher {
     }
 
     /// Launches the plugin channel `instance`, up to a successful `Configure`. Logs under a
-    /// `plugin{kind=channel instance=...}` span, which also carries the plugin's stderr.
+    /// `launch` span, which also carries the plugin's stderr.
     ///
     /// # Errors
     ///
@@ -366,7 +366,7 @@ impl Launcher {
         let ChannelRuntime::Plugin(launch) = &instance.runtime else {
             return Err(LaunchError::NotLaunched);
         };
-        let span = tracing::info_span!("plugin", kind = %Kind::Channel, instance = %instance.name);
+        let span = tracing::info_span!("launch");
         self.launch(instance, &launch.binary, &launch.sandbox, span.clone())
             .instrument(span)
             .await
@@ -793,7 +793,7 @@ pub struct LaunchedPlugin {
     /// The instance's secret values and the launch token: scrub plugin-provided text with them
     /// ([`scrub`]) before logging it.
     pub secrets: Arc<[Secret]>,
-    /// The `plugin{kind=channel instance=...}` span its logs belong under.
+    /// The `launch` span its logs belong under.
     pub span: tracing::Span,
 }
 

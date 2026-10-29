@@ -238,7 +238,7 @@ async fn an_unsandboxed_plugin_is_launched_with_the_socket_subcommand_alone() {
 }
 
 #[tokio::test]
-async fn an_early_exit_logs_scrubbed_stderr_under_the_instance_span() {
+async fn an_early_exit_logs_scrubbed_stderr_under_the_launch_span() {
     let log = Log::global();
     let home = Home::new(&unsandboxed("leaky"));
     // The plugin reads the token from stdin and prints it with the config secret; it never sees
@@ -287,15 +287,17 @@ async fn an_early_exit_logs_scrubbed_stderr_under_the_instance_span() {
     let contents = log.contents();
     assert!(
         contents.contains(
-            "plugin{kind=channel instance=leaky}: giles_core::plugin_host::stderr: token=<redacted>"
+            "launch: giles_core::plugin_host::stderr: token=<redacted> secret=<redacted> env="
         ),
         "{contents}"
     );
     assert!(!contents.contains("s3cret-value-42"), "{contents}");
+    // Every test shares the log, so the warning is this test's by the binary it names.
     assert!(
-        contents.contains(
-            "plugin{kind=channel instance=leaky}: giles_core::plugin_host: running the plugin unsandboxed"
-        ),
+        contents.lines().any(|line| {
+            line.contains("launch: giles_core::plugin_host: running the plugin unsandboxed")
+                && line.contains("giles-channel-leaky")
+        }),
         "{contents}"
     );
 }

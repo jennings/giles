@@ -245,7 +245,7 @@ async fn exit_status(
 }
 
 fn span(instance: &str) -> tracing::Span {
-    tracing::info_span!("mcp", instance = %instance)
+    tracing::info_span!("mcp", toolset = %instance)
 }
 
 async fn connect<T, E, A>(
@@ -492,7 +492,9 @@ impl Toolset for McpToolset {
             questions: Pending::default(),
             _files: files,
         };
-        tokio::spawn(run_call(task, handle).instrument(span));
+        // The debug-level call span is disabled at the default filter; the task then still runs in
+        // the `mcp` span.
+        tokio::spawn(run_call(task, handle).instrument(span).instrument(parent));
         let events = futures::stream::unfold(events_rx, |mut events| async move {
             events.recv().await.map(|event| (event, events))
         });

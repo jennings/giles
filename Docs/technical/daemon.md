@@ -39,6 +39,13 @@ One `tracing-subscriber` `fmt` subscriber, installed in `main` before any subcom
 to stderr, with ANSI colors only when stderr is a terminal. The filter is `GILES_LOG`, else
 `RUST_LOG`, else `info`; an invalid filter fails startup rather than being ignored.
 
+Spans name the instance a line is about. A plugin's supervisor logs under `channel{name=<name>}`,
+and each launch adds a `launch` span inside it. A toolset's supervisor logs under
+`toolset{name=<name>}`. Each MCP connection and tool call logs under `mcp{toolset=<name>}`, since
+calls run outside the supervisor's span. The lines a plugin or MCP server writes to stderr are
+logged under these spans with target `giles_core::plugin_host::stderr` or `giles_core::mcp::stderr`,
+which marks them as the child's text.
+
 ## `giles serve` lifecycle
 
 1. Resolve the data root (`DataRoot::from_env`) and create its layout (`create_layout`), then take
