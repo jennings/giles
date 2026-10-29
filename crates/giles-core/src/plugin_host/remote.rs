@@ -441,9 +441,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_closed_port_fails_to_dial() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
+        // Bound but not listening: connects are refused, and nothing else can take the port.
+        let reserved =
+            socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+        reserved
+            .bind(&std::net::SocketAddr::from(([127, 0, 0, 1], 0)).into())
+            .unwrap();
+        let addr = reserved.local_addr().unwrap().as_socket().unwrap();
         let target = target(&format!("http://{addr}")).unwrap();
         assert!(target.dial().await.is_err());
     }

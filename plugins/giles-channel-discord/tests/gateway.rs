@@ -11,7 +11,9 @@ mod loopback;
 use std::time::Duration;
 
 use giles_channel_discord::client::{Discord, GatewayEvent};
-use loopback::{BOT, Frame, Gateway, TOKEN, WAIT, client, message_create, message_json, next};
+use loopback::{
+    BOT, Frame, Gateway, TOKEN, WAIT, client, message_create, message_json, next, refused_address,
+};
 use serde_json::json;
 
 #[tokio::test]
@@ -197,9 +199,8 @@ async fn a_reconnect_request_is_a_close_and_a_resume() {
 
 #[tokio::test]
 async fn a_server_that_is_not_there_is_a_close_without_a_code() {
-    // Nothing listens: bind to learn a free port, then release it.
-    let url = Gateway::bind().await.url;
-    let client = client(&url);
+    let (_reserved, addr) = refused_address();
+    let client = client(&format!("ws://{addr}"));
     assert_eq!(
         next(&client).await,
         Some(GatewayEvent::Closed { code: None })

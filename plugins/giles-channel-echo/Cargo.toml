@@ -29,6 +29,7 @@ libc.workspace = true
 # Test certificates for the remote plugin over TLS.
 rcgen.workspace = true
 sha2.workspace = true
+socket2 = "0.6.5"
 tempfile.workspace = true
 tokio = { workspace = true, features = ["net", "process"] }
 tokio-util.workspace = true

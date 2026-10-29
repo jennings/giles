@@ -4,6 +4,7 @@
 // Each test binary uses part of it.
 #![allow(dead_code)]
 
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use futures::{SinkExt as _, StreamExt as _};
@@ -24,6 +25,19 @@ pub const WAIT: Duration = Duration::from_secs(30);
 
 /// The bot's user id in the fake READY.
 pub const BOT: u64 = 82_198_898_841_029_460;
+
+/// A loopback address that refuses connections for as long as the returned socket lives.
+///
+/// The socket is bound but never listened on, so connects to the address are refused, and no
+/// other socket can take the port while it is held. Keep the socket alive until the test is done.
+pub fn refused_address() -> (socket2::Socket, SocketAddr) {
+    let socket = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+    socket
+        .bind(&SocketAddr::from(([127, 0, 0, 1], 0)).into())
+        .unwrap();
+    let addr = socket.local_addr().unwrap().as_socket().unwrap();
+    (socket, addr)
+}
 
 /// A Gateway listening on loopback.
 pub struct Gateway {

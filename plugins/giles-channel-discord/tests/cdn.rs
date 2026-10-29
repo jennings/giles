@@ -12,7 +12,7 @@ use std::time::Duration;
 use futures::StreamExt as _;
 use giles_channel_discord::client::{Body, Discord, RestError, limited};
 use giles_channel_discord::real::{CdnPolicy, MAX_REDIRECTS, RealDiscord};
-use loopback::{TOKEN, WAIT, rest_client};
+use loopback::{TOKEN, WAIT, refused_address, rest_client};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
@@ -505,12 +505,8 @@ async fn a_download_that_keeps_dripping_still_ends_at_the_total_timeout() {
 
 #[tokio::test]
 async fn a_cdn_that_is_not_there_is_a_transport_error() {
-    // Bind and close, so the port is free and refuses connections.
-    let port = {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        listener.local_addr().unwrap().port()
-    };
-    let result = download(&client(), &format!("http://127.0.0.1:{port}/x"), MIB).await;
+    let (_reserved, addr) = refused_address();
+    let result = download(&client(), &format!("http://{addr}/x"), MIB).await;
     assert!(
         matches!(result, Err(RestError::Transport)),
         "{:?}",
