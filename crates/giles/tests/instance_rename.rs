@@ -119,7 +119,7 @@ async fn rename_moves_the_data_and_prints_what_it_did() {
     );
 
     let store = Store::open(root.database_file()).await.unwrap();
-    let rows = store.instance_rows().await.unwrap();
+    let rows = store.instance_rows(Kind::Channel).await.unwrap();
     assert_eq!(rows["libera-chat"].sessions, 1);
     assert!(!rows.contains_key("libera"));
 }
@@ -164,7 +164,7 @@ async fn rename_leaves_the_database_in_the_journal_mode_it_is_in() {
             .await
             .unwrap();
         assert_eq!(
-            store.instance_rows().await.unwrap()["libera-chat"].sessions,
+            store.instance_rows(Kind::Channel).await.unwrap()["libera-chat"].sessions,
             1
         );
     }

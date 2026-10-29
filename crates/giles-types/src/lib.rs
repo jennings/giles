@@ -6,6 +6,7 @@
 //! - [`channel`]: the [`Channel`] trait and the messages channels exchange with the core.
 //! - [`toolset`]: the [`Toolset`] trait, tool calls, approvals, and skills.
 //! - [`id`]: validated identifier newtypes.
+//! - [`Kind`]: the kinds of component instance.
 //!
 //! Every type is re-exported at the crate root. `prost`-generated types never appear here; the
 //! gRPC adapters convert at the boundary.
@@ -13,6 +14,7 @@
 pub mod channel;
 mod error;
 pub mod id;
+mod kind;
 pub mod message;
 pub mod provider;
 pub mod toolset;
@@ -28,6 +30,7 @@ pub use id::{
 };
 /// An instant in time (UTC), used for message and event times. Serialized as RFC 3339.
 pub use jiff::Timestamp;
+pub use kind::Kind;
 pub use message::{
     Block, BlockKind, MediaRef, Message, MessageMeta, Opaque, Role, StopReason, Usage,
 };

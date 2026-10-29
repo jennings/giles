@@ -11,12 +11,14 @@ use std::cell::RefCell;
 use std::fmt;
 use std::path::Path;
 
+use giles_types::Kind;
+
 use super::discovery::{discover_plugin, find_program};
 use super::error::{ConfigError, KeyPath};
 use super::instances::{
     ChannelInstance, ChannelRuntime, Ctx, Sandbox, ToolsetInstance, ToolsetSpec, ToolsetTransport,
 };
-use super::names::{InstanceName, Kind};
+use super::names::InstanceName;
 use super::sandbox::{self, BinaryDirs};
 use super::secrets::{Resolver, Secrets};
 use super::{Config, LoadOptions};

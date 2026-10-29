@@ -48,6 +48,7 @@ pub use agent::{
 pub use discovery::{discover_plugin, find_program};
 pub use error::{ConfigError, IgnoredToolsetTable, KeyPath, Position, Segment, UnknownKey};
 pub use giles::{CoreConfig, DEFAULT_HTTP_LISTEN, Identity, OwnerConfig};
+pub use giles_types::Kind;
 pub use hash::ConfigHash;
 pub use instances::{
     Auth, ChannelInstance, ChannelRuntime, DEFAULT_MAX_BLOB, DEFAULT_TOOL_DEADLINE, Launch,
@@ -58,7 +59,7 @@ pub use live::{
     AgentExists, InstanceExists, LiveConfig, NoSuchAgent, NoSuchToolset, RenameToolsetError,
 };
 pub use model::ModelRef;
-pub use names::{Builtins, Component, InstanceName, Kind, is_valid_name, plugin_binary};
+pub use names::{Builtins, Component, InstanceName, is_valid_name, plugin_binary};
 pub use plugin_config::PluginConfig;
 pub use sandbox::{Grants, NetworkGrant, SandboxSpec, check_grant};
 pub use secrets::{MIN_SCRUB_LEN, REDACTED, Secret, Secrets, scrub};

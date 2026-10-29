@@ -9,7 +9,9 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use super::names::{Kind, plugin_binary};
+use giles_types::Kind;
+
+use super::names::plugin_binary;
 use crate::paths::DataRoot;
 
 /// Finds the plugin binary `giles-<kind>-<component>`: in `<root>/plugins/`, then in each

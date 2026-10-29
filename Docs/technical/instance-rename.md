@@ -14,25 +14,29 @@ rename must move each of them.
 | -------------------------------------------- | ---------------------------------------------- | ------------------------------ |
 | `giles.toml` `[<kind>.<name>]`               | The instance table and its sub-tables          | Renames the table in place     |
 | `toolsets.name`                              | A toolset stored in the database (web UI)      | Renames the row (stored toolsets) |
-| `routes.channel`                             | A stored route's channel instance              | Updates in the transaction     |
+| `routes.channel`                             | A stored route's channel instance              | Updates in the transaction (channels) |
 | `giles.toml` `[[routes]]` `channel`          | A route of the old layout (imported once, then ignored) | Rewrites it (channels) |
 | `agent.toml` `models`, `compaction_model`, `[[jobs]]` `model` | `<provider instance>/<model id>` | Rewrites the prefix (providers) |
 | `agent.toml` `tools`, `ask`                  | Globs over `<toolset instance>__<tool>`        | Rewrites a leading `<name>__` (toolsets) |
-| `sessions.channel`                           | Session key (agent, channel, conversation)     | Updates in the transaction     |
-| `inbox.instance`                             | Dedupe key (instance, event id)                | Updates in the transaction     |
-| `outbox.instance`                            | The channel a proactive send routes to         | Updates in the transaction     |
-| `usage.provider`                             | The provider instance of a request             | Updates in the transaction     |
-| `messages.meta` `$.provider`                 | The provider that wrote an assistant message   | Updates in the transaction     |
+| `sessions.channel`                           | Session key (agent, channel, conversation)     | Updates in the transaction (channels)     |
+| `inbox.instance`                             | Dedupe key (instance, event id)                | Updates in the transaction (channels)     |
+| `outbox.instance`                            | The channel a proactive send routes to         | Updates in the transaction (channels)     |
+| `usage.provider`                             | The provider instance of a request             | Updates in the transaction (providers)     |
+| `messages.meta` `$.provider`                 | The provider that wrote an assistant message   | Updates in the transaction (providers)     |
 | `data/<kind>/<name>/`                        | The plugin's only writable directory           | Moves (`rename(2)`)            |
-| `agents/<agent>/groups/<name>/`              | Per-group `MEMORY.md` files of the old memory design | Moves                   |
-| `agents/<agent>/memory.db`, `memories.owner_instance` | The channel instance of a group that owns a memory (also a shared memory's author) | Updates in the hook, one transaction per database |
+| `agents/<agent>/groups/<name>/`              | Per-group `MEMORY.md` files of the old memory design | Moves (channels)        |
+| `agents/<agent>/memory.db`, `memories.owner_instance` | The channel instance of a group that owns a memory (also a shared memory's author) | Updates in the hook, one transaction per database (channels) |
 | `cache/describe/<kind>/<name>.json`, `cache/toolsets/<name>.json` | Discovery caches    | Moves if present; they are disposable |
 | `run/pids/<kind>/<name>.pid`                 | The launched plugin's pid, killed at the next start | Moves if present, so a plugin that outlived the core is still found |
 
-The files under `data/`, `cache/describe/`, `run/pids/`, and `run/sandbox/` are keyed by kind too.
-The rename looks only in the directories of the renamed instance's kind (`cache/toolsets/` is the
-toolsets'), so a toolset or provider with the old name keeps its files. A directory that an earlier
-release left in `data/plugins/` isn't looked for.
+A rename is scoped to one kind: the database half (`Store::instance_rows` and
+`Store::rename_instance` both take the kind) reads and updates only the columns marked above for
+that kind, and the memory databases and the `groups/` directories, which hold channels' data, are
+left alone when the instance isn't a channel. A toolset has no rows to update; its stored row is
+renamed separately. The files under `data/`, `cache/describe/`, `run/pids/`, and `run/sandbox/` are
+keyed by kind too. The rename looks only in the directories of the renamed instance's kind
+(`cache/toolsets/` is the toolsets'), so a toolset or provider with the old name keeps its files. A
+directory that an earlier release left in `data/plugins/` isn't looked for.
 
 Routes are a setting, not data. The rename moves `routes.channel` (in the same transaction, keeping
 the order; `RenamedRows::routes` counts them), and a name that only routes use still counts as
@@ -111,28 +115,30 @@ socket probing is needed and a core that starts mid-rename is refused instead.
      `old` is moved to match. `old` must have data.
    - If neither is configured, it is refused: with no data it is an unknown instance, and with data
      the kind can't be known, so the message says to configure `new` first.
-   - `new` must have no data: no database rows, no `data/<kind>/<new>`, no `groups/<new>` (routes
-     that name `new` don't count). The memory databases aren't checked: nothing in their schema is
-     unique over the owner, and an interrupted run (below) legitimately leaves some of them already
-     renamed. The exception is an interrupted rename run again (below): `giles.toml` already names
-     `new`, so `old` is no longer configured, and rows still exist under `old`. While `old` is still
-     configured, a directory called `new` belongs to something else and is refused.
+   - `new` must have no data: no database rows, no `data/<kind>/<new>`, and, for a channel, no
+     `groups/<new>` (routes that name `new` don't count; a group directory is a channel's, so it
+     doesn't keep a provider or toolset from taking the name). The memory databases aren't checked:
+     nothing in their schema is unique over the owner, and an interrupted run (below) legitimately
+     leaves some of them already renamed. The exception is an interrupted rename run again (below):
+     `giles.toml` already names `new`, so `old` is no longer configured, and rows still exist under
+     `old`. While `old` is still configured, a directory called `new` belongs to something else and
+     is refused.
 2. **Stage.** Every file's new text is computed in memory: the `agent.toml` files that name the
    instance, then `giles.toml`; and the list of directory and file moves is computed. The memory
-   databases to update are listed: every `agents/<agent>/memory.db` that exists. An agent without
-   one is skipped (the rename never creates a database), and a removed agent's database is in
-   `trash/agents/`, outside `agents/`, so it is not touched, like the agent's directories and
-   `agent.toml` there. The memories in a restored agent's database keep the old instance name, so
-   the renamed instance's groups don't see them. Any parse error or conflict ends the command here
-   with nothing changed.
-3. **One database transaction** (`Store::rename_instance`): update every row, then run a hook, then
-   commit. The hook does the file system work, in this order, recording each completed step in a
-   journal:
+   databases to update are listed, for a channel: every `agents/<agent>/memory.db` that exists (a
+   provider or toolset rename lists none). An agent without one is skipped (the rename never creates
+   a database), and a removed agent's database is in `trash/agents/`, outside `agents/`, so it is
+   not touched, like the agent's directories and `agent.toml` there. The memories in a restored
+   agent's database keep the old instance name, so the renamed instance's groups don't see them. Any
+   parse error or conflict ends the command here with nothing changed.
+3. **One database transaction** (`Store::rename_instance`): update the kind's rows, then run a hook,
+   then commit. The hook does the file system work, in this order, recording each completed step in
+   a journal:
    1. rewrite the `agent.toml` files (a temporary file in the same directory renamed over the
       original, with the original's permissions),
    2. rewrite `giles.toml` the same way,
    3. move the directories, then the disposable files, with `rename(2)`,
-   4. in each agent's memory database, in agent-name order, run
+   4. for a channel, in each agent's memory database, in agent-name order, run
       `MemoryStore::rename_instance(old, new)`:
       `UPDATE memories SET owner_instance = new WHERE owner_kind = 'group' AND owner_instance = old`,
       one write transaction per database, the file opened with `OpenOptions::keep_journal_mode` (the

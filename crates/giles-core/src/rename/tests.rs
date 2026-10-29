@@ -189,7 +189,7 @@ impl Home {
     }
 
     async fn rows(&self) -> BTreeMap<String, InstanceRows> {
-        self.store.instance_rows().await.unwrap()
+        instance_rows(&self.store).await.unwrap()
     }
 
     /// Everything a failed rename must leave alone: the file tree with contents, and the rows.
@@ -1463,4 +1463,74 @@ async fn a_rename_leaves_the_files_other_kinds_keep_under_the_same_name() {
     ] {
         assert!(home.path(kept).is_file(), "{kept}");
     }
+}
+
+/// A group directory is a channel's, wherever it lives: a provider or toolset rename of the same
+/// name leaves it, and the memories its group owns, alone.
+#[tokio::test]
+async fn a_provider_rename_leaves_the_groups_and_memories_of_a_channel_of_that_name() {
+    use giles_store::{MemoryOwner, MemoryViewer};
+
+    let home = Home::populated().await;
+    home.write("agents/jeeves/groups/ollama/c/MEMORY.md", "left behind");
+    let db = home.path("agents/jeeves/memory.db");
+    let viewer = MemoryViewer::new(
+        MemoryOwner::Group {
+            instance: "ollama".to_owned(),
+            conversation: ConversationId::new("c").unwrap(),
+        },
+        false,
+    );
+    let memories = giles_store::MemoryStore::open(db.clone(), giles_store::OpenOptions::new())
+        .await
+        .unwrap();
+    let new = giles_store::NewMemory {
+        content: "left behind".to_owned(),
+        core: false,
+        shared: false,
+        source_session: None,
+    };
+    let now = jiff::Timestamp::from_second(1_800_000_000).unwrap();
+    let memory = memories.add(&viewer, new, 2200, now).await.unwrap();
+    drop(memories);
+
+    let report = home.rename("ollama", "local").await.unwrap();
+
+    assert_eq!(report.kind, Kind::Provider);
+    assert!(report.memory_dbs.is_empty(), "{:?}", report.memory_dbs);
+    assert!(
+        home.path("agents/jeeves/groups/ollama/c/MEMORY.md")
+            .is_file()
+    );
+    assert!(!home.path("agents/jeeves/groups/local").exists());
+    let owner = giles_store::MemoryStore::open(db, giles_store::OpenOptions::new())
+        .await
+        .unwrap()
+        .get(&viewer, memory.id)
+        .await
+        .unwrap()
+        .owner;
+    assert_eq!(
+        owner,
+        MemoryOwner::Group {
+            instance: "ollama".to_owned(),
+            conversation: ConversationId::new("c").unwrap(),
+        }
+    );
+}
+
+/// A group directory under the new name belongs to a channel of that name, not to the provider
+/// or toolset being renamed to it.
+#[tokio::test]
+async fn a_group_directory_of_the_new_name_does_not_stop_a_provider_or_toolset_rename() {
+    let home = Home::populated().await;
+    home.write("agents/x/groups/local/c/MEMORY.md", "a channel's");
+
+    let report = home.rename("ollama", "local").await.unwrap();
+    assert_eq!(report.kind, Kind::Provider);
+    let report = home.rename("github", "local-tools").await.unwrap();
+    assert_eq!(report.kind, Kind::Toolset);
+
+    assert!(home.path("agents/x/groups/local/c/MEMORY.md").is_file());
+    assert!(home.path("data/toolset/local-tools/token-cache").is_file());
 }

@@ -13,8 +13,9 @@ use crate::paths::DataRoot;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DataDir {
     pub path: PathBuf,
-    /// The kind whose data directory it is; `None` for a group's directory under an agent.
-    pub kind: Option<Kind>,
+    /// The kind of instance that keys it: a plugin's data directory is its kind's, and a group's
+    /// directory under an agent is a channel's.
+    pub kind: Kind,
 }
 
 /// The sub-directories of `dir` whose names are valid instance names (`[a-zA-Z0-9-]+`), sorted
@@ -49,10 +50,7 @@ pub(super) fn scan_dirs(
     for kind in Kind::ALL {
         let plugins = root.plugin_data_root(kind);
         for (name, path) in list_dirs(&plugins).map_err(|e| (plugins.clone(), e))? {
-            let dir = DataDir {
-                path,
-                kind: Some(kind),
-            };
+            let dir = DataDir { path, kind };
             found.entry(name).or_default().push(dir);
         }
     }
@@ -60,15 +58,18 @@ pub(super) fn scan_dirs(
     for (_, agent) in list_dirs(&agents).map_err(|e| (agents.clone(), e))? {
         let groups = agent.join("groups");
         for (name, path) in list_dirs(&groups).map_err(|e| (groups.clone(), e))? {
-            let dir = DataDir { path, kind: None };
+            let dir = DataDir {
+                path,
+                kind: Kind::Channel,
+            };
             found.entry(name).or_default().push(dir);
         }
     }
     Ok(found)
 }
 
-/// The directories of `dirs` that renaming a `kind` instance moves: its data directory and the
-/// groups' directories, but not another kind's data directory of the same name.
+/// The directories of `dirs` that renaming a `kind` instance moves: those that kind keys, not
+/// another kind's of the same name.
 pub(super) fn of_kind(
     dirs: &BTreeMap<String, Vec<DataDir>>,
     kind: Kind,
@@ -77,7 +78,7 @@ pub(super) fn of_kind(
         .filter_map(|(name, found)| {
             let found: Vec<_> = found
                 .iter()
-                .filter(|dir| dir.kind.is_none_or(|k| k == kind))
+                .filter(|dir| dir.kind == kind)
                 .cloned()
                 .collect();
             (!found.is_empty()).then(|| (name.clone(), found))
