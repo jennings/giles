@@ -238,14 +238,19 @@ pub enum RouteError {
     },
     /// The change would make a later route unusable.
     #[error(
-        "this would leave route {position} ({criteria}) unusable: this route would match \
-         everything it does, and it comes first"
+        "this would leave route {position} ({criteria}) unusable: this route{} would always be \
+         tried first and match every conversation it does",
+        .with.as_ref().map(|other| format!(" and {other}")).unwrap_or_default()
     )]
     Hides {
         /// The 1-based position of the hidden route, in the list as it would be.
         position: usize,
         /// What the hidden route matches.
         criteria: String,
+        /// The other earlier route that hides it together with this one, e.g.
+        /// `route 1 (channel libera, direct conversations)`, when it takes two: one for direct
+        /// and one for group conversations.
+        with: Option<String>,
     },
     /// The route (or the one to insert before) doesn't exist, e.g. it was removed in another tab.
     #[error("that route no longer exists")]
@@ -379,9 +384,11 @@ fn check_reachable(
         if id.is_some_and(|id| already.contains(&id)) {
             continue;
         }
+        let others: Vec<usize> = by.into_iter().filter(|&j| new[j].0 != changed).collect();
         return Err(RouteError::Hides {
             position: i + 1,
             criteria: route.criteria(),
+            with: (!others.is_empty()).then(|| name_routes(new, &others)),
         });
     }
     Ok(())
@@ -1197,7 +1204,11 @@ mod tests {
             matches!(err, RouteError::Hides { position: 2, .. }),
             "{err}"
         );
-        assert!(message(err).contains("route 2 (channel libera, conversation #giles)"));
+        assert_eq!(
+            message(err),
+            "this would leave route 2 (channel libera, conversation #giles) unusable: this route \
+             would always be tried first and match every conversation it does"
+        );
 
         let err = h
             .routes
@@ -1311,7 +1322,43 @@ mod tests {
             "{err}"
         );
         h.routes.remove(group).await.unwrap();
-        h.routes.add(&all_libera, None).await.unwrap();
+        let all_libera_id = h.routes.add(&all_libera, None).await.unwrap();
+
+        // A group route between the direct one and the catch-all hides it together with route 1.
+        let err = h
+            .routes
+            .add(&spec(LIBERA, "group", "", "jeeves"), Some(all_libera_id))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, RouteError::Hides { position: 3, .. }),
+            "{err}"
+        );
+        assert_eq!(
+            message(err),
+            "this would leave route 3 (channel libera) unusable: this route and route 1 (channel \
+             libera, direct conversations) would always be tried first and match every \
+             conversation it does"
+        );
+
+        // Moving such a route up names the other one and not the moved route itself.
+        let any_group = h
+            .routes
+            .add(&spec("", "group", "", "jeeves"), None)
+            .await
+            .unwrap();
+        let err = h.routes.move_route(any_group, true).await.unwrap_err();
+        assert!(
+            matches!(err, RouteError::Hides { position: 3, .. }),
+            "{err}"
+        );
+        assert_eq!(
+            message(err),
+            "this would leave route 3 (channel libera) unusable: this route and route 1 (channel \
+             libera, direct conversations) would always be tried first and match every \
+             conversation it does"
+        );
+        assert_eq!(h.agents().await, ["jeeves", "bunter", "jeeves"]);
 
         // An imported list can already hold such a route: it is flagged, not refused.
         let imported = Harness::with(
