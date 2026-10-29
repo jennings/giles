@@ -397,14 +397,13 @@ const NEEDS_SECRET: &str = r#"{ "url": "https://bad.example.com/mcp",
 
 #[tokio::test]
 async fn startup_adds_what_validates_and_reports_the_rest_as_failed() {
-    let giles_toml = "[toolset.files]\ncommand = \"/nonexistent/files\"\n[channel.web]\n";
+    let giles_toml = "[toolset.files]\ncommand = \"/nonexistent/files\"\n";
     let f = Fixture::start(
         giles_toml,
         &[
             ("good", r#"{ "url": "https://good.example.com/mcp" }"#),
             ("bad", NEEDS_SECRET),
             ("Files", r#"{ "url": "https://other.example.com/mcp" }"#),
-            ("web", r#"{ "url": "https://other.example.com/mcp" }"#),
             ("stdio", r#"{ "command": "/nonexistent/stdio" }"#),
             ("broken", r#"{ "url": 5 }"#),
         ],
@@ -424,7 +423,7 @@ async fn startup_adds_what_validates_and_reports_the_rest_as_failed() {
 
     let failures = f.failures();
     let names: Vec<&str> = failures.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(names, ["Files", "bad", "broken", "stdio", "web"]);
+    assert_eq!(names, ["Files", "bad", "broken", "stdio"]);
     let reason = |name: &str| {
         failures
             .iter()
@@ -435,10 +434,6 @@ async fn startup_adds_what_validates_and_reports_the_rest_as_failed() {
     assert_eq!(
         reason("Files"),
         "the name is taken by `[toolset.files]` in giles.toml"
-    );
-    assert_eq!(
-        reason("web"),
-        "the name is taken by `[channel.web]` in giles.toml"
     );
     assert!(
         reason("bad").starts_with("auth.bearer: no secret \"bad-token\""),
@@ -481,7 +476,6 @@ async fn startup_adds_what_validates_and_reports_the_rest_as_failed() {
             ("files", true, false),
             ("good", false, false),
             ("stdio", false, true),
-            ("web", false, true),
         ]
     );
     assert_eq!(views[1].spec, None);
@@ -491,7 +485,7 @@ async fn startup_adds_what_validates_and_reports_the_rest_as_failed() {
     f.manager.remove("Files").await.unwrap();
     assert_eq!(f.configured(), ["files", "good"]);
     assert_eq!(f.supervised(), ["files", "good"]);
-    assert_eq!(f.stored().await, ["bad", "broken", "good", "stdio", "web"]);
+    assert_eq!(f.stored().await, ["bad", "broken", "good", "stdio"]);
 
     // Saving a failed toolset starts it, now that the secret is there.
     write_secrets(&f.root, "bad-token = \"bad-token-value\"\n");
@@ -510,7 +504,7 @@ async fn startup_adds_what_validates_and_reports_the_rest_as_failed() {
 
     // A failed toolset can be removed too.
     f.manager.remove("broken").await.unwrap();
-    assert_eq!(f.stored().await, ["bad", "good", "stdio", "web"]);
+    assert_eq!(f.stored().await, ["bad", "good", "stdio"]);
     assert!(f.failures().iter().all(|(name, _)| name != "broken"));
 }
 
@@ -654,9 +648,14 @@ async fn a_toolset_the_host_cannot_start_is_taken_out_of_the_configuration_and_s
 async fn the_name_taken_reason_wins_over_the_spec() {
     // A stdio spec, refused at `url` if the name were free.
     let stdio = r#"{ "command": "/nonexistent/web" }"#;
-    let giles_toml = "[channel.web]\n[channel.chat]\ncomponent = \"irc\"\n";
-    let f = Fixture::start(giles_toml, &[("web", stdio)], vec![]).await;
-    let taken = "the name is taken by `[channel.web]` in giles.toml";
+    let giles_toml = "[toolset.web]\ncommand = \"/nonexistent/web\"\n\
+                      [toolset.chat]\ncommand = \"/nonexistent/chat\"\n";
+    let scripts = vec![
+        ("web", Script::new(&["read"])),
+        ("chat", Script::new(&["read"])),
+    ];
+    let f = Fixture::start(giles_toml, &[("web", stdio)], scripts).await;
+    let taken = "the name is taken by `[toolset.web]` in giles.toml";
     assert_eq!(f.failures(), [("web".to_owned(), taken.to_owned())]);
 
     // A name no stored toolset has gets the same reason (a stored name would be `Exists`).
@@ -664,7 +663,7 @@ async fn the_name_taken_reason_wins_over_the_spec() {
     assert!(key.is_root(), "{key}");
     assert_eq!(
         reason,
-        "the name is taken by `[channel.chat]` in giles.toml"
+        "the name is taken by `[toolset.chat]` in giles.toml"
     );
     let err = f.manager.add("Web", &spec(stdio)).await.unwrap_err();
     assert!(matches!(err, ToolsetManagerError::Exists), "{err:?}");
@@ -948,11 +947,6 @@ async fn a_name_that_is_taken_or_reserved_is_refused() {
             "DOCS",
             "the name is taken by `[toolset.docs]` in giles.toml",
         ),
-        ("web", "the name is taken by `[channel.web]` in giles.toml"),
-        (
-            "anthropic",
-            "the name is taken by `[provider.anthropic]` in giles.toml",
-        ),
         ("new", "can't be a toolset's name"),
         ("bad name", "invalid instance name"),
         ("files", "already has that name"),
@@ -995,6 +989,49 @@ async fn a_name_that_is_taken_or_reserved_is_refused() {
         std::fs::read_to_string(leftover.join("state.db")).unwrap(),
         "kept"
     );
+}
+
+#[tokio::test]
+async fn a_toolset_may_have_the_name_of_a_provider_or_a_channel() {
+    let mason = "models = [\"anthropic/claude\"]\ntools = [\"web__*\", \"memory*\"]\n";
+    let f = Fixture::start_with_agents(
+        "[provider.anthropic]\n[channel.web]\n",
+        &[("files", FILES)],
+        &[("jeeves", JEEVES), ("mason", mason)],
+        vec![
+            ("files", Script::new(&["read"])),
+            ("web", Script::new(&["read"])),
+            ("pages", Script::new(&["read"])),
+            ("anthropic", Script::new(&["read"])),
+        ],
+    )
+    .await;
+
+    // Added under a channel's name, and renamed to a provider's.
+    f.manager.add("web", &spec(FILES)).await.unwrap();
+    let renamed = f.manager.rename("files", "anthropic").await.unwrap();
+    assert_eq!(renamed.agents.len(), 1);
+    assert_eq!(f.stored().await, ["anthropic", "web"]);
+    assert_eq!(f.configured(), ["anthropic", "web"]);
+    assert_eq!(f.offered().await, ["anthropic__read", "web__read"]);
+    let config = f.registry.config();
+    assert!(config.channels.contains_key("web"));
+    assert!(config.providers.contains_key("anthropic"));
+    assert_eq!(
+        agent_toml(&f, "jeeves"),
+        JEEVES.replace("files__", "anthropic__")
+    );
+
+    // The channel's name is the stored toolset's, so its agents' globs follow the rename, and the
+    // channel stays.
+    let renamed = f.manager.rename("web", "pages").await.unwrap();
+    assert_eq!(renamed.agents.len(), 1);
+    assert_eq!(renamed.agents[0].agent.as_str(), "mason");
+    assert_eq!(f.stored().await, ["anthropic", "pages"]);
+    assert_eq!(f.configured(), ["anthropic", "pages"]);
+    assert_eq!(f.offered().await, ["anthropic__read", "pages__read"]);
+    assert_eq!(agent_toml(&f, "mason"), mason.replace("web__", "pages__"));
+    assert!(f.registry.config().channels.contains_key("web"));
 }
 
 #[tokio::test]

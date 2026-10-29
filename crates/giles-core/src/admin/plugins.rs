@@ -35,7 +35,7 @@ pub trait PluginControl: Send + Sync {
 ///
 /// `plugins()` is every control's instances, in the order of the controls (so `ListPlugins` gives a
 /// configured instance the report of the first control that has one: a name can also be reported
-/// by a later control, as a stored toolset that lost its name to a `giles.toml` instance is).
+/// by a later control, as a stored toolset that lost its name to a `giles.toml` toolset is).
 /// `restart` goes to the first control that accepts the kind and instance: each control restarts
 /// only the kind it supervises, so a same-named instance of another kind is left alone.
 pub struct MergedControl {
@@ -163,7 +163,7 @@ pub(super) fn configured(config: &Config) -> Vec<Configured<'_>> {
 /// channel statuses recorded since startup, and what supervision reports in `runtimes`. A
 /// configured instance takes the first report with its kind and name, so the report of the host
 /// that supervises it comes before one a later control makes for the same name. What is left is a
-/// report for an instance the configuration doesn't have, or for a name that another instance
+/// report for an instance the configuration doesn't have, or for a name that another toolset
 /// already took: a stored toolset that failed validation (`ToolsetManager`), listed after the
 /// configured instances as the kind the report says (a toolset) with just what the report says.
 pub(super) fn plugin_instances(

@@ -277,11 +277,11 @@ impl ToolsetAdmin for FakeToolsets {
             if state.racing || state.stored_name(name).is_some() {
                 return Err(ToolsetManagerError::Exists);
             }
-            // A name that a provider or channel of giles.toml has.
-            if name == "libera" {
+            // A name that a toolset of giles.toml has.
+            if name == "taken" {
                 return Err(ToolsetManagerError::Invalid {
                     key: KeyPath::root(),
-                    reason: "the name is taken by `[channel.libera]` in giles.toml".to_owned(),
+                    reason: "the name is taken by `[toolset.taken]` in giles.toml".to_owned(),
                 });
             }
             FakeToolsetState::refuse_stdio(spec)?;
@@ -331,7 +331,7 @@ impl ToolsetAdmin for FakeToolsets {
         })
     }
 
-    /// The checks of the real one that the RPC maps, by name: `libera` is taken by a channel of
+    /// The checks of the real one that the RPC maps, by name: `taken` is the name of a toolset of
     /// giles.toml, `globby` is refused for an agent's glob, `stuck` fails a step that can't be
     /// undone. Renaming `files` rewrites two globs of the agent `main`.
     async fn rename(&self, old: &str, new: &str) -> Result<ToolsetRenamed, ToolsetManagerError> {
@@ -354,9 +354,9 @@ impl ToolsetAdmin for FakeToolsets {
             if InstanceName::new(new).is_err() {
                 return Err(invalid("the name can only have letters, digits, and `-`"));
             }
-            if new == "libera" {
+            if new == "taken" {
                 return Err(invalid(
-                    "the name is taken by `[channel.libera]` in giles.toml",
+                    "the name is taken by `[toolset.taken]` in giles.toml",
                 ));
             }
             if state.stored_name(new).is_some_and(|other| other != own) {
@@ -1779,9 +1779,9 @@ async fn set_toolset_names_the_key_of_a_spec_that_is_refused() {
         // Or as a whole.
         (
             "a taken name",
-            "libera",
-            "url = \"https://libera.example.com/mcp\"\n",
-            "the name is taken by `[channel.libera]` in giles.toml",
+            "taken",
+            "url = \"https://taken.example.com/mcp\"\n",
+            "the name is taken by `[toolset.taken]` in giles.toml",
         ),
         // The text isn't a spec.
         (
@@ -2010,7 +2010,7 @@ async fn rename_toolset_answers_each_refusal_with_its_status() {
     for (new, reason) in [
         ("files", "the same"),
         ("not a name", "letters, digits"),
-        ("libera", "`[channel.libera]`"),
+        ("taken", "`[toolset.taken]`"),
     ] {
         let err = rename("files", new).await;
         assert_eq!(err.code(), Code::InvalidArgument, "{new}");

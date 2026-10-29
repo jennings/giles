@@ -39,10 +39,11 @@ The steps:
    are errors at `core.journal_mode`) and defaults to WAL ([Storage](storage.md#journal-modes));
    `Runtime::start` passes it to the store.
 3. Load `secrets.toml` ([Secrets](#secrets)).
-4. Check that instance names are unique across the three kinds, ignoring ASCII case (the restart and
-   rename commands address an instance by name alone, and macOS file systems are case-insensitive by
-   default), then validate each instance into its typed form, resolving secret references. Ignored
-   toolset tables take no part. A toolset goes through `Ctx::toolset`, the same function
+4. Check that instance names are unique within each kind, ignoring ASCII case (macOS file systems
+   are case-insensitive by default, so `Libera` and `libera` would share a directory). A provider, a
+   channel, and a toolset may share a name, because each kind has its own directories. Then validate
+   each instance into its typed form, resolving secret references. Ignored toolset tables take no
+   part. A toolset goes through `Ctx::toolset`, the same function
    [`validate_toolset`](#validating-one-toolset) uses.
 5. Load every agent: each directory in `agents/` not starting with `.` must have a valid name and an
    `agent.toml`. Models are checked against the configured provider instances.
@@ -201,13 +202,13 @@ now. The pieces, all in `giles_core::config`:
   rules of `Ctx::toolset` (which keys fit a stdio or a remote toolset, `command`, `url`, `env`
   names, `auth`, durations, skill paths, grants against the data root and socket directory,
   credentials resolved), then the checks that involve other instances: the name against every
-  provider, channel, and toolset of the configuration (`instance_named` finds the clash and
-  `name_clash` words it, the message `giles.toml` gives), and the binary directories
-  (`check_binary_dirs`). `ToolsetContext::replacing` names the toolset being edited or renamed: that
-  one instance is left out of the name check and of the other instances' grants and directories.
-  `None` adds a toolset, so every existing instance of the name, of any kind, is a clash. The
-  toolset's own name edits it. Its old name renames it: the new name must be free, and a change only
-  in case (`github` to `GitHub`) is allowed because the old instance is left out.
+  toolset of the configuration (`toolset_named` finds the clash and `name_clash` words it, the
+  message `giles.toml` gives; a provider or channel of the same name is another instance and doesn't
+  clash), and the binary directories (`check_binary_dirs`). `ToolsetContext::replacing` names the
+  toolset being edited or renamed: that one instance is left out of the name check and of the other
+  instances' grants and directories. `None` adds a toolset, so every existing toolset of the name is
+  a clash. The toolset's own name edits it. Its old name renames it: the new name must be free, and
+  a change only in case (`github` to `GitHub`) is allowed because the old instance is left out.
 - `ToolsetContext { root, secrets, options, config, replacing }`: the data root (with its socket
   directory), a `Secrets` loaded from `secrets.toml` by the caller (so a new secret needs no
   restart), the `LoadOptions` (built-ins, the environment for `{ env = ... }` references and `PATH`,
@@ -231,11 +232,11 @@ overlapping a plugin data root (`data/<kind>/`) is checked for the toolset being
 
 `ToolsetManager` ([Toolsets](toolsets.md#stored-toolsets)) is the caller for toolsets stored in the
 database. It reads `secrets.toml` for every validation and adds its own rules. A name that a
-`giles.toml` instance of any kind uses is refused, and so is `new`, the address of the web form for
-a new toolset. A name only an [ignored table](#ignored-toolset-tables) has is free. A stored toolset
-is a remote server: a spec without `url` is refused as an `Invalid` at `url`, and an `auth.bearer`
-that isn't `{ secret = "<name>" }` at `auth.bearer`. Stdio toolsets of `giles.toml` keep accepting
-every credential form in `env`.
+`[toolset.<name>]` table of `giles.toml` uses is refused, and so is `new`, the address of the web
+form for a new toolset. A name only an [ignored table](#ignored-toolset-tables) has is free. A
+stored toolset is a remote server: a spec without `url` is refused as an `Invalid` at `url`, and an
+`auth.bearer` that isn't `{ secret = "<name>" }` at `auth.bearer`. Stdio toolsets of `giles.toml`
+keep accepting every credential form in `env`.
 
 ## Secrets
 

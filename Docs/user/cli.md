@@ -217,18 +217,20 @@ on a `database: the stored toolset ... is now ...` line. `<old>` can be in any c
 be the same name in another case (`Notes` to `notes`). The command ignores a `[toolset.<name>]`
 table with `url`, as Giles does, and leaves it in `giles.toml`.
 
+A provider or channel with the same name keeps its own table and data.
+
 If you rename a `[toolset.<name>]` table without the command, run it before you start Giles again.
 It accepts the table already being renamed and moves the data, as
 [`giles channel rename`](#giles-channel-rename-old-new) does for a channel.
 
 Names use only letters, digits, and `-`. The command changes nothing and prints the reason if:
 
-- `<new>` is the name of another toolset or instance.
+- `<new>` is the name of another toolset, in `giles.toml` or stored in Giles.
 - `<new>` already has data. Renaming never merges two instances.
 - `<new>` is `new` (in any case), for a stored toolset.
 - `giles.toml` already has an ignored `[toolset.<new>]` table with `url`, and you rename a toolset
   configured in `giles.toml`. Remove the ignored table and run the command again.
-- `<old>` is a channel or a provider. The error names the command that renames it.
+- `<old>` isn't a toolset, in `giles.toml` or stored in Giles, and has no toolset data.
 - An agent has a glob that matches the toolset's tools without starting with `<old>__`, such as
   `files*`. The error lists them. Change them (to `files__*`, say) and run the command again.
 - `giles.toml` or an `agent.toml` can't be read or isn't valid TOML.
@@ -276,8 +278,7 @@ after the network, not the channel. [Instance rename](../technical/instance-rena
 everything the command touches.
 
 The command renames a channel and nothing else. A provider or toolset with the same name keeps its
-own data. If `<old>` is a provider or a toolset, the command refuses and tells you to run
-`giles provider rename` or `giles toolset rename` instead.
+own table and data.
 
 If you rename a table in `giles.toml` without this command, `giles serve` starts the renamed channel
 with no sessions, inbox, or directories of its own, and leaves the old name's data where it is. To
@@ -288,12 +289,11 @@ Once Giles has run the renamed channel, the command refuses, because `<new>` alr
 the channel has no sessions or other data of its own yet, remove `data/channel/<new>` and run the
 command. Otherwise you have to merge the two by hand.
 
-Names use only letters, digits, and `-`. `<new>` must not differ from another instance's name only
-in case. The command changes nothing and refuses if:
+Names use only letters, digits, and `-`. `<new>` must not differ from another channel's name only in
+case. The command changes nothing and refuses if:
 
 - `<old>` isn't a channel, and has no channel data.
 - `<new>` is also configured or already has data. Renaming never merges two instances.
-- `<new>` is the name of a toolset stored in Giles.
 - `giles.toml` or an `agent.toml` can't be read or isn't valid TOML.
 
 If a step fails, the command undoes the earlier ones and says what failed. If it's interrupted, for
@@ -333,5 +333,4 @@ It renames a provider and nothing else. These work as they do for
 - what makes the command refuse
 - what the command does when a step fails
 
-If `<old>` is a channel or a toolset, the command tells you to run `giles channel rename` or
-`giles toolset rename`.
+A channel or toolset with the same name keeps its own table and data.

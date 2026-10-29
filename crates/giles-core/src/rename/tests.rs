@@ -675,55 +675,225 @@ async fn bad_requests_are_refused_without_changing_anything() {
         "{err}"
     );
 
-    // Both configured: never a merge, even across kinds.
+    // Both configured: never a merge.
     let err = refused(&home, Kind::Channel, "libera", "web").await;
     assert!(matches!(err, RenameError::BothConfigured { .. }), "{err}");
-    let err = refused(&home, Kind::Channel, "libera", "github").await;
-    assert!(
-        matches!(
-            err,
-            RenameError::BothConfigured {
-                new_kind: Kind::Toolset,
-                ..
-            }
-        ),
-        "{err}"
-    );
 
-    // A new name that is another configured instance in a different case.
+    // A new name that is another configured instance of the kind in a different case.
     let err = refused(&home, Kind::Channel, "libera", "WEB").await;
     assert!(matches!(err, RenameError::CaseCollision { .. }), "{err}");
 }
 
-/// The command gives the kind: a name that is another kind's, in `giles.toml` or stored in the
-/// database, is refused with the command that renames it.
+/// Each kind has its own names: a name that only another kind has, in `giles.toml` or stored in
+/// the database, is not an instance of the command's kind.
 #[tokio::test]
-async fn a_name_of_another_kind_is_refused_with_the_command_that_renames_it() {
+async fn a_name_only_another_kind_has_is_an_unknown_instance() {
     let home = Home::populated().await;
     add_stored(&home, "notes", NOTES).await;
 
-    for (kind, old, actual) in [
-        (Kind::Provider, "libera", Kind::Channel),
-        (Kind::Toolset, "libera", Kind::Channel),
-        (Kind::Channel, "ollama", Kind::Provider),
-        (Kind::Toolset, "ollama", Kind::Provider),
-        (Kind::Channel, "github", Kind::Toolset),
-        (Kind::Provider, "github", Kind::Toolset),
-        (Kind::Channel, "notes", Kind::Toolset),
-        (Kind::Provider, "NOTES", Kind::Toolset),
+    for (kind, old) in [
+        (Kind::Provider, "libera"),
+        (Kind::Toolset, "libera"),
+        (Kind::Channel, "ollama"),
+        (Kind::Toolset, "ollama"),
+        (Kind::Channel, "github"),
+        (Kind::Provider, "github"),
+        (Kind::Channel, "notes"),
+        (Kind::Provider, "NOTES"),
     ] {
         let err = refused(&home, kind, old, "fresh").await;
         assert!(
-            matches!(&err, RenameError::WrongKind { requested, actual: found, .. }
-                if *requested == kind && *found == actual),
+            matches!(&err, RenameError::UnknownInstance { kind: found, .. } if *found == kind),
             "{kind} {old}: {err}"
         );
-        assert!(
-            err.to_string()
-                .contains(&format!("run `giles {actual} rename {old} fresh`")),
-            "{err}"
-        );
     }
+}
+
+/// The error says what the name lacks for the command's kind. When another kind has the name in
+/// `giles.toml`, it points at that kind's command.
+#[tokio::test]
+async fn an_unknown_instance_says_where_the_name_is_configured() {
+    let home = Home::populated().await;
+
+    let message = refused(&home, Kind::Toolset, "libera", "fresh")
+        .await
+        .to_string();
+    assert!(
+        message.starts_with(
+            "no toolset named \"libera\": giles.toml has no `[toolset.libera]` table and there is \
+             no toolset data under that name (no database rows, no directory under \
+             data/toolset/)"
+        ),
+        "{message}"
+    );
+    assert!(
+        message.ends_with("(giles.toml has `[channel.libera]`; use `giles channel rename`)"),
+        "{message}"
+    );
+
+    let message = refused(&home, Kind::Channel, "nothing", "fresh")
+        .await
+        .to_string();
+    assert_eq!(
+        message,
+        "no channel named \"nothing\": giles.toml has no `[channel.nothing]` table and there is no \
+         channel data under that name (no database rows or routes, no directory under \
+         data/channel/ or agents/*/groups/)"
+    );
+
+    // More than one other kind has the name.
+    let home = Home::new(&format!("{GILES_TOML}\n[provider.libera]\n")).await;
+    let message = refused(&home, Kind::Toolset, "libera", "fresh")
+        .await
+        .to_string();
+    assert!(
+        message.ends_with(
+            "(giles.toml has `[provider.libera]` and `[channel.libera]`; use `giles provider \
+             rename` or `giles channel rename`)"
+        ),
+        "{message}"
+    );
+}
+
+/// A provider, a channel, and a toolset that share a name stay apart: renaming one of them moves
+/// that kind's table, rows, directories, files, and references, and nothing of the other two.
+#[tokio::test]
+async fn renaming_one_kinds_instance_leaves_the_same_name_of_the_other_kinds_alone() {
+    const SHARED: &str = r##"[owner]
+identities = ["web:owner"]
+
+[provider.aperture]
+component = "openai"
+
+[channel.aperture]
+component = "irc"
+unsandboxed = true
+
+[toolset.aperture]
+command = "/bin/aperture"
+
+[[routes]]
+channel = "aperture"
+agent = "jeeves"
+"##;
+    const AGENT: &str = "models = [\"aperture/gpt\"]\n\
+                         tools = [\"aperture__*\"]\n\
+                         ask = [\"aperture__send\"]\n";
+    async fn shared_home() -> Home {
+        let home = Home::new(SHARED).await;
+        home.write("agents/jeeves/agent.toml", AGENT);
+        for kind in ["provider", "channel", "toolset"] {
+            home.write(&format!("data/{kind}/aperture/state"), kind);
+            home.write(&format!("run/pids/{kind}/aperture.pid"), "123\n");
+        }
+        home.write("cache/describe/channel/aperture.json", "{}");
+        home.write("cache/describe/provider/aperture.json", "{}");
+        home.write("cache/toolsets/aperture.json", "{}");
+        home.write("agents/jeeves/groups/aperture/chat/MEMORY.md", "quiet");
+        home.seed("aperture", "aperture").await;
+        home
+    }
+    async fn channel_sessions(home: &Home, name: &str) -> u64 {
+        home.store.instance_rows(Kind::Channel).await.unwrap()[name].sessions
+    }
+
+    // The provider.
+    let home = shared_home().await;
+    home.rename(Kind::Provider, "aperture", "gateway")
+        .await
+        .unwrap();
+    let giles = home.read("giles.toml");
+    assert!(giles.contains("[provider.gateway]"), "{giles}");
+    assert!(giles.contains("[channel.aperture]"), "{giles}");
+    assert!(giles.contains("[toolset.aperture]"), "{giles}");
+    assert!(giles.contains("channel = \"aperture\""), "{giles}");
+    // Only the model references are the provider's.
+    assert_eq!(
+        home.read("agents/jeeves/agent.toml"),
+        AGENT.replace("aperture/gpt", "gateway/gpt")
+    );
+    assert_eq!(home.read("data/provider/gateway/state"), "provider");
+    assert!(!home.path("data/provider/aperture").exists());
+    assert_eq!(home.read("data/channel/aperture/state"), "channel");
+    assert_eq!(home.read("data/toolset/aperture/state"), "toolset");
+    assert!(home.path("run/pids/provider/gateway.pid").is_file());
+    assert!(home.path("run/pids/channel/aperture.pid").is_file());
+    assert!(home.path("run/pids/toolset/aperture.pid").is_file());
+    assert!(home.path("cache/describe/provider/gateway.json").is_file());
+    assert!(home.path("cache/describe/channel/aperture.json").is_file());
+    assert!(home.path("cache/toolsets/aperture.json").is_file());
+    assert!(home.path("agents/jeeves/groups/aperture").is_dir());
+    assert_eq!(channel_sessions(&home, "aperture").await, 2);
+    let usage = home.store.instance_rows(Kind::Provider).await.unwrap();
+    assert_eq!(usage["gateway"].usage, 1);
+    assert!(!usage.contains_key("aperture"));
+    let config = home.load();
+    assert!(config.providers.contains_key("gateway"));
+    assert!(config.channels.contains_key("aperture"));
+    assert!(config.toolsets.contains_key("aperture"));
+
+    // The channel.
+    let home = shared_home().await;
+    let report = home
+        .rename(Kind::Channel, "aperture", "chat")
+        .await
+        .unwrap();
+    assert_eq!(report.legacy_routes, 1);
+    let giles = home.read("giles.toml");
+    assert!(giles.contains("[provider.aperture]"), "{giles}");
+    assert!(giles.contains("[channel.chat]"), "{giles}");
+    assert!(giles.contains("[toolset.aperture]"), "{giles}");
+    // Agents don't name a channel.
+    assert_eq!(home.read("agents/jeeves/agent.toml"), AGENT);
+    assert_eq!(home.read("data/channel/chat/state"), "channel");
+    assert_eq!(home.read("data/provider/aperture/state"), "provider");
+    assert_eq!(home.read("data/toolset/aperture/state"), "toolset");
+    assert!(home.path("run/pids/channel/chat.pid").is_file());
+    assert!(home.path("run/pids/provider/aperture.pid").is_file());
+    assert!(home.path("run/pids/toolset/aperture.pid").is_file());
+    assert!(home.path("cache/describe/channel/chat.json").is_file());
+    assert!(home.path("cache/describe/provider/aperture.json").is_file());
+    assert!(home.path("agents/jeeves/groups/chat").is_dir());
+    assert!(!home.path("agents/jeeves/groups/aperture").exists());
+    assert_eq!(channel_sessions(&home, "chat").await, 2);
+    let usage = home.store.instance_rows(Kind::Provider).await.unwrap();
+    assert_eq!(usage["aperture"].usage, 1);
+    let config = home.load();
+    assert!(config.providers.contains_key("aperture"));
+    assert!(config.channels.contains_key("chat"));
+    assert!(config.toolsets.contains_key("aperture"));
+
+    // The toolset.
+    let home = shared_home().await;
+    home.rename(Kind::Toolset, "aperture", "tools")
+        .await
+        .unwrap();
+    let giles = home.read("giles.toml");
+    assert!(giles.contains("[provider.aperture]"), "{giles}");
+    assert!(giles.contains("[channel.aperture]"), "{giles}");
+    assert!(giles.contains("[toolset.tools]"), "{giles}");
+    assert!(giles.contains("channel = \"aperture\""), "{giles}");
+    // Only the tool globs are the toolset's.
+    assert_eq!(
+        home.read("agents/jeeves/agent.toml"),
+        AGENT.replace("aperture__", "tools__")
+    );
+    assert_eq!(home.read("data/toolset/tools/state"), "toolset");
+    assert_eq!(home.read("data/provider/aperture/state"), "provider");
+    assert_eq!(home.read("data/channel/aperture/state"), "channel");
+    assert!(home.path("run/pids/toolset/tools.pid").is_file());
+    assert!(home.path("run/pids/provider/aperture.pid").is_file());
+    assert!(home.path("run/pids/channel/aperture.pid").is_file());
+    assert!(home.path("cache/toolsets/tools.json").is_file());
+    assert!(home.path("cache/describe/channel/aperture.json").is_file());
+    assert!(home.path("agents/jeeves/groups/aperture").is_dir());
+    assert_eq!(channel_sessions(&home, "aperture").await, 2);
+    let usage = home.store.instance_rows(Kind::Provider).await.unwrap();
+    assert_eq!(usage["aperture"].usage, 1);
+    let config = home.load();
+    assert!(config.providers.contains_key("aperture"));
+    assert!(config.channels.contains_key("aperture"));
+    assert!(config.toolsets.contains_key("tools"));
 }
 
 /// Data a removed instance left behind is moved by the command of its kind, whatever another
@@ -749,9 +919,10 @@ async fn left_behind_data_follows_the_kind_of_the_command_not_the_name() {
     assert_eq!(home.read("giles.toml"), by_hand);
 }
 
-/// Left-behind data can't move to a name that another kind's table has.
+/// Left-behind data can't move to a name that only another kind's table has: the new name has to
+/// be configured as the kind.
 #[tokio::test]
-async fn left_behind_data_cannot_move_to_the_name_of_another_kind() {
+async fn left_behind_data_cannot_move_to_a_name_only_another_kind_has() {
     let home = Home::new(
         "[owner]\nidentities = [\"web:owner\"]\n[provider.libera-chat]\ncomponent = \"openai\"\n",
     )
@@ -762,9 +933,8 @@ async fn left_behind_data_cannot_move_to_the_name_of_another_kind() {
     assert!(
         matches!(
             &err,
-            RenameError::NewIsConfigured {
+            RenameError::NotConfigured {
                 kind: Kind::Channel,
-                new_kind: Kind::Provider,
                 ..
             }
         ),
@@ -772,10 +942,11 @@ async fn left_behind_data_cannot_move_to_the_name_of_another_kind() {
     );
 }
 
-/// A toolset stored in the database is an instance: its name can't be given to a table of
-/// `giles.toml`, ignoring case, which would take the name from it at the next start.
+/// A toolset stored in the database is a toolset: its name can't be given to a `[toolset.*]` table
+/// of `giles.toml`, ignoring case, which would take the name from it at the next start. A
+/// channel or a provider has its own names, so it may take the name.
 #[tokio::test]
-async fn a_new_name_that_a_stored_toolset_has_is_refused() {
+async fn a_new_name_that_a_stored_toolset_has_is_refused_for_a_toolset_only() {
     let home = Home::populated().await;
     home.store
         .toolset_insert(
@@ -786,16 +957,21 @@ async fn a_new_name_that_a_stored_toolset_has_is_refused() {
         .await
         .unwrap();
     for new in ["notes", "Notes", "NOTES"] {
-        let err = refused(&home, Kind::Channel, "libera", new).await;
+        let err = refused(&home, Kind::Toolset, "github", new).await;
         assert!(
             matches!(&err, RenameError::StoredToolset { existing, .. } if existing == "Notes"),
             "{new}: {err}"
         );
     }
-    // Another name still works.
-    home.rename(Kind::Channel, "libera", "libera-chat")
+    // The other kinds take the name, and the stored toolset stays as it is.
+    home.rename(Kind::Channel, "libera", "notes").await.unwrap();
+    home.rename(Kind::Provider, "ollama", "NOTES")
         .await
         .unwrap();
+    assert_eq!(stored_names(&home).await, ["Notes"]);
+    let config = home.load();
+    assert!(config.channels.contains_key("notes"));
+    assert!(config.providers.contains_key("NOTES"));
 }
 
 const NOTES: &str = r#"{ "url": "https://notes.example.com/mcp" }"#;
@@ -850,29 +1026,22 @@ async fn a_stored_toolset_is_renamed_with_its_row_and_agent_globs() {
 }
 
 #[tokio::test]
-async fn a_stored_toolset_cannot_take_the_name_of_another_instance() {
+async fn a_stored_toolset_cannot_take_the_name_of_another_toolset() {
     let home = Home::populated().await;
     add_stored(&home, "notes", NOTES).await;
     add_stored(&home, "memos", NOTES).await;
     let before = home.store.toolsets().await.unwrap();
 
-    // The tables of `giles.toml`, of every kind, own their names.
-    for (new, kind) in [
-        ("github", Kind::Toolset),
-        ("libera", Kind::Channel),
-        ("ollama", Kind::Provider),
-    ] {
-        let err = refused(&home, Kind::Toolset, "notes", new).await;
-        assert!(
-            matches!(&err, RenameError::NewIsConfigured { old, new_kind, .. }
-                if old == "notes" && *new_kind == kind),
-            "{new}: {err}"
-        );
-    }
-    for new in ["GITHUB", "Libera"] {
-        let err = refused(&home, Kind::Toolset, "notes", new).await;
-        assert!(matches!(err, RenameError::CaseCollision { .. }), "{err}");
-    }
+    // The `[toolset.*]` tables of `giles.toml` own their names, ignoring case. A channel or a
+    // provider of the name is no toolset, so it doesn't count.
+    let err = refused(&home, Kind::Toolset, "notes", "github").await;
+    assert!(
+        matches!(&err, RenameError::NewIsConfigured { kind: Kind::Toolset, old, .. }
+            if old == "notes"),
+        "{err}"
+    );
+    let err = refused(&home, Kind::Toolset, "notes", "GITHUB").await;
+    assert!(matches!(err, RenameError::CaseCollision { .. }), "{err}");
     // So does another stored toolset, ignoring case.
     for new in ["memos", "MEMOS"] {
         let err = refused(&home, Kind::Toolset, "notes", new).await;
@@ -1023,6 +1192,97 @@ async fn a_stored_rename_that_stopped_after_the_row_is_finished_by_running_it_ag
     // With nothing left under the old name there is nothing to finish: it is no instance.
     let err = refused(&home, Kind::Toolset, "notes", "memos").await;
     assert!(matches!(err, RenameError::UnknownInstance { .. }), "{err}");
+}
+
+/// A stored toolset may have the name of a channel: `giles.toml`'s `[channel.libera]` is no
+/// toolset, so the toolset rename moves the stored row and the agents' globs and leaves the
+/// channel alone.
+#[tokio::test]
+async fn a_stored_toolset_named_like_a_channel_is_renamed_without_touching_the_channel() {
+    let home = Home::populated().await;
+    add_stored(&home, "libera", NOTES).await;
+    home.write(
+        "agents/jeeves/agent.toml",
+        &NOTES_AGENT.replace("notes__", "libera__"),
+    );
+    let rows = home.rows().await;
+    assert_eq!(rows["libera"].sessions, 2);
+
+    let report = home.rename(Kind::Toolset, "libera", "memos").await.unwrap();
+
+    assert_eq!(report.kind, Kind::Toolset);
+    assert!(report.stored_toolset);
+    assert!(!report.config_table);
+    assert_eq!(report.legacy_routes, 0);
+    assert_eq!(
+        report.agent_files,
+        [(home.path("agents/jeeves/agent.toml"), 2)]
+    );
+    assert!(report.moved.is_empty(), "{:?}", report.moved);
+    assert_eq!(stored_names(&home).await, ["memos"]);
+    assert_eq!(
+        home.read("agents/jeeves/agent.toml"),
+        NOTES_AGENT.replace("notes__", "memos__")
+    );
+    // The channel keeps its table, routes, rows, directories, and files.
+    assert_eq!(home.read("giles.toml"), GILES_TOML);
+    assert_eq!(home.rows().await, rows);
+    assert!(home.path("data/channel/libera/state.json").is_file());
+    assert!(
+        home.path("agents/jeeves/groups/libera/%23giles/MEMORY.md")
+            .is_file()
+    );
+    assert!(home.path("run/pids/channel/libera.pid").is_file());
+}
+
+/// The toolset rename resumes a stored rename that stopped after the row moved, even when a
+/// channel has the old name.
+#[tokio::test]
+async fn a_stored_rename_is_finished_while_a_channel_has_the_old_name() {
+    let home = Home::populated().await;
+    add_stored(&home, "memos", NOTES).await;
+    home.write(
+        "agents/jeeves/agent.toml",
+        &NOTES_AGENT.replace("notes__", "libera__"),
+    );
+    let rows = home.rows().await;
+
+    let report = home.rename(Kind::Toolset, "libera", "memos").await.unwrap();
+
+    assert!(report.stored_toolset);
+    assert_eq!(stored_names(&home).await, ["memos"]);
+    assert_eq!(
+        home.read("agents/jeeves/agent.toml"),
+        NOTES_AGENT.replace("notes__", "memos__")
+    );
+    assert_eq!(home.read("giles.toml"), GILES_TOML);
+    assert_eq!(home.rows().await, rows);
+    assert!(home.path("data/channel/libera/state.json").is_file());
+}
+
+/// A stored toolset may be renamed to a name a channel or a provider has: each kind has its own
+/// names, so the toolset takes nothing from them.
+#[tokio::test]
+async fn a_stored_toolset_may_take_the_name_of_a_channel_or_a_provider() {
+    for new in ["libera", "ollama"] {
+        let home = Home::populated().await;
+        add_stored(&home, "notes", NOTES).await;
+        home.write("agents/jeeves/agent.toml", NOTES_AGENT);
+        let rows = home.rows().await;
+
+        let report = home.rename(Kind::Toolset, "notes", new).await.unwrap();
+
+        assert!(report.stored_toolset, "{new}");
+        assert_eq!(stored_names(&home).await, [new]);
+        assert_eq!(
+            home.read("agents/jeeves/agent.toml"),
+            NOTES_AGENT.replace("notes__", &format!("{new}__")),
+            "{new}"
+        );
+        assert_eq!(home.read("giles.toml"), GILES_TOML, "{new}");
+        assert_eq!(home.rows().await, rows, "{new}");
+        assert!(home.path("data/channel/libera/state.json").is_file());
+    }
 }
 
 /// The rules for the name of a stored toolset hold for a rename in the database too.

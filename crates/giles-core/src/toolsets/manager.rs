@@ -18,7 +18,7 @@
 //! The extra rules beyond `validate_toolset`:
 //!
 //! - the name `new` is reserved, because it is the address of the form for a new toolset;
-//! - a name that a `giles.toml` instance uses belongs to that instance;
+//! - a name that a `[toolset.<name>]` table of `giles.toml` uses belongs to that toolset;
 //! - the spec has `url` (`validate_toolset` then refuses the keys of a stdio server next to it);
 //! - a bearer token is `{ secret = "<name>" }`, so the token is in `secrets.toml`, not in the
 //!   database or the process environment.
@@ -52,8 +52,8 @@
 //! take turns), and [`ToolsetManager::rename_preview`] runs the same checks and says what would
 //! change. A remote toolset has no data directory, so no data moves.
 //!
-//! 1. The new name must be valid and free among every kind of instance (the stored toolsets and
-//!    the instances of `giles.toml`), as for a new toolset. The old
+//! 1. The new name must be valid and free among the toolsets (the stored ones and those of
+//!    `giles.toml`), as for a new toolset. The old
 //!    name is exempt, so a stored toolset can be renamed to its own name in another case. Then
 //!    every agent's `agent.toml` is read: a glob that matches the toolset's tools without
 //!    starting with `<old>__` (`github*`) can't be rewritten safely, and refuses the rename
@@ -67,7 +67,7 @@
 //! 5. The toolset is renamed in the live configuration, each rewritten agent replaces the old
 //!    one there, and the toolset is started under the new name. A failed stored toolset is
 //!    renamed too (it is started if it validates now, and else stays failed under the new name);
-//!    a stored toolset whose name an instance of `giles.toml` took leaves the agents' globs under
+//!    a stored toolset whose name a toolset of `giles.toml` took leaves the agents' globs under
 //!    the name to that instance.
 //!
 //! A step that fails undoes the ones before it (the agents' files and the row are put back as
@@ -407,7 +407,7 @@ impl ToolsetManager {
     ///
     /// [`ToolsetManagerError::Exists`] if a stored toolset has the name, ignoring ASCII case;
     /// [`ToolsetManagerError::Invalid`] if the name or the spec is refused (the key says where),
-    /// including a name that a `giles.toml` instance uses; [`ToolsetManagerError::Store`] if the
+    /// including a name that a toolset of `giles.toml` uses; [`ToolsetManagerError::Store`] if the
     /// database failed. Nothing is stored unless the toolset is added. If the row is stored but
     /// the toolset can't be started after all, the error is `Invalid` at the root and the toolset
     /// is failed.
@@ -613,7 +613,7 @@ impl ToolsetManager {
     }
 
     /// What must hold for `name` to be a toolset's name, before the spec is looked at: it isn't
-    /// the address of the form for a new toolset and no instance of `giles.toml` has it. Whether
+    /// the address of the form for a new toolset and no toolset of `giles.toml` has it. Whether
     /// another stored toolset has it is the caller's business.
     fn check_name(&self, name: &str) -> Result<(), ToolsetError> {
         let whole = |reason: String| ToolsetError {
@@ -627,32 +627,26 @@ impl ToolsetManager {
             )));
         }
         let config = self.config.get();
-        // The names before the spec: a name `giles.toml` has is that instance's whatever the
+        // The names before the spec: a name `giles.toml` has is that toolset's whatever the
         // spec says.
-        if let Some((kind, other)) = self.file_instance(&config, name) {
+        if let Some(other) = self.file_toolset(&config, name) {
             return Err(whole(format!(
-                "the name is taken by `[{kind}.{other}]` in giles.toml"
+                "the name is taken by `[toolset.{other}]` in giles.toml"
             )));
         }
         Ok(())
     }
 
-    /// The instance of `giles.toml`, of any kind, whose name is `name` ignoring ASCII case: every
-    /// provider and channel, and the toolsets that aren't stored ones.
-    fn file_instance(&self, config: &Config, name: &str) -> Option<(Kind, String)> {
+    /// The toolset of `giles.toml`, the ones that aren't stored, whose name is `name` ignoring
+    /// ASCII case. A provider or a channel with the name is another instance and doesn't count.
+    fn file_toolset(&self, config: &Config, name: &str) -> Option<String> {
         let state = lock(&self.state);
-        let providers = config.providers.keys().map(|other| (Kind::Provider, other));
-        let channels = config.channels.keys().map(|other| (Kind::Channel, other));
-        let toolsets = config
+        config
             .toolsets
             .keys()
             .filter(|other| !state.running.contains(other.as_str()))
-            .map(|other| (Kind::Toolset, other));
-        providers
-            .chain(channels)
-            .chain(toolsets)
-            .find(|(_, other)| other.as_str().eq_ignore_ascii_case(name))
-            .map(|(kind, other)| (kind, other.to_string()))
+            .find(|other| other.as_str().eq_ignore_ascii_case(name))
+            .map(ToString::to_string)
     }
 
     /// Puts a validated `instance` of the stored toolset `name` into the live configuration and

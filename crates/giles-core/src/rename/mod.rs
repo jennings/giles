@@ -77,30 +77,27 @@ pub enum RenameError {
         new: String,
     },
     /// The old name isn't configured as the kind and has no data of it.
-    #[error(
-        "no {kind} named {old:?}: it is not configured in giles.toml and has no data (no \
-         database rows or routes, no directory under data/{kind}/ or agents/*/groups/)"
-    )]
+    #[error("{}", unknown_instance_message(*.kind, .old, .elsewhere))]
     UnknownInstance {
         /// The kind being renamed.
         kind: Kind,
         /// The old name.
         old: String,
+        /// The other kinds of which `giles.toml` configures an instance with the old name.
+        elsewhere: Vec<Kind>,
     },
-    /// Both names are configured.
+    /// Both names are configured as the kind.
     #[error(
-        "both [{old_kind}.{old}] and [{new_kind}.{new}] are in giles.toml: remove or rename one \
-         of them first; renaming never merges two instances"
+        "both [{kind}.{old}] and [{kind}.{new}] are in giles.toml: remove or rename one of them \
+         first; renaming never merges two instances"
     )]
     BothConfigured {
+        /// The kind being renamed.
+        kind: Kind,
         /// The old name.
         old: String,
-        /// Its kind.
-        old_kind: Kind,
         /// The new name.
         new: String,
-        /// Its kind.
-        new_kind: Kind,
     },
     /// The old name has data, but neither name is configured.
     #[error(
@@ -116,27 +113,14 @@ pub enum RenameError {
         /// The new name.
         new: String,
     },
-    /// The old name is an instance of another kind (a toolset stored in the database counts).
+    /// The new name differs only in case from another configured instance of the kind.
     #[error(
-        "{old:?} is a {actual}, not a {requested}: run `giles {actual} rename {old} {new}` \
-         instead"
-    )]
-    WrongKind {
-        /// The old name.
-        old: String,
-        /// The new name.
-        new: String,
-        /// The kind the command renames.
-        requested: Kind,
-        /// The kind `old` is.
-        actual: Kind,
-    },
-    /// The new name differs only in case from another configured instance.
-    #[error(
-        "{new:?} differs only in case from the configured instance {existing:?}; instance names \
-         are unique ignoring case"
+        "{new:?} differs only in case from the configured {kind} {existing:?}; {kind} names are \
+         unique ignoring case"
     )]
     CaseCollision {
+        /// The kind being renamed.
+        kind: Kind,
         /// The new name.
         new: String,
         /// The configured instance.
@@ -144,8 +128,8 @@ pub enum RenameError {
     },
     /// A toolset stored in the database has the new name, which giles.toml would gain.
     #[error(
-        "{new:?} is the name of the toolset {existing:?} stored in the database; instance names \
-         are unique across kinds, ignoring case. Remove that toolset or choose another name"
+        "{new:?} is the name of the toolset {existing:?} stored in the database; toolset names \
+         are unique, ignoring case. Remove that toolset or choose another name"
     )]
     StoredToolset {
         /// The new name.
@@ -161,11 +145,10 @@ pub enum RenameError {
         /// Why.
         reason: String,
     },
-    /// The new name is configured, as some kind, so it can't take the data of the old one.
+    /// The new name is configured as the kind, so it can't take the data of the old one.
     #[error(
-        "cannot rename the {kind} {old:?} to {new:?}: giles.toml configures [{new_kind}.{new}], \
-         and instance names are unique across kinds, so remove or rename that table first; \
-         renaming never merges two instances"
+        "cannot rename the {kind} {old:?} to {new:?}: giles.toml configures [{kind}.{new}], so \
+         remove or rename that table first; renaming never merges two instances"
     )]
     NewIsConfigured {
         /// The kind being renamed.
@@ -174,8 +157,6 @@ pub enum RenameError {
         old: String,
         /// The new name.
         new: String,
-        /// The kind of the table that has it.
-        new_kind: Kind,
     },
     /// The new name already has data.
     #[error(
@@ -231,6 +212,36 @@ fn failed_message(step: &str, error: &str, undo_errors: &[String]) -> String {
     }
 }
 
+fn unknown_instance_message(kind: Kind, old: &str, elsewhere: &[Kind]) -> String {
+    // Only a channel has routes, and only a channel's groups are under the agents' directories.
+    let data = if kind == Kind::Channel {
+        "no database rows or routes, no directory under data/channel/ or agents/*/groups/"
+            .to_owned()
+    } else {
+        format!("no database rows, no directory under data/{kind}/")
+    };
+    let mut message = format!(
+        "no {kind} named {old:?}: giles.toml has no `[{kind}.{old}]` table and there is no {kind} \
+         data under that name ({data})"
+    );
+    if !elsewhere.is_empty() {
+        let tables: Vec<String> = elsewhere
+            .iter()
+            .map(|other| format!("`[{other}.{old}]`"))
+            .collect();
+        let commands: Vec<String> = elsewhere
+            .iter()
+            .map(|other| format!("`giles {other} rename`"))
+            .collect();
+        message = format!(
+            "{message} (giles.toml has {}; use {})",
+            tables.join(" and "),
+            commands.join(" or ")
+        );
+    }
+    message
+}
+
 /// Renames the `kind` instance `old` to `new`: the database rows, the directories, and the
 /// instance's table and references in the configuration. The caller proves the core is stopped by
 /// holding `lock`, the data root's single-instance lock.
@@ -245,9 +256,8 @@ fn failed_message(step: &str, error: &str, undo_errors: &[String]) -> String {
 /// (`agents/<agent>/memory.db`, if it has one). A failure at any step undoes the earlier ones and
 /// changes nothing.
 ///
-/// Only `kind`'s rows, directories and references are looked at or changed. A name that is
-/// configured as another kind is refused ([`RenameError::WrongKind`]); instance names are still
-/// unique across kinds.
+/// Only `kind`'s rows, directories and references are looked at or changed. Another kind's
+/// instance of the same name is a different instance and is left alone.
 ///
 /// # Errors
 ///
@@ -285,15 +295,26 @@ pub async fn rename_instance(
         reason: e.to_string(),
     })?;
     let configured = edit::configured(&doc);
-    // Whether `giles.toml` configures `name` as an instance of `kind`, and as an instance of any
-    // kind (names are unique across kinds).
+    // Whether `giles.toml` configures `name` as an instance of `kind`. Another kind's instance of
+    // the same name is another instance, so it is never looked at.
     let configured_as = |name: &str| configured.contains(&(kind, name.to_owned()));
-    let configured_kind = |name: &str| edit::kind_of(&configured, name);
+    // The other kinds `giles.toml` configures an instance named `name` of, for the error that says
+    // `name` isn't an instance of `kind`.
+    let elsewhere = |name: &str| -> Vec<Kind> {
+        Kind::ALL
+            .into_iter()
+            .filter(|other| *other != kind && configured.contains(&(*other, name.to_owned())))
+            .collect()
+    };
     // A name that differs from `old` in case only is the same name, which is reported below.
-    if let Some((_, existing)) = configured.iter().find(|(_, name)| {
-        name.eq_ignore_ascii_case(new) && name != new && !name.eq_ignore_ascii_case(old)
+    if let Some((_, existing)) = configured.iter().find(|(k, name)| {
+        *k == kind
+            && name.eq_ignore_ascii_case(new)
+            && name != new
+            && !name.eq_ignore_ascii_case(old)
     }) {
         return Err(RenameError::CaseCollision {
+            kind,
             new: new.to_owned(),
             existing: existing.clone(),
         });
@@ -322,8 +343,8 @@ pub async fn rename_instance(
     // with `old`; running the command again finishes it. The names are compared exactly, and a
     // rename that only changes the case can't be told from a finished one, so it isn't resumed.
     let stored_resumed = kind == Kind::Toolset
-        && configured_kind(old).is_none()
-        && configured_kind(new).is_none()
+        && !configured_as(old)
+        && !configured_as(new)
         && !old.eq_ignore_ascii_case(new)
         && stored.iter().any(|t| t.name == new)
         && !stored
@@ -331,32 +352,13 @@ pub async fn rename_instance(
             .any(|t| t.name != new && t.name.eq_ignore_ascii_case(old));
     // Unless `giles.toml` configures `old`, a stored toolset of that name (ignoring case) is the
     // one to rename.
-    let stored_old = if kind == Kind::Toolset && configured_kind(old).is_none() && !stored_resumed {
+    let stored_old = if kind == Kind::Toolset && !configured_as(old) && !stored_resumed {
         stored.iter().find(|t| t.name.eq_ignore_ascii_case(old))
     } else {
         None
     };
     let stored_toolset = stored_old.is_some() || stored_resumed;
-    // `old` isn't a `kind` instance, so say what it is. Not when the operator renamed the table
-    // by hand: `old` is then a name this kind has data under, whatever else uses it now.
     let old_configured = configured_as(old);
-    let data_left = !old_configured && configured_as(new) && has_data(old);
-    if !old_configured && !data_left && !stored_toolset {
-        let actual = configured_kind(old).or_else(|| {
-            stored
-                .iter()
-                .any(|t| t.name.eq_ignore_ascii_case(old))
-                .then_some(Kind::Toolset)
-        });
-        if let Some(actual) = actual {
-            return Err(RenameError::WrongKind {
-                old: old.to_owned(),
-                new: new.to_owned(),
-                requested: kind,
-                actual,
-            });
-        }
-    }
     // From here on the name as stored.
     let old = stored_old.map_or(old, |row| row.name.as_str());
     // Names that differ only in case are the same name, but a stored toolset can change its case.
@@ -366,14 +368,11 @@ pub async fn rename_instance(
             new: new.to_owned(),
         });
     }
-    if stored_old.is_some()
-        && let Some(new_kind) = configured_kind(new)
-    {
+    if stored_old.is_some() && configured_as(new) {
         return Err(RenameError::NewIsConfigured {
             kind,
             old: old.to_owned(),
             new: new.to_owned(),
-            new_kind,
         });
     }
     // The rules a stored toolset's name has anywhere else. A resumed rename already passed them.
@@ -388,7 +387,8 @@ pub async fn rename_instance(
     }
     // A name a stored toolset has can't be given to a table of `giles.toml` (which would take the
     // name from it at the next start), or to another stored toolset.
-    if configured_kind(new).is_none()
+    if kind == Kind::Toolset
+        && !configured_as(new)
         && !stored_resumed
         && let Some(existing) = stored.iter().find(|t| {
             t.name.eq_ignore_ascii_case(new) && stored_old.is_none_or(|row| row.name != t.name)
@@ -402,32 +402,24 @@ pub async fn rename_instance(
 
     if !stored_toolset {
         if old_configured {
-            if let Some(new_kind) = configured_kind(new) {
+            if configured_as(new) {
                 return Err(RenameError::BothConfigured {
+                    kind,
                     old: old.to_owned(),
-                    old_kind: kind,
                     new: new.to_owned(),
-                    new_kind,
                 });
             }
         } else if !has_data(old) {
             return Err(RenameError::UnknownInstance {
                 kind,
                 old: old.to_owned(),
+                elsewhere: elsewhere(old),
             });
         } else if !configured_as(new) {
-            return Err(match configured_kind(new) {
-                Some(new_kind) => RenameError::NewIsConfigured {
-                    kind,
-                    old: old.to_owned(),
-                    new: new.to_owned(),
-                    new_kind,
-                },
-                None => RenameError::NotConfigured {
-                    kind,
-                    old: old.to_owned(),
-                    new: new.to_owned(),
-                },
+            return Err(RenameError::NotConfigured {
+                kind,
+                old: old.to_owned(),
+                new: new.to_owned(),
             });
         }
     }
@@ -473,6 +465,7 @@ pub async fn rename_instance(
         return Err(RenameError::UnknownInstance {
             kind,
             old: old.to_owned(),
+            elsewhere: elsewhere(old),
         });
     }
     // The row goes first, as `giles.toml` is rewritten before the agents' files and directories.

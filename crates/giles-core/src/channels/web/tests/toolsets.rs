@@ -620,12 +620,11 @@ async fn a_taken_name_is_a_conflict_and_a_bad_name_is_not() {
     let t = env.toolsets("").await;
     let (status, _, _) = t.post("/admin/mcp-servers", &remote_form("box")).await;
     assert_eq!(status, StatusCode::SEE_OTHER);
-    // A stored toolset has the name (ignoring case), and so does `giles.toml`, and a channel.
+    // A stored toolset has the name (ignoring case), and so does a toolset of `giles.toml`.
     for (name, error) in [
         ("box", "there is already a toolset with that name"),
         ("BOX", "there is already a toolset with that name"),
         ("files", "the name is taken by"),
-        ("web", "the name is taken by"),
     ] {
         let (status, html, _) = t.post("/admin/mcp-servers", &remote_form(name)).await;
         assert_eq!(status, StatusCode::CONFLICT, "{name}");
@@ -641,6 +640,11 @@ async fn a_taken_name_is_a_conflict_and_a_bad_name_is_not() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{name:?}");
     }
     assert_eq!(stored(&env).await, ["box"]);
+
+    // The channel `web` is another kind of instance, so its name is free for a toolset.
+    let (status, _, _) = t.post("/admin/mcp-servers", &remote_form("web")).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(stored(&env).await, ["box", "web"]);
 }
 
 #[tokio::test]

@@ -52,10 +52,10 @@ next lookup.
 
 Toolsets change the same way, each change swapping in a new `Config` and bumping `subscribe()`:
 
-- `add_toolset(ToolsetInstance)` adds one and refuses a name that any other instance has, of any
-  kind (provider, channel, or toolset), ignoring ASCII case (`InstanceExists`, naming the kind and
-  the instance that has it). Instance names key data directories and tool prefixes, and are unique
-  across kinds, as in `giles.toml`.
+- `add_toolset(ToolsetInstance)` adds one and refuses a name that another toolset has, ignoring
+  ASCII case (`InstanceExists`, naming the toolset that has it). Toolset names key data directories
+  and tool prefixes, and are unique among toolsets, as in `giles.toml`. A provider or a channel may
+  have the same name.
 - `replace_toolset(ToolsetInstance)` swaps in an edited toolset under its name (`NoSuchToolset` if
   there is none).
 - `remove_toolset(&InstanceName)` takes one out and returns it; snapshots taken before still have
