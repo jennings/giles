@@ -70,8 +70,9 @@ The reader is someone installing and running Giles. Implementation detail belong
 - Use the existing labels: `bug`, `enhancement`, `documentation`, `question`, `help wanted`.
 - An issue says what and why, what done looks like, and any decisions the owner needs to make (label
   those `question`).
-- Before starting work, find or file its issue. Work the owner asked for that has no issue gets one
-  first.
+- Issues exist to remember work we aren't doing right now. Don't file a new issue for a small
+  feature or bug fix you're implementing immediately, but search for an existing matching one.
+  Otherwise, find or file the issue before starting.
 - Commit messages reference the issue, so it closes when the work reaches `main` (closing keywords
   act when the commit lands on the default branch):
   - Put `Fixes #N` (or `Closes #N`) as a footer line on the commit that completes the issue.
