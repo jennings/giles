@@ -1,9 +1,18 @@
 //! Instance names in the database (PLAN 7.2): which names the rows use, and moving them all to a
 //! new name for `giles instance rename`.
 //!
-//! An instance name appears in `sessions.channel`, `inbox.instance`, `outbox.instance`,
-//! `usage.provider`, `routes.channel`, and in the `provider` field of each assistant message's
-//! `meta` JSON. No other column or JSON payload holds one (Docs/technical/instance-rename.md has
+//! The kinds of instance have separate namespaces, so every operation here takes the [`Kind`] and
+//! touches only the places that kind is named in. A provider and a channel that share a name
+//! don't share rows.
+//!
+//! - A channel is named in `sessions.channel`, `inbox.instance`, `outbox.instance`, and
+//!   `routes.channel`.
+//! - A provider is named in `usage.provider` and in the `provider` field of each assistant
+//!   message's `meta` JSON.
+//! - A toolset is named in none of them. A stored toolset is a row of its own
+//!   ([`Store::toolset_rename`]), and the agents' files that mention it aren't the database's.
+//!
+//! No other column or JSON payload holds an instance name (Docs/technical/instance-rename.md has
 //! the audit).
 //!
 //! Routes name a channel instance but aren't data: [`Store::instance_rows`] doesn't count them, so
@@ -12,12 +21,14 @@
 
 use std::collections::BTreeMap;
 
+use giles_types::Kind;
 use rusqlite::{Connection, params};
 
 use crate::{BoxError, Error, Result, Store, query_all};
 
-/// Rows that use an instance name, for [`Store::instance_rows`]. Messages are not counted: every
-/// assistant message with a provider has a `usage` row, so they add no information.
+/// Rows that use an instance name, for [`Store::instance_rows`]. Only the columns of the kind
+/// asked for are filled in; the others are zero. Messages are not counted: every assistant message
+/// with a provider has a `usage` row, so they add no information.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InstanceRows {
     /// Sessions of the channel instance (`sessions.channel`).
@@ -55,48 +66,103 @@ impl RenamedRows {
     }
 }
 
-/// How a row's count is read: the table, the column holding the name.
-const NAME_COLUMNS: [(&str, &str); 4] = [
-    ("sessions", "channel"),
-    ("inbox", "instance"),
-    ("outbox", "instance"),
-    ("usage", "provider"),
+impl From<InstanceRows> for RenamedRows {
+    fn from(rows: InstanceRows) -> Self {
+        Self {
+            sessions: rows.sessions,
+            inbox: rows.inbox,
+            outbox: rows.outbox,
+            usage: rows.usage,
+            ..Self::default()
+        }
+    }
+}
+
+/// A column that holds an instance name, and the count it feeds.
+struct NameColumn {
+    table: &'static str,
+    column: &'static str,
+    field: fn(&mut InstanceRows) -> &mut u64,
+}
+
+const CHANNEL_COLUMNS: [NameColumn; 3] = [
+    NameColumn {
+        table: "sessions",
+        column: "channel",
+        field: |rows| &mut rows.sessions,
+    },
+    NameColumn {
+        table: "inbox",
+        column: "instance",
+        field: |rows| &mut rows.inbox,
+    },
+    NameColumn {
+        table: "outbox",
+        column: "instance",
+        field: |rows| &mut rows.outbox,
+    },
 ];
+
+const PROVIDER_COLUMNS: [NameColumn; 1] = [NameColumn {
+    table: "usage",
+    column: "provider",
+    field: |rows| &mut rows.usage,
+}];
+
+/// The columns that count as data for `kind`: where a rename of it looks for rows to refuse a
+/// merge, and what [`Store::instance_rows`] lists. Routes and messages aren't among them.
+fn name_columns(kind: Kind) -> &'static [NameColumn] {
+    match kind {
+        Kind::Channel => &CHANNEL_COLUMNS,
+        Kind::Provider => &PROVIDER_COLUMNS,
+        Kind::Toolset => &[],
+    }
+}
 
 fn count(conn: &Connection, sql: &str, name: &str) -> Result<u64> {
     let n: i64 = conn.query_row(sql, [name], |row| row.get(0))?;
     u64::try_from(n).map_err(|_| Error::corrupt("a negative row count"))
 }
 
-/// The number of rows that use `name`, by table. Messages are counted by their `meta`.
-fn rows_using(conn: &Connection, name: &str) -> Result<RenamedRows> {
-    let [sessions, inbox, outbox, usage] = NAME_COLUMNS.map(|(table, column)| {
-        count(
+/// The number of rows that use `name` as an instance of `kind`, by table. Provider messages are
+/// counted by their `meta`.
+fn rows_using(conn: &Connection, kind: Kind, name: &str) -> Result<RenamedRows> {
+    let mut counts = InstanceRows::default();
+    for NameColumn {
+        table,
+        column,
+        field,
+    } in name_columns(kind)
+    {
+        *field(&mut counts) = count(
             conn,
             &format!("SELECT count(*) FROM {table} WHERE {column} = ?1"),
             name,
-        )
-    });
-    Ok(RenamedRows {
-        sessions: sessions?,
-        inbox: inbox?,
-        outbox: outbox?,
-        usage: usage?,
-        messages: count(
+        )?;
+    }
+    let mut rows = RenamedRows::from(counts);
+    if kind == Kind::Provider {
+        rows.messages = count(
             conn,
             "SELECT count(*) FROM messages WHERE meta ->> '$.provider' = ?1",
             name,
-        )?,
-        routes: 0,
-    })
+        )?;
+    }
+    Ok(rows)
 }
 
 impl Store {
-    /// Every name the rows use, with how many rows use it, sorted by name. Reads one snapshot.
-    pub async fn instance_rows(&self) -> Result<BTreeMap<String, InstanceRows>> {
-        self.read(|conn| {
+    /// Every name the rows use for an instance of `kind`, with how many rows use it, sorted by
+    /// name. Reads one snapshot. A toolset has no rows, so the result is empty.
+    pub async fn instance_rows(&self, kind: Kind) -> Result<BTreeMap<String, InstanceRows>> {
+        self.read(move |conn| {
             let mut names: BTreeMap<String, InstanceRows> = BTreeMap::new();
-            for (i, (table, column)) in NAME_COLUMNS.into_iter().enumerate() {
+            for NameColumn {
+                table,
+                column,
+                field,
+            } in name_columns(kind)
+            {
                 let mut stmt = conn.prepare(&format!(
                     "SELECT {column}, count(*) FROM {table} WHERE {column} IS NOT NULL
                      GROUP BY {column}"
@@ -107,12 +173,7 @@ impl Store {
                 for (name, n) in rows {
                     let n = u64::try_from(n).map_err(|_| Error::corrupt("a negative count"))?;
                     let entry = names.entry(name).or_default();
-                    match i {
-                        0 => entry.sessions = n,
-                        1 => entry.inbox = n,
-                        2 => entry.outbox = n,
-                        _ => entry.usage = n,
-                    }
+                    *field(entry) = n;
                 }
             }
             Ok(names)
@@ -139,9 +200,12 @@ impl Store {
         .await
     }
 
-    /// Renames the instance `old` to `new` everywhere the database names one, in one
-    /// transaction, and runs `hook` inside it before committing. If `hook` fails, or the commit
-    /// does, no row changes.
+    /// Renames the instance `old` of `kind` to `new` everywhere the database names an instance of
+    /// that kind, in one transaction, and runs `hook` inside it before committing. Rows of another
+    /// kind with the same name stay as they are. If `hook` fails, or the commit does, no row
+    /// changes.
+    ///
+    /// A toolset has no rows of this kind, so renaming one changes none and only runs `hook`.
     ///
     /// `hook` is where the caller does the work that must succeed together with the rows (the
     /// files and directories); an `Err` from it comes back as [`Error::Hook`] with the original
@@ -150,10 +214,11 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidRequest`] if the names are equal or empty; [`Error::Conflict`] if rows
-    /// already use `new`: renaming never merges two instances' data.
+    /// [`Error::InvalidRequest`] if the names are equal or empty; [`Error::Conflict`] if rows of
+    /// `kind` already use `new`: renaming never merges two instances' data.
     pub async fn rename_instance(
         &self,
+        kind: Kind,
         old: &str,
         new: &str,
         hook: impl FnOnce(&RenamedRows) -> std::result::Result<(), BoxError> + Send + 'static,
@@ -165,7 +230,7 @@ impl Store {
         }
         let (old, new) = (old.to_owned(), new.to_owned());
         self.write(move |conn| {
-            let existing = rows_using(conn, &new)?;
+            let existing = rows_using(conn, kind, &new)?;
             if existing.total() > 0 {
                 return Err(Error::conflict(format!(
                     "{new:?} already has data in the database ({} sessions, {} inbox rows, {} \
@@ -177,7 +242,6 @@ impl Store {
                     existing.messages,
                 )));
             }
-            let mut moved = RenamedRows::default();
             let update = |table: &str, column: &str| -> Result<u64> {
                 let n = conn.execute(
                     &format!("UPDATE {table} SET {column} = ?2 WHERE {column} = ?1"),
@@ -185,17 +249,28 @@ impl Store {
                 )?;
                 Ok(n as u64)
             };
-            moved.sessions = update("sessions", "channel")?;
-            moved.inbox = update("inbox", "instance")?;
-            moved.outbox = update("outbox", "instance")?;
-            moved.usage = update("usage", "provider")?;
-            moved.routes = update("routes", "channel")?;
-            // `messages` has no trigger on `meta`, so the search index is untouched.
-            moved.messages = conn.execute(
-                "UPDATE messages SET meta = json_set(meta, '$.provider', ?2)
-                 WHERE meta ->> '$.provider' = ?1",
-                params![old, new],
-            )? as u64;
+            let mut counts = InstanceRows::default();
+            for NameColumn {
+                table,
+                column,
+                field,
+            } in name_columns(kind)
+            {
+                *field(&mut counts) = update(table, column)?;
+            }
+            let mut moved = RenamedRows::from(counts);
+            match kind {
+                Kind::Channel => moved.routes = update("routes", "channel")?,
+                Kind::Provider => {
+                    // `messages` has no trigger on `meta`, so the search index is untouched.
+                    moved.messages = conn.execute(
+                        "UPDATE messages SET meta = json_set(meta, '$.provider', ?2)
+                         WHERE meta ->> '$.provider' = ?1",
+                        params![old, new],
+                    )? as u64;
+                }
+                Kind::Toolset => {}
+            }
             hook(&moved).map_err(Error::Hook)?;
             Ok(moved)
         })
@@ -312,9 +387,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn instance_rows_counts_every_table_by_name() {
+    async fn instance_rows_counts_each_kinds_tables_by_name() {
         let (_dir, store) = store().await;
-        assert!(store.instance_rows().await.unwrap().is_empty());
+        for kind in Kind::ALL {
+            assert!(store.instance_rows(kind).await.unwrap().is_empty());
+        }
         session(&store, "libera", "c1").await;
         session(&store, "libera", "c2").await;
         inbox(&store, "libera", "e1").await;
@@ -322,33 +399,64 @@ mod tests {
         usage(&store, "anthropic").await;
         usage(&store, "anthropic").await;
 
-        let rows = store.instance_rows().await.unwrap();
-        let names: Vec<_> = rows.keys().map(String::as_str).collect();
-        assert_eq!(names, ["anthropic", "libera", "oftc"]);
+        let channels = store.instance_rows(Kind::Channel).await.unwrap();
+        let names: Vec<_> = channels.keys().map(String::as_str).collect();
+        assert_eq!(names, ["libera", "oftc"]);
         assert_eq!(
-            rows["libera"],
+            channels["libera"],
             InstanceRows {
                 sessions: 2,
                 inbox: 1,
                 ..Default::default()
             }
         );
+        assert_eq!(
+            store.instance_rows(Kind::Provider).await.unwrap(),
+            BTreeMap::from([(
+                "anthropic".to_owned(),
+                InstanceRows {
+                    usage: 2,
+                    ..Default::default()
+                }
+            )])
+        );
+        // A toolset is named in no table.
+        assert!(store.instance_rows(Kind::Toolset).await.unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn rename_moves_every_row_and_leaves_other_instances_alone() {
+    async fn instance_rows_of_one_kind_ignore_the_same_name_of_another() {
+        let (_dir, store) = store().await;
+        session(&store, "aperture", "c1").await;
+        usage(&store, "aperture").await;
+        assert_eq!(
+            store.instance_rows(Kind::Channel).await.unwrap()["aperture"],
+            InstanceRows {
+                sessions: 1,
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            store.instance_rows(Kind::Provider).await.unwrap()["aperture"],
+            InstanceRows {
+                usage: 1,
+                ..Default::default()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_moves_every_channel_row_and_leaves_other_instances_alone() {
         let (_dir, store) = store().await;
         let libera = session(&store, "libera", "c1").await;
         session(&store, "oftc", "c1").await;
         inbox(&store, "libera", "e1").await;
         inbox(&store, "oftc", "e1").await;
         outbox(&store, "libera").await;
-        usage(&store, "libera").await;
         usage(&store, "other").await;
-        messages(&store, libera, "libera").await;
 
         let moved = store
-            .rename_instance("libera", "libera-chat", |_| Ok(()))
+            .rename_instance(Kind::Channel, "libera", "libera-chat", |_| Ok(()))
             .await
             .unwrap();
         assert_eq!(
@@ -357,22 +465,20 @@ mod tests {
                 sessions: 1,
                 inbox: 1,
                 outbox: 1,
-                usage: 1,
-                messages: 1,
-                routes: 0,
+                ..Default::default()
             }
         );
 
-        let rows = store.instance_rows().await.unwrap();
+        let rows = store.instance_rows(Kind::Channel).await.unwrap();
         assert!(!rows.contains_key("libera"));
         assert_eq!(rows["libera-chat"].sessions, 1);
-        assert_eq!(rows["libera-chat"].usage, 1);
+        assert_eq!(rows["libera-chat"].inbox, 1);
+        assert_eq!(rows["libera-chat"].outbox, 1);
         assert_eq!(rows["oftc"].sessions, 1);
         assert_eq!(rows["oftc"].inbox, 1);
-        assert_eq!(rows["other"].usage, 1);
         assert_eq!(
-            provider_of_messages(&store).await,
-            [None, Some("libera-chat".to_owned())]
+            store.instance_rows(Kind::Provider).await.unwrap()["other"].usage,
+            1
         );
         // The renamed session is still the open session of its key, so a new message on the
         // renamed instance continues the old conversation.
@@ -386,24 +492,241 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rename_refuses_to_merge_into_a_name_with_data() {
-        for existing in ["inbox", "outbox", "usage", "messages"] {
-            let (_dir, store) = store_with(existing).await;
+    async fn rename_moves_every_provider_row_and_leaves_other_instances_alone() {
+        let (_dir, store) = store().await;
+        // The messages live in a session of a channel, which isn't renamed.
+        let s = session(&store, "web", "c1").await;
+        usage(&store, "ollama").await;
+        usage(&store, "other").await;
+        messages(&store, s, "ollama").await;
+
+        let moved = store
+            .rename_instance(Kind::Provider, "ollama", "local", |_| Ok(()))
+            .await
+            .unwrap();
+        assert_eq!(
+            moved,
+            RenamedRows {
+                usage: 1,
+                messages: 1,
+                ..Default::default()
+            }
+        );
+
+        let rows = store.instance_rows(Kind::Provider).await.unwrap();
+        let names: Vec<_> = rows.keys().map(String::as_str).collect();
+        assert_eq!(names, ["local", "other"]);
+        assert_eq!(
+            provider_of_messages(&store).await,
+            [None, Some("local".to_owned())]
+        );
+        assert_eq!(store.instance_rows(Kind::Channel).await.unwrap().len(), 1);
+    }
+
+    /// One row of every table that names an instance, all under `name`: a channel's session,
+    /// inbox event, outbox row, and route, and a provider's usage row and assistant message.
+    async fn seed_every_kind(store: &Store, name: &str) {
+        let s = session(store, name, "c1").await;
+        inbox(store, name, "e1").await;
+        outbox(store, name).await;
+        route(store, Some(name), "jeeves").await;
+        usage(store, name).await;
+        messages(store, s, name).await;
+    }
+
+    /// What the tables hold for `name`: the channel's rows and routes, the provider's rows, and
+    /// the assistant messages naming it.
+    async fn held_by(store: &Store, name: &str) -> (InstanceRows, u64, InstanceRows, u64) {
+        let channels = store.instance_rows(Kind::Channel).await.unwrap();
+        let providers = store.instance_rows(Kind::Provider).await.unwrap();
+        let routes = store.instance_routes().await.unwrap();
+        let messages = provider_of_messages(store)
+            .await
+            .into_iter()
+            .filter(|p| p.as_deref() == Some(name))
+            .count() as u64;
+        (
+            channels.get(name).copied().unwrap_or_default(),
+            routes.get(name).copied().unwrap_or_default(),
+            providers.get(name).copied().unwrap_or_default(),
+            messages,
+        )
+    }
+
+    #[tokio::test]
+    async fn renaming_a_channel_leaves_a_provider_of_the_same_name_alone() {
+        let (_dir, store) = store().await;
+        seed_every_kind(&store, "aperture").await;
+
+        let moved = store
+            .rename_instance(Kind::Channel, "aperture", "lens", |_| Ok(()))
+            .await
+            .unwrap();
+        assert_eq!(
+            moved,
+            RenamedRows {
+                sessions: 1,
+                inbox: 1,
+                outbox: 1,
+                routes: 1,
+                ..Default::default()
+            }
+        );
+
+        let (channel, routes, provider, messages) = held_by(&store, "aperture").await;
+        assert_eq!(channel, InstanceRows::default());
+        assert_eq!(routes, 0);
+        // The provider keeps its usage and its messages.
+        assert_eq!(provider.usage, 1);
+        assert_eq!(messages, 1);
+        let (channel, routes, provider, messages) = held_by(&store, "lens").await;
+        assert_eq!(
+            channel,
+            InstanceRows {
+                sessions: 1,
+                inbox: 1,
+                outbox: 1,
+                ..Default::default()
+            }
+        );
+        assert_eq!(routes, 1);
+        assert_eq!(provider, InstanceRows::default());
+        assert_eq!(messages, 0);
+    }
+
+    #[tokio::test]
+    async fn renaming_a_provider_leaves_a_channel_of_the_same_name_alone() {
+        let (_dir, store) = store().await;
+        seed_every_kind(&store, "aperture").await;
+
+        let moved = store
+            .rename_instance(Kind::Provider, "aperture", "lens", |_| Ok(()))
+            .await
+            .unwrap();
+        assert_eq!(
+            moved,
+            RenamedRows {
+                usage: 1,
+                messages: 1,
+                ..Default::default()
+            }
+        );
+
+        let (channel, routes, provider, messages) = held_by(&store, "aperture").await;
+        // The channel keeps its sessions, inbox, outbox, and route.
+        assert_eq!(
+            channel,
+            InstanceRows {
+                sessions: 1,
+                inbox: 1,
+                outbox: 1,
+                ..Default::default()
+            }
+        );
+        assert_eq!(routes, 1);
+        assert_eq!(provider, InstanceRows::default());
+        assert_eq!(messages, 0);
+        let (channel, routes, provider, messages) = held_by(&store, "lens").await;
+        assert_eq!(channel, InstanceRows::default());
+        assert_eq!(routes, 0);
+        assert_eq!(provider.usage, 1);
+        assert_eq!(messages, 1);
+    }
+
+    #[tokio::test]
+    async fn renaming_a_toolset_changes_no_row_but_runs_the_hook() {
+        let (_dir, store) = store().await;
+        seed_every_kind(&store, "aperture").await;
+        let before = held_by(&store, "aperture").await;
+
+        let moved = store
+            .rename_instance(Kind::Toolset, "aperture", "lens", |moved| {
+                assert_eq!(moved.total(), 0);
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(moved, RenamedRows::default());
+        assert_eq!(held_by(&store, "aperture").await, before);
+        assert_eq!(
+            held_by(&store, "lens").await,
+            (InstanceRows::default(), 0, InstanceRows::default(), 0)
+        );
+
+        let err = store
+            .rename_instance(Kind::Toolset, "aperture", "lens", |_| {
+                Err("disk on fire".into())
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Hook(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn another_kinds_data_under_the_new_name_is_not_a_merge() {
+        let (_dir, store) = store().await;
+        session(&store, "libera", "c1").await;
+        usage(&store, "oftc").await;
+        let moved = store
+            .rename_instance(Kind::Channel, "libera", "oftc", |_| Ok(()))
+            .await
+            .unwrap();
+        assert_eq!(moved.sessions, 1);
+        // The provider `oftc` is where it was.
+        assert_eq!(
+            store.instance_rows(Kind::Provider).await.unwrap()["oftc"].usage,
+            1
+        );
+
+        // And the other way round: a channel's rows under the new name don't block a provider.
+        usage(&store, "ollama").await;
+        let moved = store
+            .rename_instance(Kind::Provider, "ollama", "libera", |_| Ok(()))
+            .await
+            .unwrap();
+        assert_eq!(moved.usage, 1);
+        assert_eq!(
+            store.instance_rows(Kind::Channel).await.unwrap()["oftc"].sessions,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_refuses_to_merge_into_a_name_with_data_of_the_same_kind() {
+        for (kind, existing) in [
+            (Kind::Channel, "session"),
+            (Kind::Channel, "inbox"),
+            (Kind::Channel, "outbox"),
+            (Kind::Provider, "usage"),
+            (Kind::Provider, "messages"),
+        ] {
+            let (_dir, store) = store_with(kind, existing).await;
             let err = store
-                .rename_instance("libera", "oftc", |_| Ok(()))
+                .rename_instance(kind, "old", "oftc", |_| Ok(()))
                 .await
                 .unwrap_err();
             assert!(matches!(err, Error::Conflict(_)), "{existing}: {err:?}");
             assert!(err.to_string().contains("doesn't merge"), "{err}");
-            assert!(store.instance_rows().await.unwrap().contains_key("libera"));
+            assert!(store.instance_rows(kind).await.unwrap().contains_key("old"));
         }
     }
 
-    /// A database where `libera` has a session and `oftc` has data in `table` only.
-    async fn store_with(table: &str) -> (tempfile::TempDir, Store) {
+    /// A database where the instance `old` of `kind` has data and `oftc` has data of the same
+    /// kind in `table` only.
+    async fn store_with(kind: Kind, table: &str) -> (tempfile::TempDir, Store) {
         let (dir, store) = store().await;
-        let s = session(&store, "libera", "c1").await;
+        let s = session(&store, "web", "c1").await;
+        match kind {
+            Kind::Channel => session(&store, "old", "c2").await,
+            _ => {
+                usage(&store, "old").await;
+                s
+            }
+        };
         match table {
+            "session" => {
+                session(&store, "oftc", "c3").await;
+            }
             "inbox" => inbox(&store, "oftc", "e1").await,
             "outbox" => outbox(&store, "oftc").await,
             "usage" => usage(&store, "oftc").await,
@@ -415,12 +738,14 @@ mod tests {
     #[tokio::test]
     async fn rename_rejects_degenerate_names() {
         let (_dir, store) = store().await;
-        for (old, new) in [("a", "a"), ("", "b"), ("a", "")] {
-            let err = store
-                .rename_instance(old, new, |_| Ok(()))
-                .await
-                .unwrap_err();
-            assert!(matches!(err, Error::InvalidRequest(_)), "{err:?}");
+        for kind in Kind::ALL {
+            for (old, new) in [("a", "a"), ("", "b"), ("a", "")] {
+                let err = store
+                    .rename_instance(kind, old, new, |_| Ok(()))
+                    .await
+                    .unwrap_err();
+                assert!(matches!(err, Error::InvalidRequest(_)), "{err:?}");
+            }
         }
     }
 
@@ -429,26 +754,33 @@ mod tests {
         let (_dir, store) = store().await;
         let s = session(&store, "libera", "c1").await;
         inbox(&store, "libera", "e1").await;
-        usage(&store, "libera").await;
-        messages(&store, s, "libera").await;
-        let before = store.instance_rows().await.unwrap();
+        usage(&store, "ollama").await;
+        messages(&store, s, "ollama").await;
+        let channels = store.instance_rows(Kind::Channel).await.unwrap();
+        let providers = store.instance_rows(Kind::Provider).await.unwrap();
 
-        let err = store
-            .rename_instance("libera", "oftc", |moved| {
-                assert_eq!(moved.total(), 4, "the hook runs after the updates");
-                Err("disk on fire".into())
-            })
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(&err, Error::Hook(e) if e.to_string() == "disk on fire"),
-            "{err:?}"
+        for (kind, old) in [(Kind::Channel, "libera"), (Kind::Provider, "ollama")] {
+            let err = store
+                .rename_instance(kind, old, "other", |moved| {
+                    assert_eq!(moved.total(), 2, "the hook runs after the updates");
+                    Err("disk on fire".into())
+                })
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&err, Error::Hook(e) if e.to_string() == "disk on fire"),
+                "{err:?}"
+            );
+        }
+
+        assert_eq!(store.instance_rows(Kind::Channel).await.unwrap(), channels);
+        assert_eq!(
+            store.instance_rows(Kind::Provider).await.unwrap(),
+            providers
         );
-
-        assert_eq!(store.instance_rows().await.unwrap(), before);
         assert_eq!(
             provider_of_messages(&store).await,
-            [None, Some("libera".to_owned())]
+            [None, Some("ollama".to_owned())]
         );
     }
 
@@ -489,7 +821,7 @@ mod tests {
             BTreeMap::from([("libera".to_owned(), 2), ("oftc".to_owned(), 1)])
         );
         // Not data: they don't count as rows of the name.
-        assert!(store.instance_rows().await.unwrap().is_empty());
+        assert!(store.instance_rows(Kind::Channel).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -502,7 +834,7 @@ mod tests {
         route(&store, Some("libera"), "d").await;
 
         let moved = store
-            .rename_instance("libera", "libera-chat", |_| Ok(()))
+            .rename_instance(Kind::Channel, "libera", "libera-chat", |_| Ok(()))
             .await
             .unwrap();
         assert_eq!((moved.sessions, moved.routes), (1, 2));
@@ -523,7 +855,7 @@ mod tests {
         let (_dir, store) = store().await;
         route(&store, Some("libera"), "a").await;
         let moved = store
-            .rename_instance("libera", "oftc", |_| Ok(()))
+            .rename_instance(Kind::Channel, "libera", "oftc", |_| Ok(()))
             .await
             .unwrap();
         assert_eq!(moved.routes, 1);
@@ -537,7 +869,7 @@ mod tests {
         route(&store, Some("libera"), "a").await;
         route(&store, Some("oftc"), "b").await;
         store
-            .rename_instance("libera", "oftc", |_| Ok(()))
+            .rename_instance(Kind::Channel, "libera", "oftc", |_| Ok(()))
             .await
             .unwrap();
         assert_eq!(
@@ -553,7 +885,7 @@ mod tests {
         route(&store, Some("libera"), "a").await;
         let before = store.routes().await.unwrap();
         let err = store
-            .rename_instance("libera", "oftc", |moved| {
+            .rename_instance(Kind::Channel, "libera", "oftc", |moved| {
                 assert_eq!(moved.routes, 1, "the hook runs after the updates");
                 Err("disk on fire".into())
             })

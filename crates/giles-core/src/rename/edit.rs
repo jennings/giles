@@ -3,7 +3,7 @@
 //! lines, key order, quoting). `toml_edit` does the editing; nothing here touches the file system.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use toml_edit::{DocumentMut, Item, Key, Table, TableLike, Value};
 
@@ -28,25 +28,34 @@ pub(super) fn parse(source: &str) -> Result<DocumentMut, EditError> {
         .map_err(|e: toml_edit::TomlError| EditError::Syntax(e.to_string()))
 }
 
-/// The instances `giles.toml` configures: every key of `[provider]`, `[channel]`, and
-/// `[toolset]`, with its kind, except a `[toolset.<name>]` with `url`, which the configuration
-/// loader ignores (remote toolsets are stored in the database). Names are unique across kinds in
-/// a valid configuration; if one isn't, the later kind in `provider`, `channel`, `toolset` order
-/// wins.
-pub(super) fn configured(doc: &DocumentMut) -> BTreeMap<String, Kind> {
-    let mut names = BTreeMap::new();
+/// The instances `giles.toml` configures, as `(kind, name)`: every key of `[provider]`,
+/// `[channel]`, and `[toolset]`, except a `[toolset.<name>]` with `url`, which the configuration
+/// loader ignores (remote toolsets are stored in the database).
+pub(super) fn configured(doc: &DocumentMut) -> BTreeSet<(Kind, String)> {
+    let mut names = BTreeSet::new();
     for kind in Kind::ALL {
         if let Some(table) = doc.get(kind.as_str()).and_then(Item::as_table_like) {
             for (name, item) in table.iter() {
                 let remote = kind == Kind::Toolset
                     && item.as_table_like().is_some_and(|t| t.contains_key("url"));
                 if !remote {
-                    names.insert(name.to_owned(), kind);
+                    names.insert((kind, name.to_owned()));
                 }
             }
         }
     }
     names
+}
+
+/// The kind of the instance `name` in `configured`. Names are unique across kinds in a valid
+/// configuration; if one isn't, the later kind in `provider`, `channel`, `toolset` order wins.
+/// Relies on `Kind`'s derived `Ord` matching the order of `Kind::ALL`.
+pub(super) fn kind_of(configured: &BTreeSet<(Kind, String)>, name: &str) -> Option<Kind> {
+    configured
+        .iter()
+        .rev()
+        .find(|(_, configured)| configured == name)
+        .map(|(kind, _)| *kind)
 }
 
 /// What [`rename_in_giles_toml`] changed.
@@ -528,14 +537,28 @@ agent = "jeeves"
     fn configured_lists_every_kind_but_ignored_toolset_tables() {
         let doc = parse(GILES).unwrap();
         let names = configured(&doc);
-        assert_eq!(names["libera"], Kind::Channel);
-        assert_eq!(names["web"], Kind::Channel);
-        assert_eq!(names["files"], Kind::Toolset);
-        assert_eq!(names.len(), 3);
+        assert_eq!(
+            names,
+            BTreeSet::from([
+                (Kind::Channel, "libera".to_owned()),
+                (Kind::Channel, "web".to_owned()),
+                (Kind::Toolset, "files".to_owned()),
+            ])
+        );
 
         // Loading ignores a toolset table with `url`, so it configures nothing.
         let doc = parse(&format!("{GILES}[toolset.github]\nurl = \"https://x\"\n")).unwrap();
-        assert!(!configured(&doc).contains_key("github"));
+        assert!(!configured(&doc).contains(&(Kind::Toolset, "github".to_owned())));
+    }
+
+    #[test]
+    fn the_kind_of_a_name_is_the_later_kind_when_a_name_is_configured_twice() {
+        let doc = parse("[provider.a]\n[channel.a]\n[provider.b]\n[toolset.c]\n").unwrap();
+        let names = configured(&doc);
+        assert_eq!(kind_of(&names, "a"), Some(Kind::Channel));
+        assert_eq!(kind_of(&names, "b"), Some(Kind::Provider));
+        assert_eq!(kind_of(&names, "c"), Some(Kind::Toolset));
+        assert_eq!(kind_of(&names, "d"), None);
     }
 
     #[test]

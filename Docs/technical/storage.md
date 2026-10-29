@@ -423,27 +423,36 @@ cache reads + cache writes), since `input_tokens` excludes cached tokens. Token 
 
 ## Instance names
 
-Instance names (PLAN 7.2) are stored in `sessions.channel`, `inbox.instance`, `outbox.instance`,
-`usage.provider`, `routes.channel`, and in the `provider` field of an assistant message's `meta`
-JSON. Nothing else holds one: `inbox.payload` and `outbox.payload` carry conversations and text but
-no instance name, `jobs.spec` carries a prompt and a schedule, and identities use the namespace the
+Instance names (PLAN 7.2) are stored in different places for each kind, and the store's operations
+take the kind and touch only that kind's places:
+
+- A channel is named in `sessions.channel`, `inbox.instance`, `outbox.instance`, and
+  `routes.channel`.
+- A provider is named in `usage.provider` and in the `provider` field of an assistant message's
+  `meta` JSON.
+- A toolset is named in none of these. A stored toolset is a row of its own in `toolsets`.
+
+Nothing else holds one: `inbox.payload` and `outbox.payload` carry conversations and text but no
+instance name, `jobs.spec` carries a prompt and a schedule, and identities use the namespace the
 channel reports, not the instance name.
 
-`instance_rows` returns, per name, how many rows use it in the first four of those columns. It's
-what `giles instance rename` reads to see which names have data. It leaves `routes.channel` out on
+`instance_rows(kind)` returns, per name, how many rows of that kind use it: sessions, inbox, and
+outbox rows for a channel, usage rows for a provider, and nothing for a toolset. It's what
+`giles instance rename` reads to see which names have data. It leaves `routes.channel` out on
 purpose: routes are settings, not data, and a route to a removed instance is kept (the routes page
 flags it), so counting it would keep that name from being given to another instance.
 `instance_routes` returns, per channel instance, how many routes name it; `giles instance rename`
 reads it to see that a name is used.
 
-`rename_instance(old, new, hook)` moves all six places to the new name in one `IMMEDIATE`
+`rename_instance(kind, old, new, hook)` moves the kind's places to the new name in one `IMMEDIATE`
 transaction, runs `hook` inside it after the updates and before the commit, and returns the number
-of rows moved. It refuses with `Conflict` if any row already uses `new`, so two instances' data are
-never merged; routes that already name `new` don't count as data and are kept (`RenamedRows::routes`
-counts the routes moved). A failing hook rolls everything back and comes back as `Error::Hook`; the
-caller does its filesystem work in the hook, so that work and the rows succeed or fail together. The
-caller still has to undo that work if the commit itself fails. `messages.meta` is updated without a
-trigger on the column, so the search index is untouched.
+of rows moved. Rows of another kind with the same name don't move. For a toolset it updates nothing
+and only runs the hook. It refuses with `Conflict` if any row of that kind already uses `new`, so
+two instances' data are never merged; routes that already name `new` don't count as data and are
+kept (`RenamedRows::routes` counts the routes moved). A failing hook rolls everything back and comes
+back as `Error::Hook`; the caller does its filesystem work in the hook, so that work and the rows
+succeed or fail together. The caller still has to undo that work if the commit itself fails.
+`messages.meta` is updated without a trigger on the column, so the search index is untouched.
 
 ## Web sessions
 

@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use giles_plugin_sdk::config::{ByteSize, HumanDuration};
+use giles_types::Kind;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::ser::Serializer;
@@ -20,7 +21,7 @@ use url::{Host, Url};
 
 use super::error::{ConfigError, KeyPath, Position};
 use super::hash::ConfigHash;
-use super::names::{Builtins, Component, InstanceName, Kind, invalid_name_reason, is_valid_name};
+use super::names::{Builtins, Component, InstanceName, invalid_name_reason, is_valid_name};
 use super::plugin_config::PluginConfig;
 use super::sandbox::{self, Grants, Protected, SandboxSpec};
 use super::secrets::{REDACTED, Resolver, Secret};

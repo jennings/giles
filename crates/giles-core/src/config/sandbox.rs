@@ -10,13 +10,15 @@ use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+use giles_types::Kind;
+
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::{self, Deserializer, SeqAccess, Visitor};
 use serde::ser::Serializer;
 
 use super::error::{ConfigError, KeyPath};
-use super::names::{InstanceName, Kind};
+use super::names::InstanceName;
 use crate::paths::DataRoot;
 
 /// What a sandboxed plugin may reach beyond the defaults (PLAN section 12.4).
