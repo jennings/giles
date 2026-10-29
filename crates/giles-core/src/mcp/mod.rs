@@ -577,6 +577,9 @@ async fn run_call(mut task: CallTask, handle: RequestHandle<RoleClient>) {
         tokio::select! {
             biased;
             () = events.closed() => {
+                // Unregister before the await below: the caller may already be starting its next
+                // call.
+                drop(task.slot);
                 tracing::debug!("call dropped; cancelling it");
                 let reason = "the caller stopped waiting".to_owned();
                 let cancelled = CancelledNotificationParam::new(Some(id), Some(reason));
