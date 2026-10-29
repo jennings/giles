@@ -58,7 +58,7 @@
 //!    every agent's `agent.toml` is read: a glob that matches the toolset's tools without
 //!    starting with `<old>__` (`github*`) can't be rewritten safely, and refuses the rename
 //!    ([`ToolsetManagerError::Refused`]) with the globs listed. Those checks are the ones of
-//!    `giles instance rename`, which share their code with this.
+//!    `giles toolset rename` with Giles stopped, which share their code with this.
 //! 2. The toolset is stopped: its tools leave the registry, so a running session that still
 //!    lists them gets `tool unavailable`.
 //! 3. The `<old>__` globs of each agent are rewritten in its `agent.toml` with the agent edit

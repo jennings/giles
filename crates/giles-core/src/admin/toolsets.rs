@@ -109,8 +109,15 @@ pub(super) fn manager_status(rpc: &'static str, name: &str, err: ToolsetManagerE
 }
 
 /// The caller's status for a failed `RenameToolset`: [`manager_status`], about `new` when another
-/// stored toolset has that name and about `old` for every other failure.
+/// stored toolset has that name and about `old` for every other failure. A toolset of `giles.toml`
+/// is renamed with Giles stopped, so the refusal says so.
 pub(super) fn rename_status(old: &str, new: &str, err: ToolsetManagerError) -> Status {
+    if matches!(err, ToolsetManagerError::Unsupported) {
+        return Status::failed_precondition(format!(
+            "toolset `{old}` is configured in giles.toml: stop Giles first, then run \
+             `giles toolset rename {old} {new}` to rename it"
+        ));
+    }
     let name = if matches!(err, ToolsetManagerError::Exists) {
         new
     } else {

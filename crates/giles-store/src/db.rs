@@ -83,7 +83,7 @@ impl OpenOptions {
 
     /// Opens the database in whatever mode it is in, without changing it: WAL if the file is
     /// recorded as WAL, otherwise `delete`. For tools that run beside the configuration, like
-    /// `giles instance rename`, and must not undo the daemon's choice.
+    /// the `giles <kind> rename` commands, and must not undo the daemon's choice.
     pub fn keep_journal_mode(mut self) -> Self {
         self.journal_mode = None;
         self

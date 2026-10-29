@@ -3,9 +3,9 @@
 mod admin_client;
 mod backup;
 mod cli;
-mod instance;
 mod logging;
 mod login_link;
+mod rename;
 mod sandbox_exec;
 mod serve;
 mod shutdown;
@@ -15,7 +15,9 @@ mod usage;
 
 use clap::Parser;
 
-use crate::cli::{AdminCommand, Cli, Command, InstanceCommand};
+use giles_core::config::Kind;
+
+use crate::cli::{AdminCommand, ChannelCommand, Cli, Command, ProviderCommand};
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -49,10 +51,16 @@ fn main() -> anyhow::Result<()> {
             logging?;
             toolset::run(home, &args)
         }
-        Command::Instance(args) => {
+        Command::Channel(args) => {
             logging?;
             match args.command {
-                InstanceCommand::Rename(args) => instance::run(home, &args),
+                ChannelCommand::Rename(args) => rename::run(home, Kind::Channel, &args),
+            }
+        }
+        Command::Provider(args) => {
+            logging?;
+            match args.command {
+                ProviderCommand::Rename(args) => rename::run(home, Kind::Provider, &args),
             }
         }
         Command::SandboxExec(args) => sandbox_exec::run(&args, logging),

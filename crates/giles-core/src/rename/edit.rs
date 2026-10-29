@@ -1,4 +1,4 @@
-//! Text edits for `giles instance rename`: rename one instance in `giles.toml` and in the agents'
+//! Text edits for `giles <kind> rename`: rename one instance in `giles.toml` and in the agents'
 //! `agent.toml` files while keeping everything else as the operator wrote it (comments, blank
 //! lines, key order, quoting). `toml_edit` does the editing; nothing here touches the file system.
 

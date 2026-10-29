@@ -105,9 +105,11 @@ The manager stores only remote servers. A spec without `url` (a stdio server, wh
 | No toolset manager                                          | `UNAVAILABLE`                                                          |
 
 `RenameToolset` takes `old` and `new`. `old` matches ignoring case, and `NOT_FOUND` and
-`FAILED_PRECONDITION` (a toolset of `giles.toml`) are about it. The manager's checks and steps, and
-the undo of a failed step, are in [Toolsets](toolsets.md#stored-toolsets). The response's agents are
-the manager's `ToolsetRenamed::agents`, ordered by agent id, and its `old` is
+`FAILED_PRECONDITION` (a toolset of `giles.toml`) are about it. For a toolset of `giles.toml` the
+message says to stop Giles first and run `giles toolset rename <old> <new>`, which renames it
+offline ([Instance rename](instance-rename.md#renaming-while-giles-runs)). The manager's checks and
+steps, and the undo of a failed step, are in [Toolsets](toolsets.md#stored-toolsets). The response's
+agents are the manager's `ToolsetRenamed::agents`, ordered by agent id, and its `old` is
 `ToolsetRenamed::from`, the name the toolset had as stored.
 
 ### `giles toolset`
@@ -120,11 +122,12 @@ the daemon answers `NOT_FOUND` to a call that sent a time (a copy of another too
 output), `set` says to remove the comment. `restart` looks the toolset up with `GetToolset` and
 restarts it under the name that answers, so it restarts only toolsets and gets the spelling right.
 
-`rename` prints the old and the new name as the daemon stored them (`RenameToolsetResponse.old` and
-`toolset.name`, which can differ in case from the arguments), each glob of each agent that was
-rewritten, and says that running sessions keep the old tool names. A toolset that couldn't start
-under its new name is reported on standard error, since the rename itself is done. A refusal is
-printed with the daemon's reason.
+`rename` with a running daemon prints the old and the new name as the daemon stored them
+(`RenameToolsetResponse.old` and `toolset.name`, which can differ in case from the arguments), each
+glob of each agent that was rewritten, and says that running sessions keep the old tool names. A
+toolset that couldn't start under its new name is reported on standard error, since the rename
+itself is done. A refusal is printed with the daemon's reason. With no daemon running (the command
+can take the data root's lock), it doesn't use the RPC and does the offline rename instead.
 
 ### Plugin instances
 

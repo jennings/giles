@@ -306,7 +306,7 @@ of that name returns.
 A toolset's name is its tool prefix and the start of the globs agents use in `tools` and `ask`, so
 `rename(old, new)` is more than a change to the row
 ([Instance rename](instance-rename.md#renaming-while-giles-runs) has the full account, and the
-offline `giles instance rename` does the same for a stored toolset while Giles is stopped).
+offline `giles toolset rename` does the same for either kind of toolset while Giles is stopped).
 `rename_preview(old, new)` makes the checks and returns a `RenamePreview { agents }`, the
 `AgentGlobChange { agent, globs }` of every agent whose `tools` or `ask` globs would change, each
 `GlobChange { key, from, to }` with the list it is in (`tools` or `ask`) and the glob before and

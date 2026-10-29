@@ -1736,7 +1736,7 @@ fn toolset_commands_list_show_set_remove_rename_and_restart_toolsets_of_the_runn
             &["rename", "ghost", "other"],
             "there is no toolset called `ghost`",
         ),
-        (&["rename", "docs", "other"], "giles.toml"),
+        (&["rename", "docs", "other"], "stop Giles first"),
     ] {
         let (ok, stdout, stderr) = toolset(args);
         assert!(!ok && stdout.is_empty(), "{args:?}: {stdout}");
@@ -1755,4 +1755,28 @@ fn toolset_commands_list_show_set_remove_rename_and_restart_toolsets_of_the_runn
     assert!(status.success(), "{status}\n{log}");
     let (ok, _, stderr) = toolset(&["list"]);
     assert!(!ok && stderr.contains("giles is not running"), "{stderr}");
+
+    // With Giles stopped, rename works on the data root: a stored toolset is renamed as its row,
+    // and a toolset of giles.toml, which the running daemon refused, as its table.
+    let (ok, stdout, stderr) = toolset(&["rename", "papers", "memos"]);
+    assert!(ok, "{stderr}");
+    assert!(
+        stdout.starts_with("Renamed toolset instance \"papers\" to \"memos\".\n")
+            && stdout.contains("database: the stored toolset \"papers\" is now \"memos\""),
+        "{stdout}"
+    );
+    let (ok, stdout, stderr) = toolset(&["rename", "docs", "manuals"]);
+    assert!(ok, "{stderr}");
+    assert!(
+        stdout.contains("giles.toml: [toolset.docs] -> [toolset.manuals]"),
+        "{stdout}"
+    );
+    let config = fs::read_to_string(home.join("giles.toml")).unwrap();
+    assert!(config.contains("[toolset.manuals]"), "{config}");
+    assert!(!config.contains("[toolset.docs]"), "{config}");
+    let (ok, _, stderr) = toolset(&["rename", "papers", "other"]);
+    assert!(
+        !ok && stderr.contains("no toolset named \"papers\""),
+        "{stderr}"
+    );
 }

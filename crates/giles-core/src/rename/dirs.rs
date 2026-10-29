@@ -1,5 +1,5 @@
 //! The directories an instance name keys: `data/<kind>/<name>` and `agents/*/groups/<name>`.
-//! `giles instance rename` moves them.
+//! `giles <kind> rename` moves them.
 
 use std::collections::BTreeMap;
 use std::fs;

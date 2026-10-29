@@ -293,7 +293,7 @@ impl MemoryStore {
     /// Nothing in the schema is unique over the owner columns, so the rows of `new` already
     /// there (if any) stay and the two instances' groups are not told apart afterwards; a caller
     /// that must not merge instances checks `new` first. This is the memory half of
-    /// `giles instance rename`; running it again after it succeeded changes nothing.
+    /// `giles channel rename`; running it again after it succeeded changes nothing.
     ///
     /// # Errors
     ///

@@ -76,10 +76,10 @@ so changing the setting in either direction rewrites the file header once at the
 manual step and no data copied. Leaving WAL needs no other connection open; the daemon's
 single-instance lock makes that so for Giles, and the writer connects before the readers. A `-wal`
 file left by a crash is recovered and removed by that first connection.
-`OpenOptions::keep_journal_mode()` opens in whatever mode the file is in. `giles instance rename`
-uses it: it runs without loading `giles.toml` (the file may be half renamed), so it can't know the
-configured mode, and opening with the default would switch a database on a file system without WAL
-to WAL and fail.
+`OpenOptions::keep_journal_mode()` opens in whatever mode the file is in. The `giles <kind> rename`
+commands use it: they run without loading `giles.toml` (the file may be half renamed), so they can't
+know the configured mode, and opening with the default would switch a database on a file system
+without WAL to WAL and fail.
 
 **What changes in the rollback modes** (`delete`, `truncate`, `persist`), where readers and the
 writer exclude each other:
@@ -437,12 +437,12 @@ instance name, `jobs.spec` carries a prompt and a schedule, and identities use t
 channel reports, not the instance name.
 
 `instance_rows(kind)` returns, per name, how many rows of that kind use it: sessions, inbox, and
-outbox rows for a channel, usage rows for a provider, and nothing for a toolset. It's what
-`giles instance rename` reads to see which names have data. It leaves `routes.channel` out on
-purpose: routes are settings, not data, and a route to a removed instance is kept (the routes page
-flags it), so counting it would keep that name from being given to another instance.
-`instance_routes` returns, per channel instance, how many routes name it; `giles instance rename`
-reads it to see that a name is used.
+outbox rows for a channel, usage rows for a provider, and nothing for a toolset. It's what the
+rename commands read to see which names have data. It leaves `routes.channel` out on purpose: routes
+are settings, not data, and a route to a removed instance is kept (the routes page flags it), so
+counting it would keep that name from being given to another instance. `instance_routes` returns,
+per channel instance, how many routes name it; `giles channel rename` reads it to see that a name is
+used.
 
 `rename_instance(kind, old, new, hook)` moves the kind's places to the new name in one `IMMEDIATE`
 transaction, runs `hook` inside it after the updates and before the commit, and returns the number
