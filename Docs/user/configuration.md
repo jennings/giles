@@ -52,15 +52,10 @@ In `agent.toml`, an unknown key is an error.
 
 Settings of the core itself. Optional.
 
-| Key                 | Default            | Meaning                                                           |
-| ------------------- | ------------------ | ----------------------------------------------------------------- |
-| `http_listen`       | `"127.0.0.1:8080"` | Address of the HTTP server (web chat, admin pages, login links)   |
-| `retired_instances` | `[]`               | Names of instances you removed on purpose, whose data stays       |
-| `journal_mode`      | `"wal"`            | SQLite journal mode of `data/giles.db`: `wal`, `delete`, `truncate`, `persist` |
-
-`retired_instances` tells Giles to ignore the data a removed instance left behind when it checks for
-a half-done rename. No instance table may use a name listed there. See
-[Renaming an instance](cli.md#giles-instance-rename-old-new).
+| Key            | Default            | Meaning                                                                        |
+| -------------- | ------------------ | ------------------------------------------------------------------------------ |
+| `http_listen`  | `"127.0.0.1:8080"` | Address of the HTTP server (web chat, admin pages, login links)                |
+| `journal_mode` | `"wal"`            | SQLite journal mode of `data/giles.db`: `wal`, `delete`, `truncate`, `persist` |
 
 To reach Giles from other machines, or from outside a container, set `http_listen` to
 `"0.0.0.0:8080"`. The web interface does not handle TLS, so read

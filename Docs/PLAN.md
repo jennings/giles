@@ -755,12 +755,13 @@ Instance names are permanent ids: sessions, the inbox, group memories, and the p
 directory are keyed by them. Renaming one in its config alone would orphan all of that, so
 `giles instance rename <old> <new>` does it, with the core stopped: it migrates the database rows,
 renames the directories, and renames the instance's config (in the current layout, the
-`[<kind>.<old>]` table in `giles.toml`, section 11.2). At startup, the core refuses to start a new
-instance whose name doesn't match any known data while an unused old name has data, and points to
-the rename command. An instance removed on purpose, whose data stays, is listed in
-`[core] retired_instances` (section 11.2), which the check ignores. Renaming a provider or channel
-that has no `component` key keeps its component by writing `component = "<old>"`, since the
-component defaults to the instance name. A toolset has no component.
+`[<kind>.<old>]` table in `giles.toml`, section 11.2). Giles doesn't check for a rename done in the
+config alone: the renamed instance starts with no data, and the old name's rows and directories stay
+where they are, unused. The command finishes such a hand-rename only before the renamed instance has
+started: launching it creates `data/plugins/<new>/`, and then `<new>` has data and the command
+refuses. Renaming a provider or channel that has no `component` key keeps its component by writing
+`component = "<old>"`, since the component defaults to the instance name. A toolset has no
+component.
 
 ### 7.3 Discovery and enablement
 
@@ -1343,8 +1344,6 @@ No plugin is ever granted read or write access to any part of `GILES_HOME` excep
 on the host. The operator writes them and Giles never edits them:
 
 - The address the web interface listens on (`[core] http_listen`).
-- Names of instances removed on purpose, whose data stays (`[core] retired_instances`). The startup
-  check for a rename done by hand skips them (section 7.2).
 - The default time zone for users who don't set one.
 - Security-model requirements, such as whether the sandbox is always enforced or a plugin instance
   may be configured to run unsandboxed (section 12).
@@ -1388,7 +1387,6 @@ for an agent created in the web UI or a user created at runtime (section 3.2).
 ```toml
 [core]
 http_listen = "127.0.0.1:8080"
-retired_instances = []        # instance names removed on purpose; their data stays (section 7.2)
 journal_mode = "wal"          # SQLite journal mode: wal (default), delete, truncate, persist (11.4)
 
 # Instances: [<kind>.<instance>]. A provider's or channel's `component` defaults to the instance

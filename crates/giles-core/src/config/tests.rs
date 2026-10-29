@@ -171,45 +171,26 @@ fn type_errors_have_a_key_path_and_position() {
 }
 
 #[test]
-fn retired_instances_are_names_that_are_not_configured() {
+fn a_leftover_retired_instances_key_is_an_unknown_key() {
     let config = Home::new(&format!(
-        "{MINIMAL}[core]\nretired_instances = [\"old-irc\", \"gone\"]\n[channel.web]\n"
+        "{MINIMAL}[core]\nretired_instances = [\"old-irc\", \"web\"]\n[channel.web]\n"
     ))
     .load_ok();
-    let names: Vec<_> = config
-        .core
-        .retired_instances
-        .iter()
-        .map(InstanceName::as_str)
-        .collect();
-    assert_eq!(names, ["old-irc", "gone"]);
-    assert!(
-        Home::new(MINIMAL)
-            .load_ok()
-            .core
-            .retired_instances
-            .is_empty()
+    assert_eq!(unknown_keys(&config), ["core.retired_instances"]);
+    assert_eq!(
+        config.unknown_keys[0].to_string(),
+        format!(
+            "{}:{}:1: unknown key `core.retired_instances` (ignored)",
+            config.unknown_keys[0].file.display(),
+            config.unknown_keys[0].position.unwrap().line,
+        )
     );
-
-    for (value, key, reason) in [
-        (
-            "[\"a b\"]",
-            "core.retired_instances[0]",
-            "invalid instance name",
-        ),
-        (
-            "[\"x\", \"x\"]",
-            "core.retired_instances[1]",
-            "listed twice",
-        ),
-        ("[\"web\"]", "core.retired_instances[0]", "is configured"),
-        ("\"x\"", "core.retired_instances", "invalid type"),
-    ] {
-        let home = Home::new(&format!(
-            "{MINIMAL}[core]\nretired_instances = {value}\n[channel.web]\n"
-        ));
-        assert_error(&home, "giles.toml", key, reason);
-    }
+    // Whatever its value, it is ignored.
+    let config = Home::new(&format!(
+        "{MINIMAL}[core]\nretired_instances = 5\n[channel.web]\n"
+    ))
+    .load_ok();
+    assert_eq!(unknown_keys(&config), ["core.retired_instances"]);
 }
 
 #[test]
@@ -438,11 +419,6 @@ fn a_known_key_with_the_wrong_type_still_fails_whatever_else_is_wrong() {
         (
             "typo = 1\n[core]\nhttp_listen = 5\nhttp_listn = 2",
             "core.http_listen",
-            "invalid type",
-        ),
-        (
-            "[core]\nhttp_listen = \"127.0.0.1:1\"\nretired_instances = [1]",
-            "core.retired_instances[0]",
             "invalid type",
         ),
         (
@@ -909,13 +885,6 @@ fn a_toolset_table_with_url_is_ignored_whatever_it_holds_and_reported() {
         config.toolsets["github"].transport,
         ToolsetTransport::Http(_)
     ));
-
-    // Nor is the name configured for `retired_instances`.
-    let home = Home::new(&format!(
-        "[core]\nretired_instances = [\"github\"]\n{MINIMAL}\
-         [toolset.github]\nurl = \"https://x\"\n"
-    ));
-    assert_eq!(home.load_ok().ignored_toolset_tables().len(), 1);
 }
 
 #[test]

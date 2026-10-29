@@ -19,7 +19,6 @@
 //!
 //! - the name `new` is reserved, because it is the address of the form for a new toolset;
 //! - a name that a `giles.toml` instance uses belongs to that instance;
-//! - a name in `[core] retired_instances` is for instances that are not configured;
 //! - the spec has `url` (`validate_toolset` then refuses the keys of a stdio server next to it);
 //! - a bearer token is `{ secret = "<name>" }`, so the token is in `secrets.toml`, not in the
 //!   database or the process environment.
@@ -53,8 +52,8 @@
 //! take turns), and [`ToolsetManager::rename_preview`] runs the same checks and says what would
 //! change. A remote toolset has no data directory, so no data moves.
 //!
-//! 1. The new name must be valid and free among every kind of instance (the stored toolsets, the
-//!    instances of `giles.toml`, and `[core] retired_instances`), as for a new toolset. The old
+//! 1. The new name must be valid and free among every kind of instance (the stored toolsets and
+//!    the instances of `giles.toml`), as for a new toolset. The old
 //!    name is exempt, so a stored toolset can be renamed to its own name in another case. Then
 //!    every agent's `agent.toml` is read: a glob that matches the toolset's tools without
 //!    starting with `<old>__` (`github*`) can't be rewritten safely, and refuses the rename
@@ -614,8 +613,8 @@ impl ToolsetManager {
     }
 
     /// What must hold for `name` to be a toolset's name, before the spec is looked at: it isn't
-    /// the address of the form for a new toolset, no instance of `giles.toml` has it, and it
-    /// isn't retired. Whether another stored toolset has it is the caller's business.
+    /// the address of the form for a new toolset and no instance of `giles.toml` has it. Whether
+    /// another stored toolset has it is the caller's business.
     fn check_name(&self, name: &str) -> Result<(), ToolsetError> {
         let whole = |reason: String| ToolsetError {
             key: KeyPath::root(),
@@ -633,17 +632,6 @@ impl ToolsetManager {
         if let Some((kind, other)) = self.file_instance(&config, name) {
             return Err(whole(format!(
                 "the name is taken by `[{kind}.{other}]` in giles.toml"
-            )));
-        }
-        if config
-            .core
-            .retired_instances
-            .iter()
-            .any(|retired| retired.as_str() == name)
-        {
-            return Err(whole(format!(
-                "{name:?} is in `[core] retired_instances` in giles.toml, which lists names that \
-                 are not configured: remove it from the list to use the name"
             )));
         }
         Ok(())

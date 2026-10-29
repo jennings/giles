@@ -129,7 +129,7 @@ impl ToolsetManager {
     /// [`ToolsetManagerError::NotFound`] if no stored toolset has the name;
     /// [`ToolsetManagerError::Unsupported`] if it is a toolset of `giles.toml`;
     /// [`ToolsetManagerError::Invalid`] (at the root) if `new` is the same name, isn't valid, is
-    /// reserved, is taken by an instance of `giles.toml`, or is retired, or, for a running
+    /// reserved, is taken by an instance of `giles.toml`, or, for a running
     /// toolset, if its spec doesn't validate under the new name; [`ToolsetManagerError::Exists`]
     /// if another stored toolset has `new`;
     /// [`ToolsetManagerError::Refused`] if an agent has globs that match the toolset's tools

@@ -1,4 +1,4 @@
-//! End-to-end tests of `giles instance rename` and the startup check, running the real binary on
+//! End-to-end tests of `giles instance rename`, running the real binary on
 //! a temporary data root with a populated database.
 
 use std::fs;
@@ -212,29 +212,4 @@ async fn a_running_core_blocks_the_rename() {
             .unwrap()
             .contains("[channel.libera]")
     );
-}
-
-#[tokio::test]
-async fn serve_refuses_a_hand_renamed_instance_and_points_to_the_command() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = populated(dir.path()).await;
-    let edited = fs::read_to_string(root.config_file())
-        .unwrap()
-        .replace("[channel.libera]", "[channel.libera-chat]")
-        .replace("channel = \"libera\"", "channel = \"libera-chat\"");
-    fs::write(root.config_file(), edited).unwrap();
-
-    let output = giles(dir.path(), &["serve"]);
-    assert!(!output.status.success());
-    let err = stderr(&output);
-    assert!(
-        err.contains("giles instance rename libera libera-chat"),
-        "{err}"
-    );
-    assert!(err.contains("retired_instances"), "{err}");
-
-    // Following the advice makes the data match the configuration.
-    let output = giles(dir.path(), &["instance", "rename", "libera", "libera-chat"]);
-    assert!(output.status.success(), "{}", stderr(&output));
-    assert!(root.plugin_data_dir("libera-chat").unwrap().is_dir());
 }

@@ -7,9 +7,8 @@
 //! the audit).
 //!
 //! Routes name a channel instance but aren't data: [`Store::instance_rows`] doesn't count them, so
-//! the startup check for an unused old name ignores them (a route to a removed instance is kept on
-//! purpose, and must not make adding an instance look like a rename). A rename still moves them
-//! ([`RenamedRows::routes`], [`Store::instance_routes`]).
+//! a route to a removed instance (kept on purpose) doesn't count as data to merge in a rename. A
+//! rename still moves them ([`RenamedRows::routes`], [`Store::instance_routes`]).
 
 use std::collections::BTreeMap;
 
@@ -29,18 +28,6 @@ pub struct InstanceRows {
     pub outbox: u64,
     /// Provider requests to the provider instance (`usage.provider`).
     pub usage: u64,
-}
-
-impl InstanceRows {
-    /// Whether any row uses the name as a channel instance.
-    pub fn is_channel(&self) -> bool {
-        self.sessions + self.inbox + self.outbox > 0
-    }
-
-    /// Whether any row uses the name as a provider instance.
-    pub fn is_provider(&self) -> bool {
-        self.usage > 0
-    }
 }
 
 /// What [`Store::rename_instance`] moved.
@@ -346,9 +333,6 @@ mod tests {
                 ..Default::default()
             }
         );
-        assert!(rows["libera"].is_channel() && !rows["libera"].is_provider());
-        assert!(rows["oftc"].is_channel());
-        assert!(rows["anthropic"].is_provider() && !rows["anthropic"].is_channel());
     }
 
     #[tokio::test]
@@ -504,7 +488,7 @@ mod tests {
             store.instance_routes().await.unwrap(),
             BTreeMap::from([("libera".to_owned(), 2), ("oftc".to_owned(), 1)])
         );
-        // Not data: they don't make a name look used to the startup check.
+        // Not data: they don't count as rows of the name.
         assert!(store.instance_rows().await.unwrap().is_empty());
     }
 

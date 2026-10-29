@@ -1,15 +1,14 @@
 # Instance rename
 
 Instance names are permanent ids (PLAN section 7.2). `giles_core::rename` renames one,
-`rename_instance`, which `giles instance rename <old> <new>` calls, and refuses a configuration that
-looks like a rename done in `giles.toml` alone, `check_unused_instance_data`, which `Runtime::start`
-calls. `ToolsetManager::rename` renames a toolset stored in the database while Giles runs. This page
-covers what a name keys, the order of the steps, and what a failure leaves behind.
+`rename_instance`, which `giles instance rename <old> <new>` calls. `ToolsetManager::rename` renames
+a toolset stored in the database while Giles runs. This page covers what a name keys, the order of
+the steps, and what a failure leaves behind.
 
 ## What a name keys
 
 An audit of every place the implementation stores or derives something from an instance name. A
-rename must move each of them, and the startup check treats each as data.
+rename must move each of them.
 
 | Where                                        | What it is                                     | Rename does                    |
 | -------------------------------------------- | ---------------------------------------------- | ------------------------------ |
@@ -30,17 +29,14 @@ rename must move each of them, and the startup check treats each as data.
 | `cache/describe/<name>.json`, `cache/toolsets/<name>.json` | Discovery caches                 | Moves if present; they are disposable |
 | `run/pids/<name>.pid`                        | The launched plugin's pid, killed at the next start | Moves if present, so a plugin that outlived the core is still found |
 
-Routes are the exception to "a rename must move each of them, and the startup check treats each as
-data": a route is a setting, not data. The rename moves `routes.channel` (in the same transaction,
-keeping the order; `RenamedRows::routes` counts them), and a name that only routes use still counts
-as existing for `old`, so a table renamed by hand can be finished. But `instance_rows`, which the
-startup check reads, leaves routes out, and a route to `new` isn't a conflict. The reason is the
-removed-instance case: a route to a removed instance is kept (the routes page flags it), and if
-routes counted as data, adding any instance would make the check take the removed name for the old
-name of the new instance and refuse to start until it is retired. The `[[routes]]` of `giles.toml`
-are rewritten too, because Giles reads them exactly once: a rename before the first start with
-routes in the database would otherwise import the old name, and the rewrite keeps a leftover block
-consistent after that (`RenameReport::legacy_routes`).
+Routes are a setting, not data. The rename moves `routes.channel` (in the same transaction, keeping
+the order; `RenamedRows::routes` counts them), and a name that only routes use still counts as
+existing for `old`, so a table renamed by hand can be finished. But `instance_rows` leaves routes
+out, and a route to `new` isn't a conflict: a route to a removed instance is kept (the routes page
+flags it), and it must not keep another instance from taking the name. The `[[routes]]` of
+`giles.toml` are rewritten too, because Giles reads them exactly once: a rename before the first
+start with routes in the database would otherwise import the old name, and the rewrite keeps a
+leftover block consistent after that (`RenameReport::legacy_routes`).
 
 Things that look like they carry a name and don't:
 
@@ -106,8 +102,8 @@ socket probing is needed and a core that starts mid-rename is refused instead.
    are scanned.
    - If both names are configured the rename is refused: instances are never merged.
    - If only `old` is configured, that table is renamed.
-   - If only `new` is configured, the operator already renamed the table (this is what the startup
-     check asks for) and the data under `old` is moved to match. `old` must have data.
+   - If only `new` is configured, the operator already renamed the table by hand and the data under
+     `old` is moved to match. `old` must have data.
    - If neither is configured, it is refused: with no data it is an unknown instance, and with data
      the kind can't be known, so the message says to configure `new` first.
    - `new` must have no data: no database rows, no `data/plugins/<new>`, no `groups/<new>` (routes
@@ -121,7 +117,9 @@ socket probing is needed and a core that starts mid-rename is refused instead.
    databases to update are listed: every `agents/<agent>/memory.db` that exists. An agent without
    one is skipped (the rename never creates a database), and a removed agent's database is in
    `trash/agents/`, outside `agents/`, so it is not touched, like the agent's directories and
-   `agent.toml` there. Any parse error or conflict ends the command here with nothing changed.
+   `agent.toml` there. The memories in a restored agent's database keep the old instance name, so
+   the renamed instance's groups don't see them. Any parse error or conflict ends the command here
+   with nothing changed.
 3. **One database transaction** (`Store::rename_instance`): update every row, then run a hook, then
    commit. The hook does the file system work, in this order, recording each completed step in a
    journal:
@@ -146,11 +144,11 @@ socket probing is needed and a core that starts mid-rename is refused instead.
 Why this order. The database transaction is the only step that can't be undone by hand-editing, so
 it is the one that is held open until everything else worked: every failure the code can observe
 leaves the data root exactly as it was. `giles.toml` is rewritten before the directories, so a crash
-between them leaves the startup check's situation (config renamed, data not) and not the reverse.
-The memory databases come last, after `giles.toml`, for the same reason and one more: each of them
-commits on its own, so a step after them would have to rename them back with another write. Renaming
-the owners is also idempotent (rows already under `new` don't match), which makes it safe to repeat
-after a crash.
+between them leaves the configuration renamed and the data not, which running the command again
+finishes, and not the reverse. The memory databases come last, after `giles.toml`, for the same
+reason and one more: each of them commits on its own, so a step after them would have to rename them
+back with another write. Renaming the owners is also idempotent (rows already under `new` don't
+match), which makes it safe to repeat after a crash.
 
 ## Stored toolsets
 
@@ -178,8 +176,8 @@ from then on. What differs from an instance of `giles.toml`:
   nothing is left under `old` the run refuses it as an unknown instance. A rename of the case only
   can't be told from a finished one, so it isn't resumed this way.
 - A new name must be one that a stored toolset can have anywhere: not `new` in any case, which is
-  the address of the web form for a new toolset, and not in `[core] retired_instances`
-  (`RenameError::StoredToolsetName`). A table of `giles.toml` can have either.
+  the address of the web form for a new toolset (`RenameError::StoredToolsetName`). A table of
+  `giles.toml` can have it.
 
 ## Renaming while Giles runs
 
@@ -189,16 +187,15 @@ that the core is running, so the toolset is stopped and started again and nothin
 database transaction:
 
 1. The checks, with nothing changed. The new name must be valid and free among every kind of
-   instance (another stored toolset is `ToolsetManagerError::Exists`, an instance of `giles.toml` or
-   a retired name is `Invalid` at the root key), as for a new toolset. The old name is exempt, so
-   the case of a name can change. Data under `data/plugins/<new>/`, left by an earlier instance,
-   doesn't refuse the name, as it doesn't refuse a new stored toolset: a stored toolset is remote
-   and has no data to merge with it. Then every agent's `agent.toml` is read and its `tools` and
-   `ask` globs are checked with the same function the command uses
-   (`rename::rewrite_toolset_globs`): a glob that matches the tools without starting with `<old>__`
-   refuses the rename (`ToolsetManagerError::Refused`) and the reason lists each one, and so does a
-   file that can't be parsed. The edited text of each agent is validated as the agent edit form
-   validates it.
+   instance (another stored toolset is `ToolsetManagerError::Exists`, an instance of `giles.toml` is
+   `Invalid` at the root key), as for a new toolset. The old name is exempt, so the case of a name
+   can change. Data under `data/plugins/<new>/`, left by an earlier instance, doesn't refuse the
+   name, as it doesn't refuse a new stored toolset: a stored toolset is remote and has no data to
+   merge with it. Then every agent's `agent.toml` is read and its `tools` and `ask` globs are
+   checked with the same function the command uses (`rename::rewrite_toolset_globs`): a glob that
+   matches the tools without starting with `<old>__` refuses the rename
+   (`ToolsetManagerError::Refused`) and the reason lists each one, and so does a file that can't be
+   parsed. The edited text of each agent is validated as the agent edit form validates it.
 2. The running toolset is stopped, which takes its tools out of the registry. A session that still
    lists them gets `tool unavailable`: running sessions keep the old tool names.
 3. Each agent's `agent.toml` is rewritten with the agent edit machinery: a temporary file in the
@@ -249,63 +246,10 @@ the same command again:
   others are finished. In a database whose commit never happened nothing changed, since a database
   is one transaction.
 
-The window is the few system calls of step 3, and the startup check usually notices the unfinished
-state if the daemon is started in between (`giles.toml` renamed, rows still under `old`). It cannot
-once any moved directory is already at its new path, because the instance then has a data directory
-and no longer looks new: the daemon would start, with the old rows stranded. Run the command again
-before the next start. After the daemon has written rows under the new name the command refuses (the
-new name has data), and merging by hand is the only way back.
-
-## Startup check
-
-`Runtime::start` calls `check_unused_instance_data(root, config, store)` right after the database
-opens, before anything else uses the data, and fails with `StartError::InstanceData`. It refuses the
-one situation that looks like a rename done in `giles.toml` alone, because starting would leave the
-old name's sessions, inbox, and directories orphaned and begin a new, empty instance.
-
-Definitions:
-
-- A name **has data** if it appears in `sessions.channel`, `inbox.instance`, `outbox.instance`, or
-  `usage.provider` (not `routes.channel`, see above), or is a directory `data/plugins/<name>` or
-  `agents/*/groups/<name>`. Only directories with a valid name count (`.DS_Store` doesn't). An agent
-  removed in the web UI lives in `trash/agents/`, outside `agents/`, so its directories count for
-  nothing here, and a rename neither reads nor rewrites its `agent.toml` or its `memory.db`. The
-  memories in a restored agent's database keep the old instance name, so the renamed instance's
-  groups don't see them. Memory databases are not data to this check.
-- A configured instance is **fresh** if its name has no data.
-- Toolsets stored in the database ([Toolsets](toolsets.md#stored-toolsets)) are configured: the
-  check reads them with `Store::toolsets`. They are remote, so they have no data of their own and
-  nothing matches them, but data that an earlier instance left under a stored toolset's name is not
-  an unused name (the name can't be listed in `[core] retired_instances` while a stored toolset has
-  it). A name that a `giles.toml` instance also has stays that instance's.
-- A name is **unused** if it has data, is not configured, and is not in `[core] retired_instances`.
-- An unused name **matches** a fresh instance if the kinds fit. Rows of `sessions`, `inbox`, or
-  `outbox` can only belong to a channel; `usage` rows to a provider; a `groups` directory to a
-  channel; a `data/plugins` directory to a channel or a toolset that the core launches (a plugin
-  channel, or a stdio toolset). Built-in and remote instances, and v1 providers, never have such a
-  directory, so a leftover one is never taken for their old name. A remote toolset (`url`) gets
-  neither rows nor a directory, so nothing ever matches it.
-
-The check fails if some unused name matches a fresh instance. The message names each such pair and
-shows `giles instance rename <old> <new>` with the first candidate.
-
-False positives and how each resolves:
-
-| Situation                                                     | Result   | Resolution                           |
-| ------------------------------------------------------------- | -------- | ------------------------------------ |
-| A new instance is added; nothing has been removed             | Starts   |                                      |
-| An instance is removed; nothing is added                      | Starts   | Its data stays unused                |
-| An instance is removed, an unrelated one of the same kind is added | Refused | List the old name in `retired_instances` |
-| An instance is removed and a different kind is added          | Starts when no kind fits | |
-| A built-in or remote channel, or a provider, has never produced data and a removed instance of that kind had data | Refused | `retired_instances`, or use the instance once |
-| A remote toolset is stored and a stdio toolset's directory is left over | Starts |  |
-| A stdio toolset is added to `giles.toml` while the data of a removed plugin instance is left over | Refused | `retired_instances` |
-| `retired_instances` names a configured instance               | Config error | Remove one of them               |
-
-`retired_instances` (`[core]` in `giles.toml`) is the explicit "I know" list: names there are never
-unused. It keeps the data, so the name can be un-retired and configured again later. It doesn't
-delete anything: the rows and directories of a retired name stay until the operator removes them
-(there is no command for that in v1).
-
-The check is conservative about what it reads: it doesn't count messages (every assistant message
-with a provider has a `usage` row) and doesn't look at the cache or pid files.
+The window is the few system calls of step 3. Giles doesn't notice an unfinished rename, so run the
+command again before the next start. If the daemon is started in between (`giles.toml` renamed, rows
+still under `old`), it starts a new, empty instance under the new name and leaves the old name's
+sessions, inbox, and directories where they are. Launching a plugin instance creates
+`data/plugins/<new>/`, and once the daemon has done that, or written rows under the new name, the
+command refuses (the new name has data). If nothing else exists under the new name, removing
+`data/plugins/<new>` lets the command run; otherwise merging by hand is the only way back.

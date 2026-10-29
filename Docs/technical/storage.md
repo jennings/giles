@@ -430,11 +430,11 @@ no instance name, `jobs.spec` carries a prompt and a schedule, and identities us
 channel reports, not the instance name.
 
 `instance_rows` returns, per name, how many rows use it in the first four of those columns. It's
-what the startup check for an unused old instance name reads (`Docs/technical/instance-rename.md`).
-It leaves `routes.channel` out on purpose: routes are settings, not data, and a route to a removed
-instance is kept (the routes page flags it), so counting it would make adding an instance look like
-an unfinished rename. `instance_routes` returns, per channel instance, how many routes name it;
-`giles instance rename` reads it to see that a name is used.
+what `giles instance rename` reads to see which names have data. It leaves `routes.channel` out on
+purpose: routes are settings, not data, and a route to a removed instance is kept (the routes page
+flags it), so counting it would keep that name from being given to another instance.
+`instance_routes` returns, per channel instance, how many routes name it; `giles instance rename`
+reads it to see that a name is used.
 
 `rename_instance(old, new, hook)` moves all six places to the new name in one `IMMEDIATE`
 transaction, runs `hook` inside it after the updates and before the commit, and returns the number

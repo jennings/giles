@@ -515,7 +515,7 @@ async fn startup_adds_what_validates_and_reports_the_rest_as_failed() {
 #[tokio::test]
 async fn toolsets_of_giles_toml_are_read_only_and_keep_their_names() {
     let f = Fixture::start(
-        "[core]\nretired_instances = [\"old\"]\n[toolset.docs]\ncommand = \"/nonexistent/docs\"\n",
+        "[toolset.docs]\ncommand = \"/nonexistent/docs\"\n",
         &[],
         vec![
             ("docs", Script::new(&["search"])),
@@ -547,10 +547,6 @@ async fn toolsets_of_giles_toml_are_read_only_and_keep_their_names() {
             "the name is taken by `[toolset.docs]` in giles.toml"
         );
     }
-    // A name `[core] retired_instances` lists is for instances that are not configured.
-    let (key, reason) = invalid(f.manager.add("old", &spec(FILES)).await.unwrap_err());
-    assert!(key.is_root());
-    assert!(reason.contains("retired_instances"), "{reason}");
 
     // The address of the form for a new toolset is no toolset's name, in any case.
     for name in ["new", "NEW", "New"] {
@@ -914,9 +910,9 @@ async fn an_agent_edit_waits_for_the_lock_the_toolset_manager_shares() {
 }
 
 #[tokio::test]
-async fn a_name_that_is_taken_retired_or_reserved_is_refused() {
-    let giles_toml = "[core]\nretired_instances = [\"old\"]\n[provider.anthropic]\n\
-                      [channel.web]\n[toolset.docs]\ncommand = \"/nonexistent/docs\"\n";
+async fn a_name_that_is_taken_or_reserved_is_refused() {
+    let giles_toml = "[provider.anthropic]\n[channel.web]\n\
+                      [toolset.docs]\ncommand = \"/nonexistent/docs\"\n";
     let f = Fixture::start_with_agents(
         giles_toml,
         &[("files", FILES), ("other", FILES)],
@@ -955,7 +951,6 @@ async fn a_name_that_is_taken_retired_or_reserved_is_refused() {
             "anthropic",
             "the name is taken by `[provider.anthropic]` in giles.toml",
         ),
-        ("old", "retired_instances"),
         ("new", "can't be a toolset's name"),
         ("bad name", "invalid instance name"),
         ("files", "already has that name"),

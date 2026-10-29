@@ -51,22 +51,6 @@ pub(super) fn configured(doc: &DocumentMut) -> BTreeMap<String, Kind> {
     names
 }
 
-/// The names in `[core] retired_instances`. Entries that aren't strings are skipped: the
-/// configuration loader refuses them when Giles starts.
-pub(super) fn retired(doc: &DocumentMut) -> Vec<String> {
-    doc.get("core")
-        .and_then(Item::as_table_like)
-        .and_then(|core| core.get("retired_instances"))
-        .and_then(Item::as_array)
-        .map(|names| {
-            names
-                .iter()
-                .filter_map(|name| name.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// What [`rename_in_giles_toml`] changed.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct GilesEdit {
