@@ -33,7 +33,7 @@ environment.
   data/               DataRoot::data_dir()
     giles.db          DataRoot::database_file()
     blobs/            DataRoot::blobs_dir()
-    plugins/          DataRoot::plugin_data_root()
+    <kind>/           DataRoot::plugin_data_root(kind)   channel, provider, toolset
       <instance>/     DataRoot::plugin_data_dir(kind, name)
   backups/            DataRoot::backups_dir()
   trash/              DataRoot::trash_dir()         not in the layout: made at the first removal
@@ -43,9 +43,9 @@ environment.
     admin.token       DataRoot::admin_token_file()
     giles.lock        DataRoot::lock_file()         flock held by the running core
     proxy.sock        DataRoot::proxy_socket()      unless it falls back (below)
-    pids/             DataRoot::pids_dir()
+    pids/<kind>/      DataRoot::pids_dir(kind)
       <instance>.pid  DataRoot::pid_file(kind, name)
-    sandbox/          DataRoot::sandbox_specs_dir()
+    sandbox/<kind>/   DataRoot::sandbox_specs_dir(kind)
       <instance>.json DataRoot::sandbox_spec_file(kind, name)
   cache/              DataRoot::cache_dir()
 ```
@@ -53,12 +53,19 @@ environment.
 Building a `DataRoot` does no I/O, so a CLI client computes the same paths, including the socket
 paths, as the daemon serving that root.
 
+Per-instance state sits under the instance's kind (`channel`, `provider`, or `toolset`, from
+`Kind::as_str`), so a channel and a toolset with the same name share no data directory, pid file, or
+sandbox spec. `create_layout` creates all nine roots (`data/<kind>/`, `run/pids/<kind>/`, and
+`run/sandbox/<kind>/`). Nothing uses `data/provider/` yet, because providers are built in. Giles
+doesn't read `data/plugins/`, `run/pids/*.pid`, or `run/sandbox/*.json` from earlier releases and
+leaves them where they are.
+
 Accessors that take an agent, user, or instance name return `PathsError::InvalidName` unless the
 name is a single normal path component (`is_valid_name`: non-empty, no `/` or NUL, not `.` or `..`),
 so a name can never escape its parent directory. This is a path-safety backstop, not the name
 grammar: config validation applies the stricter `[a-zA-Z0-9-]+`, but names also arrive at runtime
 (e.g. a user created through the admin service), and those must not be able to traverse paths
-either. It matters most for `data/plugins/<instance>/`, the only directory a plugin can write.
+either. It matters most for `data/<kind>/<instance>/`, the only directory a plugin can write.
 
 ## Creating the layout
 
@@ -88,7 +95,8 @@ $TMPDIR/giles-<16 hex digits>/proxy.sock
 - The name is the 64-bit FNV-1a hash of the absolute, normalized root path. It is a fixed algorithm
   (unlike Rust's `DefaultHasher`), so the daemon and any `giles` CLI, even from another release,
   derive the same directory from the same `GILES_HOME` without coordinating.
-- Only the sockets move. `run/admin.token`, `run/giles.lock`, and `run/pids/` stay in the data root.
+- Only the sockets move. `run/admin.token`, `run/giles.lock`, `run/pids/`, and `run/sandbox/` stay
+  in the data root.
 - The temporary directory may be shared with other users (`/tmp`), and the name is predictable, so
   `create_layout` creates the directory with mode 0700 and, if it already exists, accepts it only if
   it is a real directory (not a symlink) owned by the owner of `run/`. It then resets its mode to

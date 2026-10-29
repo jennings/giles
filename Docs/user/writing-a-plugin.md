@@ -11,7 +11,7 @@ Model providers are built in for now. Toolsets are ordinary MCP servers and need
 ## What Giles does for you
 
 Giles starts the plugin in a sandbox. The only directory it can write to is the instance's data
-directory, `<GILES_HOME>/data/plugins/<instance>/`.
+directory, `<GILES_HOME>/data/channel/<instance>/`.
 
 Giles sends the plugin the instance's `config` table with secrets already filled in. A plugin never
 reads `giles.toml` or `secrets.toml`, and never listens on a socket.

@@ -84,16 +84,16 @@ servers in a prefix of their own, such as a venv or `npm --prefix`.
 
 Like a plugin launch ([Plugin host](plugin-host.md)), without the gRPC parts:
 
-- Data directory `data/plugins/<instance>/` and its `tmp/`, mode 0700, refused if it is a link
-  (`plugin_host::prepare_data_dir`). Instance names are unique across kinds, so toolsets share the
-  plugin data root (PLAN section 11.6).
+- Data directory `data/toolset/<instance>/` and its `tmp/`, mode 0700, refused if it is a link
+  (`plugin_host::prepare_data_dir`). Toolsets have their own data root, `data/toolset/` (PLAN
+  section 11.6).
 - The spec: `read` and `execute` from the plan (plus configured `read`), configured `write`, `unix`,
   `min_abi`, `network` (off unless granted: the config loader's toolset default), `inherit_env` =
   the names in `env`, and `path` from the plan. No `env`: MCP servers aren't Giles plugins and get
   no handshake variables.
-- Sandboxed: the spec goes to `run/sandbox/<instance>.json` (0600, atomically), and the command is
-  `giles sandbox-exec <spec> -- <program> <args>` with the `env` values set on the trampoline's
-  process. The trampoline passes exactly those names on (the sandbox's
+- Sandboxed: the spec goes to `run/sandbox/toolset/<instance>.json` (0600, atomically), and the
+  command is `giles sandbox-exec <spec> -- <program> <args>` with the `env` values set on the
+  trampoline's process. The trampoline passes exactly those names on (the sandbox's
   [inherited variables](sandbox.md#environment)), so credentials never touch the spec file or
   `argv`.
 - `unsandboxed = true`: the program runs directly, with a warning at every launch, the same scrubbed

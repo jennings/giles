@@ -10,8 +10,6 @@ use toml_edit::{DocumentMut, Item, Key, Table, TableLike, Value};
 use crate::agent_loop::glob;
 use crate::config::Kind;
 
-const KINDS: [Kind; 3] = [Kind::Provider, Kind::Channel, Kind::Toolset];
-
 /// A file can't be edited.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum EditError {
@@ -37,7 +35,7 @@ pub(super) fn parse(source: &str) -> Result<DocumentMut, EditError> {
 /// wins.
 pub(super) fn configured(doc: &DocumentMut) -> BTreeMap<String, Kind> {
     let mut names = BTreeMap::new();
-    for kind in KINDS {
+    for kind in Kind::ALL {
         if let Some(table) = doc.get(kind.as_str()).and_then(Item::as_table_like) {
             for (name, item) in table.iter() {
                 let remote = kind == Kind::Toolset

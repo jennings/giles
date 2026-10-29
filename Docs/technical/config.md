@@ -39,11 +39,11 @@ The steps:
    are errors at `core.journal_mode`) and defaults to WAL ([Storage](storage.md#journal-modes));
    `Runtime::start` passes it to the store.
 3. Load `secrets.toml` ([Secrets](#secrets)).
-4. Check that instance names are unique across the three kinds, ignoring ASCII case (they share the
-   data directory namespace, `data/plugins/<instance>/`, and pid files, and macOS file systems are
-   case-insensitive by default), then validate each instance into its typed form, resolving secret
-   references. Ignored toolset tables take no part. A toolset goes through `Ctx::toolset`, the same
-   function [`validate_toolset`](#validating-one-toolset) uses.
+4. Check that instance names are unique across the three kinds, ignoring ASCII case (the restart and
+   rename commands address an instance by name alone, and macOS file systems are case-insensitive by
+   default), then validate each instance into its typed form, resolving secret references. Ignored
+   toolset tables take no part. A toolset goes through `Ctx::toolset`, the same function
+   [`validate_toolset`](#validating-one-toolset) uses.
 5. Load every agent: each directory in `agents/` not starting with `.` must have a valid name and an
    `agent.toml`. Models are checked against the configured provider instances.
 6. Keep `[[routes]]` as written (`Config::legacy_routes`, unvalidated). Routes are stored in the
@@ -227,7 +227,7 @@ toolset's server and `skills` directories. The error then names the other instan
 (`toolset.other.sandbox.write[0]`) in the reason, with an empty `key`. Problems among other
 instances that were already there (a binary that appeared in a granted directory after startup) are
 not blamed on the toolset being validated, while loading `giles.toml` still rejects them. `skills`
-overlapping the plugin data root is checked for the toolset being validated only.
+overlapping a plugin data root (`data/<kind>/`) is checked for the toolset being validated only.
 
 `ToolsetManager` ([Toolsets](toolsets.md#stored-toolsets)) is the caller for toolsets stored in the
 database. It reads `secrets.toml` for every validation and adds its own rules. A name that a

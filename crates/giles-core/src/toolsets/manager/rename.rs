@@ -200,7 +200,7 @@ impl ToolsetManager {
 
         // The new name: valid and free among every kind of instance, as for a new toolset. The
         // old name is exempt, so the case of a name can change. A remote toolset has no data
-        // directory, so data under `data/plugins/<new>/` (left by an earlier instance) is no
+        // directory, so data under `data/toolset/<new>/` (left by an earlier instance) is no
         // reason to refuse, as it isn't for a new toolset.
         if row.name == new {
             return Err(ToolsetManagerError::whole(

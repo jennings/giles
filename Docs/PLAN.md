@@ -758,7 +758,7 @@ renames the directories, and renames the instance's config (in the current layou
 `[<kind>.<old>]` table in `giles.toml`, section 11.2). Giles doesn't check for a rename done in the
 config alone: the renamed instance starts with no data, and the old name's rows and directories stay
 where they are, unused. The command finishes such a hand-rename only before the renamed instance has
-started: launching it creates `data/plugins/<new>/`, and then `<new>` has data and the command
+started: launching it creates `data/<kind>/<new>/`, and then `<new>` has data and the command
 refuses. Renaming a provider or channel that has no `component` key keeps its component by writing
 `component = "<old>"`, since the component defaults to the instance name. A toolset has no
 component.
@@ -833,9 +833,9 @@ clean up:
   end-of-file, the core is gone and the plugin exits. This is the only case in which a plugin exits
   on its own. `giles-plugin-sdk` does it automatically; plugins in other languages must implement
   it.
-- pid files: the core records each launched plugin in `run/pids/<instance>.pid`, outside every
-  plugin's writable directories. At startup, before launching an instance, it kills any process
-  still recorded there whose executable is the expected plugin binary.
+- pid files: the core records each launched plugin in `run/pids/<kind>/<instance>.pid`, outside
+  every plugin's writable directories. At startup, before launching an instance, it kills any
+  process still recorded there whose executable is the expected plugin binary.
 
 ### 7.5 Lifecycle
 
@@ -1321,13 +1321,14 @@ Everything lives under `GILES_HOME`, default `~/.giles`.
   plugins/                      # plugin binaries
   data/giles.db                 # section 11.4
   data/blobs/sha256/ab/<hash>   # section 11.5
-  data/plugins/<instance>/      # section 11.6
+  data/<kind>/<instance>/       # section 11.6; <kind> is channel, provider, or toolset
   backups/                      # `giles backup` output and pre-migration snapshots
   trash/agents/<agent>-<time>/  # agents removed in the web UI (made at the first removal)
   run/admin.sock
   run/admin.token               # mode 0600; required by the admin service
   run/proxy.sock                # optional trusted-proxy listener (section 3.4)
-  run/pids/                     # plugin pid files
+  run/pids/<kind>/<instance>.pid      # plugin pid files
+  run/sandbox/<kind>/<instance>.json  # sandbox specs (section 12.1)
   cache/                        # Describe and tool-list cache
 ```
 
@@ -1336,7 +1337,7 @@ the admin or proxy socket path too long, the core uses a private directory under
 Plugins have no socket paths (section 7.4).
 
 No plugin is ever granted read or write access to any part of `GILES_HOME` except its own
-`data/plugins/<instance>/`. Config validation rejects a grant that overlaps the rest (section 12).
+`data/<kind>/<instance>/`. Config validation rejects a grant that overlaps the rest (section 12).
 
 ### 11.2 Configuration
 
@@ -1556,9 +1557,10 @@ swept.
 
 ### 11.6 Plugin state
 
-Each launched instance gets `data/plugins/<instance>/`, passed as `GILES_PLUGIN_DATA`. It's the
+Each launched instance gets `data/<kind>/<instance>/`, passed as `GILES_PLUGIN_DATA`. It's the
 plugin's only writable directory; its `TMPDIR` is inside it (section 7.4). It survives restarts and
-upgrades. The core never deletes it automatically. Remote plugins keep their own state.
+upgrades. The core never deletes it automatically. Remote plugins keep their own state. Instances of
+different kinds never share a directory, even with the same name.
 
 ### 11.7 Usage
 
@@ -1581,7 +1583,8 @@ core and remote plugins run elsewhere, so neither is sandboxed by the core.
 The core never sets up a sandbox inside its own multi-threaded process. It spawns the plugin through
 a trampoline, `giles sandbox-exec <spec> -- <plugin>`: a fresh single-threaded process that builds
 the Landlock ruleset (Linux) or Seatbelt profile (macOS), applies it and the seccomp filter, and
-then `exec`s the plugin. The fds from section 7.4 pass through unchanged.
+then `exec`s the plugin. The fds from section 7.4 pass through unchanged. The spec is the file
+`run/sandbox/<kind>/<instance>.json`, which the core rewrites at each launch.
 
 At startup the core checks that the sandbox works on this host (Landlock enabled, seccomp available,
 `sandbox-exec` present). If not, it reports one clear error naming the cause, instead of letting

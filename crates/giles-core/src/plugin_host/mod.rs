@@ -898,7 +898,7 @@ impl PluginHost {
     /// A host supervising nothing yet that hands launched channels to `wiring`, with the
     /// `Describe` cache of the launcher's data root.
     pub fn new(launcher: Launcher, wiring: ChannelWiring) -> Self {
-        let supervision = Supervision::new(DescribeCache::new(launcher.root()));
+        let supervision = Supervision::new(DescribeCache::new(launcher.root(), Kind::Channel));
         Self {
             launcher,
             wiring,

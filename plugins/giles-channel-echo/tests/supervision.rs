@@ -218,7 +218,7 @@ async fn describe_answers_are_cached_for_status() {
     assert_eq!(describe.output, OutputMode::Blocks);
     assert!(describe.can_initiate);
     core.stop().await;
-    let cached = home.root.cache_dir().join("describe/echo.json");
+    let cached = home.root.cache_dir().join("describe/channel/echo.json");
     let entry: serde_json::Value = serde_json::from_slice(&fs::read(cached).unwrap()).unwrap();
     assert_eq!(entry["describe"]["version"], env!("CARGO_PKG_VERSION"));
 

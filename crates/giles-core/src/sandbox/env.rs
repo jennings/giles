@@ -64,16 +64,16 @@ mod tests {
     #[test]
     fn defaults_only() {
         let env = scrubbed_env(
-            &Spec::new("/g/data/plugins/irc"),
+            &Spec::new("/g/data/channel/irc"),
             &inherited(&[("SECRET", "x")]),
         );
         assert_eq!(
             pairs(&env),
             [
-                ("GILES_PLUGIN_DATA", "/g/data/plugins/irc"),
-                ("HOME", "/g/data/plugins/irc"),
+                ("GILES_PLUGIN_DATA", "/g/data/channel/irc"),
+                ("HOME", "/g/data/channel/irc"),
                 ("PATH", "/usr/bin:/bin"),
-                ("TMPDIR", "/g/data/plugins/irc/tmp"),
+                ("TMPDIR", "/g/data/channel/irc/tmp"),
             ]
         );
     }

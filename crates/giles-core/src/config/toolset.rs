@@ -243,7 +243,10 @@ pub(super) fn check_binary_dirs<'a>(
     for toolset in toolsets {
         for (i, dir) in toolset.skills.iter().enumerate() {
             if focus.is_none_or(|focus| focus == &toolset.name)
-                && sandbox::overlaps(dir, &root.plugin_data_root())
+                && let Some(data_root) = Kind::ALL
+                    .into_iter()
+                    .map(|kind| root.plugin_data_root(kind))
+                    .find(|data_root| sandbox::overlaps(dir, data_root))
             {
                 return Err(ConfigError::at(
                     file,
@@ -255,7 +258,7 @@ pub(super) fn check_binary_dirs<'a>(
                     format!(
                         "{} overlaps the plugins' data directories, {}",
                         dir.display(),
-                        root.plugin_data_root().display()
+                        data_root.display()
                     ),
                 ));
             }
@@ -603,7 +606,6 @@ mod tests {
     #[test]
     fn rules_name_the_key_they_apply_to() {
         let fixture = Fixture::new("", "");
-        let plugin_data = fixture.root.plugin_data_root();
         let cases = [
             (
                 json!({ "url": "https://x", "args": [] }),
@@ -661,11 +663,6 @@ mod tests {
                 "must be an absolute path",
             ),
             (
-                json!({ "url": "https://x", "skills": [plugin_data] }),
-                "skills[0]",
-                "overlaps the plugins' data directories",
-            ),
-            (
                 json!({ "command": "/x", "sandbox": { "read": ["relative"] } }),
                 "sandbox.read[0]",
                 "not an absolute path",
@@ -693,6 +690,16 @@ mod tests {
         ];
         for (spec, key, reason) in cases {
             fixture.assert_invalid("t", spec, key, reason);
+        }
+        // Skills may not overlap any kind's data directories.
+        for kind in Kind::ALL {
+            let data_root = fixture.root.plugin_data_root(kind);
+            fixture.assert_invalid(
+                "t",
+                json!({ "url": "https://x", "skills": [data_root] }),
+                "skills[0]",
+                "overlaps the plugins' data directories",
+            );
         }
         // The name is checked too, as the toolset as a whole.
         fixture.assert_invalid(

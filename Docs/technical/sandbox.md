@@ -93,12 +93,12 @@ plugin writes to it, reads stdin, and writes to stdout and stderr.
 
 `giles_core::sandbox::Spec`, serialized as one JSON object. The spec is a file, not an argument, so
 it isn't limited by `ARG_MAX` or visible in `ps`. The plugin host writes it with `Spec::to_json`
-(which validates first) to `run/sandbox/<instance>.json`, mode 0600, outside every plugin's grants,
-and passes its path ([Plugin Host](plugin-host.md#the-sandbox-spec)).
+(which validates first) to `run/sandbox/<kind>/<instance>.json`, mode 0600, outside every plugin's
+grants, and passes its path ([Plugin Host](plugin-host.md#the-sandbox-spec)).
 
 ```json
 {
-  "data_dir": "/home/me/.giles/data/plugins/irc",
+  "data_dir": "/home/me/.giles/data/channel/irc",
   "read": ["/opt/homebrew"],
   "write": [],
   "execute": ["/opt/homebrew/bin"],

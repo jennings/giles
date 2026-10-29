@@ -191,7 +191,7 @@ question.
 **Media inputs** (PLAN sections 5 and 7.10). The dispatcher resolves each `{"$media": "<id>"}` in a
 tool input against the session's media and puts the media in `ToolCall::media`
 ([Agent loop](agent-loop.md)). For a connection made with `McpMedia::files_in(dir)` (the toolset
-launcher passes the stdio server's `TMPDIR`, `data/plugins/<instance>/tmp/`), `call` copies each
+launcher passes the stdio server's `TMPDIR`, `data/toolset/<instance>/tmp/`), `call` copies each
 blob into `dir` and replaces every reference object with the copy's absolute path, as a string,
 before sending `tools/call`; an id missing from `ToolCall::media` is `InvalidRequest`
 (`unknown media <id>`), and so is an input that is a reference itself. The copies (`mcp/files.rs`):

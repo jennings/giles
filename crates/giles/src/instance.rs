@@ -133,8 +133,8 @@ mod tests {
             legacy_routes: 2,
             agent_files: vec![(Path::new("/g/agents/jeeves/agent.toml").to_owned(), 1)],
             moved: vec![(
-                Path::new("/g/data/plugins/libera").to_owned(),
-                Path::new("/g/data/plugins/libera-chat").to_owned(),
+                Path::new("/g/data/channel/libera").to_owned(),
+                Path::new("/g/data/channel/libera-chat").to_owned(),
             )],
             memory_dbs: vec![(Path::new("/g/agents/jeeves/memory.db").to_owned(), 5)],
         };
@@ -152,7 +152,7 @@ mod tests {
         let sep = std::path::MAIN_SEPARATOR;
         assert!(
             text.contains(&format!(
-                "  moved data{sep}plugins{sep}libera -> data{sep}plugins{sep}libera-chat"
+                "  moved data{sep}channel{sep}libera -> data{sep}channel{sep}libera-chat"
             )),
             "{text}"
         );

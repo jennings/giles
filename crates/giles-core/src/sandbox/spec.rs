@@ -38,7 +38,7 @@ const GILES_ENV_PREFIX: &str = "GILES_";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Spec {
-    /// The instance's data directory (`data/plugins/<instance>/`, PLAN section 11.6). Absolute,
+    /// The instance's data directory (`data/<kind>/<instance>/`, PLAN section 11.6). Absolute,
     /// and it must exist. Always writable; it becomes `HOME`, `GILES_PLUGIN_DATA`, and the working
     /// directory, and `TMPDIR` is [`TMP_DIR_NAME`] inside it.
     pub data_dir: PathBuf,
@@ -394,7 +394,7 @@ mod tests {
     fn full_spec_parses() {
         let spec = Spec::parse(
             r#"{
-                "data_dir": "/g/data/plugins/irc",
+                "data_dir": "/g/data/channel/irc",
                 "read": ["/opt/homebrew"],
                 "write": ["/srv/out"],
                 "execute": ["/opt/homebrew/bin"],
