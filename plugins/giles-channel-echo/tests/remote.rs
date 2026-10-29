@@ -13,6 +13,8 @@ use std::path::Path;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 
+use giles_core::admin::PluginControl as _;
+use giles_core::config::Kind;
 use giles_core::plugin_host::PluginState;
 use giles_plugin_sdk::giles_types::{ConversationId, OutboundMessage, SendTarget};
 use giles_plugin_sdk::tls::rustls::RootCertStore;
@@ -252,7 +254,7 @@ async fn a_restart_closes_the_old_connection_for_good() {
 
     // Someone (a session, the outbox) still holds the first connection's channel.
     let old = core.runtime.registry.channel("echo").unwrap();
-    assert!(core.host.restart("echo"));
+    assert!(core.host.restart(Kind::Channel, "echo"));
     wait_until(|| {
         let current = core.runtime.registry.channel("echo")?;
         (!Arc::ptr_eq(&current, &old) && matches!(state(&core), PluginState::Running { .. }))

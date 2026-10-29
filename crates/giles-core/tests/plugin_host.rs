@@ -286,14 +286,15 @@ async fn an_early_exit_logs_scrubbed_stderr_under_the_instance_span() {
     assert_eq!(vars, expected);
     let contents = log.contents();
     assert!(
-        contents
-            .contains("plugin{instance=leaky}: giles_core::plugin_host::stderr: token=<redacted>"),
+        contents.contains(
+            "plugin{kind=channel instance=leaky}: giles_core::plugin_host::stderr: token=<redacted>"
+        ),
         "{contents}"
     );
     assert!(!contents.contains("s3cret-value-42"), "{contents}");
     assert!(
         contents.contains(
-            "plugin{instance=leaky}: giles_core::plugin_host: running the plugin unsandboxed"
+            "plugin{kind=channel instance=leaky}: giles_core::plugin_host: running the plugin unsandboxed"
         ),
         "{contents}"
     );

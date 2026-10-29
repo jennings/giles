@@ -57,7 +57,7 @@ impl WebApp {
             Router::new()
                 .route("/admin", get(status_page))
                 .route("/admin/plugins", get(plugins_page))
-                .route("/admin/plugins/{instance}/restart", post(restart))
+                .route("/admin/plugins/{kind}/{instance}/restart", post(restart))
                 .with_state(AdminPages { admin })
                 .route_layer(auth)
                 .route_layer(map_response(async |response: Response| no_store(response))),
@@ -245,8 +245,25 @@ pub(super) struct PluginRow {
     pub(super) sandbox: String,
     pub(super) lacking: Vec<String>,
     pub(super) requests: Option<String>,
+    /// The kind as the restart route spells it.
+    pub(super) route_kind: &'static str,
     /// Whether plugin supervision knows the instance, so `RestartPlugin` can restart it.
     pub(super) restartable: bool,
+}
+
+/// The kinds of plugin the restart route takes, as it spells them.
+const ROUTE_KINDS: [(&str, pb::InstanceKind); 3] = [
+    ("provider", pb::InstanceKind::Provider),
+    ("channel", pb::InstanceKind::Channel),
+    ("toolset", pb::InstanceKind::Toolset),
+];
+
+/// How the restart route spells `kind`; empty for one it has no spelling for.
+fn route_kind(kind: pb::InstanceKind) -> &'static str {
+    ROUTE_KINDS
+        .iter()
+        .find(|(_, k)| *k == kind)
+        .map_or("", |(name, _)| name)
 }
 
 pub(super) fn plugin_row(plugin: &pb::PluginInstance) -> PluginRow {
@@ -297,6 +314,7 @@ pub(super) fn plugin_row(plugin: &pb::PluginInstance) -> PluginRow {
     if plugin.restarts > 0 {
         state.push_str(&format!("; {} restarts", plugin.restarts));
     }
+    let route_kind = route_kind(plugin.kind());
     let channel = (plugin.kind() == pb::InstanceKind::Channel)
         .then(|| status_view(plugin.channel_status.as_ref()).text);
     let mut lacking = Vec::new();
@@ -326,7 +344,8 @@ pub(super) fn plugin_row(plugin: &pb::PluginInstance) -> PluginRow {
         sandbox,
         lacking,
         requests: plugin.requested_grants.as_ref().map(requested_grants),
-        restartable: plugin.state() != pb::PluginState::Unspecified,
+        route_kind,
+        restartable: plugin.state() != pb::PluginState::Unspecified && !route_kind.is_empty(),
     }
 }
 
@@ -430,12 +449,12 @@ struct RestartForm {
     csrf: Option<String>,
 }
 
-/// `POST /admin/plugins/<instance>/restart` (CSRF-checked): `RestartPlugin`, then 303 back to the
-/// plugins page.
+/// `POST /admin/plugins/<kind>/<instance>/restart` (CSRF-checked): `RestartPlugin` for that kind
+/// of instance, then 303 back to the plugins page. A kind the route doesn't spell is a 404.
 async fn restart(
     State(pages): State<AdminPages>,
     user: WebUser,
-    Path(instance): Path<String>,
+    Path((kind, instance)): Path<(String, String)>,
     headers: HeaderMap,
     Form(form): Form<RestartForm>,
 ) -> Response {
@@ -445,9 +464,19 @@ async fn restart(
     if let Err(rejected) = check_csrf(&user, &headers, form.csrf.as_deref()) {
         return rejected.into_response();
     }
+    let Some((_, kind)) = ROUTE_KINDS.iter().find(|(name, _)| *name == kind) else {
+        return error_page(
+            StatusCode::NOT_FOUND,
+            "Restart failed",
+            &format!("there is no kind of plugin called `{kind}`"),
+        );
+    };
     match pages
         .admin
-        .restart_plugin(Request::new(pb::RestartPluginRequest { instance }))
+        .restart_plugin(Request::new(pb::RestartPluginRequest {
+            instance,
+            kind: (*kind).into(),
+        }))
         .await
     {
         Ok(_) => Redirect::to("/admin/plugins").into_response(),

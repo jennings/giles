@@ -354,7 +354,7 @@ impl Launcher {
     }
 
     /// Launches the plugin channel `instance`, up to a successful `Configure`. Logs under a
-    /// `plugin{instance=...}` span, which also carries the plugin's stderr.
+    /// `plugin{kind=channel instance=...}` span, which also carries the plugin's stderr.
     ///
     /// # Errors
     ///
@@ -366,7 +366,7 @@ impl Launcher {
         let ChannelRuntime::Plugin(launch) = &instance.runtime else {
             return Err(LaunchError::NotLaunched);
         };
-        let span = tracing::info_span!("plugin", instance = %instance.name);
+        let span = tracing::info_span!("plugin", kind = %Kind::Channel, instance = %instance.name);
         self.launch(instance, &launch.binary, &launch.sandbox, span.clone())
             .instrument(span)
             .await
@@ -793,7 +793,7 @@ pub struct LaunchedPlugin {
     /// The instance's secret values and the launch token: scrub plugin-provided text with them
     /// ([`scrub`]) before logging it.
     pub secrets: Arc<[Secret]>,
-    /// The `plugin{instance=...}` span its logs belong under.
+    /// The `plugin{kind=channel instance=...}` span its logs belong under.
     pub span: tracing::Span,
 }
 
@@ -958,13 +958,6 @@ impl PluginHost {
         self.supervision.status(instance)
     }
 
-    /// Relaunches `instance` now: stops it if it runs, and skips the backoff or the wait for a
-    /// new binary otherwise (the admin service's `RestartPlugin`). A request during a launch
-    /// takes effect once that launch is up. `false` if `instance` isn't supervised.
-    pub fn restart(&self, instance: &str) -> bool {
-        self.supervision.restart(instance)
-    }
-
     /// Stops supervision and every plugin concurrently ([`LaunchedPlugin::stop`] with
     /// [`STOP_GRACE`]), and waits for them. Nothing is relaunched afterwards.
     pub async fn stop_all(&self) {
@@ -978,8 +971,12 @@ impl PluginControl for PluginHost {
         self.statuses().into_iter().map(plugin_runtime).collect()
     }
 
-    fn restart(&self, instance: &str) -> bool {
-        PluginHost::restart(self, instance)
+    /// Relaunches the channel `instance` now: stops it if it runs, and skips the backoff or the
+    /// wait for a new binary otherwise. A request during a launch takes effect once that launch
+    /// is up. `false` if `instance` isn't a supervised channel; the host supervises no other
+    /// kind.
+    fn restart(&self, kind: Kind, instance: &str) -> bool {
+        kind == Kind::Channel && self.supervision.restart(instance)
     }
 }
 
@@ -1008,6 +1005,7 @@ fn plugin_runtime(status: PluginStatus) -> PluginRuntime {
         None => (None, None),
     };
     PluginRuntime {
+        kind: Kind::Channel,
         instance: status.instance,
         binary: status.binary,
         state,

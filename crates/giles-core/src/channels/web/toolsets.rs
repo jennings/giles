@@ -1091,6 +1091,7 @@ async fn restart(
         .admin
         .restart_plugin(Request::new(pb::RestartPluginRequest {
             instance: view.name.clone(),
+            kind: pb::InstanceKind::Toolset.into(),
         }))
         .await
     {

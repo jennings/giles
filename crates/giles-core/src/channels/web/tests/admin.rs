@@ -11,8 +11,9 @@ use tonic::{Request, Response as RpcResponse, Status};
 
 use super::*;
 
-/// The admin service's answers, from a state the test sets. `RestartPlugin` records the instance
-/// (`NOT_FOUND` for one `Status` doesn't list).
+/// The admin service's answers, from a state the test sets. `RestartPlugin` records the kind and
+/// instance as `<kind>/<instance>` (`NOT_FOUND` for one `Status` doesn't list, and
+/// `INVALID_ARGUMENT` for no kind).
 #[derive(Default)]
 pub(super) struct FakeAdmin {
     pub(super) status: Mutex<pb::StatusResponse>,
@@ -56,20 +57,33 @@ impl AdminRpc for FakeAdmin {
         &self,
         request: Request<pb::RestartPluginRequest>,
     ) -> Result<RpcResponse<pb::RestartPluginResponse>, Status> {
-        let instance = request.into_inner().instance;
+        let request = request.into_inner();
+        let kind = match request.kind() {
+            pb::InstanceKind::Unspecified => {
+                return Err(Status::invalid_argument("kind: name the kind"));
+            }
+            pb::InstanceKind::Provider => "provider",
+            pb::InstanceKind::Channel => "channel",
+            pb::InstanceKind::Toolset => "toolset",
+        };
+        let wanted = request.kind();
+        let instance = request.instance;
         let listed = self
             .status
             .lock()
             .unwrap()
             .plugins
             .iter()
-            .any(|p| p.instance == instance);
+            .any(|p| p.kind() == wanted && p.instance == instance);
         if !listed {
             return Err(Status::not_found(format!(
                 "there is no plugin instance `{instance}`"
             )));
         }
-        self.restarted.lock().unwrap().push(instance);
+        self.restarted
+            .lock()
+            .unwrap()
+            .push(format!("{kind}/{instance}"));
         Ok(RpcResponse::new(pb::RestartPluginResponse {}))
     }
 
@@ -293,7 +307,7 @@ async fn only_the_owner_gets_the_admin_pages() {
     let cases = [
         (Method::GET, "/admin"),
         (Method::GET, "/admin/plugins"),
-        (Method::POST, "/admin/plugins/libera/restart"),
+        (Method::POST, "/admin/plugins/channel/libera/restart"),
     ];
     for (method, path) in cases {
         for (user, expected) in [
@@ -334,7 +348,7 @@ async fn the_status_page_shows_the_admin_state_with_plugin_strings_escaped() {
         "web, built in",
         "error: nick in use &#60;script&#62;alert(1)&#60;/script&#62;",
         "since <time datetime=\"2026-10-21T00:00:00Z\">2026-10-21 00:00:00 UTC</time>",
-        r##"<a href="/admin/plugins#plugin-libera">libera</a>"##,
+        r##"<a href="/admin/plugins#plugin-channel-libera">libera</a>"##,
         r#"<td class="state-bad">down</td>"#,
         r#"<td class="state-unknown">unknown</td>"#,
     ] {
@@ -429,14 +443,15 @@ async fn the_plugins_page_shows_each_plugin_and_restart_buttons_for_supervised_o
     });
     let (status, html) = env.admin_page(&admin, "/admin/plugins").await;
     assert_eq!(status, StatusCode::OK);
-    let (libera, search) = html.split_once(r#"id="plugin-search""#).unwrap();
+    let (libera, search) = html.split_once(r#"id="plugin-toolset-search""#).unwrap();
     for expected in [
+        r#"id="plugin-channel-libera""#,
         "down, retrying at 2026-10-21 00:01:00 UTC; 3 restarts",
         "connection refused &#60;script&#62;",
         "0.1.0 &#60;script&#62;",
         "/opt/giles/plugins/giles-channel-irc",
         "<dd>error: nick in use",
-        r#"<form method="post" action="/admin/plugins/libera/restart">"#,
+        r#"<form method="post" action="/admin/plugins/channel/libera/restart">"#,
         &format!(r#"<input type="hidden" name="csrf" value="{CSRF}">"#),
     ] {
         assert!(libera.contains(expected), "{expected}\n{libera}");
@@ -456,9 +471,9 @@ async fn the_plugins_page_shows_a_toolsets_state_and_a_restart_form() {
     });
     let (status, html) = env.admin_page(&admin, "/admin/plugins").await;
     assert_eq!(status, StatusCode::OK);
-    let (_, rest) = html.split_once(r#"id="plugin-files""#).unwrap();
-    let (files, rest) = rest.split_once(r#"id="plugin-broken""#).unwrap();
-    let (broken, _) = rest.split_once(r#"id="plugin-search""#).unwrap();
+    let (_, rest) = html.split_once(r#"id="plugin-toolset-files""#).unwrap();
+    let (files, rest) = rest.split_once(r#"id="plugin-toolset-broken""#).unwrap();
+    let (broken, _) = rest.split_once(r#"id="plugin-toolset-search""#).unwrap();
 
     // A running toolset: state with its restarts, the binary found, the version, the tools it
     // offers, and no pid (stdio servers run under the sandbox trampoline).
@@ -469,7 +484,7 @@ async fn the_plugins_page_shows_a_toolsets_state_and_a_restart_form() {
         "<dd>2.1.0</dd>",
         "<dt>Tools</dt>",
         "<dd>4</dd>",
-        r#"<form method="post" action="/admin/plugins/files/restart">"#,
+        r#"<form method="post" action="/admin/plugins/toolset/files/restart">"#,
         &format!(r#"<input type="hidden" name="csrf" value="{CSRF}">"#),
     ] {
         assert!(files.contains(expected), "{expected}\n{files}");
@@ -480,7 +495,7 @@ async fn the_plugins_page_shows_a_toolsets_state_and_a_restart_form() {
     for expected in [
         "failed (not retried until it",
         "HTTP 401 &#60;script&#62;",
-        r#"<form method="post" action="/admin/plugins/broken/restart">"#,
+        r#"<form method="post" action="/admin/plugins/toolset/broken/restart">"#,
     ] {
         assert!(broken.contains(expected), "{expected}\n{broken}");
     }
@@ -490,7 +505,7 @@ async fn the_plugins_page_shows_a_toolsets_state_and_a_restart_form() {
     // The status page's summary has the state word and the tool count.
     let (_, html) = env.admin_page(&admin, "/admin").await;
     for expected in [
-        r##"<a href="/admin/plugins#plugin-files">files</a>"##,
+        r##"<a href="/admin/plugins#plugin-toolset-files">files</a>"##,
         r#"<td class="state-ok">running</td><td>4</td>"#,
         r#"<td class="state-bad">failed</td><td>0</td>"#,
     ] {
@@ -518,7 +533,7 @@ async fn restarting_a_plugin_needs_the_csrf_token() {
         assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
         response
     };
-    let libera = "/admin/plugins/libera/restart";
+    let libera = "/admin/plugins/channel/libera/restart";
     for (headers, form) in [
         (&[][..], ""),
         (&[][..], "csrf=wrong"),
@@ -539,21 +554,47 @@ async fn restarting_a_plugin_needs_the_csrf_token() {
     assert_eq!(response.headers()[LOCATION], "/admin/plugins");
     let response = restart(libera, &[("x-csrf-token", CSRF)], "").await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert_eq!(admin.restarted(), ["libera", "libera"]);
+    assert_eq!(admin.restarted(), ["channel/libera", "channel/libera"]);
 
     // The service's refusal is shown (escaped).
-    let response = restart("/admin/plugins/%3Cb%3Enope/restart", &[], &form).await;
+    let response = restart("/admin/plugins/channel/%3Cb%3Enope/restart", &[], &form).await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let html = body_text(response).await;
     assert!(
         html.contains("there is no plugin instance `&#60;b&#62;nope`"),
         "{html}"
     );
-    assert_eq!(admin.restarted(), ["libera", "libera"]);
+    assert_eq!(admin.restarted(), ["channel/libera", "channel/libera"]);
 
-    // A toolset's Restart goes to the same RPC.
-    let response = restart("/admin/plugins/files/restart", &[], &form).await;
+    // A toolset's Restart goes to the same RPC, with its own kind.
+    let response = restart("/admin/plugins/toolset/files/restart", &[], &form).await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert_eq!(response.headers()[LOCATION], "/admin/plugins");
-    assert_eq!(admin.restarted(), ["libera", "libera", "files"]);
+    assert_eq!(
+        admin.restarted(),
+        ["channel/libera", "channel/libera", "toolset/files"]
+    );
+
+    // The kind is part of the route: `libera` is not a toolset, and there is no kind `plugin`.
+    let response = restart("/admin/plugins/toolset/libera/restart", &[], &form).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let response = restart("/admin/plugins/plugin/libera/restart", &[], &form).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let html = body_text(response).await;
+    assert!(
+        html.contains("there is no kind of plugin called `plugin`"),
+        "{html}"
+    );
+    assert_eq!(admin.restarted().len(), 3);
+    // The old route, without a kind, is gone.
+    let response = call(
+        env.admin_router(&admin, Some(owner())),
+        Method::POST,
+        "/admin/plugins/libera/restart",
+        &[],
+        Some(&form),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(admin.restarted().len(), 3);
 }

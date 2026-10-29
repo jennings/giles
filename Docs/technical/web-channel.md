@@ -38,7 +38,7 @@ the live-output hook.
 | `POST /logout`                 | Ends a cookie login (CSRF-checked), 303 to `/`.                  |
 | `GET /admin`                   | The status page ([Admin pages](#admin-pages)).                   |
 | `GET /admin/plugins`           | The plugins page.                                                |
-| `POST /admin/plugins/<i>/restart` | Restarts plugin instance `<i>` (CSRF-checked), 303 back.      |
+| `POST /admin/plugins/<k>/<i>/restart` | Restarts the `<k>` instance `<i>` (CSRF-checked), 303 back. |
 | `GET /admin/agents`            | Every agent ([Agent pages](#agent-pages)).                       |
 | `GET /admin/agents/new`        | The form that creates an agent.                                  |
 | `POST /admin/agents`           | Creates the agent (CSRF-checked), 303 to its page.               |
@@ -377,10 +377,12 @@ trait.
   plugins and toolsets alike, since `serve` merges both hosts into one `PluginControl`. A failed
   toolset's state says only a restart retries it (a failed channel plugin's also names a changed
   binary).
-- `POST /admin/plugins/<instance>/restart` checks the owner, then CSRF (`check_csrf`: the `csrf`
-  field or the `X-CSRF-Token` header), then calls `RestartPlugin` and answers 303 to
-  `/admin/plugins`. Errors show the service's message: `NOT_FOUND` as 404, `FAILED_PRECONDITION` as
-  409, `UNAVAILABLE` as 503, `INVALID_ARGUMENT` as 400; anything else is logged and a generic 500.
+- `POST /admin/plugins/<kind>/<instance>/restart` checks the owner, then CSRF (`check_csrf`: the
+  `csrf` field or the `X-CSRF-Token` header), then calls `RestartPlugin` with the kind (`channel`,
+  `toolset`, or `provider`; any other is a 404) and the instance, and answers 303 to
+  `/admin/plugins`. Each plugin's form names its own kind. Errors show the service's message:
+  `NOT_FOUND` as 404, `FAILED_PRECONDITION` as 409, `UNAVAILABLE` as 503, `INVALID_ARGUMENT` as 400;
+  anything else is logged and a generic 500.
 - Every answer on the admin routes (pages, error pages, the 401 login page, redirects) is
   `Cache-Control: no-store`: a `map_response` route layer outside the authentication middleware
   applies `pages::no_store`, the helper the login routes use too. Times are UTC (`<time datetime>`
@@ -738,7 +740,7 @@ for what `ListPlugins` knows (state, last error, and tool count, built by the pl
 | `POST /admin/mcp-servers/<name>/remove`  | `ToolsetManager::remove`, then 303 to the list          |
 | `GET /admin/mcp-servers/<name>/rename`   | the form; with `?new=`, `rename_preview` and the button |
 | `POST /admin/mcp-servers/<name>/rename`  | `ToolsetManager::rename`, then 303 to the new page      |
-| `POST /admin/mcp-servers/<name>/restart` | `RestartPlugin`, then 303 to the page                   |
+| `POST /admin/mcp-servers/<name>/restart` | `RestartPlugin` (`Toolset`), then 303 to the page       |
 
 - **The list** has one row per `ToolsetManager::list` entry, with Edit and Remove for stored
   toolsets only, which are remote servers. A toolset of `giles.toml` (`ToolsetSource::File`), a

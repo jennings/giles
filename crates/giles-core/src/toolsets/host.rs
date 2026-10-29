@@ -16,7 +16,7 @@ use super::cache::{ToolCache, file_digest};
 use super::launch::ToolsetLauncher;
 use super::lifecycle::{Connection, Connector, Control, Managed, Report};
 use crate::admin::{PluginControl, PluginRuntime};
-use crate::config::{InstanceName, ToolsetInstance, ToolsetTransport};
+use crate::config::{InstanceName, Kind, ToolsetInstance, ToolsetTransport};
 use crate::registry::{Registry, RegistryError};
 
 /// The configured toolsets of a running core (PLAN section 7.5): each is registered at boot
@@ -252,7 +252,10 @@ impl PluginControl for ToolsetHost {
             .collect()
     }
 
-    fn restart(&self, instance: &str) -> bool {
+    fn restart(&self, kind: Kind, instance: &str) -> bool {
+        if kind != Kind::Toolset {
+            return false;
+        }
         match lock(&self.controls).get(instance) {
             Some(control) => {
                 control.request_restart();
@@ -267,6 +270,7 @@ impl PluginControl for ToolsetHost {
 /// runs under the sandbox trampoline, so the process the core spawned isn't the server.
 fn plugin_runtime(instance: &InstanceName, report: Report) -> PluginRuntime {
     PluginRuntime {
+        kind: Kind::Toolset,
         instance: instance.clone(),
         binary: report.binary,
         state: report.state,

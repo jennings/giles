@@ -13,6 +13,7 @@ use std::sync::Arc;
 use giles_core::admin::{
     self, AdminListener, AdminOptions, AdminService, InstanceLock, PluginControl,
 };
+use giles_core::config::Kind;
 use giles_core::plugin_host::{PluginState, PluginStatus};
 use giles_core::sessions::SystemClock;
 use giles_plugin_sdk::giles_types::{OutputMode, Timestamp};
@@ -82,8 +83,10 @@ async fn a_restart_request_relaunches_the_plugin() {
     home.install_echo_as("echo");
     let core = home.start_core().await;
     let first = running_pid(&core).unwrap();
-    assert!(core.host.restart("echo"));
-    assert!(!core.host.restart("nope"));
+    assert!(core.host.restart(Kind::Channel, "echo"));
+    assert!(!core.host.restart(Kind::Channel, "nope"));
+    // The host supervises channels, so a toolset of that name is not it.
+    assert!(!core.host.restart(Kind::Toolset, "echo"));
     let second = wait_until(|| running_pid(&core).filter(|&pid| pid != first)).await;
     assert!(!alive(first));
     assert!(alive(second));
@@ -141,6 +144,7 @@ async fn the_admin_service_shows_and_restarts_a_running_plugin() {
     client
         .restart_plugin(pb::RestartPluginRequest {
             instance: "echo".into(),
+            kind: pb::InstanceKind::Channel.into(),
         })
         .await
         .unwrap();
@@ -157,10 +161,28 @@ async fn the_admin_service_shows_and_restarts_a_running_plugin() {
     let unknown = client
         .restart_plugin(pb::RestartPluginRequest {
             instance: "nope".into(),
+            kind: pb::InstanceKind::Channel.into(),
         })
         .await
         .unwrap_err();
     assert_eq!(unknown.code(), tonic::Code::NotFound);
+    // The plugin is a channel: a toolset of that name doesn't exist, and a restart needs a kind.
+    let wrong_kind = client
+        .restart_plugin(pb::RestartPluginRequest {
+            instance: "echo".into(),
+            kind: pb::InstanceKind::Toolset.into(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(wrong_kind.code(), tonic::Code::NotFound);
+    let no_kind = client
+        .restart_plugin(pb::RestartPluginRequest {
+            instance: "echo".into(),
+            kind: pb::InstanceKind::Unspecified.into(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(no_kind.code(), tonic::Code::InvalidArgument);
 
     shutdown.cancel();
     server.await.unwrap().unwrap();
@@ -191,7 +213,7 @@ async fn a_failure_that_wont_pass_waits_and_a_restart_retries() {
     // `RestartPlugin`); without the request, the next binary check would find it.
     fs::remove_file(&script).unwrap();
     home.install_echo_as("echo");
-    assert!(core.host.restart("echo"));
+    assert!(core.host.restart(Kind::Channel, "echo"));
     wait_until(|| running_pid(&core)).await;
     assert!(core.runtime.registry.channel("echo").is_some());
     round_trip(&home, &core, "works", 1).await;

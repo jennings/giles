@@ -49,8 +49,8 @@ token (after the socket answers, so it's the running core's). A missing socket, 
 | RPC               | Behavior                                                                                    |
 | ----------------- | ------------------------------------------------------------------------------------------- |
 | `Status`          | Version, start time, `config_error` (always unset in v1: an invalid configuration stops startup, and there is no reload), the host's sandbox (`SandboxHost`: the startup check's report or error, and the Landlock ABI on Linux), every configured channel with its runtime and last recorded status (from `Sessions::channel_statuses`), and the plugins as in `ListPlugins`. |
-| `ListPlugins`     | Every configured channel plugin (launched or remote) and MCP toolset, channels first, each sorted by name. v1 providers are all built in, so none is listed. A configured instance takes the first supervision report with its name (the plugin host's and the toolset host's come before the toolset manager's). A report left over is a stored toolset that failed to start (`ToolsetManager`, [Toolsets](toolsets.md#stored-toolsets)): it is listed after the configured instances as a toolset in state `FAILED` with the reason in `last_error`, also when a `giles.toml` instance took its name. |
-| `RestartPlugin`   | `NOT_FOUND` for anything not listed by `ListPlugins` (a configured instance, or any instance the control reports, so a failed stored toolset is found); `UNAVAILABLE` without plugin supervision; `FAILED_PRECONDITION` if supervision doesn't know the instance; else `PluginControl::restart`. For a failed stored toolset that is the manager's: it re-reads `secrets.toml`, validates the stored spec again, and starts it in the background (still failing, it stays `FAILED` with the new reason). |
+| `ListPlugins`     | Every configured channel plugin (launched or remote) and MCP toolset, channels first, each sorted by name. v1 providers are all built in, so none is listed. A configured instance takes the first supervision report with its kind and name (the plugin host's and the toolset host's come before the toolset manager's). A report left over is a stored toolset that failed to start (`ToolsetManager`, [Toolsets](toolsets.md#stored-toolsets)): it is listed after the configured instances as a toolset in state `FAILED` with the reason in `last_error`, also when a `giles.toml` instance took its name. |
+| `RestartPlugin`   | The request names the `kind` (`InstanceKind`) and the instance: `INVALID_ARGUMENT` for `UNSPECIFIED` or a number the protocol doesn't name, before anything else is looked up. `NOT_FOUND` for an instance of that kind that `ListPlugins` doesn't list (a configured instance, or an instance the control reports, so a failed stored toolset is found; a same-named instance of another kind doesn't count, and a provider never is one); `UNAVAILABLE` without plugin supervision; `FAILED_PRECONDITION` if supervision doesn't know the instance; else `PluginControl::restart(kind, instance)`. For a failed stored toolset that is the manager's: it re-reads `secrets.toml`, validates the stored spec again, and starts it in the background (still failing, it stays `FAILED` with the new reason). |
 | `ListSessions`    | `Store::list_sessions`: newest activity first, optionally one agent's, open ones unless `include_ended`. `INVALID_ARGUMENT` for an invalid agent id. |
 | `ResetSession`    | Ends the session like `/new` (`Store::end_session` at the current time; a running turn finishes, and the conversation's next message opens a new session). `NOT_FOUND`, `FAILED_PRECONDITION` if it already ended, `INVALID_ARGUMENT` for a malformed id. |
 | `CreateLoginLink` | `LoginLinks::create_login_link(&user, now)`; `UNAVAILABLE` without the web channel. `UnknownUser` maps to `NOT_FOUND`, `Refused` to `FAILED_PRECONDITION`. |
@@ -155,9 +155,10 @@ pub trait ChannelStatuses: Send + Sync {
 
 pub trait PluginControl: Send + Sync {
     fn plugins(&self) -> Vec<PluginRuntime>;
-    fn restart(&self, instance: &str) -> bool;
+    fn restart(&self, kind: Kind, instance: &str) -> bool;
 }
 pub struct PluginRuntime {
+    pub kind: Kind,
     pub instance: InstanceName,
     pub binary: Option<PathBuf>,
     pub state: PluginRunState, // Starting, Running { pid: Option<u32>, since }, Idle,
@@ -190,14 +191,18 @@ The built-in web channel implements `LoginLinks` (its `UnknownUser` becomes `Unk
 `[channel.web]` instance `CreateLoginLink` answers `UNAVAILABLE`. The plugin host implements
 `PluginControl` ([Plugin Host](plugin-host.md#status)): `plugins()` maps each `PluginStatus` field
 for field (a remote plugin runs with no pid, and the version and `requested_grants` come from the
-live or cached `Describe` answer), and `restart` is `PluginHost::restart`. So does the toolset host
+live or cached `Describe` answer), and `restart` stops and launches the channel again (`false` for
+any other kind, since the host supervises channels only). So does the toolset host
 ([Toolsets](toolsets.md#lifecycle)): each supervisor's report becomes a `PluginRuntime` (state,
 restarts, last error, the binary found, the server's version from `initialize`, and `tool_count`;
-`pid` and `requested_grants` stay unset), and `restart` is `Control::request_restart`, which drops
-the connection and starts again at once, with the backoff reset (a `Failed` toolset gets a fresh
-try). `serve` passes both as one `PluginControl`, `MergedControl`: `plugins()` is the instances of
-every host, and `restart(instance)` goes to the first host that supervises the instance (names are
-unique across kinds). `RestartPlugin` therefore restarts channel plugins and toolsets alike.
+`pid` and `requested_grants` stay unset), and `restart` (for `Kind::Toolset` only) is
+`Control::request_restart`, which drops the connection and starts again at once, with the backoff
+reset (a `Failed` toolset gets a fresh try). `serve` passes both as one `PluginControl`,
+`MergedControl`: `plugins()` is the instances of every host, and `restart(kind, instance)` goes to
+the first host that supervises an instance of that kind with that name. Each host accepts only its
+own kind (the plugin host channels, the toolset host and the manager toolsets), so a channel and a
+toolset with the same name are restarted independently. `RestartPlugin` therefore restarts channel
+plugins and toolsets alike.
 
 `ToolsetManager` implements `ToolsetAdmin` method for method, and `serve` passes it in
 `AdminOptions::toolsets`. The admin service tests plug in a fake that keeps the toolsets in a map,

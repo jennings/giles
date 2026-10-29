@@ -737,6 +737,7 @@ impl PluginControl for ToolsetManager {
             .iter()
             .filter_map(|(name, reason)| {
                 Some(PluginRuntime {
+                    kind: Kind::Toolset,
                     instance: InstanceName::new(name.as_str()).ok()?,
                     binary: None,
                     state: PluginRunState::Failed,
@@ -753,10 +754,10 @@ impl PluginControl for ToolsetManager {
     /// Tries a failed stored toolset again, in the background ([`retry`](ToolsetManager::retry)):
     /// it starts if it validates now (a secret was added to `secrets.toml`, say), and else stays
     /// failed with the new reason. `true` means the request was accepted; `false` is for an
-    /// instance that isn't a failed stored toolset (a running one is the host's), or when there
-    /// is no async runtime to run it on.
-    fn restart(&self, instance: &str) -> bool {
-        if !lock(&self.state).failed.contains_key(instance) {
+    /// instance that isn't a failed stored toolset (a running one is the host's, and another
+    /// kind isn't a toolset), or when there is no async runtime to run it on.
+    fn restart(&self, kind: Kind, instance: &str) -> bool {
+        if kind != Kind::Toolset || !lock(&self.state).failed.contains_key(instance) {
             return false;
         }
         let (Some(manager), Ok(runtime)) =

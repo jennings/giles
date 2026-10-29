@@ -18,7 +18,7 @@ use tokio_util::task::TaskTracker;
 use tracing::{Instrument as _, error, info, warn};
 
 use super::describe_cache::{DescribeCache, DescribeInfo};
-use crate::config::{ConfigHash, InstanceName};
+use crate::config::{ConfigHash, InstanceName, Kind};
 
 /// How often a running plugin's health is checked (PLAN section 7.5).
 pub const HEALTH_INTERVAL: Duration = Duration::from_secs(30);
@@ -214,8 +214,8 @@ impl Supervision {
                 restart: Arc::clone(&restart),
             },
         );
-        // Launches log under their own `plugin{instance=...}` span inside this one.
-        let span = tracing::info_span!("supervisor", instance = %instance);
+        // Launches log under their own `plugin{kind=channel instance=...}` span inside this one.
+        let span = tracing::info_span!("supervisor", kind = %Kind::Channel, instance = %instance);
         let supervisor = Supervisor {
             instance,
             config_hash,

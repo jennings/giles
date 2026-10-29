@@ -22,7 +22,7 @@ use tonic::transport::{Channel, Endpoint, Uri};
 
 use super::*;
 use crate::config::test_toolsets::add_toolsets;
-use crate::config::{Config, InstanceName, KeyPath, LiveConfig, LoadOptions, ToolsetSpec};
+use crate::config::{Config, InstanceName, KeyPath, Kind, LiveConfig, LoadOptions, ToolsetSpec};
 use crate::paths::DataRoot;
 use crate::sandbox::HostReport;
 use crate::sessions::{ChannelStatusRecord, Clock};
@@ -86,6 +86,7 @@ impl ChannelStatuses for FakeStatuses {
 #[derive(Default)]
 struct FakeControl {
     plugins: Vec<PluginRuntime>,
+    /// The names restarted, in order.
     restarted: Mutex<Vec<String>>,
 }
 
@@ -94,8 +95,11 @@ impl PluginControl for FakeControl {
         self.plugins.clone()
     }
 
-    fn restart(&self, instance: &str) -> bool {
-        let supervised = self.plugins.iter().any(|p| p.instance.as_str() == instance);
+    fn restart(&self, kind: Kind, instance: &str) -> bool {
+        let supervised = self
+            .plugins
+            .iter()
+            .any(|p| p.kind == kind && p.instance.as_str() == instance);
         if supervised {
             self.restarted.lock().unwrap().push(instance.to_owned());
         }
@@ -523,6 +527,7 @@ where
                 client
                     .restart_plugin(pb::RestartPluginRequest {
                         instance: "libera".into(),
+                        kind: pb::InstanceKind::Channel.into(),
                     })
                     .await,
             ),
@@ -678,6 +683,7 @@ async fn the_socket_and_token_are_private_fresh_and_removed_at_shutdown() {
 async fn status_reports_the_sandbox_channels_and_plugins() {
     let control = FakeControl {
         plugins: vec![PluginRuntime {
+            kind: Kind::Channel,
             instance: InstanceName::new("libera").unwrap(),
             binary: Some("/opt/giles/plugins/giles-channel-irc".into()),
             state: PluginRunState::Running {
@@ -827,37 +833,59 @@ async fn a_host_without_a_sandbox_is_reported() {
     h.stop().await;
 }
 
-async fn restart(h: &Harness, instance: &str) -> Result<(), Code> {
+async fn restart(h: &Harness, kind: pb::InstanceKind, instance: &str) -> Result<(), Code> {
+    restart_as(h, kind.into(), instance).await
+}
+
+/// A restart with a `kind` that may be a number the protocol doesn't name.
+async fn restart_as(h: &Harness, kind: i32, instance: &str) -> Result<(), Code> {
     h.client()
         .await
         .restart_plugin(pb::RestartPluginRequest {
             instance: instance.into(),
+            kind,
         })
         .await
         .map(drop)
         .map_err(|s| s.code())
 }
 
+/// A supervised instance of `kind` in a failed state.
+fn failed(kind: Kind, instance: &str) -> PluginRuntime {
+    PluginRuntime {
+        kind,
+        instance: InstanceName::new(instance).unwrap(),
+        binary: None,
+        state: PluginRunState::Failed,
+        restarts: 0,
+        last_error: None,
+        version: None,
+        requested_grants: None,
+        tool_count: None,
+    }
+}
+
 #[tokio::test]
 async fn restart_plugin_needs_a_configured_supervised_plugin() {
     // Without supervision.
     let h = Harness::start(Fakes::default()).await;
-    assert_eq!(restart(&h, "libera").await, Err(Code::Unavailable));
-    assert_eq!(restart(&h, "web").await, Err(Code::NotFound), "built in");
-    assert_eq!(restart(&h, "nope").await, Err(Code::NotFound));
+    assert_eq!(
+        restart(&h, pb::InstanceKind::Channel, "libera").await,
+        Err(Code::Unavailable)
+    );
+    assert_eq!(
+        restart(&h, pb::InstanceKind::Channel, "web").await,
+        Err(Code::NotFound),
+        "built in"
+    );
+    assert_eq!(
+        restart(&h, pb::InstanceKind::Channel, "nope").await,
+        Err(Code::NotFound)
+    );
     h.stop().await;
 
     let control = Arc::new(FakeControl {
-        plugins: vec![PluginRuntime {
-            instance: InstanceName::new("libera").unwrap(),
-            binary: None,
-            state: PluginRunState::Failed,
-            restarts: 0,
-            last_error: None,
-            version: None,
-            requested_grants: None,
-            tool_count: None,
-        }],
+        plugins: vec![failed(Kind::Channel, "libera")],
         ..FakeControl::default()
     });
     let h = Harness::start(Fakes {
@@ -865,15 +893,91 @@ async fn restart_plugin_needs_a_configured_supervised_plugin() {
         ..Fakes::default()
     })
     .await;
-    assert_eq!(restart(&h, "libera").await, Ok(()));
+    assert_eq!(
+        restart(&h, pb::InstanceKind::Channel, "libera").await,
+        Ok(())
+    );
     assert_eq!(*control.restarted.lock().unwrap(), ["libera"]);
-    assert_eq!(restart(&h, "files").await, Err(Code::FailedPrecondition));
+    assert_eq!(
+        restart(&h, pb::InstanceKind::Toolset, "files").await,
+        Err(Code::FailedPrecondition)
+    );
     h.stop().await;
 }
 
 #[tokio::test]
+async fn restart_plugin_needs_the_kind_of_a_plugin_the_core_runs() {
+    let control = Arc::new(FakeControl {
+        plugins: vec![failed(Kind::Channel, "libera")],
+        ..FakeControl::default()
+    });
+    let h = Harness::start(Fakes {
+        control: Some(control.clone()),
+        ..Fakes::default()
+    })
+    .await;
+
+    // No kind, or one this version doesn't know, is rejected whatever the name.
+    for kind in [pb::InstanceKind::Unspecified as i32, 99] {
+        assert_eq!(
+            restart_as(&h, kind, "libera").await,
+            Err(Code::InvalidArgument)
+        );
+        assert_eq!(
+            restart_as(&h, kind, "nope").await,
+            Err(Code::InvalidArgument)
+        );
+    }
+    // The instance has to be of the named kind: `libera` is a channel, and `files` a toolset.
+    assert_eq!(
+        restart(&h, pb::InstanceKind::Toolset, "libera").await,
+        Err(Code::NotFound)
+    );
+    assert_eq!(
+        restart(&h, pb::InstanceKind::Channel, "files").await,
+        Err(Code::NotFound)
+    );
+    // Providers are built in, so they have no plugin to restart.
+    assert_eq!(
+        restart(&h, pb::InstanceKind::Provider, "libera").await,
+        Err(Code::NotFound)
+    );
+    assert!(control.restarted.lock().unwrap().is_empty());
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_merged_control_restarts_only_the_kind_asked_for() {
+    // A channel and a toolset with the same name, each supervised by its own control.
+    let channels = Arc::new(FakeControl {
+        plugins: vec![failed(Kind::Channel, "shared")],
+        ..FakeControl::default()
+    });
+    let toolsets = Arc::new(FakeControl {
+        plugins: vec![failed(Kind::Toolset, "shared")],
+        ..FakeControl::default()
+    });
+    let merged = MergedControl::new(vec![
+        channels.clone() as Arc<dyn PluginControl>,
+        toolsets.clone() as Arc<dyn PluginControl>,
+    ]);
+
+    assert!(merged.restart(Kind::Toolset, "shared"));
+    assert!(channels.restarted.lock().unwrap().is_empty());
+    assert_eq!(*toolsets.restarted.lock().unwrap(), ["shared"]);
+
+    assert!(merged.restart(Kind::Channel, "shared"));
+    assert_eq!(*channels.restarted.lock().unwrap(), ["shared"]);
+    assert_eq!(*toolsets.restarted.lock().unwrap(), ["shared"]);
+
+    assert!(!merged.restart(Kind::Provider, "shared"));
+    assert!(!merged.restart(Kind::Toolset, "other"));
+}
+
+#[tokio::test]
 async fn a_merged_control_lists_every_host_and_restarts_on_the_one_that_owns_the_instance() {
-    let runtime = |instance: &str, state, tool_count| PluginRuntime {
+    let runtime = |kind, instance: &str, state, tool_count| PluginRuntime {
+        kind,
         instance: InstanceName::new(instance).unwrap(),
         binary: None,
         state,
@@ -884,13 +988,19 @@ async fn a_merged_control_lists_every_host_and_restarts_on_the_one_that_owns_the
         tool_count,
     };
     let channels = Arc::new(FakeControl {
-        plugins: vec![runtime("libera", PluginRunState::Failed, None)],
+        plugins: vec![runtime(
+            Kind::Channel,
+            "libera",
+            PluginRunState::Failed,
+            None,
+        )],
         ..FakeControl::default()
     });
     let toolsets = Arc::new(FakeControl {
         plugins: vec![
-            runtime("files", PluginRunState::Idle, Some(3)),
+            runtime(Kind::Toolset, "files", PluginRunState::Idle, Some(3)),
             runtime(
+                Kind::Toolset,
                 "github",
                 PluginRunState::BackingOff { until: at(60) },
                 Some(0),
@@ -934,11 +1044,76 @@ async fn a_merged_control_lists_every_host_and_restarts_on_the_one_that_owns_the
     assert_eq!(by_name("libera").tool_count, None);
 
     // Each restart reaches only the host that supervises the instance.
-    assert_eq!(restart(&h, "files").await, Ok(()));
-    assert_eq!(restart(&h, "libera").await, Ok(()));
-    assert_eq!(restart(&h, "mail").await, Err(Code::FailedPrecondition));
+    assert_eq!(
+        restart(&h, pb::InstanceKind::Toolset, "files").await,
+        Ok(())
+    );
+    assert_eq!(
+        restart(&h, pb::InstanceKind::Channel, "libera").await,
+        Ok(())
+    );
+    assert_eq!(
+        restart(&h, pb::InstanceKind::Channel, "mail").await,
+        Err(Code::FailedPrecondition)
+    );
     assert_eq!(*toolsets.restarted.lock().unwrap(), ["files"]);
     assert_eq!(*channels.restarted.lock().unwrap(), ["libera"]);
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_runtime_of_another_kind_with_a_configured_name_is_listed_apart_from_that_instance() {
+    // The configuration has the channel `libera`; supervision reports a toolset by that name,
+    // which is not the channel's runtime. The channel row gets no runtime, and the toolset is
+    // listed after the configured instances as a row of its own.
+    let control = Arc::new(FakeControl {
+        plugins: vec![PluginRuntime {
+            kind: Kind::Toolset,
+            instance: InstanceName::new("libera").unwrap(),
+            binary: None,
+            state: PluginRunState::Failed,
+            restarts: 2,
+            last_error: Some("toolset failed".into()),
+            version: Some("9.9".into()),
+            requested_grants: None,
+            tool_count: Some(5),
+        }],
+        ..FakeControl::default()
+    });
+    let h = Harness::start(Fakes {
+        control: Some(control),
+        ..Fakes::default()
+    })
+    .await;
+
+    let listed = h
+        .client()
+        .await
+        .list_plugins(pb::ListPluginsRequest::default())
+        .await
+        .unwrap()
+        .into_inner()
+        .plugins;
+    let named: Vec<_> = listed.iter().filter(|p| p.instance == "libera").collect();
+    assert_eq!(named.len(), 2, "{listed:?}");
+    let channel = named[0];
+    assert_eq!(channel.kind(), pb::InstanceKind::Channel);
+    assert_eq!(channel.state(), pb::PluginState::Unspecified);
+    assert_eq!(channel.last_error, None);
+    assert_eq!(channel.version, None);
+    assert_eq!(channel.tool_count, None);
+    let toolset = named[1];
+    assert_eq!(toolset.kind(), pb::InstanceKind::Toolset);
+    assert_eq!(toolset.state(), pb::PluginState::Failed);
+    assert_eq!(toolset.last_error.as_deref(), Some("toolset failed"));
+    assert_eq!(toolset.version.as_deref(), Some("9.9"));
+    assert_eq!(toolset.tool_count, Some(5));
+    assert_eq!(toolset.restarts, 2);
+    assert_eq!(
+        listed.last().unwrap().kind(),
+        pb::InstanceKind::Toolset,
+        "the leftover row comes last"
+    );
     h.stop().await;
 }
 
@@ -948,6 +1123,7 @@ async fn a_failed_stored_toolset_is_listed_though_the_configuration_lacks_it() {
     // configuration, so it isn't started. It is listed, and restarting it goes to the manager.
     let control = Arc::new(FakeControl {
         plugins: vec![PluginRuntime {
+            kind: Kind::Toolset,
             instance: InstanceName::new("notes").unwrap(),
             binary: None,
             state: PluginRunState::Failed,
@@ -989,15 +1165,27 @@ async fn a_failed_stored_toolset_is_listed_though_the_configuration_lacks_it() {
         .into_inner();
     assert!(status.plugins.iter().any(|p| p.instance == "notes"));
 
-    assert_eq!(restart(&h, "notes").await, Ok(()));
+    assert_eq!(
+        restart(&h, pb::InstanceKind::Toolset, "notes").await,
+        Ok(())
+    );
     assert_eq!(*control.restarted.lock().unwrap(), ["notes"]);
-    assert_eq!(restart(&h, "ghost").await, Err(Code::NotFound));
+    assert_eq!(
+        restart(&h, pb::InstanceKind::Toolset, "ghost").await,
+        Err(Code::NotFound)
+    );
+    // A stored toolset is not a channel.
+    assert_eq!(
+        restart(&h, pb::InstanceKind::Channel, "notes").await,
+        Err(Code::NotFound)
+    );
     h.stop().await;
 }
 
 #[tokio::test]
 async fn a_stored_toolset_that_lost_its_name_does_not_replace_the_instance_that_kept_it() {
     let runtime = |state, last_error: &str, tool_count| PluginRuntime {
+        kind: Kind::Toolset,
         instance: InstanceName::new("files").unwrap(),
         binary: None,
         state,
@@ -1052,7 +1240,10 @@ async fn a_stored_toolset_that_lost_its_name_does_not_replace_the_instance_that_
         Some("the name is taken by `[toolset.files]` in giles.toml")
     );
     // A restart goes to the first control that has the name.
-    assert_eq!(restart(&h, "files").await, Ok(()));
+    assert_eq!(
+        restart(&h, pb::InstanceKind::Toolset, "files").await,
+        Ok(())
+    );
     assert_eq!(*host.restarted.lock().unwrap(), ["files"]);
     assert!(manager.restarted.lock().unwrap().is_empty());
     h.stop().await;

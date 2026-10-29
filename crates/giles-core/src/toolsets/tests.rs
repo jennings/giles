@@ -26,7 +26,7 @@ use super::host::ToolsetHost;
 use super::lifecycle::{Connection, Connector};
 use crate::admin::{PluginControl, PluginRunState, PluginRuntime};
 use crate::config::test_toolsets::add_toolsets;
-use crate::config::{Config, InstanceName, LoadOptions, ToolsetInstance};
+use crate::config::{Config, InstanceName, Kind, LoadOptions, ToolsetInstance};
 use crate::paths::DataRoot;
 use crate::registry::Registry;
 
@@ -791,7 +791,7 @@ async fn restarting_a_running_toolset_drops_the_connection_and_starts_again() {
     host.started().await;
     assert_eq!(s.call_text("files", "read").await, "read by connection 1");
 
-    assert!(host.restart("files"));
+    assert!(host.restart(Kind::Toolset, "files"));
     settle().await;
     assert_eq!(connector.connects("files"), 2);
     assert_eq!(connector.live("files"), 1, "the old connection is dropped");
@@ -802,7 +802,7 @@ async fn restarting_a_running_toolset_drops_the_connection_and_starts_again() {
     assert_eq!(s.offered().await, ["files__read"]);
 
     // An instance the host doesn't supervise.
-    assert!(!host.restart("nope"));
+    assert!(!host.restart(Kind::Toolset, "nope"));
     host.stop().await;
 }
 
@@ -816,7 +816,7 @@ async fn restarting_an_idle_toolset_starts_it_now() {
     assert_eq!(reported(&host, "files").state, PluginRunState::Idle);
     assert_eq!(connector.live("files"), 0);
 
-    assert!(host.restart("files"));
+    assert!(host.restart(Kind::Toolset, "files"));
     settle().await;
     assert_eq!(connector.connects("files"), 2);
     assert_eq!(connector.live("files"), 1);
@@ -843,7 +843,7 @@ async fn restarting_a_backing_off_toolset_starts_it_now_and_resets_the_backoff()
     ));
     assert_eq!(connector.connects("files"), 2);
 
-    assert!(host.restart("files"));
+    assert!(host.restart(Kind::Toolset, "files"));
     settle().await;
     assert_eq!(connector.connects("files"), 3);
     let files = reported(&host, "files");
@@ -874,7 +874,7 @@ async fn restarting_a_failed_toolset_gives_it_a_fresh_try() {
     advance(Duration::from_secs(3600)).await;
     assert_eq!(connector.connects("remote"), 1);
 
-    assert!(host.restart("remote"));
+    assert!(host.restart(Kind::Toolset, "remote"));
     settle().await;
     assert_eq!(connector.connects("remote"), 2);
     let remote = reported(&host, "remote");
@@ -901,7 +901,7 @@ async fn a_restart_during_a_start_begins_the_start_over() {
     assert_eq!(reported(&host, "files").state, PluginRunState::Starting);
 
     // The first attempt is waiting for its server; the restart abandons it and tries again.
-    assert!(host.restart("files"));
+    assert!(host.restart(Kind::Toolset, "files"));
     settle().await;
     gate.add_permits(1);
     host.started().await;
@@ -1129,7 +1129,7 @@ async fn removing_a_toolset_withdraws_its_tools_and_ends_its_calls() {
             .iter()
             .all(|p| p.instance.as_str() != "files")
     );
-    assert!(!host.restart("files"));
+    assert!(!host.restart(Kind::Toolset, "files"));
     assert_eq!(
         s.call_text("remote", "fetch").await,
         "fetch by connection 1"

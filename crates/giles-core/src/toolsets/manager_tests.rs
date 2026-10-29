@@ -456,8 +456,8 @@ async fn startup_adds_what_validates_and_reports_the_rest_as_failed() {
         reason("broken")
     );
     // A failed toolset isn't started. A running one is the host's to restart, not the manager's.
-    assert!(!f.manager.restart("good"));
-    assert!(!f.manager.restart("nope"));
+    assert!(!f.manager.restart(Kind::Toolset, "good"));
+    assert!(!f.manager.restart(Kind::Toolset, "nope"));
     assert_eq!(f.supervised(), ["files", "good"]);
 
     // The pages see every toolset: the failed ones with their reasons, the file's as read-only.
@@ -594,7 +594,7 @@ async fn restarting_a_failed_stored_toolset_validates_it_again_and_starts_it() {
     // The secret is added: the restart is accepted, and the toolset starts. It runs in the
     // background, so wait for it.
     write_secrets(&f.root, "bad-token = \"bad-token-value\"\n");
-    assert!(f.manager.restart("bad"));
+    assert!(f.manager.restart(Kind::Toolset, "bad"));
     for _ in 0..500 {
         if f.failures().is_empty() {
             break;
@@ -607,12 +607,12 @@ async fn restarting_a_failed_stored_toolset_validates_it_again_and_starts_it() {
     assert_eq!(f.connector.connects("bad"), 1);
 
     // Running now, so a restart is the host's, and the manager leaves it alone.
-    assert!(!f.manager.restart("bad"));
+    assert!(!f.manager.restart(Kind::Toolset, "bad"));
     let view = f.manager.retry("bad").await.unwrap();
     assert_eq!(view.failure, None);
     assert_eq!(f.connector.connects("bad"), 1);
     // Unknown names and the toolsets of `giles.toml` aren't the manager's.
-    assert!(!f.manager.restart("ghost"));
+    assert!(!f.manager.restart(Kind::Toolset, "ghost"));
     assert!(matches!(
         f.manager.retry("ghost").await.unwrap_err(),
         ToolsetManagerError::NotFound

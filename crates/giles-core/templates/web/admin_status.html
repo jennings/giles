@@ -74,7 +74,7 @@
 <thead><tr><th>Instance</th><th>Kind</th><th>State</th><th>Tools</th></tr></thead>
 <tbody>
 {%- for plugin in plugins %}
-<tr><td><a href="/admin/plugins#plugin-{{ plugin.instance }}">{{ plugin.instance }}</a></td><td>{{ plugin.kind }}</td><td class="state-{{ plugin.class }}">{{ plugin.state_word }}</td><td>{% if let Some(tools) = plugin.tools %}{{ tools }}{% endif %}</td></tr>
+<tr><td><a href="/admin/plugins#plugin-{{ plugin.route_kind }}-{{ plugin.instance }}">{{ plugin.instance }}</a></td><td>{{ plugin.kind }}</td><td class="state-{{ plugin.class }}">{{ plugin.state_word }}</td><td>{% if let Some(tools) = plugin.tools %}{{ tools }}{% endif %}</td></tr>
 {%- endfor %}
 </tbody>
 </table>

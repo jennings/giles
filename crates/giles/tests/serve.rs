@@ -1025,20 +1025,20 @@ fn plugins_that_fail_to_launch_are_supervised_and_giles_runs() {
     // The plugin's stderr under the instance's span, the unsandboxed warning, and the failure.
     assert!(
         log.contains(
-            "plugin{instance=flaky}: giles_core::plugin_host::stderr: flaky: cannot reach the network"
+            "plugin{kind=channel instance=flaky}: giles_core::plugin_host::stderr: flaky: cannot reach the network"
         ),
         "{log}"
     );
     assert!(
         log.contains(
-            "plugin{instance=flaky}: giles_core::plugin_host: running the plugin unsandboxed"
+            "plugin{kind=channel instance=flaky}: giles_core::plugin_host: running the plugin unsandboxed"
         ),
         "{log}"
     );
     // A plugin that exits is relaunched with backoff; a sandbox failure waits for a new binary.
     let flaky = log.lines().find(|line| {
         line.contains("cannot launch the plugin; retrying after a delay")
-            && line.contains("supervisor{instance=flaky}")
+            && line.contains("supervisor{kind=channel instance=flaky}")
     });
     assert!(
         flaky.is_some_and(|line| line.contains("retry_in=1s")),
@@ -1046,7 +1046,7 @@ fn plugins_that_fail_to_launch_are_supervised_and_giles_runs() {
     );
     let boxed = log.lines().find(|line| {
         line.contains("cannot launch the plugin; not retrying until its binary changes")
-            && line.contains("supervisor{instance=boxed}")
+            && line.contains("supervisor{kind=channel instance=boxed}")
     });
     assert!(boxed.is_some(), "{log}");
     assert!(!home.join("run/pids/channel/flaky.pid").exists());
