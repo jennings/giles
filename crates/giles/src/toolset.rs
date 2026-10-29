@@ -164,6 +164,7 @@ fn restart(home: Option<&Path>, name: &str) -> anyhow::Result<()> {
         client
             .restart_plugin(pb::RestartPluginRequest {
                 instance: toolset.name.clone(),
+                kind: pb::InstanceKind::Toolset.into(),
             })
             .await?;
         Ok(toolset)

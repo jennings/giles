@@ -191,13 +191,13 @@ service as a `PluginRuntime` (`ToolsetHost` implements `PluginControl`, see
 `pid` is never set: a stdio server runs under the sandbox trampoline, so the process the core
 spawned isn't the server, and a remote server has none.
 
-`PluginControl::restart(instance)` (`Control::request_restart`) wakes the supervisor whatever state
-it is in, and the supervisor drops the connection and starts again at once. It starts the backoff
-over and counts a restart. `Failed` toolsets get a fresh try, as a Giles restart would give them. A
-restart while a start is under way abandons that attempt and begins another, so a hung start can be
-retried. The old connection closes when its last call ends, so a call still running keeps the old
-server alive until it finishes. `restart` answers `false` for an instance the host doesn't
-supervise, such as a toolset that couldn't be registered.
+`PluginControl::restart(Kind::Toolset, instance)` (`Control::request_restart`) wakes the supervisor
+whatever state it is in, and the supervisor drops the connection and starts again at once. It starts
+the backoff over and counts a restart. `Failed` toolsets get a fresh try, as a Giles restart would
+give them. A restart while a start is under way abandons that attempt and begins another, so a hung
+start can be retried. The old connection closes when its last call ends, so a call still running
+keeps the old server alive until it finishes. `restart` answers `false` for an instance the host
+doesn't supervise, such as a toolset that couldn't be registered.
 
 ## Changing toolsets while Giles runs
 
@@ -351,14 +351,14 @@ read, or the name. **Startup never fails on a stored toolset**; only the databas
 
 The manager is also a `PluginControl`, which `serve` merges with the plugin host and the toolset
 host. Its `plugins()` is one `Failed` `PluginRuntime` per stored toolset that isn't running, with
-the reason as `last_error`. Its `restart(name)` accepts a failed stored toolset (and answers `false`
-for any other name) and runs `retry(name)` in the background: it reads `secrets.toml` again,
-validates the stored spec against the live configuration as startup did, and starts the toolset, or
-leaves it failed with the new reason. `retry` is public, and returns the `ToolsetView`.
-`ListPlugins` and `Status` list a runtime that the configuration doesn't have as a toolset, after
-the configured instances, so `giles status` shows the failed toolset and why. The fix is in the web
-UI, which needs Giles running: saving the toolset again validates it and starts it (`update` on a
-failed toolset adds it), and removing it deletes the row.
+the reason as `last_error`. Its `restart(kind, name)` accepts a failed stored toolset (and answers
+`false` for any other name, or any other kind) and runs `retry(name)` in the background: it reads
+`secrets.toml` again, validates the stored spec against the live configuration as startup did, and
+starts the toolset, or leaves it failed with the new reason. `retry` is public, and returns the
+`ToolsetView`. `ListPlugins` and `Status` list a runtime that the configuration doesn't have as a
+toolset, after the configured instances, so `giles status` shows the failed toolset and why. The fix
+is in the web UI, which needs Giles running: saving the toolset again validates it and starts it
+(`update` on a failed toolset adds it), and removing it deletes the row.
 
 Giles doesn't wait for a stored toolset's first start before it reports that it started, as it does
 for the toolsets of `giles.toml`; it starts in the background.

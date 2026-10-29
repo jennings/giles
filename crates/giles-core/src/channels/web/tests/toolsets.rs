@@ -354,7 +354,7 @@ async fn every_change_needs_the_csrf_token() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert_eq!(t.admin.restarted(), ["box"]);
+    assert_eq!(t.admin.restarted(), ["toolset/box"]);
     let response = call(
         t.router(Some(owner())),
         Method::POST,
@@ -1042,19 +1042,19 @@ async fn the_toolset_page_shows_settings_state_and_tools_and_restarts() {
     let (status, _, location) = t.post("/admin/mcp-servers/box/restart", &[]).await;
     assert_eq!(status, StatusCode::SEE_OTHER);
     assert_eq!(location.as_deref(), Some("/admin/mcp-servers/box"));
-    assert_eq!(t.admin.restarted(), ["box"]);
+    assert_eq!(t.admin.restarted(), ["toolset/box"]);
     // The name may be in any case, and the service gets the toolset's own.
     let (status, _, location) = t.post("/admin/mcp-servers/BOX/restart", &[]).await;
     assert_eq!(status, StatusCode::SEE_OTHER);
     assert_eq!(location.as_deref(), Some("/admin/mcp-servers/box"));
-    assert_eq!(t.admin.restarted(), ["box", "box"]);
+    assert_eq!(t.admin.restarted(), ["toolset/box", "toolset/box"]);
     // A toolset that is gone is a 404 that the service never hears of.
     let (status, html, _) = t.post("/admin/mcp-servers/nothing/restart", &[]).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(html.contains("No such MCP server"), "{html}");
     let (status, _) = t.get("/admin/mcp-servers/nothing").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    assert_eq!(t.admin.restarted(), ["box", "box"]);
+    assert_eq!(t.admin.restarted(), ["toolset/box", "toolset/box"]);
     // The service's refusal is shown, and a toolset the service doesn't supervise has no restart
     // button.
     t.set_plugins(Vec::new());

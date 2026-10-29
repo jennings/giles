@@ -19,7 +19,7 @@ use super::toolsets::{
     ToolsetAdmin, manager_status, rename_status, renamed_to_proto, toolset_to_proto,
 };
 use crate::backup::{self, BackupError};
-use crate::config::{ChannelRuntime, Config, InstanceName, LiveConfig, ToolsetSpec};
+use crate::config::{ChannelRuntime, Config, InstanceName, Kind, LiveConfig, ToolsetSpec};
 use crate::paths::DataRoot;
 use crate::sandbox::HostReport;
 use crate::sessions::{ChannelStatusRecord, Clock, Sessions};
@@ -209,21 +209,32 @@ impl AdminRpc for AdminService {
         &self,
         request: Request<pb::RestartPluginRequest>,
     ) -> Result<Response<pb::RestartPluginResponse>, Status> {
-        let instance = request.into_inner().instance;
+        let request = request.into_inner();
+        let kind = match request.kind() {
+            pb::InstanceKind::Provider => Kind::Provider,
+            pb::InstanceKind::Channel => Kind::Channel,
+            pb::InstanceKind::Toolset => Kind::Toolset,
+            pb::InstanceKind::Unspecified => {
+                return Err(Status::invalid_argument(
+                    "kind: name the kind of the plugin instance (channel or toolset)",
+                ));
+            }
+        };
+        let instance = request.instance;
         // `ListPlugins` lists the configured instances, and a stored toolset that failed to start,
         // which the configuration doesn't have but supervision reports.
         let listed = configured(&self.options.config.get())
             .iter()
-            .any(|c| c.instance.as_str() == instance)
+            .any(|c| c.kind == kind && c.instance.as_str() == instance)
             || self.options.plugins.as_ref().is_some_and(|control| {
                 control
                     .plugins()
                     .iter()
-                    .any(|runtime| runtime.instance.as_str() == instance)
+                    .any(|runtime| runtime.kind == kind && runtime.instance.as_str() == instance)
             });
         if !listed {
             return Err(Status::not_found(format!(
-                "there is no plugin instance `{instance}`"
+                "there is no {kind} plugin instance `{instance}`"
             )));
         }
         let Some(control) = &self.options.plugins else {
@@ -231,12 +242,13 @@ impl AdminRpc for AdminService {
                 "plugin supervision is not available, so plugins can't be restarted",
             ));
         };
-        if !control.restart(&instance) {
+        if !control.restart(kind, &instance) {
             return Err(Status::failed_precondition(format!(
-                "plugin instance `{instance}` isn't supervised"
+                "{kind} plugin instance `{instance}` isn't supervised"
             )));
         }
         info!(
+            %kind,
             instance,
             "plugin restart requested through the admin service"
         );

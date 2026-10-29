@@ -26,7 +26,7 @@ use url::{Host, Url};
 use super::grpc::{Authorization, CallMetadata};
 use super::oauth::{self, TokenClient};
 use super::{LaunchError, PluginConnection, describe_and_configure};
-use crate::config::{Auth, ChannelInstance, ChannelRuntime, InstanceName, Secret, scrub};
+use crate::config::{Auth, ChannelInstance, ChannelRuntime, InstanceName, Kind, Secret, scrub};
 
 /// How long connecting (TCP and the TLS handshake) may take.
 pub const REMOTE_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -64,7 +64,7 @@ pub struct RemotePlugin {
     /// and the current access tokens, kept up to date as they're refreshed): scrub
     /// plugin-provided text with them before logging it.
     pub secrets: Secrets,
-    /// The `plugin{instance=...}` span its logs belong under.
+    /// The `plugin{kind=channel instance=...}` span its logs belong under.
     pub span: tracing::Span,
     closed: CancellationToken,
     /// Cancelled when this is dropped: the connection then fails every read and write.
@@ -140,8 +140,8 @@ impl Secrets {
 impl super::Launcher {
     /// Connects to the remote plugin channel `instance` and configures it: the OAuth token if the
     /// instance uses client credentials, TCP and TLS ([`REMOTE_CONNECT_TIMEOUT`]), then
-    /// `Describe` and `Configure` as for a launched plugin. Logs under a `plugin{instance=...}`
-    /// span.
+    /// `Describe` and `Configure` as for a launched plugin. Logs under a
+    /// `plugin{kind=channel instance=...}` span.
     ///
     /// # Errors
     ///
@@ -153,7 +153,7 @@ impl super::Launcher {
         let ChannelRuntime::Remote(remote) = &instance.runtime else {
             return Err(LaunchError::NotRemote);
         };
-        let span = tracing::info_span!("plugin", instance = %instance.name);
+        let span = tracing::info_span!("plugin", kind = %Kind::Channel, instance = %instance.name);
         async {
             let mut secrets: Vec<Secret> = instance.config.secrets().cloned().collect();
             let mut refresh = None;

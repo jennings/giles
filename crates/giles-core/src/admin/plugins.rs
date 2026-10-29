@@ -11,7 +11,7 @@ use giles_proto::plugin::v1::SandboxGrants;
 use giles_types::Timestamp;
 
 use crate::config::{
-    ChannelRuntime, Config, InstanceName, NetworkGrant, Sandbox, ToolsetTransport,
+    ChannelRuntime, Config, InstanceName, Kind, NetworkGrant, Sandbox, ToolsetTransport,
 };
 use crate::sandbox::HostReport;
 use crate::sessions::ChannelStatusRecord;
@@ -23,9 +23,10 @@ pub trait PluginControl: Send + Sync {
     /// Every supervised instance, in any order.
     fn plugins(&self) -> Vec<PluginRuntime>;
 
-    /// Relaunches (or reconnects) `instance` now, skipping its backoff or the wait for a new
-    /// binary. `false` if it isn't supervised.
-    fn restart(&self, instance: &str) -> bool;
+    /// Relaunches (or reconnects) the `kind` instance named `instance` now, skipping its backoff
+    /// or the wait for a new binary. `false` if it isn't supervised: an instance of another kind
+    /// with the same name is not it.
+    fn restart(&self, kind: Kind, instance: &str) -> bool;
 }
 
 /// Several [`PluginControl`]s as one: `serve` has a plugin host for channel plugins, a toolset
@@ -35,7 +36,8 @@ pub trait PluginControl: Send + Sync {
 /// `plugins()` is every control's instances, in the order of the controls (so `ListPlugins` gives a
 /// configured instance the report of the first control that has one: a name can also be reported
 /// by a later control, as a stored toolset that lost its name to a `giles.toml` instance is).
-/// `restart` goes to the first control that accepts the instance.
+/// `restart` goes to the first control that accepts the kind and instance: each control restarts
+/// only the kind it supervises, so a same-named instance of another kind is left alone.
 pub struct MergedControl {
     controls: Vec<Arc<dyn PluginControl>>,
 }
@@ -55,16 +57,18 @@ impl PluginControl for MergedControl {
             .collect()
     }
 
-    fn restart(&self, instance: &str) -> bool {
+    fn restart(&self, kind: Kind, instance: &str) -> bool {
         self.controls
             .iter()
-            .any(|control| control.restart(instance))
+            .any(|control| control.restart(kind, instance))
     }
 }
 
 /// What supervision knows about one instance.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PluginRuntime {
+    /// The kind of the instance.
+    pub kind: Kind,
     /// The instance.
     pub instance: InstanceName,
     /// The binary found for it (symlinks resolved), once looked up.
@@ -113,7 +117,7 @@ pub enum PluginRunState {
 /// One configured instance that runs as a plugin, as the configuration describes it.
 pub(super) struct Configured<'a> {
     pub(super) instance: &'a InstanceName,
-    pub(super) kind: pb::InstanceKind,
+    pub(super) kind: Kind,
     /// The channel's component; empty for a toolset, which has none.
     pub(super) component: &'a str,
     /// The program as configured, or the URL.
@@ -133,7 +137,7 @@ pub(super) fn configured(config: &Config) -> Vec<Configured<'_>> {
         };
         Some(Configured {
             instance: &c.name,
-            kind: pb::InstanceKind::Channel,
+            kind: Kind::Channel,
             component: &c.component,
             location,
             sandbox,
@@ -146,7 +150,7 @@ pub(super) fn configured(config: &Config) -> Vec<Configured<'_>> {
         };
         Configured {
             instance: &t.name,
-            kind: pb::InstanceKind::Toolset,
+            kind: Kind::Toolset,
             component: "",
             location,
             sandbox,
@@ -157,11 +161,11 @@ pub(super) fn configured(config: &Config) -> Vec<Configured<'_>> {
 
 /// The `PluginInstance` of every configured plugin: the configuration, the host's sandbox, the
 /// channel statuses recorded since startup, and what supervision reports in `runtimes`. A
-/// configured instance takes the first report with its name, so the report of the host that
-/// supervises it comes before one a later control makes for the same name. What is left is a
+/// configured instance takes the first report with its kind and name, so the report of the host
+/// that supervises it comes before one a later control makes for the same name. What is left is a
 /// report for an instance the configuration doesn't have, or for a name that another instance
 /// already took: a stored toolset that failed validation (`ToolsetManager`), listed after the
-/// configured instances as a toolset with just what the report says.
+/// configured instances as the kind the report says (a toolset) with just what the report says.
 pub(super) fn plugin_instances(
     config: &Config,
     host: &Result<HostReport, String>,
@@ -174,20 +178,21 @@ pub(super) fn plugin_instances(
         .map(|c| {
             let mut instance = pb::PluginInstance {
                 instance: c.instance.to_string(),
-                kind: c.kind.into(),
+                kind: proto_kind(c.kind).into(),
                 component: c.component.to_owned(),
                 location: c.location,
                 sandbox: c.sandbox.map(|sandbox| sandbox_status(sandbox, host)),
                 ..pb::PluginInstance::default()
             };
-            if c.kind == pb::InstanceKind::Channel {
+            if c.kind == Kind::Channel {
                 instance.channel_status = statuses
                     .get(c.instance)
                     .and_then(|record| status_to_proto(record.status.clone()).ok());
             }
-            let first = runtimes
-                .iter_mut()
-                .find(|r| r.as_ref().is_some_and(|r| &r.instance == c.instance));
+            let first = runtimes.iter_mut().find(|r| {
+                r.as_ref()
+                    .is_some_and(|r| r.kind == c.kind && &r.instance == c.instance)
+            });
             if let Some(runtime) = first.and_then(Option::take) {
                 apply_runtime(&mut instance, runtime);
             }
@@ -199,13 +204,22 @@ pub(super) fn plugin_instances(
     instances.extend(unconfigured.into_iter().map(|runtime| {
         let mut instance = pb::PluginInstance {
             instance: runtime.instance.to_string(),
-            kind: pb::InstanceKind::Toolset.into(),
+            kind: proto_kind(runtime.kind).into(),
             ..pb::PluginInstance::default()
         };
         apply_runtime(&mut instance, runtime);
         instance
     }));
     instances
+}
+
+/// The kind as the admin protocol names it.
+pub(super) fn proto_kind(kind: Kind) -> pb::InstanceKind {
+    match kind {
+        Kind::Provider => pb::InstanceKind::Provider,
+        Kind::Channel => pb::InstanceKind::Channel,
+        Kind::Toolset => pb::InstanceKind::Toolset,
+    }
 }
 
 fn apply_runtime(instance: &mut pb::PluginInstance, runtime: PluginRuntime) {

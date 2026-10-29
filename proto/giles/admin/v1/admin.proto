@@ -19,8 +19,8 @@ service AdminService {
   rpc Status(StatusRequest) returns (StatusResponse);
   // Every configured plugin instance.
   rpc ListPlugins(ListPluginsRequest) returns (ListPluginsResponse);
-  // Restarts a plugin instance now, clearing its restart backoff. NOT_FOUND if there is no such
-  // plugin instance.
+  // Restarts a plugin instance of one kind now, clearing its restart backoff. NOT_FOUND if there is
+  // no such plugin instance of that kind.
   rpc RestartPlugin(RestartPluginRequest) returns (RestartPluginResponse);
   // Sessions, newest activity first.
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
@@ -195,6 +195,8 @@ message SandboxStatus {
 message RestartPluginRequest {
   // The instance name.
   string instance = 1;
+  // The kind of instance. UNSPECIFIED, or a value this version doesn't know, is INVALID_ARGUMENT.
+  InstanceKind kind = 2;
 }
 
 message RestartPluginResponse {}

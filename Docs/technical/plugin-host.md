@@ -14,8 +14,9 @@ to it instead ([Remote plugins](#remote-plugins)), and supervises the connection
 
 ## Launch
 
-`Launcher::launch_channel(&ChannelInstance)` runs these steps under a `plugin{instance=<name>}`
-span. Any failure after the spawn kills the plugin's whole process group before the error returns.
+`Launcher::launch_channel(&ChannelInstance)` runs these steps under a
+`plugin{kind=channel instance=<name>}` span. Any failure after the spawn kills the plugin's whole
+process group before the error returns.
 
 1. Sandboxed instances are refused at once if the startup host check failed (`Launcher::new` takes
    its result): one clear error instead of each launch failing in the trampoline.
@@ -122,8 +123,8 @@ whole directory. The trampoline adds `GILES_PLUGIN_DATA`, `HOME`, `TMPDIR`, `PAT
 
 - stderr is read line by line (lines cut at 4 KiB), scrubbed, and logged at info level with target
   `giles_core::plugin_host::stderr` under the instance's span, e.g.
-  `INFO plugin{instance=irc}: giles_core::plugin_host::stderr: connected`. The last 20 lines are
-  kept for error messages (`stderr_tail`).
+  `INFO plugin{kind=channel instance=irc}: giles_core::plugin_host::stderr: connected`. The last 20
+  lines are kept for error messages (`stderr_tail`).
 - `wait()` and `exit_status()`: when the plugin has exited, `SIGKILL` to the rest of its process
   group, then reap it. Children can outlive the plugin, and this is the only moment the group can be
   signalled safely after the plugin is gone: the exit is observed without reaping (`waitid` with
@@ -190,7 +191,7 @@ pub struct LaunchedPlugin {
     pub connection: PluginConnection,
     pub process: PluginProcess,
     pub secrets: Arc<[Secret]>,       // the instance's secrets and the token, for `scrub`
-    pub span: tracing::Span,          // plugin{instance=...}
+    pub span: tracing::Span,          // plugin{kind=channel instance=...}
 }
 ```
 
@@ -206,8 +207,8 @@ loopback unless `insecure = true`) and `auth` ([Configuration](config.md)). The 
 `ChannelPlugin::serve_remote` ([Plugin SDK](plugin-sdk.md#remote-plugins)), which every shipped
 plugin's `serve` subcommand calls ([Command line](plugin-sdk.md#command-line)).
 
-`Launcher::connect_remote(&ChannelInstance)` (module `remote`), under a `plugin{instance=<name>}`
-span:
+`Launcher::connect_remote(&ChannelInstance)` (module `remote`), under a
+`plugin{kind=channel instance=<name>}` span:
 
 1. Credentials. `auth = { bearer = ... }`: `authorization: Bearer <token>` (marked sensitive) on
    every call. `auth = { oauth = ... }`: a token request first (`oauth::TokenClient`, below), whose
@@ -360,18 +361,20 @@ event refers to at startup, so a release lost to a crash or a restart leaks noth
 ## Supervision
 
 `plugin_host::supervisor` runs one task per plugin channel (PLAN section 7.5), under a
-`supervisor{instance=<name>}` span (each launch adds its own `plugin{instance=<name>}` span inside
-it). A launch is `Launcher::launch_channel` followed by `ChannelWiring::attach` (below), so every
-launch, the first and each relaunch, registers its new `RemoteChannel` and attaches it to the
-session manager, replacing the old one and its event pump. Remote plugins differ as described under
+`supervisor{kind=channel instance=<name>}` span (each launch adds its own
+`plugin{kind=channel instance=<name>}` span inside it). A launch is `Launcher::launch_channel`
+followed by `ChannelWiring::attach` (below), so every launch, the first and each relaunch, registers
+its new `RemoteChannel` and attaches it to the session manager, replacing the old one and its event
+pump. Remote plugins differ as described under
 [Supervision of remote plugins](#supervision-of-remote-plugins).
 
 While the plugin runs, the task waits for the first of:
 
 - Shutdown (`stop_all`): `LaunchedPlugin::stop(STOP_GRACE)`: `Shutdown` with a deadline, then
   `SIGTERM`, then `SIGKILL` to the process group.
-- A restart request (`PluginHost::restart`, for the admin service's `RestartPlugin`): the plugin is
-  stopped the same way and launched again at once, with the backoff reset.
+- A restart request (`PluginControl::restart` for a channel, for the admin service's
+  `RestartPlugin`): the plugin is stopped the same way and launched again at once, with the backoff
+  reset.
 - The process exiting (`PluginProcess::wait`, which kills the rest of its group before reaping).
 - A failed health check: every `HEALTH_INTERVAL` (30 s) a `grpc.health.v1` `Check` of
   `giles.channel.v1.ChannelService`, which must answer `SERVING` within `HEALTH_TIMEOUT` (10 s). One
@@ -414,8 +417,9 @@ scrubbed of the instance's secrets and the token. The channel's own status (`Con
 
 `PluginHost` implements `admin::PluginControl` for the [Admin service](admin.md): `plugins()`
 returns the statuses as `PluginRuntime`s (the state as is; the version and `requested_grants`, field
-for field as `SandboxGrants`, from `describe`), and `restart` is `PluginHost::restart`. `serve`
-shares one `Arc<PluginHost>` between the two.
+for field as `SandboxGrants`, from `describe`), and `restart(kind, instance)` restarts a supervised
+channel (`false` for any other kind: the host supervises channels only). `serve` shares one
+`Arc<PluginHost>` between the two.
 
 ### The Describe cache
 
