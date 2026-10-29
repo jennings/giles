@@ -1232,7 +1232,6 @@ fn a_provider_a_channel_and_a_toolset_with_one_name_run_with_state_of_their_own(
         "plugin{kind=channel instance=aperture}",
         "plugin process started",
     ]);
-    daemon.wait_for_log("giles started");
     let deadline = Instant::now() + TIMEOUT;
     while !home.join("data/toolset/aperture").is_dir() {
         assert!(Instant::now() < deadline, "the toolset was never launched");
