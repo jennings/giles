@@ -137,7 +137,8 @@ instance's data directory are keyed by the name. To change it, use the rename co
 - [`giles provider rename`](cli.md#giles-provider-rename-old-new)
 - [`giles toolset rename`](cli.md#rename-a-toolset)
 
-Names are unique across all three kinds, ignoring case. `Libera` and `libera` clash.
+A provider, a channel, and a toolset can share a name. They are separate instances with their own
+data. Names are unique within a kind, ignoring case. `Libera` and `libera` clash.
 
 A provider or channel's `component` says what runs the instance, and defaults to the instance name.
 Giles uses its built-in component of that kind and name, if it has one. Otherwise the instance runs

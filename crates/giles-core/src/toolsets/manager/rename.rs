@@ -129,7 +129,7 @@ impl ToolsetManager {
     /// [`ToolsetManagerError::NotFound`] if no stored toolset has the name;
     /// [`ToolsetManagerError::Unsupported`] if it is a toolset of `giles.toml`;
     /// [`ToolsetManagerError::Invalid`] (at the root) if `new` is the same name, isn't valid, is
-    /// reserved, is taken by an instance of `giles.toml`, or, for a running
+    /// reserved, is taken by a toolset of `giles.toml`, or, for a running
     /// toolset, if its spec doesn't validate under the new name; [`ToolsetManagerError::Exists`]
     /// if another stored toolset has `new`;
     /// [`ToolsetManagerError::Refused`] if an agent has globs that match the toolset's tools
@@ -198,7 +198,7 @@ impl ToolsetManager {
             Target::Missing => return Err(ToolsetManagerError::NotFound),
         };
 
-        // The new name: valid and free among every kind of instance, as for a new toolset. The
+        // The new name: valid and free among the toolsets, as for a new toolset. The
         // old name is exempt, so the case of a name can change. A remote toolset has no data
         // directory, so data under `data/toolset/<new>/` (left by an earlier instance) is no
         // reason to refuse, as it isn't for a new toolset.
@@ -236,9 +236,9 @@ impl ToolsetManager {
             _ => None,
         };
 
-        // A stored toolset that lost its name to an instance of `giles.toml` at startup isn't
-        // that instance: the agents' globs under the name are the instance's, and are left alone.
-        let agents = if self.file_instance(&config, &row.name).is_some() {
+        // A stored toolset that lost its name to a toolset of `giles.toml` at startup isn't
+        // that toolset: the agents' globs under the name are the toolset's, and are left alone.
+        let agents = if self.file_toolset(&config, &row.name).is_some() {
             Vec::new()
         } else {
             self.plan_agents(&config, &row.name, new).await?

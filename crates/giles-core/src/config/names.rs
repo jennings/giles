@@ -22,7 +22,8 @@ pub(crate) fn invalid_name_reason(what: &str, name: &str) -> String {
 /// The name of a configured component instance: the `<instance>` in `[<kind>.<instance>]`.
 ///
 /// Instance names are permanent ids (PLAN section 7.2): sessions, the inbox, tool prefixes, and
-/// the instance's data directory are keyed by them. They are unique across all kinds.
+/// the instance's data directory are keyed by them. They are unique within a kind, ignoring case;
+/// a provider, a channel, and a toolset may share a name.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
 #[serde(try_from = "String")]
 pub struct InstanceName(String);

@@ -207,9 +207,10 @@ impl Config {
             env: options.env,
         };
 
-        // Compared case-insensitively: on a case-insensitive file system (the macOS default),
-        // `Libera` and `libera` would share a data directory and pid file.
-        let mut kinds: BTreeMap<String, (Kind, &str)> = BTreeMap::new();
+        // Compared case-insensitively within a kind: on a case-insensitive file system (the macOS
+        // default), `Libera` and `libera` would share a data directory and pid file. A provider,
+        // a channel, and a toolset may share a name, because each kind has its own directories.
+        let mut names: BTreeMap<(Kind, String), &str> = BTreeMap::new();
         let instances = raw
             .provider
             .keys()
@@ -217,12 +218,11 @@ impl Config {
             .chain(raw.channel.keys().map(|n| (n, Kind::Channel)))
             .chain(toolset_specs.keys().map(|n| (n, Kind::Toolset)));
         for (name, kind) in instances {
-            if let Some((other, other_name)) = kinds.insert(name.to_ascii_lowercase(), (kind, name))
-            {
+            if let Some(other_name) = names.insert((kind, name.to_ascii_lowercase()), name) {
                 return Err(ConfigError::at(
                     file,
                     KeyPath::root().key(kind.as_str()).key(name.as_str()),
-                    toolset::name_clash(other, other_name, name),
+                    toolset::name_clash(kind, other_name, name),
                 ));
             }
         }

@@ -8,7 +8,7 @@ use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard};
 use giles_types::AgentId;
 use tokio::sync::watch;
 
-use super::{AgentConfig, Config, InstanceName, Kind, ToolsetInstance, toolset};
+use super::{AgentConfig, Config, InstanceName, ToolsetInstance, toolset};
 
 /// The running core's configuration, shared by everything that needs to see agents and toolsets
 /// changed at runtime: the registry, the session manager, the router, the scheduler, the toolset
@@ -45,14 +45,13 @@ pub struct AgentExists(pub AgentId);
 #[error("there is no agent `{0}`")]
 pub struct NoSuchAgent(pub AgentId);
 
-/// [`LiveConfig::add_toolset`] or [`LiveConfig::rename_toolset`] refused a name: another instance,
-/// of any kind, already has it, ignoring ASCII case.
+/// [`LiveConfig::add_toolset`] or [`LiveConfig::rename_toolset`] refused a name: another toolset
+/// already has it, ignoring ASCII case.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("there is already a {kind} `{existing}`")]
+#[error("there is already a toolset `{existing}`")]
 pub struct InstanceExists {
-    /// The kind of the instance that has the name.
-    pub kind: Kind,
-    /// Its name, which may differ from the one asked for in case.
+    /// The name of the toolset that has the name, which may differ from the one asked for in
+    /// case.
     pub existing: InstanceName,
 }
 
@@ -68,20 +67,19 @@ pub enum RenameToolsetError {
     /// There is no toolset with the old name.
     #[error(transparent)]
     NoSuchToolset(#[from] NoSuchToolset),
-    /// Another instance has the new name.
+    /// Another toolset has the new name.
     #[error(transparent)]
     Exists(#[from] InstanceExists),
 }
 
-/// The instance, of any kind, whose name is `name` ignoring ASCII case, other than the toolset
-/// `except`, as the error a refused name reports.
-fn instance_named(
+/// The toolset, other than `except`, whose name is `name` ignoring ASCII case, as the error a
+/// refused name reports.
+fn toolset_named(
     config: &Config,
     name: &InstanceName,
     except: Option<&InstanceName>,
 ) -> Option<InstanceExists> {
-    toolset::instance_named(config, name.as_str(), except).map(|(kind, existing)| InstanceExists {
-        kind,
+    toolset::toolset_named(config, name.as_str(), except).map(|existing| InstanceExists {
         existing: existing.clone(),
     })
 }
@@ -209,17 +207,17 @@ impl LiveConfig {
     /// configuration they had. Starting it is the toolset host's job
     /// ([`ToolsetHost::add`](crate::toolsets::ToolsetHost::add)).
     ///
-    /// Names are compared ignoring ASCII case and across kinds, as in `giles.toml`: instance
-    /// names key data directories and tool prefixes, and are unique among providers, channels,
-    /// and toolsets.
+    /// Names are compared ignoring ASCII case, as in `giles.toml`: toolset names key data
+    /// directories and tool prefixes, and are unique among toolsets. A provider or a channel may
+    /// have the same name.
     ///
     /// # Errors
     ///
-    /// [`InstanceExists`] (naming the instance that has the name) if it is taken; nothing
+    /// [`InstanceExists`] (naming the toolset that has the name) if it is taken; nothing
     /// changes.
     pub fn add_toolset(&self, toolset: ToolsetInstance) -> Result<Arc<Config>, InstanceExists> {
         self.change(|state| {
-            if let Some(taken) = instance_named(&state.config, &toolset.name, None) {
+            if let Some(taken) = toolset_named(&state.config, &toolset.name, None) {
                 return (None, Err(taken));
             }
             let mut next = Config::clone(&state.config);
@@ -268,8 +266,8 @@ impl LiveConfig {
     /// # Errors
     ///
     /// [`RenameToolsetError::NoSuchToolset`] if no toolset is named `from`, and
-    /// [`RenameToolsetError::Exists`] if another instance of any kind has the name `to`, ignoring
-    /// ASCII case; nothing changes.
+    /// [`RenameToolsetError::Exists`] if another toolset has the name `to`, ignoring ASCII case;
+    /// nothing changes.
     pub fn rename_toolset(
         &self,
         from: &InstanceName,
@@ -279,7 +277,7 @@ impl LiveConfig {
             if !state.config.toolsets.contains_key(from) {
                 return (None, Err(NoSuchToolset(from.clone()).into()));
             }
-            if let Some(taken) = instance_named(&state.config, &to, Some(from)) {
+            if let Some(taken) = toolset_named(&state.config, &to, Some(from)) {
                 return (None, Err(taken.into()));
             }
             let mut next = Config::clone(&state.config);

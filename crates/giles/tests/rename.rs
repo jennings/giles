@@ -408,52 +408,56 @@ async fn a_failed_rename_exits_nonzero_and_changes_nothing() {
     );
 }
 
-/// The command says which kind to rename, so a name that is another kind's is refused, with the
-/// command that renames it, and nothing changes.
+/// The command says which kind to rename. A name that only another kind has, in `giles.toml` or
+/// stored in the database, is no instance of that kind, so the command refuses and nothing changes.
 #[tokio::test]
-async fn a_command_for_another_kind_of_instance_is_refused() {
+async fn a_name_only_another_kind_has_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let root = populated(dir.path()).await;
 
-    for (args, hint) in [
+    for (args, reason) in [
         (
             ["provider", "rename", "libera", "other"],
-            "run `giles channel rename libera other`",
+            "no provider named \"libera\"",
         ),
         (
             ["toolset", "rename", "libera", "other"],
-            "run `giles channel rename libera other`",
+            "no toolset named \"libera\": giles.toml has no `[toolset.libera]` table",
+        ),
+        (
+            ["toolset", "rename", "libera", "other"],
+            "(giles.toml has `[channel.libera]`; use `giles channel rename`)",
         ),
         (
             ["channel", "rename", "anthropic", "other"],
-            "run `giles provider rename anthropic other`",
+            "no channel named \"anthropic\"",
         ),
         (
             ["toolset", "rename", "anthropic", "other"],
-            "run `giles provider rename anthropic other`",
+            "no toolset named \"anthropic\"",
         ),
         (
             ["channel", "rename", "github", "other"],
-            "run `giles toolset rename github other`",
+            "no channel named \"github\"",
         ),
         (
             ["provider", "rename", "github", "other"],
-            "run `giles toolset rename github other`",
+            "no provider named \"github\"",
         ),
         // A stored toolset is a toolset too.
         (
             ["channel", "rename", "notes", "other"],
-            "run `giles toolset rename notes other`",
+            "no channel named \"notes\"",
         ),
         (
             ["provider", "rename", "notes", "other"],
-            "run `giles toolset rename notes other`",
+            "no provider named \"notes\"",
         ),
     ] {
         let output = giles(dir.path(), &args);
         assert!(!output.status.success(), "{args:?}");
         assert!(
-            stderr(&output).contains(hint),
+            stderr(&output).contains(reason),
             "{args:?}: {}",
             stderr(&output)
         );
@@ -463,6 +467,157 @@ async fn a_command_for_another_kind_of_instance_is_refused() {
     assert_eq!(read(&root, "agents/jeeves/agent.toml"), AGENT_TOML);
     let store = Store::open(root.database_file()).await.unwrap();
     assert_eq!(store.toolsets().await.unwrap()[0].name, "notes");
+}
+
+const SHARED_GILES_TOML: &str = r#"[owner]
+identities = ["irc:libera:account:me"]
+
+[provider.aperture]
+component = "openai"
+
+[channel.aperture]
+component = "irc"
+unsandboxed = true
+
+[toolset.aperture]
+command = "/bin/aperture"
+
+[[routes]]
+channel = "aperture"
+agent = "jeeves"
+"#;
+
+const SHARED_AGENT_TOML: &str = "models = [\"aperture/gpt\"]\n\
+                                 tools = [\"aperture__*\"]\n\
+                                 ask = [\"aperture__send\"]\n";
+
+/// A provider, a channel, and a toolset all named `aperture`, each with data of its own: a
+/// directory, and for the provider a usage row and for the channel a session.
+async fn shared(dir: &Path) -> DataRoot {
+    let root = DataRoot::new(dir, Path::new("/tmp")).unwrap();
+    fs::create_dir_all(root.run_dir()).unwrap();
+    fs::create_dir_all(root.data_dir()).unwrap();
+    fs::write(root.config_file(), SHARED_GILES_TOML).unwrap();
+    let agent = dir.join("agents/jeeves");
+    fs::create_dir_all(&agent).unwrap();
+    fs::write(agent.join("agent.toml"), SHARED_AGENT_TOML).unwrap();
+    for kind in Kind::ALL {
+        let data = root.plugin_data_dir(kind, "aperture").unwrap();
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join("state"), kind.as_str()).unwrap();
+    }
+    let store = Store::open(root.database_file()).await.unwrap();
+    let key = SessionKey {
+        agent: AgentId::new("jeeves").unwrap(),
+        channel: "aperture".into(),
+        conversation: ConversationId::new("#giles").unwrap(),
+    };
+    store
+        .open_session(
+            key,
+            SessionKind::Group,
+            Some(UserId::new("owner").unwrap()),
+            jiff::Timestamp::from_second(1_800_000_000).unwrap(),
+        )
+        .await
+        .unwrap();
+    record_usage(&store, "aperture").await;
+    root
+}
+
+/// What a command of one kind renames is that kind's `aperture` alone: the other two keep their
+/// tables, directories, rows, and the references to them.
+#[tokio::test]
+async fn each_command_renames_only_its_own_kinds_instance_of_a_shared_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = shared(dir.path()).await;
+    let state = |kind: Kind, name: &str| root.plugin_data_dir(kind, name).unwrap().join("state");
+    let sessions = async |name: &str| {
+        let store = Store::open(root.database_file()).await.unwrap();
+        let rows = store.instance_rows(Kind::Channel).await.unwrap();
+        rows.get(name).map(|rows| rows.sessions)
+    };
+    let usage = async |name: &str| {
+        let store = Store::open(root.database_file()).await.unwrap();
+        let rows = store.instance_rows(Kind::Provider).await.unwrap();
+        rows.get(name).map(|rows| rows.usage)
+    };
+    let rename = |kind: &str, new: &str| {
+        let output = giles(dir.path(), &[kind, "rename", "aperture", new]);
+        assert!(output.status.success(), "{kind}: {}", stderr(&output));
+        stdout(&output)
+    };
+
+    let out = rename("provider", "gateway");
+    assert!(
+        out.contains("[provider.aperture] -> [provider.gateway]"),
+        "{out}"
+    );
+    let toml = read(&root, "giles.toml");
+    for table in [
+        "[provider.gateway]",
+        "[channel.aperture]",
+        "[toolset.aperture]",
+    ] {
+        assert!(toml.contains(table), "{table}\n{toml}");
+    }
+    assert!(!toml.contains("[provider.aperture]"), "{toml}");
+    // Only the model references are the provider's.
+    assert_eq!(
+        read(&root, "agents/jeeves/agent.toml"),
+        SHARED_AGENT_TOML.replace("aperture/gpt", "gateway/gpt")
+    );
+    assert!(state(Kind::Provider, "gateway").is_file());
+    assert!(!state(Kind::Provider, "aperture").exists());
+    assert!(state(Kind::Channel, "aperture").is_file());
+    assert!(state(Kind::Toolset, "aperture").is_file());
+    assert_eq!(usage("gateway").await, Some(1));
+    assert_eq!(usage("aperture").await, None);
+    assert_eq!(sessions("aperture").await, Some(1));
+
+    let out = rename("channel", "chat");
+    assert!(
+        out.contains("[channel.aperture] -> [channel.chat]"),
+        "{out}"
+    );
+    let toml = read(&root, "giles.toml");
+    for table in ["[provider.gateway]", "[channel.chat]", "[toolset.aperture]"] {
+        assert!(toml.contains(table), "{table}\n{toml}");
+    }
+    assert!(toml.contains("channel = \"chat\""), "{toml}");
+    // Agents don't name a channel.
+    assert_eq!(
+        read(&root, "agents/jeeves/agent.toml"),
+        SHARED_AGENT_TOML.replace("aperture/gpt", "gateway/gpt")
+    );
+    assert!(state(Kind::Channel, "chat").is_file());
+    assert!(!state(Kind::Channel, "aperture").exists());
+    assert!(state(Kind::Provider, "gateway").is_file());
+    assert!(state(Kind::Toolset, "aperture").is_file());
+    assert_eq!(sessions("chat").await, Some(1));
+    assert_eq!(sessions("aperture").await, None);
+    assert_eq!(usage("gateway").await, Some(1));
+
+    let out = rename("toolset", "tools");
+    assert!(
+        out.contains("[toolset.aperture] -> [toolset.tools]"),
+        "{out}"
+    );
+    let toml = read(&root, "giles.toml");
+    for table in ["[provider.gateway]", "[channel.chat]", "[toolset.tools]"] {
+        assert!(toml.contains(table), "{table}\n{toml}");
+    }
+    // Only the tool globs are the toolset's.
+    assert_eq!(
+        read(&root, "agents/jeeves/agent.toml"),
+        "models = [\"gateway/gpt\"]\ntools = [\"tools__*\"]\nask = [\"tools__send\"]\n"
+    );
+    assert!(state(Kind::Toolset, "tools").is_file());
+    assert!(!state(Kind::Toolset, "aperture").exists());
+    assert!(state(Kind::Provider, "gateway").is_file());
+    assert!(state(Kind::Channel, "chat").is_file());
+    assert_eq!(sessions("chat").await, Some(1));
+    assert_eq!(usage("gateway").await, Some(1));
 }
 
 #[tokio::test]

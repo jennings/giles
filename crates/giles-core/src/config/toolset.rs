@@ -93,11 +93,11 @@ impl std::error::Error for ToolsetError {}
 ///   names, `auth`, durations, skill directories, and the sandbox grants against the data root and
 ///   the socket directory;
 /// - credentials: each reference is resolved now (`secrets`, or the environment);
-/// - the name: it must not be used by any other instance, of any kind, ignoring case. The toolset
-///   `ctx.replacing`, if any, is the one being edited or renamed, so it doesn't count: adding a
-///   toolset passes `None`, editing passes its own name, and renaming passes its old name (so the
-///   new name only has to be free of every other instance, even if it differs from the old one
-///   only in case);
+/// - the name: it must not be used by any other toolset, ignoring case. Providers and channels
+///   have their own names, so they don't count. The toolset `ctx.replacing`, if any, is the one
+///   being edited or renamed, so it doesn't count either: adding a toolset passes `None`, editing
+///   passes its own name, and renaming passes its old name (so the new name only has to be free of
+///   every other toolset, even if it differs from the old one only in case);
 /// - binary directories: the toolset's `write` and `unix` grants must not overlap the directory of
 ///   a binary Giles runs (the `giles` binary, plugins, every stdio server including this one),
 ///   and no other instance's grant may overlap the directory of this toolset's server. Another
@@ -135,10 +135,10 @@ pub fn validate_toolset(
         .map_err(relative)?;
 
     let config = ctx.config;
-    if let Some((kind, other)) = instance_named(config, name, ctx.replacing) {
+    if let Some(other) = toolset_named(config, name, ctx.replacing) {
         return Err(ToolsetError {
             key: KeyPath::root(),
-            reason: name_clash(kind, other.as_str(), name),
+            reason: name_clash(Kind::Toolset, other.as_str(), name),
         });
     }
 
@@ -160,33 +160,28 @@ pub fn validate_toolset(
     Ok(instance)
 }
 
-/// The instance of `config`, of any kind, whose name is `name` ignoring ASCII case, other than the
-/// toolset `replacing`. The one rule for the name of a toolset, whether it is validated or the
-/// running configuration is changed: instance names key data directories and tool prefixes, so
-/// they are unique across kinds, ignoring case.
-pub(super) fn instance_named<'a>(
+/// The toolset of `config` whose name is `name` ignoring ASCII case, other than the toolset
+/// `replacing`. The one rule for the name of a toolset, whether it is validated or the running
+/// configuration is changed: toolset names key data directories and tool prefixes, so they are
+/// unique among toolsets, ignoring case. A provider or channel of the same name is another
+/// instance with its own state.
+pub(super) fn toolset_named<'a>(
     config: &'a Config,
     name: &str,
     replacing: Option<&InstanceName>,
-) -> Option<(Kind, &'a InstanceName)> {
-    let providers = config.providers.keys().map(|other| (Kind::Provider, other));
-    let channels = config.channels.keys().map(|other| (Kind::Channel, other));
-    let toolsets = config
+) -> Option<&'a InstanceName> {
+    config
         .toolsets
         .keys()
         .filter(|other| Some(*other) != replacing)
-        .map(|other| (Kind::Toolset, other));
-    providers
-        .chain(channels)
-        .chain(toolsets)
-        .find(|(_, other)| other.as_str().eq_ignore_ascii_case(name))
+        .find(|other| other.as_str().eq_ignore_ascii_case(name))
 }
 
-/// Why `name` can't be an instance name next to the existing `[other.other_name]`.
-pub(super) fn name_clash(other: Kind, other_name: &str, name: &str) -> String {
+/// Why `name` can't be the name of a `kind` instance next to the existing `[kind.other_name]`.
+pub(super) fn name_clash(kind: Kind, other_name: &str, name: &str) -> String {
     format!(
-        "instance names must be unique across kinds, ignoring case, and \
-         `[{other}.{other_name}]` also uses {name:?}"
+        "{kind} names must be unique, ignoring case, and `[{kind}.{other_name}]` also uses \
+         {name:?}"
     )
 }
 
@@ -713,21 +708,22 @@ mod tests {
     }
 
     #[test]
-    fn a_name_taken_by_another_kind_is_refused() {
+    fn a_name_a_provider_or_a_channel_has_is_free() {
         let fixture = Fixture::new(
             "[provider.anthropic]\n[channel.web]\n[toolset.github]\ncommand = \"/bin/github\"\n",
             "",
         );
         let spec = json!({ "url": "https://y" });
-        fixture.assert_invalid("web", spec.clone(), "", "`[channel.web]` also uses \"web\"");
+        // Providers and channels have their own names.
+        fixture.assert_valid("web", spec.clone());
+        fixture.assert_valid("Anthropic", spec.clone());
+        // Another toolset differing only in case is a clash, as in `giles.toml`.
         fixture.assert_invalid(
-            "Anthropic",
+            "GitHub",
             spec.clone(),
             "",
-            "`[provider.anthropic]` also uses \"Anthropic\"",
+            "toolset names must be unique, ignoring case, and `[toolset.github]` also uses",
         );
-        // Another toolset differing only in case is a clash too, as in `giles.toml`.
-        fixture.assert_invalid("GitHub", spec.clone(), "", "`[toolset.github]` also uses");
         // Replacing the toolset of exactly this name (an edit) is not a clash.
         let replaced = fixture
             .validate_replacing("github", Some("github"), spec.clone())
@@ -766,17 +762,20 @@ mod tests {
             .validate_replacing("hub", Some("github"), spec.clone())
             .unwrap();
         assert_eq!(renamed.name.as_str(), "hub");
-        // Another instance's name stays taken, in any case and of any kind.
-        for (name, clash) in [
-            ("files", "`[toolset.files]` also uses"),
-            ("Files", "`[toolset.files]` also uses"),
-            ("web", "`[channel.web]` also uses"),
-        ] {
+        // Another toolset's name stays taken, in any case. A channel's name is free.
+        for name in ["files", "Files"] {
             let err = fixture
                 .validate_replacing(name, Some("github"), spec.clone())
                 .unwrap_err();
-            assert!(err.key.is_root() && err.reason.contains(clash), "{err}");
+            assert!(
+                err.key.is_root() && err.reason.contains("`[toolset.files]` also uses"),
+                "{err}"
+            );
         }
+        let renamed = fixture
+            .validate_replacing("web", Some("github"), spec)
+            .unwrap();
+        assert_eq!(renamed.name.as_str(), "web");
     }
 
     #[test]

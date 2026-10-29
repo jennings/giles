@@ -752,18 +752,22 @@ with its own config and sandbox grants. RPCs carry no instance id. Instance conf
 section 11.2.
 
 Instance names are permanent ids: sessions, the inbox, group memories, and the plugin's data
-directory are keyed by them. Renaming one in its config alone would orphan all of that, so
-`giles <kind> rename <old> <new>` does it (`channel`, `provider`, or `toolset`), with the core
-stopped: it migrates the database rows, renames the directories, and renames the instance's config
-(in the current layout, the `[<kind>.<old>]` table in `giles.toml`, section 11.2). The command's
-kind says which instance is renamed; it only touches that kind's rows, directories, and table.
-`giles toolset rename` also works with the core running, for a toolset stored in the database. Giles
-doesn't check for a rename done in the config alone: the renamed instance starts with no data, and
-the old name's rows and directories stay where they are, unused. The command finishes such a
-hand-rename only before the renamed instance has started: launching it creates `data/<kind>/<new>/`,
-and then `<new>` has data and the command refuses. Renaming a provider or channel that has no
-`component` key keeps its component by writing `component = "<old>"`, since the component defaults
-to the instance name. A toolset has no component.
+directory are keyed by them. Providers, channels, and toolsets have separate namespaces: a provider,
+a channel, and a toolset can all be named `aperture`, and the kinds keep their rows, directories,
+pid files, and sandbox specs apart. A name is unique within its kind, ignoring case, so a
+case-insensitive file system never gives two instances of a kind one directory. Renaming one in its
+config alone would orphan all of that, so `giles <kind> rename <old> <new>` does it (`channel`,
+`provider`, or `toolset`), with the core stopped: it migrates the database rows, renames the
+directories, and renames the instance's config (in the current layout, the `[<kind>.<old>]` table in
+`giles.toml`, section 11.2). The command's kind says which instance is renamed; it only touches that
+kind's rows, directories, and table. `giles toolset rename` also works with the core running, for a
+toolset stored in the database. Giles doesn't check for a rename done in the config alone: the
+renamed instance starts with no data, and the old name's rows and directories stay where they are,
+unused. The command finishes such a hand-rename only before the renamed instance has started:
+launching it creates `data/<kind>/<new>/`, and then `<new>` has data and the command refuses.
+Renaming a provider or channel that has no `component` key keeps its component by writing
+`component = "<old>"`, since the component defaults to the instance name. A toolset has no
+component.
 
 ### 7.3 Discovery and enablement
 

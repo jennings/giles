@@ -596,24 +596,21 @@ fn instance_names_and_components() {
             "provider plugins are not supported",
         ),
         (
-            "[provider.web]\ncomponent = \"openai\"\n[channel.web]",
-            "channel.web",
-            "`[provider.web]` also uses \"web\"",
+            "[provider.Ollama]\ncomponent = \"openai\"\n[provider.ollama]\ncomponent = \"openai\"",
+            "provider.ollama",
+            "provider names must be unique, ignoring case, and `[provider.Ollama]` also uses \
+             \"ollama\"",
         ),
         (
-            "[channel.github]\n[toolset.github]\ncommand = \"/x\"",
+            "[toolset.Github]\ncommand = \"/x\"\n[toolset.github]\ncommand = \"/x\"",
             "toolset.github",
-            "unique across kinds",
-        ),
-        (
-            "[channel.Libera]\ncomponent = \"irc\"\n[toolset.libera]\ncommand = \"/x\"",
-            "toolset.libera",
-            "`[channel.Libera]` also uses \"libera\"",
+            "toolset names must be unique, ignoring case, and `[toolset.Github]` also uses \
+             \"github\"",
         ),
         (
             "[channel.IRC]\n[channel.irc]",
             "channel.irc",
-            "ignoring case",
+            "channel names must be unique, ignoring case, and `[channel.IRC]` also uses \"irc\"",
         ),
     ];
     for (toml, key, reason) in cases {
@@ -653,6 +650,57 @@ fn providers_are_built_in() {
     let err = Config::load_with(&home.root, &options).unwrap_err();
     assert_eq!(err.key.to_string(), "provider.anthropic.component");
     assert!(err.reason.contains("built-in: openai"), "{err}");
+}
+
+#[test]
+fn a_provider_a_channel_and_a_toolset_may_share_a_name_and_keep_their_own_state() {
+    let toml = |channel_grant: &str, toolset_grant: &str| {
+        format!(
+            "{MINIMAL}[provider.aperture]\ncomponent = \"openai\"\n\
+             [channel.aperture]\ncomponent = \"irc\"\nsandbox = {{ write = [{channel_grant}] }}\n\
+             [toolset.aperture]\ncommand = \"/x\"\nsandbox = {{ write = [{toolset_grant}] }}\n"
+        )
+    };
+    let home = Home::new(MINIMAL);
+    let dir = |kind| home.root.plugin_data_dir(kind, "aperture").unwrap();
+    let (channel_dir, toolset_dir) = (dir(Kind::Channel), dir(Kind::Toolset));
+    assert_ne!(channel_dir, toolset_dir);
+    assert_ne!(
+        home.root.pid_file(Kind::Channel, "aperture").unwrap(),
+        home.root.pid_file(Kind::Toolset, "aperture").unwrap()
+    );
+
+    // All three load, each as its own kind.
+    home.write(
+        "giles.toml",
+        &toml(&format!("{channel_dir:?}"), &format!("{toolset_dir:?}")),
+    );
+    let config = home.load_ok();
+    assert_eq!(config.providers["aperture"].component, "openai");
+    assert_eq!(config.channels["aperture"].component, "irc");
+    assert_eq!(config.toolsets["aperture"].name.as_str(), "aperture");
+
+    // An instance's own data directory is the one of its kind: the other kind's is not its own.
+    home.write(
+        "giles.toml",
+        &toml(&format!("{toolset_dir:?}"), &format!("{toolset_dir:?}")),
+    );
+    assert_error(
+        &home,
+        "giles.toml",
+        "channel.aperture.sandbox.write[0]",
+        "overlaps the data root",
+    );
+    home.write(
+        "giles.toml",
+        &toml(&format!("{channel_dir:?}"), &format!("{channel_dir:?}")),
+    );
+    assert_error(
+        &home,
+        "giles.toml",
+        "toolset.aperture.sandbox.write[0]",
+        "overlaps the data root",
+    );
 }
 
 #[test]
@@ -843,14 +891,14 @@ fn a_toolset_with_component_is_refused_with_the_program_to_set_instead() {
 #[test]
 fn a_toolset_table_with_url_is_ignored_whatever_it_holds_and_reported() {
     // Remote toolsets are stored in the database. A table with `url` configures nothing: not
-    // even a wrong type, an unknown key, a stdio key, or a name another instance has stops
+    // even a wrong type, an unknown key, a stdio key, or a name another toolset has stops
     // loading, and the name stays free for a stored toolset.
     let home = Home::new(&format!(
-        "{MINIMAL}[channel.web]\n\
+        "{MINIMAL}\
          [toolset.github]\nurl = \"https://api.githubcopilot.com/mcp/\"\n\
          auth = {{ bearer = {{ env = \"UNSET\" }} }}\nparallel = \"yes\"\ntypo = 1\n\
          [toolset.files]\ncommand = \"/x\"\n\
-         [toolset.Web]\nurl = 5\ncommand = \"relative/x\"\n"
+         [toolset.Files]\nurl = 5\ncommand = \"relative/x\"\n"
     ));
     let mut config = home.load_ok();
     assert_eq!(
@@ -866,9 +914,9 @@ fn a_toolset_table_with_url_is_ignored_whatever_it_holds_and_reported() {
     // Each ignored table, in file order, named in the warning `giles serve` logs.
     let ignored = config.ignored_toolset_tables();
     let names: Vec<&str> = ignored.iter().map(|t| t.name.as_str()).collect();
-    assert_eq!(names, ["github", "Web"]);
+    assert_eq!(names, ["github", "Files"]);
     assert_eq!(ignored[0].file, home.path("giles.toml"));
-    assert_eq!(ignored[0].position.map(|p| p.line), Some(4));
+    assert_eq!(ignored[0].position.map(|p| p.line), Some(3));
     assert_eq!(
         ignored[0].to_string(),
         "giles.toml: [toolset.github] is ignored: remote toolsets are managed in the web UI \
@@ -1153,23 +1201,15 @@ fn live_config_adds_replaces_and_removes_toolsets_and_tells_subscribers() {
 }
 
 #[test]
-fn live_config_refuses_a_toolset_name_another_instance_has_whatever_its_kind_or_case() {
+fn live_config_refuses_a_toolset_name_another_toolset_has_whatever_its_case() {
     let config = with_toolsets();
     let github = config.toolsets["github"].clone();
     let live = LiveConfig::new(std::sync::Arc::new(config));
     let changes = live.subscribe();
     let before = live.get();
 
-    for (name, kind, existing) in [
-        ("anthropic", Kind::Provider, "anthropic"),
-        ("ANTHROPIC", Kind::Provider, "anthropic"),
-        ("web", Kind::Channel, "web"),
-        ("Web", Kind::Channel, "web"),
-        ("github", Kind::Toolset, "github"),
-        ("FILES", Kind::Toolset, "files"),
-    ] {
+    for (name, existing) in [("github", "github"), ("FILES", "files")] {
         let refused = live.add_toolset(toolset_named(&github, name)).unwrap_err();
-        assert_eq!(refused.kind, kind, "{name}");
         assert_eq!(refused.existing.as_str(), existing, "{name}");
         assert!(refused.to_string().contains(existing), "{refused}");
 
@@ -1183,7 +1223,6 @@ fn live_config_refuses_a_toolset_name_another_instance_has_whatever_its_kind_or_
         assert_eq!(
             refused,
             RenameToolsetError::Exists(InstanceExists {
-                kind,
                 existing: instance_name(existing),
             }),
             "{name}"
@@ -1192,6 +1231,25 @@ fn live_config_refuses_a_toolset_name_another_instance_has_whatever_its_kind_or_
     // Refusals change nothing and announce nothing.
     assert!(std::sync::Arc::ptr_eq(&before, &live.get()));
     assert!(!changes.has_changed().unwrap());
+}
+
+#[test]
+fn live_config_takes_a_toolset_name_a_provider_or_a_channel_has() {
+    let config = with_toolsets();
+    let github = config.toolsets["github"].clone();
+    let live = LiveConfig::new(std::sync::Arc::new(config));
+
+    // `anthropic` is a provider and `web` a channel of the configuration.
+    let added = live
+        .add_toolset(toolset_named(&github, "anthropic"))
+        .unwrap();
+    assert!(added.toolsets.contains_key("anthropic"));
+    let renamed = live
+        .rename_toolset(&instance_name("files"), instance_name("WEB"))
+        .unwrap();
+    assert!(renamed.toolsets.contains_key("WEB"));
+    assert!(renamed.providers.contains_key("anthropic"));
+    assert!(renamed.channels.contains_key("web"));
 }
 
 #[test]

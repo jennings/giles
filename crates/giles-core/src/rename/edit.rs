@@ -47,17 +47,6 @@ pub(super) fn configured(doc: &DocumentMut) -> BTreeSet<(Kind, String)> {
     names
 }
 
-/// The kind of the instance `name` in `configured`. Names are unique across kinds in a valid
-/// configuration; if one isn't, the later kind in `provider`, `channel`, `toolset` order wins.
-/// Relies on `Kind`'s derived `Ord` matching the order of `Kind::ALL`.
-pub(super) fn kind_of(configured: &BTreeSet<(Kind, String)>, name: &str) -> Option<Kind> {
-    configured
-        .iter()
-        .rev()
-        .find(|(_, configured)| configured == name)
-        .map(|(kind, _)| *kind)
-}
-
 /// What [`rename_in_giles_toml`] changed.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct GilesEdit {
@@ -549,16 +538,6 @@ agent = "jeeves"
         // Loading ignores a toolset table with `url`, so it configures nothing.
         let doc = parse(&format!("{GILES}[toolset.github]\nurl = \"https://x\"\n")).unwrap();
         assert!(!configured(&doc).contains(&(Kind::Toolset, "github".to_owned())));
-    }
-
-    #[test]
-    fn the_kind_of_a_name_is_the_later_kind_when_a_name_is_configured_twice() {
-        let doc = parse("[provider.a]\n[channel.a]\n[provider.b]\n[toolset.c]\n").unwrap();
-        let names = configured(&doc);
-        assert_eq!(kind_of(&names, "a"), Some(Kind::Channel));
-        assert_eq!(kind_of(&names, "b"), Some(Kind::Provider));
-        assert_eq!(kind_of(&names, "c"), Some(Kind::Toolset));
-        assert_eq!(kind_of(&names, "d"), None);
     }
 
     #[test]

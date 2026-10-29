@@ -238,7 +238,7 @@ and a replaced one starts over as `Starting`.
 ([Storage](storage.md#toolsets)), and `ToolsetManager` is the one place that changes them. There is
 one per core, built in `giles serve` after the host has started the toolsets of `giles.toml`. The
 web pages, the admin RPCs, and the CLI call it; none touches the table, the live configuration, or
-the host. Both sources work side by side, and instance names stay unique across them.
+the host. Both sources work side by side, and toolset names stay unique across them.
 
 A stored toolset is a remote server. A web login must not be able to choose a program for Giles to
 run on the host, its arguments, its environment, or its sandbox grants: installing and running code
@@ -278,8 +278,8 @@ One async lock spans each change, as `Routes` does for routes. A change:
    against the running configuration, with `secrets.toml` read again: a secret added to the file is
    found by the next save, with no restart. Before it, in this order, the manager refuses the name
    `new` (ignoring case), which is the address of the web form for a new toolset (an `Invalid` at
-   the root), a name that a `giles.toml` instance uses (the reason is
-   ``the name is taken by `[<kind>.<name>]` in giles.toml``, whatever else is wrong with the spec),
+   the root), a name that a `giles.toml` toolset uses (the reason is
+   ``the name is taken by `[toolset.<name>]` in giles.toml``, whatever else is wrong with the spec),
    a spec without `url` (an `Invalid` at `url`: a stdio server goes in `giles.toml`), and an
    `auth.bearer` that isn't `{ secret = "<name>" }` (an `{ env = ... }` reference or a plain token).
    `validate_toolset` then refuses the keys of a stdio server (`command`, `args`, `env`,
@@ -316,7 +316,7 @@ manager's lock once the checks start (see
 [Instance rename](instance-rename.md#renaming-while-giles-runs)), a rename:
 
 1. Checks the new name and the agents. The name must be valid, not `new`, free among the stored
-   toolsets (`Exists`) and the instances of `giles.toml` (`Invalid` at the root), as for a new
+   toolsets (`Exists`) and the toolsets of `giles.toml` (`Invalid` at the root), as for a new
    toolset. The old name is exempt, so a rename that changes only the case of a stored toolset's
    name is allowed. A running toolset's spec is validated again under the new name, with
    `secrets.toml` read again. Then each agent's `agent.toml` is read. A glob that matches the tools
@@ -336,18 +336,18 @@ A stored toolset is remote: it has no data directory, and its tool-list cache en
 offered, so nothing on disk moves but the agents' files. A step that fails undoes the earlier ones:
 the agents' files are put back, the row is restored exactly (`Store::toolset_restore`), and the
 toolset is started again under its old name. The error is `Failed { step, error, undo_errors }`;
-`undo_errors` lists what couldn't be put back. A stored toolset whose name an instance of
-`giles.toml` took at startup (it shows as failed) is renamed in the database only: the agents' globs
-under that name are the instance's.
+`undo_errors` lists what couldn't be put back. A stored toolset whose name a toolset of `giles.toml`
+took at startup (it shows as failed) is renamed in the database only: the agents' globs under that
+name are that toolset's.
 
 ### Startup
 
 `start` takes every row in name order and runs the same checks as a change, then adds it to the live
 configuration and the host. The host has started the toolsets of `giles.toml` first, so a name that
-a `giles.toml` instance (of any kind) also uses stays with that instance and the stored one fails. A
-stored toolset that fails isn't started: it is logged (`a stored toolset is not started`) and kept
-with its reason, a missing secret, a spec that a stored toolset can't have, a spec that can't be
-read, or the name. **Startup never fails on a stored toolset**; only the database can't be read.
+a `giles.toml` toolset also uses stays with that toolset and the stored one fails. A stored toolset
+that fails isn't started: it is logged (`a stored toolset is not started`) and kept with its reason,
+a missing secret, a spec that a stored toolset can't have, a spec that can't be read, or the name.
+**Startup never fails on a stored toolset**; only the database can't be read.
 
 The manager is also a `PluginControl`, which `serve` merges with the plugin host and the toolset
 host. Its `plugins()` is one `Failed` `PluginRuntime` per stored toolset that isn't running, with
@@ -437,19 +437,19 @@ failed write is logged.
   `{ secret = ... }` reference is refused at that key; a missing secret is refused, then accepted
   after it is added to `secrets.toml` with no restart, and only the reference is stored; startup
   adds the valid stored toolset beside a `giles.toml` toolset and reports each failure (missing
-  secret, a name taken by a toolset or a channel of `giles.toml` with the exact reason, a stdio
-  spec, a damaged spec) as failed, and saving or removing a failed toolset works and leaves the
-  instance that kept the name running; toolsets of `giles.toml` can't be changed, and a stored name
-  is unique ignoring case. The admin tests cover a `Failed` runtime that the configuration doesn't
-  have in `ListPlugins` and `Status` (also when a `giles.toml` instance has the name, which keeps
-  the host's report), and restarting it. Renaming: a running toolset offers its tools under the new
-  prefix, and the agents' files and the live configuration say the new name (and the preview lists
-  the same globs and changes nothing); a name that is taken (by a stored toolset or by an instance
-  of `giles.toml`), reserved, invalid, or the same is refused, and so are globs that match by the
-  old name and an agent file that can't be edited, with the globs listed and nothing changed, while
-  data left under the new name is not; a failed agent write is undone (the agents, the row, and the
-  running toolset are as before); a failed toolset is renamed and started once it validates, and one
-  that lost its name to `giles.toml` leaves the instance's globs alone; the case of a name changes.
-  The rename tests (`rename/tests.rs`) cover the offline rename of a stored toolset: the row and the
-  agents' globs; the refusals; the case of a name; a failure undone with the row put back exactly;
-  and a run that stopped after the row finished by running it again.
+  secret, a name taken by a toolset of `giles.toml` with the exact reason, a stdio spec, a damaged
+  spec) as failed, and saving or removing a failed toolset works and leaves the toolset that kept
+  the name running; toolsets of `giles.toml` can't be changed, and a stored name is unique ignoring
+  case, though a provider or a channel may share it. The admin tests cover a `Failed` runtime that
+  the configuration doesn't have in `ListPlugins` and `Status` (also when a `giles.toml` toolset has
+  the name, which keeps the host's report), and restarting it. Renaming: a running toolset offers
+  its tools under the new prefix, and the agents' files and the live configuration say the new name
+  (and the preview lists the same globs and changes nothing); a name that is taken (by a stored
+  toolset or by a toolset of `giles.toml`), reserved, invalid, or the same is refused, and so are
+  globs that match by the old name and an agent file that can't be edited, with the globs listed and
+  nothing changed, while data left under the new name is not; a failed agent write is undone (the
+  agents, the row, and the running toolset are as before); a failed toolset is renamed and started
+  once it validates, and one that lost its name to `giles.toml` leaves that toolset's globs alone;
+  the case of a name changes. The rename tests (`rename/tests.rs`) cover the offline rename of a
+  stored toolset: the row and the agents' globs; the refusals; the case of a name; a failure undone
+  with the row put back exactly; and a run that stopped after the row finished by running it again.

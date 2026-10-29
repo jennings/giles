@@ -1119,10 +1119,17 @@ fn stored_toolsets_start_or_are_reported_failed_and_giles_runs() {
     let env = Env::new();
     let home = env.path("home");
     let home_arg = home.to_str().unwrap();
+    let script = env.path("web-server");
+    fs::write(&script, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
     write_config(
         &home,
-        "[core]\nhttp_listen = \"127.0.0.1:0\"\n\n\
-         [owner]\nidentities = [\"web:owner\"]\n\n[channel.web]\n",
+        &format!(
+            "[core]\nhttp_listen = \"127.0.0.1:0\"\n\n\
+             [owner]\nidentities = [\"web:owner\"]\n\n[channel.web]\n\n\
+             [toolset.web]\ncommand = \"{}\"\nunsandboxed = true\n",
+            script.display()
+        ),
     );
     // Nothing listens on the discard port, so the valid one starts, fails, and is retried.
     let unreachable = r#"{ "url": "http://127.0.0.1:9/mcp" }"#;
@@ -1136,7 +1143,7 @@ fn stored_toolsets_start_or_are_reported_failed_and_giles_runs() {
                 "stored-bad",
                 r#"{ "url": "http://127.0.0.1:9/mcp", "auth": { "bearer": { "env": "TOKEN" } } }"#,
             ),
-            // A name that `giles.toml` uses.
+            // A name that a toolset of `giles.toml` uses. The channel `web` is no toolset.
             ("web", unreachable),
         ],
     );
@@ -1159,11 +1166,13 @@ fn stored_toolsets_start_or_are_reported_failed_and_giles_runs() {
     // The others are reported failed, with the reason.
     for (instance, reason) in [
         ("stored-bad", "auth.bearer: must be { secret = \"<name>\" }"),
-        ("web", "the name is taken by `[channel.web]` in giles.toml"),
+        ("web", "the name is taken by `[toolset.web]` in giles.toml"),
     ] {
+        // The failed stored toolset is listed after the configured toolset of the same name.
         let block = stdout
-            .split(&format!("{instance} (toolset)\n"))
-            .nth(1)
+            .rsplit(&format!("{instance} (toolset)\n"))
+            .next()
+            .filter(|block| block.len() != stdout.len())
             .unwrap_or_else(|| panic!("{instance} in:\n{stdout}"));
         let mut lines = block.lines();
         let state = lines.next().unwrap();
@@ -1184,7 +1193,7 @@ fn stored_toolsets_start_or_are_reported_failed_and_giles_runs() {
     let summary = log.lines().find(|line| line.contains("registry ready"));
     let summary = summary.unwrap_or_else(|| panic!("no registry summary in:\n{log}"));
     assert!(
-        summary.contains("toolsets=1") && summary.contains("pending=0"),
+        summary.contains("toolsets=2") && summary.contains("pending=0"),
         "{summary}"
     );
     for instance in ["stored-bad", "web"] {
@@ -1195,6 +1204,65 @@ fn stored_toolsets_start_or_are_reported_failed_and_giles_runs() {
         assert!(reported, "{instance}\n{log}");
     }
     assert!(log.contains("giles stopped"), "{log}");
+}
+
+/// A provider, a channel, and a toolset can all be named `aperture`. They run together, and the
+/// channel and the toolset each keep their data directory and their files under their own kind.
+#[test]
+fn a_provider_a_channel_and_a_toolset_with_one_name_run_with_state_of_their_own() {
+    let env = Env::new();
+    let home = env.path("home");
+    let home_arg = home.to_str().unwrap();
+    let server = env.path("aperture-server");
+    fs::write(&server, "#!/bin/sh\nexec sleep 300\n").unwrap();
+    fs::set_permissions(&server, fs::Permissions::from_mode(0o755)).unwrap();
+    write_config(
+        &home,
+        &format!(
+            "{MINIMAL_CONFIG}\n[provider.aperture]\ncomponent = \"openai\"\n\n\
+             [channel.aperture]\nunsandboxed = true\n\n\
+             [toolset.aperture]\ncommand = \"{}\"\nunsandboxed = true\n",
+            server.display()
+        ),
+    );
+    // Never prints a handshake line, so the channel stays launching and its pid file stays.
+    install_script_plugin(&home, "aperture", "exec sleep 300");
+    let mut daemon = Daemon::spawn(env.command(&["serve", "--home", home_arg]));
+    daemon.wait_for_line(&[
+        "plugin{kind=channel instance=aperture}",
+        "plugin process started",
+    ]);
+    daemon.wait_for_log("giles started");
+    let deadline = Instant::now() + TIMEOUT;
+    while !home.join("data/toolset/aperture").is_dir() {
+        assert!(Instant::now() < deadline, "the toolset was never launched");
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    // Each kind has its own directory. Nothing is under the bare name.
+    assert!(home.join("data/channel/aperture").is_dir());
+    assert!(home.join("data/toolset/aperture").is_dir());
+    assert!(!home.join("data/aperture").exists());
+    assert!(!home.join("data/plugins").exists());
+    let pid = fs::read_to_string(home.join("run/pids/channel/aperture.pid")).unwrap();
+    assert!(pid.lines().next().unwrap().parse::<u32>().is_ok(), "{pid}");
+    assert!(!home.join("run/pids/aperture.pid").exists());
+    assert!(!home.join("run/pids/toolset/aperture.pid").exists());
+
+    // The status lists the channel and the toolset apart.
+    let (ok, stdout, stderr) = run_cli(&env, &["status", "--home", home_arg]);
+    assert!(ok, "{stderr}");
+    for expected in [
+        "Channels:\n  aperture  aperture (plugin)",
+        "Plugins:\n  aperture (channel, aperture)\n",
+        "  aperture (toolset)\n",
+    ] {
+        assert!(stdout.contains(expected), "{expected}\n{stdout}");
+    }
+
+    let (status, log) = daemon.stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+    assert!(!home.join("run/pids/channel/aperture.pid").exists());
 }
 
 #[test]
