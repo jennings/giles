@@ -604,10 +604,9 @@ gives it a new incarnation, so the old sessions' cached prompts are not reused
 against: reattaching the old chats is what the owner who recreates an agent most likely wants, and
 the page says so.
 
-`trash/` is outside `agents/`, so config loading, the agent list, the instance-rename walks
-(`agents/*/agent.toml`, `agents/*/groups/*`) and the startup check for unused instance data never
-see it, and the backup archive, whose list of trees is explicit, leaves it out
-([Backups](backups.md)); a test pins each.
+`trash/` is outside `agents/`, so config loading, the agent list, and the instance-rename walks
+(`agents/*/agent.toml`, `agents/*/groups/*`) never see it, and the backup archive, whose list of
+trees is explicit, leaves it out ([Backups](backups.md)); a test pins each.
 
 The new agent is usable at once because everything that looks agents up reads the running
 configuration: the agent loop and core tools through `Registry::config()`, the session manager's
@@ -769,8 +768,8 @@ for what `ListPlugins` knows (state, last error, and tool count, built by the pl
   refuses `new` as a toolset's name, because it is the address of the form.
 - **Errors** come back on the form with what was typed and `<key>: <reason>` from the manager or the
   form: 400 for a value that isn't valid, 409 for a name that is taken (`Exists`, an instance of
-  `giles.toml`, a retired name) or a toolset the manager can't start as a whole, and 409 for a stale
-  edit. Anything else is logged and answered 500, and a toolset that is gone is a 404.
+  `giles.toml`) or a toolset the manager can't start as a whole, and 409 for a stale edit. Anything
+  else is logged and answered 500, and a toolset that is gone is a 404.
 - **Stale edits.** The edit form carries the `updated_at` the toolset had when the form was made.
   The post gives it to `ToolsetManager::update` as `expected_updated_at`. A toolset changed
   meanwhile gives `Stale`, shown as a 409 with the typed values, the old `updated_at`, and a link
@@ -794,7 +793,7 @@ for what `ListPlugins` knows (state, last error, and tool count, built by the pl
     or an `agent.toml` that isn't valid TOML or that the edit form can't edit, with the agents and
     globs listed by the manager).
   - On the form, 409 for a name that can't be used: another stored toolset, an instance of
-    `giles.toml`, a retired name, or the toolset's own name (all `Problem::of`).
+    `giles.toml`, or the toolset's own name (all `Problem::of`).
   - On the form, 500 for `Failed`, which shows the step, the error, and the undo errors if there are
     any. The preview can show it too, for an agent file that can't be read, and says nothing was
     changed.

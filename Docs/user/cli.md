@@ -192,7 +192,7 @@ toolset too.
 
 Names use only letters, digits, and `-`. The command changes nothing and prints the reason if:
 
-- `<new>` is the name of another toolset or instance, or is retired.
+- `<new>` is the name of another toolset or instance.
 - An agent has a glob that matches the toolset's tools without starting with `<old>__`, such as
   `files*`. The error lists them. Change them (to `files__*`, say) and run the command again.
 
@@ -259,6 +259,15 @@ everything the command touches.
 
 To rename a stored toolset while Giles runs, use [`giles toolset rename`](#rename-a-toolset).
 
+If you rename a table in `giles.toml` without this command, `giles serve` starts the renamed
+instance with no sessions, inbox, or directories of its own, and leaves the old name's data where it
+is. To move the data to the renamed table, run the command before you start Giles again. It accepts
+the table already being renamed.
+
+Once Giles has run the renamed instance, the command refuses, because `<new>` already has data. If
+the instance has no sessions or other data of its own yet, remove `data/plugins/<new>` and run the
+command. Otherwise you have to merge the two by hand.
+
 Names use only letters, digits, and `-`. `<new>` must not differ from another instance's name only
 in case. The command changes nothing and refuses if:
 
@@ -266,8 +275,7 @@ in case. The command changes nothing and refuses if:
 - `<new>` is also configured or already has data. Renaming never merges two instances.
 - `giles.toml` already has a `[<kind>.<new>]` table, such as an ignored `[toolset.<new>]` with
   `url`. Remove it and run the command again.
-- `<old>` is a stored toolset and `<new>` is `new` (in any case) or listed in
-  `core.retired_instances`.
+- `<old>` is a stored toolset and `<new>` is `new` (in any case).
 - `giles.toml` or an `agent.toml` can't be read or isn't valid TOML.
 - A renamed toolset's `tools` or `ask` globs match its tools without starting with `<old>__`, such
   as `github*` or `git*`. The command lists them. Change them (to `github__*`, say) and run it
@@ -276,28 +284,3 @@ in case. The command changes nothing and refuses if:
 If a step fails, the command undoes the earlier ones and says what failed. If it's interrupted, for
 example by a power loss, run the same command again to finish. If undoing a failed rename also
 fails, the error lists what to fix by hand.
-
-### If you renamed the table by hand
-
-If you rename `[channel.libera]` to `[channel.libera-chat]` in `giles.toml` without this command,
-`giles serve` refuses to start:
-
-```text
-giles.toml configures an instance that has no data, while a name it no longer configures still
-has data. That looks like a rename done in giles.toml alone ...
-  "libera" has 3 sessions, 10 inbox rows; configured without data: [channel.libera-chat]
-If it was a rename, stop giles and run `giles instance rename libera libera-chat` ...
-```
-
-Run the command it suggests. It accepts the table already being renamed and moves the data to match.
-
-Giles can mistake an unrelated new instance for a rename, for example if you removed one instance
-and added another. List the old name in `core.retired_instances` to tell Giles it was removed on
-purpose:
-
-```toml
-[core]
-retired_instances = ["old-irc"]
-```
-
-Giles never deletes the data of a retired or removed name.

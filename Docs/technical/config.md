@@ -34,12 +34,7 @@ The steps:
    `toml::Value`s too (`RawGiles.toolset`): one with `url` is set aside
    ([Ignored toolset tables](#ignored-toolset-tables)), and each other one is then deserialized into
    a `ToolsetSpec` the same lenient way, its unknown keys and errors at their full key path.
-2. Validate `[core]` and `[owner]`. `core.retired_instances` holds valid instance names that appear
-   once and that no `[provider.*]`, `[channel.*]`, or `[toolset.*]` table uses (an ignored
-   `[toolset.*]` table doesn't count); the core only stores them, for the startup check in
-   [Instance Rename](instance-rename.md#startup-check). A toolset stored in the database can't be
-   checked here, since loading reads no database: the toolset manager refuses a stored toolset with
-   a retired name when it is saved and at startup. `core.journal_mode` is parsed with
+2. Validate `[core]` and `[owner]`. `core.journal_mode` is parsed with
    `giles_store::JournalMode::from_str` (case-insensitive; `memory` and `off` and anything unknown
    are errors at `core.journal_mode`) and defaults to WAL ([Storage](storage.md#journal-modes));
    `Runtime::start` passes it to the store.
@@ -185,9 +180,9 @@ file, not the position):
 giles.toml: [toolset.github] is ignored: remote toolsets are managed in the web UI (Admin → MCP servers) or with giles toolset set
 ```
 
-An ignored table's name isn't part of the unique-name check or of the `retired_instances` check, and
-the `Config` doesn't have it, so a stored toolset may use the name. Nothing is migrated: the owner
-adds each remote server again in the web UI or with `giles toolset set`.
+An ignored table's name isn't part of the unique-name check, and the `Config` doesn't have it, so a
+stored toolset may use the name. Nothing is migrated: the owner adds each remote server again in the
+web UI or with `giles toolset set`.
 
 ## Validating one toolset
 
@@ -236,12 +231,11 @@ overlapping the plugin data root is checked for the toolset being validated only
 
 `ToolsetManager` ([Toolsets](toolsets.md#stored-toolsets)) is the caller for toolsets stored in the
 database. It reads `secrets.toml` for every validation and adds its own rules. A name that a
-`giles.toml` instance of any kind uses, or that `[core] retired_instances` lists, is refused, and so
-is `new`, the address of the web form for a new toolset. A name only an
-[ignored table](#ignored-toolset-tables) has is free. A stored toolset is a remote server: a spec
-without `url` is refused as an `Invalid` at `url`, and an `auth.bearer` that isn't
-`{ secret = "<name>" }` at `auth.bearer`. Stdio toolsets of `giles.toml` keep accepting every
-credential form in `env`.
+`giles.toml` instance of any kind uses is refused, and so is `new`, the address of the web form for
+a new toolset. A name only an [ignored table](#ignored-toolset-tables) has is free. A stored toolset
+is a remote server: a spec without `url` is refused as an `Invalid` at `url`, and an `auth.bearer`
+that isn't `{ secret = "<name>" }` at `auth.bearer`. Stdio toolsets of `giles.toml` keep accepting
+every credential form in `env`.
 
 ## Secrets
 

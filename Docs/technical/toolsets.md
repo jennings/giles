@@ -280,11 +280,11 @@ One async lock spans each change, as `Routes` does for routes. A change:
    `new` (ignoring case), which is the address of the web form for a new toolset (an `Invalid` at
    the root), a name that a `giles.toml` instance uses (the reason is
    ``the name is taken by `[<kind>.<name>]` in giles.toml``, whatever else is wrong with the spec),
-   a name in `[core] retired_instances`, which lists names that are not configured, a spec without
-   `url` (an `Invalid` at `url`: a stdio server goes in `giles.toml`), and an `auth.bearer` that
-   isn't `{ secret = "<name>" }` (an `{ env = ... }` reference or a plain token). `validate_toolset`
-   then refuses the keys of a stdio server (`command`, `args`, `env`, `idle_stop`, `sandbox`,
-   `unsandboxed`) next to `url`, each at its key. Nothing is stored when any of these fails.
+   a spec without `url` (an `Invalid` at `url`: a stdio server goes in `giles.toml`), and an
+   `auth.bearer` that isn't `{ secret = "<name>" }` (an `{ env = ... }` reference or a plain token).
+   `validate_toolset` then refuses the keys of a stdio server (`command`, `args`, `env`,
+   `idle_stop`, `sandbox`, `unsandboxed`) next to `url`, each at its key. Nothing is stored when any
+   of these fails.
 3. Writes the row. The store checks the stale token too, so a write can't overwrite a change that
    isn't the one the caller read.
 4. Changes the `LiveConfig` (`add_toolset` or `replace_toolset`), then the host (`add` or
@@ -316,11 +316,11 @@ manager's lock once the checks start (see
 [Instance rename](instance-rename.md#renaming-while-giles-runs)), a rename:
 
 1. Checks the new name and the agents. The name must be valid, not `new`, free among the stored
-   toolsets (`Exists`) and the instances of `giles.toml` and `retired_instances` (`Invalid` at the
-   root), as for a new toolset. The old name is exempt, so a rename that changes only the case of a
-   stored toolset's name is allowed. A running toolset's spec is validated again under the new name,
-   with `secrets.toml` read again. Then each agent's `agent.toml` is read. A glob that matches the
-   tools without starting with `<old>__` (`github*`) can't be rewritten and refuses the rename:
+   toolsets (`Exists`) and the instances of `giles.toml` (`Invalid` at the root), as for a new
+   toolset. The old name is exempt, so a rename that changes only the case of a stored toolset's
+   name is allowed. A running toolset's spec is validated again under the new name, with
+   `secrets.toml` read again. Then each agent's `agent.toml` is read. A glob that matches the tools
+   without starting with `<old>__` (`github*`) can't be rewritten and refuses the rename:
    `Refused { reason }` names each glob and its agent, and so does a file that isn't valid TOML or
    that the form can't edit. Nothing has changed at this point, and `rename_preview` stops here.
 2. Stops the toolset in the host, which unregisters it: a session that lists its old tools gets
@@ -444,13 +444,12 @@ failed write is logged.
   have in `ListPlugins` and `Status` (also when a `giles.toml` instance has the name, which keeps
   the host's report), and restarting it. Renaming: a running toolset offers its tools under the new
   prefix, and the agents' files and the live configuration say the new name (and the preview lists
-  the same globs and changes nothing); a name that is taken (by a stored toolset, or by an instance
-  or the retired list of `giles.toml`), reserved, invalid, or the same is refused, and so are globs
-  that match by the old name and an agent file that can't be edited, with the globs listed and
-  nothing changed, while data left under the new name is not; a failed agent write is undone (the
-  agents, the row, and the running toolset are as before); a failed toolset is renamed and started
-  once it validates, and one that lost its name to `giles.toml` leaves the instance's globs alone;
-  the case of a name changes. The rename tests (`rename/tests.rs`) cover stored toolsets in the
-  startup check and the offline rename of a stored toolset: the row and the agents' globs; the
-  refusals; the case of a name; a failure undone with the row put back exactly; and a run that
-  stopped after the row finished by running it again.
+  the same globs and changes nothing); a name that is taken (by a stored toolset or by an instance
+  of `giles.toml`), reserved, invalid, or the same is refused, and so are globs that match by the
+  old name and an agent file that can't be edited, with the globs listed and nothing changed, while
+  data left under the new name is not; a failed agent write is undone (the agents, the row, and the
+  running toolset are as before); a failed toolset is renamed and started once it validates, and one
+  that lost its name to `giles.toml` leaves the instance's globs alone; the case of a name changes.
+  The rename tests (`rename/tests.rs`) cover the offline rename of a stored toolset: the row and the
+  agents' globs; the refusals; the case of a name; a failure undone with the row put back exactly;
+  and a run that stopped after the row finished by running it again.

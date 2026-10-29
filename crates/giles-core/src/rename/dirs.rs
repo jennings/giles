@@ -13,9 +13,6 @@ use crate::paths::DataRoot;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DataDir {
     pub path: PathBuf,
-    /// `agents/<agent>/groups/<instance>/`, memory a channel's groups wrote; otherwise
-    /// `data/plugins/<instance>/`, which any kind of plugin instance may have.
-    pub group: bool,
 }
 
 /// The sub-directories of `dir` whose names are valid instance names (`[a-zA-Z0-9-]+`), sorted
@@ -49,19 +46,13 @@ pub(super) fn scan_dirs(
     let mut found: BTreeMap<String, Vec<DataDir>> = BTreeMap::new();
     let plugins = root.plugin_data_root();
     for (name, path) in list_dirs(&plugins).map_err(|e| (plugins.clone(), e))? {
-        found
-            .entry(name)
-            .or_default()
-            .push(DataDir { path, group: false });
+        found.entry(name).or_default().push(DataDir { path });
     }
     let agents = root.agents_dir();
     for (_, agent) in list_dirs(&agents).map_err(|e| (agents.clone(), e))? {
         let groups = agent.join("groups");
         for (name, path) in list_dirs(&groups).map_err(|e| (groups.clone(), e))? {
-            found
-                .entry(name)
-                .or_default()
-                .push(DataDir { path, group: true });
+            found.entry(name).or_default().push(DataDir { path });
         }
     }
     Ok(found)

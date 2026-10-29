@@ -1,14 +1,12 @@
 //! Instance names are permanent ids (PLAN section 7.2): sessions, the inbox, memory paths, and the
 //! plugin's data directory are keyed by them. This module renames one ([`rename_instance`], behind
-//! `giles instance rename <old> <new>`) and, at startup, refuses a configuration that looks like a
-//! rename that was never carried out ([`check_unused_instance_data`]).
+//! `giles instance rename <old> <new>`).
 //!
 //! Docs/technical/instance-rename.md describes what a name keys, the order of the steps, and what
 //! a failure leaves behind.
 
 mod dirs;
 mod edit;
-mod guard;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -28,7 +26,6 @@ use crate::toolsets::RESERVED_TOOLSET_NAME;
 
 pub use edit::GlobChange;
 pub(crate) use edit::{ToolsetGlobs, rewrite_toolset_globs};
-pub use guard::{InstanceDataError, UnusedName, check_unused_instance_data};
 
 /// What [`rename_instance`] changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,8 +273,8 @@ pub async fn rename_instance(
     let rows = store.instance_rows().await.map_err(RenameError::Store)?;
     let memory_dbs = memory_databases(root)?;
     let dirs = dirs::scan_dirs(root).map_err(|(path, source)| RenameError::Io { path, source })?;
-    // Routes name an instance without being data (the startup check ignores them), but a name
-    // only they use is still worth renaming.
+    // Routes name an instance without being data, but a name only they use is still worth
+    // renaming.
     let routes = store.instance_routes().await.map_err(RenameError::Store)?;
     let has_data = |name: &str| {
         rows.contains_key(name) || dirs.contains_key(name) || routes.contains_key(name)
@@ -321,27 +318,14 @@ pub async fn rename_instance(
         });
     }
     // The rules a stored toolset's name has anywhere else. A resumed rename already passed them.
-    if stored_old.is_some() {
-        let reason = if new.eq_ignore_ascii_case(RESERVED_TOOLSET_NAME) {
-            Some(format!(
+    if stored_old.is_some() && new.eq_ignore_ascii_case(RESERVED_TOOLSET_NAME) {
+        return Err(RenameError::StoredToolsetName {
+            new: new.to_owned(),
+            reason: format!(
                 "it is the address of the web form for a new toolset ({RESERVED_TOOLSET_NAME:?} \
                  in any case)"
-            ))
-        } else if edit::retired(&doc).iter().any(|name| name == new) {
-            Some(
-                "it is in `[core] retired_instances` in giles.toml, which lists names that are \
-                 not configured: remove it from the list to use the name"
-                    .to_owned(),
-            )
-        } else {
-            None
-        };
-        if let Some(reason) = reason {
-            return Err(RenameError::StoredToolsetName {
-                new: new.to_owned(),
-                reason,
-            });
-        }
+            ),
+        });
     }
     // A name a stored toolset has can't be given to a table of `giles.toml` (which would take the
     // name from it at the next start), or to another stored toolset.
@@ -648,8 +632,8 @@ impl Plan {
 
         let agent_files = files.iter().map(|f| (f.path.clone(), f.changes)).collect();
 
-        // The configuration last: it is what the startup check reads. A stored toolset has no
-        // table in it (`config_text` is `None`): its row is renamed in the database.
+        // The configuration last. A stored toolset has no table in it (`config_text` is `None`):
+        // its row is renamed in the database.
         let (mut config_table, mut routes) = (false, 0);
         if let Some(config_text) = config_text {
             let giles = edit::rename_in_giles_toml(config_text, kind, old, new)
@@ -683,10 +667,7 @@ impl Plan {
             if to.symlink_metadata().is_ok() {
                 return Err(RenameError::NewHasData {
                     new: new.to_owned(),
-                    what: describe_dirs(&[dirs::DataDir {
-                        path: to,
-                        group: dir.group,
-                    }]),
+                    what: describe_dirs(&[dirs::DataDir { path: to }]),
                 });
             }
             moves.push(Move {
