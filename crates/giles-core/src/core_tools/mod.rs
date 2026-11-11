@@ -10,6 +10,7 @@
 //! fields; what it needs to know about the turn arrives in each [`CoreCall`]. [`register`] adds
 //! every core tool at startup.
 
+mod environment;
 mod load_skill;
 mod memory;
 mod memory_add;
@@ -40,6 +41,7 @@ use crate::sessions::{Clock, Reply, SystemClock};
 use crate::skills::SkillSet;
 use crate::workspaces::LeaseSlot;
 
+pub use environment::bash::{BASH, DEADLINE as BASH_DEADLINE};
 pub use load_skill::{LOAD_SKILL, LoadSkillTool, MAX_INLINE_TEXT_BYTES};
 pub use memory_add::{MEMORY_ADD, MemoryAddTool};
 pub use memory_edit::{MEMORY_EDIT, MemoryEditTool};
@@ -94,7 +96,7 @@ pub fn register(runtime: &Runtime) -> Result<(), RegistryError> {
         runtime.jobs.clone(),
         Arc::new(SystemClock),
     )))?;
-    Ok(())
+    environment::register(runtime)
 }
 
 /// The turn a core-tool call belongs to, built once per turn and shared by its calls.

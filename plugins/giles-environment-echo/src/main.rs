@@ -5,8 +5,9 @@
 //!
 //! - `echo <text>`: writes `<text>` and a newline to stdout and exits with status 0.
 //! - `fail`: writes `failed` and a newline to stderr and exits with status 3.
-//! - `hang`: writes `started` and a newline to stdout, then never ends. When the core cancels the
-//!   call, the plugin writes the file `exec-cancelled` in its data directory.
+//! - `hang`: writes `started` and a newline to stdout, then never ends. The plugin writes the file
+//!   `exec-started` in its data directory when the command starts, and `exec-cancelled` when the
+//!   core cancels the call.
 //!
 //! Any other command fails the call as invalid.
 //!
@@ -35,6 +36,9 @@ use tracing_subscriber::EnvFilter;
 
 /// The file written in the data directory when a `hang` command is cancelled.
 const CANCELLED_FILE: &str = "exec-cancelled";
+
+/// The file written in the data directory when a `hang` command starts.
+const STARTED_FILE: &str = "exec-started";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -207,6 +211,7 @@ impl Environment for Echo {
             .boxed())
         } else if command == "hang" {
             let guard = CancelGuard(self.data_dir.join(CANCELLED_FILE));
+            let _ = std::fs::write(self.data_dir.join(STARTED_FILE), "started");
             Ok(stream::iter([Ok(ExecEvent::Stdout(b"started\n".to_vec()))])
                 .chain(stream::pending::<Result<ExecEvent>>().inspect(move |_| {
                     let _ = &guard;

@@ -18,15 +18,26 @@ use crate::registry::prefixed_name;
 
 /// What each core tool does, for the form. Sorted like
 /// [`CORE_TOOLS`](crate::registry::CORE_TOOLS), which a test checks.
-const CORE_TOOL_NOTES: [(&str, &str); 8] = [
+const CORE_TOOL_NOTES: [(&str, &str); 19] = [
+    ("bash", "Run a shell command in its environment."),
+    ("edit", "Replace text in a file in its environment."),
+    ("environment_create", "Create its environment workspace."),
+    ("environment_delete", "Delete its environment workspace."),
+    ("environment_plugins", "List the environments it can use."),
+    ("environment_reset", "Replace its workspace with a new one."),
+    ("environment_status", "Show its environment workspace."),
+    ("find", "Find files in its environment."),
+    ("grep", "Search file contents in its environment."),
     ("load_skill", "Load a skill's instructions."),
     ("memory_add", "Remember something new."),
     ("memory_edit", "Change a memory."),
     ("memory_forget", "Delete a memory."),
     ("memory_recall", "Search the memories it can see."),
     ("memory_search", "Search the text of earlier conversations."),
+    ("read", "Read a file in its environment."),
     ("schedule", "Schedule prompts for itself to run later."),
     ("send_attachment", "Send a file to the conversation."),
+    ("write", "Write a file in its environment."),
 ];
 
 /// What a toolset's checkbox says about it.

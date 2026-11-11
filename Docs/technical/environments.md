@@ -144,9 +144,34 @@ other rows ([Instance rename](instance-rename.md)); a renamed instance keeps its
 every state, so a pending cleanup still finds its plugin. There is no agent rename to cover: the
 agent in an owner is the agent's id.
 
-## For the workspace tools
+## Workspace tools
 
-A core tool gets what it needs from its `CoreCall`:
+The core tools are in `core_tools/environment/`: `lifecycle.rs` (`environment_plugins`,
+`environment_create`, `environment_status`, `environment_reset`, `environment_delete`), `bash.rs`,
+`files.rs` (`read`, `write`, `edit`), and `search.rs` (`find`, `grep`), on a shared `Env` (the
+`Workspaces` service and the registry). The plugin provides primitives, and the tools shape what the
+model sees, so the limits and messages are the same for every plugin.
+[Environments](../user/environments.md) is the user's view.
+
+### Offering and checking
+
+`SessionTools::for_agent` takes the registry's tool snapshot, keeps the tools that match the agent's
+`tools` globs, and drops the `ENVIRONMENT_TOOLS` unless the agent's `environments` is not empty.
+Tool specs never change during a session. What changes is read at call time: `environment_plugins`
+lists the agent's own instances (name, description, whether `Registry::environment` has a client,
+and the options schema as of the plugin's last `Configure`). Every call goes through `Env::scope`,
+which reads the agent's `environments` from the live configuration, and a workspace whose
+environment isn't among them is refused, so a call can't use an environment the agent doesn't list.
+For a job run the agent is the job's. `Workspaces::create` doesn't check the allowlist; the tools
+do.
+
+`Workspaces` and `Env` hold the registry weakly. The registry owns the core tools, and the tools own
+`Workspaces`, so a strong reference back would keep the registry (and the database it shares) alive
+after the runtime is dropped: the database's WAL files would never be checkpointed at shutdown.
+
+### Opening a workspace
+
+A workspace tool calls `Env::open`:
 
 ```rust
 let owner = WorkspaceOwner::of_session(&call.turn.session);
@@ -154,7 +179,64 @@ let opened = runtime.workspaces.open(&owner, &call.turn.lease).await?;
 // run in `opened.record.id` through `opened.client`; show `opened.notice` first, if any
 ```
 
-`WorkspaceError`'s messages are written for the model, so a tool can return `error.to_string()`.
+It reads `current` first. With no workspace the error result lists the agent's environments with
+their descriptions, points at `environment_plugins` and `environment_create`, and, if the owner had
+one, says when and why it was deleted (`last_deleted`: `deleted_at`, `DeleteReason`'s wording) and
+the environment and options it had. `Opened::notice` leads the result, error or not.
+`WorkspaceError`'s messages are written for the model, so the other failures are returned as
+`error.to_string()`; `environment_create` words `AlreadyHasWorkspace` itself, with the current
+environment and options.
+
+### Lifecycle tools
+
+- `environment_create {plugin, options?}` checks the allowlist and calls `Workspaces::create`.
+- `environment_status` reads `current`, and asks the plugin's `ListWorkspaces` for the run state and
+  disk use. It doesn't call `StartWorkspace`, so it doesn't start a stopped workspace.
+- `environment_reset {plugin?, options?}` resolves the target from the current workspace (options
+  default to the current ones only if the plugin stays the same), checks the allowlist, that the
+  environment is reachable, and that the options are an object, all before deleting. Then it calls
+  `delete(ModelReset)` and `create`, and says what was discarded. If creating fails, the error
+  result says so, and that the conversation now has no workspace.
+- `environment_delete` calls `delete(ModelDelete)`.
+
+None needs approval; an operator can put them in the agent's `ask` globs.
+
+### `bash`
+
+`ExecRequest { command, timeout, output_limit }` with the call's `timeout` (default 120 s, at most
+600 s, outside that the call is refused) and an `output_limit` of 1 MiB. The core reads the stream
+into a `Capture`: the first 10 KiB and the last 20 KiB of the combined output in arrival order. What
+falls between is counted per stream, and each stream's section of the result shows
+`[... N bytes of output left out ...]` where it was. Bytes the plugin dropped itself
+(`ExecExit::dropped_bytes`) are reported at the end. The result gives the exit code, a note if the
+environment timed the command out, and the stdout and stderr sections; a non-zero exit or a timeout
+is an error result.
+
+The call's future owns the exec stream, so dropping the future (the dispatcher's stream dropped by
+`/stop`) drops the stream, which is how the plugin learns to kill the command. The dispatcher's
+deadline for `bash` is `BASH_DEADLINE`, 11 minutes (`CallPolicy::of`), above the longest timeout.
+
+### File tools
+
+`read` asks for at most 256 KiB (`max_bytes`) and shows `cat -n` lines (`{:>6}\t{line}`), 2000 by
+default, from the 1-based `offset`. It refuses content with a NUL byte in the first 8 KiB or that
+isn't UTF-8 (a character cut by the byte cap at the end is dropped, not refused), and says when it
+left lines out and the file's full size. `write` sends the whole file. `edit` reads the file (at
+most 8 MiB; a larger file is refused, because writing back a partial read would cut it off), counts
+non-overlapping matches of `old_string`, refuses zero, and more than one unless `replace_all`, and
+writes the result. The read and the write aren't atomic. Paths go to the plugin as given: absolute,
+or relative to the workspace's working directory.
+
+`find` and `grep` are protocol calls with a limit of 200. `grep` lines are cut at 500 characters,
+and a truncated result says so.
+
+### Parallelism
+
+`read`, `find`, `grep`, `environment_status`, and `environment_plugins` are in
+`PARALLEL_SAFE_CORE_TOOLS`. Calls of one turn that open the workspace at once share its lease (a
+shared lock; each `open` replaces the `LeaseSlot`'s guard with another read guard), and a call that
+finds the workspace stopped starts it, so only one of them gets the notice. `write`, `edit`, `bash`,
+and the lifecycle tools run alone.
 
 ## Tests
 
@@ -167,3 +249,12 @@ pruning, each reconciliation rule and the grace period, startup recovery, the sc
 connection watcher. `scheduler/tests.rs` covers the isolated run's deletion and a `dm` job's
 workspace staying; `giles-store`'s tests cover the table, and the rename tests cover the rows
 moving.
+
+`core_tools/environment/tests.rs` runs each workspace tool against the same in-process environment
+(its `exec` streams scripted events, or hangs and records that its stream was dropped, and it keeps
+files): the offer and the allowlist gate, the no-workspace and deleted guidance, one workspace per
+conversation, notices leading results, reset and delete, `bash` output and timeout handling and
+cancellation, `read`'s numbering and caps, `edit`'s match counting, and `find` and `grep` limits.
+The end-to-end tests (`crates/giles/tests/e2e/environments.rs`) drive the daemon with the echo
+environment plugin: create, write, read, and run, and `/stop` cancelling a running command in the
+plugin.

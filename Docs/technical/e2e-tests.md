@@ -13,6 +13,7 @@ in the product is test-aware: there is no test feature, injectable provider, or 
 | `chat.rs`     | Message to reply, tool call with approval (allowed and denied), `/stop`            |
 | `recovery.rs` | Killing the daemon mid-turn and starting it again                                  |
 | `jobs.rs`     | A configured job delivered through the outbox, also across a restart               |
+| `environments.rs` | An agent working in the echo environment plugin's workspace, and `/stop` cancelling its command |
 
 The suite is one test target, `cargo test -p giles --test e2e`, and part of
 `cargo test --workspace`. It takes a few seconds: the tests run in parallel, each with its own
@@ -52,6 +53,11 @@ by accident through a turn it didn't plan, and scripts say exactly what the mode
   plugin symlinked into `plugins/`. `HOME` and `TMPDIR` point into the temporary directory, the HTTP
   server listens on `127.0.0.1:0`, and the daemon's sockets are under the root (or `TMPDIR` when the
   path is long, as in production). Nothing touches the real `~/.giles`.
+- **The environment plugin** is opt-in: `Home::with_environment` also symlinks
+  `giles-environment-echo` (built the same way, on first use) and configures it as
+  `[environment.box]`. The agent still lists it in `environments`. The plugin keeps workspaces and
+  files in memory, and writes `exec-started` and `exec-cancelled` in its data directory
+  (`Home::environment_dir`) when a `hang` command starts and when the core cancels it.
 - **The plugin binary** is `giles-channel-echo` next to the `giles` binary in `target/`. Once per
   test run the harness runs `cargo build -p giles-channel-echo` for that target directory and
   profile. It does nothing when `cargo test --workspace` has just built the plugin (same artifact),
@@ -93,6 +99,10 @@ by accident through a turn it didn't plan, and scripts say exactly what the mode
 - **`/stop`** (`chat.rs`): during a model request, the daemon drops the request, the conversation
   works at once, and the cancelled turn left nothing in the history; during a pending approval, the
   call's slot is filled with `cancelled` and a late `yes` doesn't run it.
+- **Environment** (`environments.rs`): with `environments = ["box"]` the model is offered the
+  workspace tools and one without it isn't. A workspace tool before `environment_create` fails with
+  the guidance, then the model creates a workspace, writes and reads a file, and runs a command. A
+  `/stop` during a `hang` command makes the plugin cancel it, and the call's result is `cancelled`.
 - **Restart recovery** (`recovery.rs`): SIGKILL with an approval pending, and SIGKILL while the
   model is answering. The inbox row is `started` after the crash; after the restart the owner is
   told `Interrupted by a restart; resend if needed.`, the row is `unknown`, nothing is replayed (the

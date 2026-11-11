@@ -67,8 +67,8 @@ Agents don't get an environment by default. Name the environments an agent may u
 environments = ["docker"]
 ```
 
-The agent then has tools to create a workspace, run commands, and work with files. The model chooses
-the image when it creates a workspace.
+The agent then has tools to create a workspace, run commands, and work with files, described in
+[Environments](environments.md). The model chooses the image when it creates a workspace.
 
 ## Run the plugin on another machine
 

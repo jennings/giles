@@ -25,7 +25,7 @@ use tracing::debug;
 use super::prompt::SessionTools;
 use crate::approvals::TurnApprovals;
 use crate::config::{Config, DEFAULT_TOOL_DEADLINE};
-use crate::core_tools::{CoreCall, CoreTool, TurnContext};
+use crate::core_tools::{BASH, BASH_DEADLINE, CoreCall, CoreTool, TurnContext};
 use crate::media::{SessionMedia, input_media};
 use crate::registry::{Registry, ToolTarget};
 
@@ -47,8 +47,20 @@ pub const SKIPPED_FOR_MESSAGE_RESULT: &str = "Skipped to read a new message";
 /// The most parallel-safe calls that run at once (PLAN section 6.3).
 pub const MAX_PARALLEL_CALLS: usize = 8;
 
-/// The core tools that only read, so they're parallel-safe (PLAN section 6.3).
-pub const PARALLEL_SAFE_CORE_TOOLS: [&str; 3] = ["load_skill", "memory_recall", "memory_search"];
+/// The core tools that only read, so they're parallel-safe (PLAN section 6.3). The workspace
+/// tools among them (`read`, `find`, `grep`, `environment_status`, `environment_plugins`) change
+/// nothing in the workspace; calls that open it at the same time share the turn's lease, and a
+/// call that finds the workspace stopped starts it.
+pub const PARALLEL_SAFE_CORE_TOOLS: [&str; 8] = [
+    "environment_plugins",
+    "environment_status",
+    "find",
+    "grep",
+    "load_skill",
+    "memory_recall",
+    "memory_search",
+    "read",
+];
 
 /// One `ToolUse` block to run.
 #[derive(Debug, Clone, PartialEq)]
@@ -123,7 +135,8 @@ pub struct CallPolicy {
 impl CallPolicy {
     /// The policy of a call to `name`: a toolset tool takes its instance's `parallel` and
     /// `deadline`; a core tool is parallel-safe if it's one of [`PARALLEL_SAFE_CORE_TOOLS`]
-    /// and has the default deadline. A tool the session doesn't offer runs nothing (its call is
+    /// and has the default deadline, except that `bash` has a longer one
+    /// ([`BASH_DEADLINE`]). A tool the session doesn't offer runs nothing (its call is
     /// answered at once), so it's parallel-safe and never holds up another call.
     pub fn of(tools: &SessionTools, config: &Config, name: &str) -> Self {
         match tools.get(name).map(|tool| &tool.target) {
@@ -133,7 +146,11 @@ impl CallPolicy {
             },
             Some(ToolTarget::Core) => Self {
                 parallel: PARALLEL_SAFE_CORE_TOOLS.contains(&name),
-                deadline: DEFAULT_TOOL_DEADLINE,
+                deadline: if name == BASH {
+                    BASH_DEADLINE
+                } else {
+                    DEFAULT_TOOL_DEADLINE
+                },
             },
             // A toolset removed since the session started has no configuration, so it gets the
             // default policy.

@@ -18,6 +18,7 @@
 - [Email](user/email.md)
 - [WhatsApp](user/whatsapp.md)
 - [Discord](user/discord.md)
+- [Environments](user/environments.md)
 - [Docker environment](user/docker-environment.md)
 - [Skills and memory](user/skills-and-memory.md)
 - [Writing a plugin](user/writing-a-plugin.md)

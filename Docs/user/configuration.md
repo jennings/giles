@@ -279,6 +279,7 @@ The [Docker environment](docker-environment.md) shows the sandbox grants its plu
 configuration file of the plugin, on the host that runs it.
 
 An agent uses an environment when `environments = ["<name>"]` in its `agent.toml` lists it.
+[Environments](environments.md) describes the tools it then has.
 
 #### Toolsets
 
@@ -512,6 +513,10 @@ A toolset's tools are named `<instance>__<tool>`. The core tools have bare names
 - `load_skill`
 - `schedule`
 - `send_attachment`
+- `environment_plugins`, `environment_create`, `environment_status`, `environment_reset`,
+  `environment_delete`, `bash`, `read`, `write`, `edit`, `find`, and `grep`, the
+  [environment tools](environments.md#what-the-agent-can-do). An agent without `environments` is
+  never offered them.
 
 `memory_cap` limits the core memories, the ones in the agent's prompt. See
 [Skills and Memory](skills-and-memory.md#memory).

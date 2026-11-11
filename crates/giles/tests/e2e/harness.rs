@@ -1,5 +1,6 @@
 //! The harness: a throwaway data root, the real `giles serve` binary running in it, the echo
-//! channel plugin it launches, and helpers to drive and inspect both.
+//! channel plugin it launches (and, for a test that asks, the echo environment plugin), and
+//! helpers to drive and inspect them.
 //!
 //! Everything is private to one test: a temporary data root (so `GILES_HOME`, `HOME`, and
 //! `TMPDIR` never point at the user's), loopback listeners on port 0, and Unix sockets under
@@ -27,6 +28,9 @@ pub const AGENT: &str = "jeeves";
 
 /// The echo channel instance's name, which is also its identity namespace.
 pub const CHANNEL: &str = "echo";
+
+/// The echo environment instance's name, when a test enables it ([`Home::with_environment`]).
+pub const ENVIRONMENT: &str = "box";
 
 /// The conversation the tests talk in (the one `Home::say` injects into).
 pub const CONVERSATION: &str = "dm";
@@ -61,6 +65,7 @@ pub struct Home {
     dir: tempfile::TempDir,
     provider_url: String,
     agent_toml: String,
+    environment: bool,
     next_event: AtomicUsize,
 }
 
@@ -68,6 +73,16 @@ impl Home {
     /// A data root whose `jeeves` agent uses `provider`'s model, with `agent_extra` appended to
     /// its `agent.toml` (`tools`, `ask`, `[[jobs]]`, ...), and an echo channel with no config.
     pub fn new(provider: &FakeProvider, agent_extra: &str) -> Self {
+        Self::build(provider, agent_extra, false)
+    }
+
+    /// [`Home::new`] with the echo environment plugin configured as `[environment.box]`
+    /// ([`ENVIRONMENT`]). The agent still needs `environments = ["box"]` in `agent_extra`.
+    pub fn with_environment(provider: &FakeProvider, agent_extra: &str) -> Self {
+        Self::build(provider, agent_extra, true)
+    }
+
+    fn build(provider: &FakeProvider, agent_extra: &str, environment: bool) -> Self {
         let home = Self {
             dir: tempfile::Builder::new().prefix("g").tempdir().unwrap(),
             provider_url: provider.base_url(),
@@ -75,6 +90,7 @@ impl Home {
                 "name = \"Jeeves\"\nmodels = [\"fake/{}\"]\n{agent_extra}\n",
                 crate::provider::MODEL
             ),
+            environment,
             next_event: AtomicUsize::new(1),
         };
         fs::DirBuilder::new()
@@ -88,6 +104,13 @@ impl Home {
             home.root().join("plugins/giles-channel-echo"),
         )
         .unwrap();
+        if environment {
+            symlink(
+                &*ECHO_ENVIRONMENT_BINARY,
+                home.root().join("plugins/giles-environment-echo"),
+            )
+            .unwrap();
+        }
         fs::create_dir(home.user()).unwrap();
         fs::create_dir(home.tmp()).unwrap();
         home.configure_echo("");
@@ -122,6 +145,11 @@ impl Home {
         } else {
             "unsandboxed = true\n"
         };
+        let environment = if self.environment {
+            format!("[environment.{ENVIRONMENT}]\ncomponent = \"echo\"\n{unsandboxed}\n")
+        } else {
+            String::new()
+        };
         fs::write(
             self.root().join("giles.toml"),
             format!(
@@ -131,6 +159,7 @@ impl Home {
                  config = {{ base_url = \"{}\" }}\n\n\
                  [channel.{CHANNEL}]\ncomponent = \"echo\"\n{unsandboxed}\n\
                  [channel.{CHANNEL}.config]\n{echo_config}\n\n\
+                 {environment}\
                  [[routes]]\nagent = \"{AGENT}\"\n",
                 self.provider_url
             ),
@@ -145,6 +174,12 @@ impl Home {
 
     fn echo_dir(&self) -> PathBuf {
         self.root().join("data/channel").join(CHANNEL)
+    }
+
+    /// The echo environment plugin's data directory, where it writes `exec-cancelled` when the
+    /// core cancels a `hang` command.
+    pub fn environment_dir(&self) -> PathBuf {
+        self.root().join("data/environment").join(ENVIRONMENT)
     }
 
     /// The agent's directory.
@@ -301,18 +336,26 @@ impl Home {
     }
 }
 
-/// The echo plugin binary built next to `giles`, brought up to date once per test run: `cargo
-/// build -p giles-channel-echo` does nothing when `cargo test --workspace` has just built it (it
-/// resolves to the same artifact), and builds or rebuilds it when only `-p giles` is being tested,
-/// so a stale plugin never runs silently. The tests run the build one at a time (this
-/// initializer), and Cargo isn't holding its build lock while tests run.
-static ECHO_BINARY: LazyLock<PathBuf> = LazyLock::new(|| {
+/// The echo channel plugin binary built next to `giles`, brought up to date once per test run.
+static ECHO_BINARY: LazyLock<PathBuf> = LazyLock::new(|| build_plugin("giles-channel-echo"));
+
+/// The echo environment plugin binary, built the same way as [`ECHO_BINARY`] when a test first
+/// needs it.
+static ECHO_ENVIRONMENT_BINARY: LazyLock<PathBuf> =
+    LazyLock::new(|| build_plugin("giles-environment-echo"));
+
+/// Builds the plugin package `package` next to `giles` and returns its binary: `cargo build -p
+/// <package>` does nothing when `cargo test --workspace` has just built it (it resolves to the
+/// same artifact), and builds or rebuilds it when only `-p giles` is being tested, so a stale
+/// plugin never runs silently. The tests run the build one at a time (the initializers), and
+/// Cargo isn't holding its build lock while tests run.
+fn build_plugin(package: &str) -> PathBuf {
     let giles = Path::new(env!("CARGO_BIN_EXE_giles"));
     let profile_dir = giles.parent().unwrap();
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut build = Command::new(cargo);
     build
-        .args(["build", "--locked", "-p", "giles-channel-echo"])
+        .args(["build", "--locked", "-p", package])
         .arg("--target-dir")
         .arg(profile_dir.parent().unwrap());
     let profile = profile_dir.file_name().unwrap().to_str().unwrap();
@@ -320,11 +363,15 @@ static ECHO_BINARY: LazyLock<PathBuf> = LazyLock::new(|| {
         build.args(["--profile", profile]);
     }
     let status = build.status().unwrap();
-    assert!(status.success(), "cannot build giles-channel-echo");
-    let echo = profile_dir.join("giles-channel-echo");
-    assert!(echo.is_file(), "no {} after building it", echo.display());
-    echo
-});
+    assert!(status.success(), "cannot build {package}");
+    let binary = profile_dir.join(package);
+    assert!(
+        binary.is_file(),
+        "no {} after building it",
+        binary.display()
+    );
+    binary
+}
 
 /// What a daemon has written to stderr, and whether it has finished.
 #[derive(Default)]
