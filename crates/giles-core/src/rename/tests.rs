@@ -521,6 +521,55 @@ async fn renaming_a_toolset_rewrites_the_tool_globs_and_moves_its_directory() {
 }
 
 #[tokio::test]
+async fn renaming_an_environment_rewrites_the_agents_lists_and_moves_its_directory() {
+    let giles = GILES_TOML.to_owned()
+        + "\n# Where the agent works.\n[environment.docker]\nunsandboxed = true\n\
+           description = \"scratch\"\n\n[environment.other]\n";
+    let home = Home::new(&giles).await;
+    home.write(
+        "agents/jeeves/agent.toml",
+        &format!("{JEEVES}environments = [\"docker\", \"other\"]\n"),
+    );
+    home.write("agents/bunter/agent.toml", BUNTER);
+    home.write("data/environment/docker/state.json", "{}");
+    home.write("data/channel/docker/state.json", "another kind");
+    home.write("cache/describe/environment/docker.json", "{}");
+    home.write("run/pids/environment/docker.pid", "123\n");
+    let report = home
+        .rename(Kind::Environment, "docker", "sandbox")
+        .await
+        .unwrap();
+
+    assert_eq!(report.kind, Kind::Environment);
+    assert!(report.config_table);
+    assert_eq!(report.agent_files.len(), 1);
+    assert_eq!(report.agent_files[0].1, 1);
+    assert_eq!(
+        home.read("agents/jeeves/agent.toml"),
+        format!("{JEEVES}environments = [\"sandbox\", \"other\"]\n")
+    );
+    assert_eq!(home.read("agents/bunter/agent.toml"), BUNTER);
+    assert!(home.path("data/environment/sandbox/state.json").is_file());
+    assert!(!home.path("data/environment/docker").exists());
+    // The same name of another kind is another instance.
+    assert!(home.path("data/channel/docker/state.json").is_file());
+    assert!(
+        home.path("cache/describe/environment/sandbox.json")
+            .is_file()
+    );
+    assert!(home.path("run/pids/environment/sandbox.pid").is_file());
+    let text = home.read("giles.toml");
+    // The component is kept, and the comment stays with the table.
+    assert!(text.contains("# Where the agent works.\n[environment.sandbox]\n"));
+    assert!(text.contains("component = \"docker\""));
+    assert!(!text.contains("[environment.docker]"));
+    let config = home.load();
+    assert_eq!(config.environments["sandbox"].component, "docker");
+    let environments = &config.agents[&AgentId::new("jeeves").unwrap()].environments;
+    assert_eq!(environments[0].as_str(), "sandbox");
+}
+
+#[tokio::test]
 async fn a_table_renamed_by_hand_gets_its_data_moved() {
     // giles.toml already says `libera-chat`.
     let hand_edited = GILES_TOML

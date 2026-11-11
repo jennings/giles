@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use super::error::{ConfigError, KeyPath, UnknownKey};
 use super::giles::parse_timezone;
 use super::model::ModelRef;
-use super::names::{invalid_name_reason, is_valid_name};
+use super::names::{InstanceName, invalid_name_reason, is_valid_name};
 
 /// The iteration cap of job turns when the agent sets no `max_iterations_jobs` (PLAN section 6.3).
 pub const DEFAULT_MAX_ITERATIONS_JOBS: u32 = 25;
@@ -44,6 +44,9 @@ pub struct AgentConfig {
     pub tools: Vec<String>,
     /// Globs of tools that need approval before each call.
     pub ask: Vec<String>,
+    /// The environment instances the agent may use for workspaces, in file order, each a
+    /// configured `[environment.<instance>]`. Empty unless set: the agent has no workspace.
+    pub environments: Vec<InstanceName>,
     /// The iteration cap of interactive turns; `None` means no cap.
     pub max_iterations: Option<u32>,
     /// The iteration cap of job turns. [`DEFAULT_MAX_ITERATIONS_JOBS`] unless set.
@@ -205,6 +208,8 @@ struct RawAgent {
     tools: Vec<String>,
     #[serde(default)]
     ask: Vec<String>,
+    #[serde(default)]
+    environments: Vec<String>,
     max_iterations: Option<u32>,
     max_iterations_jobs: Option<u32>,
     #[serde(default)]
@@ -234,14 +239,16 @@ struct RawJob {
 }
 
 /// Loads `agent.toml` from `dir` for agent `id`. `providers` are the configured provider instances
-/// every model must name. Also returns the keys Giles doesn't recognize, which are ignored.
+/// every model must name, and `environments` the configured environment instances. Also returns
+/// the keys Giles doesn't recognize, which are ignored.
 pub(crate) fn load(
     id: &str,
     dir: &Path,
     providers: &BTreeSet<&str>,
+    environments: &BTreeSet<&str>,
 ) -> Result<(AgentConfig, Vec<UnknownKey>), ConfigError> {
     let source = super::read_file(&dir.join("agent.toml"))?;
-    parse(id, dir, &source, providers)
+    parse(id, dir, &source, providers, environments)
 }
 
 /// Validates `source` as the `agent.toml` in `dir` of agent `id`, as [`load`] does once it has
@@ -252,6 +259,7 @@ pub(crate) fn parse(
     dir: &Path,
     source: &str,
     providers: &BTreeSet<&str>,
+    environments: &BTreeSet<&str>,
 ) -> Result<(AgentConfig, Vec<UnknownKey>), ConfigError> {
     let file = dir.join("agent.toml");
     let (raw, unknown): (RawAgent, Vec<KeyPath>) = super::parse_toml_lenient(&file, source)?;
@@ -283,6 +291,22 @@ pub(crate) fn parse(
     }
     if let Some(model) = &raw.compaction_model {
         check_model(root.key("compaction_model"), model)?;
+    }
+    let mut agent_environments = Vec::with_capacity(raw.environments.len());
+    for (i, name) in raw.environments.iter().enumerate() {
+        let at = root.key("environments").index(i);
+        if !environments.contains(name.as_str()) {
+            return Err(err(
+                at,
+                format!("no environment instance {name:?} (`[environment.{name}]` in giles.toml)"),
+            ));
+        }
+        let instance =
+            InstanceName::new(name.as_str()).map_err(|reason| err(at.clone(), reason))?;
+        if agent_environments.contains(&instance) {
+            return Err(err(at, format!("{name:?} is listed twice")));
+        }
+        agent_environments.push(instance);
     }
     for key in ["tools", "ask"] {
         let globs = if key == "tools" { &raw.tools } else { &raw.ask };
@@ -387,6 +411,7 @@ pub(crate) fn parse(
         compaction_model: raw.compaction_model,
         tools: raw.tools,
         ask: raw.ask,
+        environments: agent_environments,
         max_iterations,
         max_iterations_jobs,
         busy_mode: raw.busy_mode,

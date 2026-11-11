@@ -241,12 +241,12 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     let mut http_server =
         tokio::spawn(async move { tokio::try_join!(main_server, proxy_server).map(|_| ()) });
     let admin_server = tokio::spawn(admin_listener.serve(admin, shutdown.clone()));
-    // Every configured plugin channel, supervised: registered and attached to the sessions as it
-    // comes up, relaunched with backoff when it fails. Startup waits for each first attempt and
-    // for the first start of each toolset of `giles.toml` (a failed toolset retries in the
-    // background; stored toolsets start in the background); a shutdown
-    // during startup stops waiting, and `stop_all` abandons the launches still running (killing
-    // their plugins).
+    // Every configured plugin channel and environment, supervised: a channel is registered and
+    // attached to the sessions as it comes up, an environment is registered once it has answered
+    // `Info`, and both are relaunched with backoff when they fail. Startup waits for each first
+    // attempt and for the first start of each toolset of `giles.toml` (a failed toolset retries in
+    // the background; stored toolsets start in the background); a shutdown during startup stops
+    // waiting, and `stop_all` abandons the launches still running (killing their plugins).
     tokio::select! {
         _ = async { tokio::join!(plugins.start(&config), toolsets.started()) } => {}
         () = shutdown.cancelled() => {}
@@ -260,6 +260,7 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
         agents = config.agents.len(),
         providers = config.providers.len(),
         channels = config.channels.len(),
+        environments = config.environments.len(),
         toolsets = runtime.registry.config().toolsets.len(),
         "giles started",
     );

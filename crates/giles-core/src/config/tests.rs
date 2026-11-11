@@ -2330,3 +2330,147 @@ fn an_empty_instance_table_has_the_empty_table_hash() {
         ConfigHash::of(&toml::Table::new())
     );
 }
+
+#[test]
+fn environments_default_and_take_their_keys() {
+    let config = Home::new(&format!(
+        "{MINIMAL}[environment.docker]\n\n\
+         [environment.box]\ncomponent = \"docker\"\ndescription = \"A scratch box\"\n\
+         stop_after = \"10m\"\ndelete_after = \"7d\"\nconfig = {{ network = \"none\" }}\n\
+         sandbox = {{ unix = [\"/var/run/docker.sock\"] }}\n\n\
+         [environment.far]\ncomponent = \"docker\"\naddress = \"http://127.0.0.1:9000\"\n"
+    ))
+    .load_ok();
+    let docker = &config.environments["docker"];
+    assert_eq!(docker.component, "docker");
+    assert_eq!(docker.description, "");
+    assert_eq!(docker.stop_after, DEFAULT_STOP_AFTER);
+    assert_eq!(docker.stop_after, Duration::from_secs(30 * 60));
+    assert_eq!(docker.delete_after, Duration::from_secs(30 * 24 * 3600));
+    let EnvironmentRuntime::Plugin(launch) = &docker.runtime else {
+        panic!("{docker:?}");
+    };
+    assert_eq!(launch.binary, "giles-environment-docker");
+    // The network is off by default: the plugin reaches its runtime over a Unix socket.
+    assert_eq!(launch.sandbox.grants.network, NetworkGrant::None);
+
+    let boxed = &config.environments["box"];
+    assert_eq!(boxed.description, "A scratch box");
+    assert_eq!(boxed.stop_after, Duration::from_secs(600));
+    assert_eq!(boxed.delete_after, Duration::from_secs(7 * 24 * 3600));
+    let EnvironmentRuntime::Plugin(launch) = &boxed.runtime else {
+        panic!("{boxed:?}");
+    };
+    assert_eq!(
+        launch.sandbox.grants.unix,
+        [PathBuf::from("/var/run/docker.sock")]
+    );
+    assert!(matches!(
+        config.environments["far"].runtime,
+        EnvironmentRuntime::Remote(_)
+    ));
+}
+
+#[test]
+fn a_remote_environment_has_no_config() {
+    let error = Home::new(&format!(
+        "{MINIMAL}[environment.far]\naddress = \"http://127.0.0.1:9000\"\nconfig = {{ a = 1 }}\n"
+    ))
+    .load()
+    .unwrap_err();
+    assert_eq!(error.key.to_string(), "environment.far.config");
+    assert!(
+        error.reason.contains("configuration file of the plugin"),
+        "{error}"
+    );
+    for bad in [
+        "stop_after = \"0s\"",
+        "delete_after = \"0s\"",
+        "auth = { bearer = \"x\" }",
+    ] {
+        let error = Home::new(&format!("{MINIMAL}[environment.box]\n{bad}\n"))
+            .load()
+            .unwrap_err();
+        assert!(
+            error.key.to_string().starts_with("environment.box."),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn agents_name_configured_environments() {
+    let home = Home::new(&format!(
+        "{MINIMAL}[provider.anthropic]\n\n[environment.box]\n"
+    ));
+    home.agent(
+        "jeeves",
+        "models = [\"anthropic/m\"]\nenvironments = [\"box\"]\n",
+    );
+    let config = home.load_ok();
+    let environments = &config.agents[&agent_id("jeeves")].environments;
+    assert_eq!(environments.len(), 1);
+    assert_eq!(environments[0].as_str(), "box");
+
+    home.agent(
+        "jeeves",
+        "models = [\"anthropic/m\"]\nenvironments = [\"box\", \"gone\"]\n",
+    );
+    let error = home.load().unwrap_err();
+    assert_eq!(error.key.to_string(), "environments[1]");
+    assert!(
+        error.reason.contains("no environment instance \"gone\""),
+        "{error}"
+    );
+    home.agent(
+        "jeeves",
+        "models = [\"anthropic/m\"]\nenvironments = [\"box\", \"box\"]\n",
+    );
+    assert!(home.load().unwrap_err().reason.contains("listed twice"));
+}
+
+#[test]
+fn an_environment_plugin_may_read_its_binary_directory_but_not_write_or_use_sockets_there() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let bin = tempfile::tempdir().unwrap();
+    let binary = bin.path().join("giles-environment-docker");
+    std::fs::write(&binary, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::ffi::OsString::from(bin.path());
+    let env = move |name: &str| (name == "PATH").then(|| path.clone());
+    let load = |grant: &str| {
+        let home = Home::new(&format!(
+            "{MINIMAL}[environment.docker]\nsandbox = {{ {grant} }}\n"
+        ));
+        Config::load_with(
+            &home.root,
+            &LoadOptions {
+                env: &env,
+                giles_exe: None,
+                ..LoadOptions::default()
+            },
+        )
+    };
+    let dir = bin.path().display();
+    let config = load(&format!(
+        "read = [\"{dir}\"], unix = [\"/var/run/docker.sock\"]"
+    ))
+    .unwrap();
+    assert_eq!(
+        config.environments["docker"].component, "docker",
+        "{config:?}"
+    );
+    for key in ["write", "unix"] {
+        let error = load(&format!("{key} = [\"{dir}\"]")).unwrap_err();
+        assert_eq!(
+            error.key.to_string(),
+            format!("environment.docker.sandbox.{key}[0]")
+        );
+        assert!(
+            error
+                .reason
+                .contains("directory of environment docker's plugin"),
+            "{error}"
+        );
+    }
+}

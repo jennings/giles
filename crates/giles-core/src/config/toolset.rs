@@ -16,7 +16,8 @@ use giles_types::Kind;
 use super::discovery::{discover_plugin, find_program};
 use super::error::{ConfigError, KeyPath};
 use super::instances::{
-    ChannelInstance, ChannelRuntime, Ctx, Sandbox, ToolsetInstance, ToolsetSpec, ToolsetTransport,
+    ChannelInstance, ChannelRuntime, Ctx, EnvironmentInstance, EnvironmentRuntime, Sandbox,
+    ToolsetInstance, ToolsetSpec, ToolsetTransport,
 };
 use super::names::InstanceName;
 use super::sandbox::{self, BinaryDirs};
@@ -153,6 +154,7 @@ pub fn validate_toolset(
         ctx.root,
         ctx.options,
         config.channels.values(),
+        config.environments.values(),
         &toolsets,
         Some(&instance.name),
     )
@@ -185,13 +187,14 @@ pub(super) fn name_clash(kind: Kind, other_name: &str, name: &str) -> String {
     )
 }
 
-/// Checks the sandbox grants of `channels` and `toolsets` (all validated) against the directories
-/// holding the binaries and skills Giles reads or runs. Errors are in `file`.
+/// Checks the sandbox grants of `channels`, `environments`, and `toolsets` (all validated) against
+/// the directories holding the binaries and skills Giles reads or runs. Errors are in `file`.
 ///
 /// Directories holding binaries Giles runs may be read but not written by any plugin: the `giles`
-/// binary, each launched channel plugin, and each stdio server, as found now. A toolset's skill
-/// directories are read by the core for the model (PLAN section 6.6), so no plugin may write
-/// there, so none can race those reads; they must not overlap the plugins' data directories.
+/// binary, each launched channel and environment plugin, and each stdio server, as found now. A
+/// toolset's skill directories are read by the core for the model (PLAN section 6.6), so no plugin
+/// may write there, so none can race those reads; they must not overlap the plugins' data
+/// directories.
 ///
 /// With `focus`, the toolset just validated (one of `toolsets`), only what involves it is checked:
 /// its own grants and skills against everything, and every other instance's grants against its
@@ -201,6 +204,7 @@ pub(super) fn check_binary_dirs<'a>(
     root: &DataRoot,
     options: &LoadOptions<'_>,
     channels: impl IntoIterator<Item = &'a ChannelInstance>,
+    environments: impl IntoIterator<Item = &'a EnvironmentInstance>,
     toolsets: &[&'a ToolsetInstance],
     focus: Option<&InstanceName>,
 ) -> Result<(), ConfigError> {
@@ -221,6 +225,21 @@ pub(super) fn check_binary_dirs<'a>(
                 binary_dirs.add(&binary, what);
             }
             sandboxes.push((Kind::Channel, &channel.name, &launch.sandbox));
+        }
+    }
+    for environment in environments {
+        if let EnvironmentRuntime::Plugin(launch) = &environment.runtime {
+            if let Some(binary) =
+                discover_plugin(root, Kind::Environment, &environment.component, env)
+            {
+                let what = format!(
+                    "environment {}'s plugin, {}",
+                    environment.name,
+                    binary.display()
+                );
+                binary_dirs.add(&binary, what);
+            }
+            sandboxes.push((Kind::Environment, &environment.name, &launch.sandbox));
         }
     }
     for toolset in toolsets {

@@ -42,6 +42,9 @@ A backup leaves out:
 - The plugin binaries in `plugins/`. Install them again.
 - The state plugins keep in `data/channel/` and `data/toolset/`, such as a WhatsApp session. A
   plugin that loses it asks you to link or log in again.
+- The workspaces of [environments](configuration.md#environments). They live in the environment's
+  own runtime, such as Docker volumes. Copy any files you want to keep out of a workspace before
+  it's deleted.
 - [Agents you removed](web.md#removing-an-agent), which are kept in `trash/`. Copy that directory
   yourself if you want them kept elsewhere.
 - Symbolic links. If `giles.toml` or an agent's `memory.db` is a link, as a dotfiles manager makes,

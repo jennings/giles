@@ -105,3 +105,21 @@ certificate.
 The plugin builds its channel from the `config` Giles sends on its first connection, and refuses a
 different one until it restarts. After you change the instance's `config` in `giles.toml`, restart
 the plugin. Giles then reconnects by itself.
+
+## Run an environment plugin remotely
+
+An `[environment.<name>]` with `address` connects to an environment plugin you run yourself, the
+same way. Create a token and start the plugin as above, then set `address` and `auth` in
+`giles.toml`:
+
+```toml
+[environment.docker]
+address = "https://builder.example.com:7443"
+auth = { bearer = { secret = "docker-remote" } }
+```
+
+To pass the token in the environment instead of a file, set `GILES_ENVIRONMENT_DOCKER_TOKEN`.
+
+A remote environment has no `config` in `giles.toml`. Giles refuses it, because the plugin reads its
+settings from the `[config]` table of its own `--config` file, on the machine that runs it. Restart
+the plugin after you change them.

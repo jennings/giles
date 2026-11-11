@@ -35,6 +35,8 @@ pub enum Command {
     Backup(BackupArgs),
     /// Manage channels with the daemon stopped.
     Channel(ChannelArgs),
+    /// Manage environments with the daemon stopped.
+    Environment(EnvironmentArgs),
     /// Manage providers with the daemon stopped.
     Provider(ProviderArgs),
     /// Run a command in the plugin sandbox (internal: the daemon launches plugins through it).
@@ -123,7 +125,8 @@ pub struct ToolsetNameArgs {
     pub name: String,
 }
 
-/// Arguments to `giles channel rename`, `giles provider rename`, and `giles toolset rename`.
+/// Arguments to `giles channel rename`, `giles environment rename`, `giles provider rename`, and
+/// `giles toolset rename`.
 #[derive(Debug, Args)]
 pub struct RenameArgs {
     /// The name now.
@@ -160,6 +163,22 @@ pub struct ChannelArgs {
 #[derive(Debug, Subcommand)]
 pub enum ChannelCommand {
     /// Rename a channel: its database rows, directories, and config. Stop the daemon first.
+    Rename(RenameArgs),
+}
+
+/// Arguments to `giles environment`.
+#[derive(Debug, Args)]
+pub struct EnvironmentArgs {
+    /// What to do.
+    #[command(subcommand)]
+    pub command: EnvironmentCommand,
+}
+
+/// The `giles environment` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum EnvironmentCommand {
+    /// Rename an environment: its database rows, directories, config, and the agents that list
+    /// it. Stop the daemon first.
     Rename(RenameArgs),
 }
 
@@ -345,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn channel_and_provider_rename_take_two_names() {
+    fn channel_environment_and_provider_rename_take_two_names() {
         let cli = Cli::try_parse_from(["giles", "channel", "rename", "libera", "oftc"]).unwrap();
         let Command::Channel(ChannelArgs {
             command: ChannelCommand::Rename(args),
@@ -362,7 +381,15 @@ mod tests {
             panic!("{:?}", cli.command);
         };
         assert_eq!((args.old.as_str(), args.new.as_str()), ("ollama", "local"));
-        for kind in ["channel", "provider"] {
+        let cli = Cli::try_parse_from(["giles", "environment", "rename", "box", "dev"]).unwrap();
+        let Command::Environment(EnvironmentArgs {
+            command: EnvironmentCommand::Rename(args),
+        }) = cli.command
+        else {
+            panic!("{:?}", cli.command);
+        };
+        assert_eq!((args.old.as_str(), args.new.as_str()), ("box", "dev"));
+        for kind in ["channel", "environment", "provider"] {
             for args in [
                 &["giles", kind][..],
                 &["giles", kind, "rename"],

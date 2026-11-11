@@ -9,6 +9,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use giles_proto::MAX_MESSAGE_SIZE;
 use giles_proto::channel::v1::channel_service_client::ChannelServiceClient;
+use giles_proto::environment::v1::environment_service_client::EnvironmentServiceClient;
 use giles_proto::plugin::v1::plugin_service_client::PluginServiceClient;
 use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -100,6 +101,13 @@ impl PluginConnection {
     /// A `giles.channel.v1.ChannelService` client.
     pub fn channel(&self) -> ChannelServiceClient<PluginTransport> {
         ChannelServiceClient::new(self.transport())
+            .max_decoding_message_size(MAX_MESSAGE_SIZE)
+            .max_encoding_message_size(MAX_MESSAGE_SIZE)
+    }
+
+    /// A `giles.environment.v1.EnvironmentService` client.
+    pub fn environment(&self) -> EnvironmentServiceClient<PluginTransport> {
+        EnvironmentServiceClient::new(self.transport())
             .max_decoding_message_size(MAX_MESSAGE_SIZE)
             .max_encoding_message_size(MAX_MESSAGE_SIZE)
     }
