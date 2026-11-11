@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -18,10 +18,8 @@ use giles_proto::channel::v1::channel_service_server::{
 use giles_proto::channel::v1::{
     ChannelCapabilities, EventsRequest, EventsResponse, SendRequest, SendResponse, events_request,
 };
-use giles_proto::handshake::MAGIC_COOKIE_ENV;
 use giles_proto::plugin::v1::{DescribeResponse, PluginKind, describe_response};
 use giles_types::{Channel, ChannelEvent, MediaId, OutputMode, Result, SendTarget};
-use serde::de::DeserializeOwned;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tonic::service::Routes;
@@ -31,11 +29,12 @@ use tonic_health::server::HealthReporter;
 
 use crate::base::{Grants, Kind, internal};
 use crate::blobs::Blobs;
-use crate::cli;
+use crate::configure::Configure;
 use crate::convert::{
     event_to_proto, outbound_from_proto, output_mode_to_proto, status_from_error,
 };
 use crate::remote::RemoteServer;
+use crate::run;
 use crate::server::{self, Context};
 use crate::spool::Spool;
 
@@ -257,75 +256,18 @@ impl ChannelPlugin {
         Fut: Future<Output = Result<C>> + Send + 'static,
         C: Channel + 'static,
     {
-        let binary = format!("giles-channel-{}", self.name);
-        match cli::parse(args) {
-            Ok(cli::Command::Socket) => self.serve(configure).await,
-            Ok(cli::Command::Serve(serve)) => {
-                let result = match serve.resolve(&self.name, env) {
-                    Ok(settings) => self.serve_settings(settings, configure).await,
-                    Err(e) => Err(e.into()),
-                };
-                match result {
-                    Ok(()) => ExitCode::SUCCESS,
-                    Err(e) => {
-                        eprintln!("{binary}: {e}");
-                        ExitCode::from(e.exit_code())
-                    }
-                }
-            }
-            Ok(cli::Command::Help) => {
-                print!("{}", cli::usage(&binary, &self.name));
-                ExitCode::SUCCESS
-            }
-            // A core from before the subcommands starts a plugin with no arguments.
-            Err(cli::CliError::NoCommand) if env(MAGIC_COOKIE_ENV).is_some() => {
-                eprintln!(
-                    "{binary}: Giles launched it without the `socket` argument, so the Giles \
-                     that started it is older than this plugin; upgrade Giles"
-                );
-                ExitCode::from(1)
-            }
-            Err(cli::CliError::NoCommand) => {
-                eprint!("{}", cli::usage(&binary, &self.name));
-                ExitCode::from(2)
-            }
-            Err(e) => {
-                eprintln!("{binary}: {e}\nRun `{binary} --help` for usage.");
-                ExitCode::from(2)
-            }
-        }
-    }
-
-    /// The `serve` subcommand once its settings are known.
-    async fn serve_settings<F, Fut, C>(
-        self,
-        settings: cli::Settings,
-        configure: F,
-    ) -> Result<(), cli::RunError>
-    where
-        F: Fn(Configure) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<C>> + Send + 'static,
-        C: Channel + 'static,
-    {
-        let listener = tokio::net::TcpListener::bind(&settings.listen)
-            .await
-            .map_err(|source| cli::RunError::Listen {
-                address: settings.listen.clone(),
-                source,
-            })?;
-        let server = RemoteServer::new(listener, settings.data, settings.auth);
-        #[cfg(feature = "tls")]
-        let server = match settings.tls {
-            Some((cert, key)) => server.tls(cli::tls_config(&cert, &key)?),
-            None => server,
-        };
-        {
-            use std::io::Write as _;
-            let mut stdout = io::stdout().lock();
-            writeln!(stdout, "listening on {}", server.local_addr()?)?;
-            stdout.flush()?;
-        }
-        Ok(self.serve_remote(server, configure).await?)
+        let name = self.name.clone();
+        run::run(
+            giles_types::Kind::Channel,
+            &name,
+            args,
+            env,
+            (self, configure),
+            |(plugin, configure)| plugin.serve(configure),
+            // A channel's settings come from the core, not from the file's `[config]`.
+            |(plugin, configure), server, _| plugin.serve_remote(server, configure),
+        )
+        .await
     }
 
     fn services(
@@ -351,56 +293,6 @@ impl ChannelPlugin {
             .max_decoding_message_size(MAX_MESSAGE_SIZE)
             .max_encoding_message_size(MAX_MESSAGE_SIZE);
         (Arc::new(ChannelKind(shared)), Routes::new(service))
-    }
-}
-
-/// What `configure` gets: the instance config and the plugin's resources.
-#[derive(Debug)]
-pub struct Configure {
-    instance: String,
-    config: serde_json::Value,
-    data_dir: PathBuf,
-    blobs: Blobs,
-}
-
-impl Configure {
-    /// The instance name, e.g. `libera` for `[channel.libera]`. For logs and messages only: the
-    /// plugin's state belongs in [`data_dir`](Configure::data_dir), which already is per instance.
-    pub fn instance(&self) -> &str {
-        &self.instance
-    }
-
-    /// The instance's `config` table from `giles.toml`, as JSON, with secrets resolved.
-    pub fn config(&self) -> &serde_json::Value {
-        &self.config
-    }
-
-    /// Deserializes [`config`](Configure::config). A mismatch is
-    /// [`Error::InvalidRequest`](giles_types::Error::InvalidRequest) naming the offending key, e.g.
-    /// `invalid config: tls.verify: invalid type: string "yes", expected a boolean`; the core shows
-    /// it to the operator. Use `#[serde(deny_unknown_fields)]` to catch misspelled keys.
-    pub fn parse_config<T: DeserializeOwned>(&self) -> Result<T> {
-        serde_path_to_error::deserialize(&self.config).map_err(|e| {
-            let path = e.path().to_string();
-            let error = e.into_inner();
-            giles_types::Error::InvalidRequest(if path == "." {
-                format!("invalid config: {error}")
-            } else {
-                format!("invalid config: {path}: {error}")
-            })
-        })
-    }
-
-    /// The instance's data directory: the plugin's only writable directory, kept across restarts
-    /// and upgrades (`GILES_PLUGIN_DATA` for a launched plugin, the [`RemoteServer`]'s for a
-    /// remote one). The SDK's own state is in its `giles-sdk/` subdirectory; leave that alone.
-    pub fn data_dir(&self) -> &Path {
-        &self.data_dir
-    }
-
-    /// The plugin's blob store, for attachments in both directions.
-    pub fn blobs(&self) -> &Blobs {
-        &self.blobs
     }
 }
 
@@ -624,12 +516,12 @@ impl Kind for ChannelKind {
             };
         }
         tracing::info!(%instance, "configuring");
-        let context = Configure {
-            instance: instance.clone(),
-            config: config.clone(),
-            data_dir: shared.data_dir.clone(),
-            blobs: shared.blobs.clone(),
-        };
+        let context = Configure::new(
+            instance.clone(),
+            config.clone(),
+            shared.data_dir.clone(),
+            shared.blobs.clone(),
+        );
         let channel = (shared.configure)(context)
             .await
             .map_err(status_from_error)?;

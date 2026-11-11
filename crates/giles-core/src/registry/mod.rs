@@ -390,6 +390,8 @@ impl Registry {
             Kind::Provider => config.providers.contains_key(name),
             Kind::Channel => config.channels.contains_key(name),
             Kind::Toolset => config.toolsets.contains_key(name),
+            // Environments aren't configurable yet (#87).
+            Kind::Environment => false,
         };
         if configured {
             Ok(())

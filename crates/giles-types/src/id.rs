@@ -207,6 +207,53 @@ impl MediaId {
 
 impl_string_conversions!(MediaId);
 
+/// The id of a workspace in an environment plugin (PLAN section 8.8): 1 to 64 characters of `a-z`,
+/// `0-9`, and `-`. The core chooses it, and the plugin may use it in names of its own (a container
+/// name, a directory) without escaping.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String")]
+pub struct WorkspaceId(String);
+
+impl WorkspaceId {
+    const KIND: &'static str = "workspace id";
+
+    /// The longest id, in characters.
+    pub const MAX_LEN: usize = 64;
+
+    /// Creates the id. Fails unless `id` is 1 to 64 characters of `a-z`, `0-9`, and `-`.
+    pub fn new(id: impl Into<String>) -> Result<Self, IdError> {
+        let id = id.into();
+        if id.is_empty() {
+            return Err(IdError::new(Self::KIND, "must not be empty"));
+        }
+        if id.len() > Self::MAX_LEN {
+            return Err(IdError::new(Self::KIND, "must be at most 64 characters"));
+        }
+        if !id
+            .bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'))
+        {
+            return Err(IdError::new(
+                Self::KIND,
+                "must contain only a-z, 0-9, and \"-\"",
+            ));
+        }
+        Ok(Self(id))
+    }
+
+    /// The id as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Consumes the id and returns its string.
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl_string_conversions!(WorkspaceId);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,5 +331,31 @@ mod tests {
         assert!(serde_json::from_str::<MediaId>(r#""a3f9""#).is_err());
         let id: MediaId = serde_json::from_str(&format!("\"{DIGEST_HEX}\"")).unwrap();
         assert_eq!(id.as_str(), DIGEST_HEX);
+    }
+
+    #[test]
+    fn workspace_id_accepts_one_to_sixty_four_of_a_z_0_9_and_dash() {
+        for ok in ["a", "0", "-", "ws-1", "abc-123-def", &"a".repeat(64)] {
+            assert_eq!(WorkspaceId::new(ok).unwrap().as_str(), ok);
+        }
+        assert_eq!(
+            WorkspaceId::new("").unwrap_err().to_string(),
+            "invalid workspace id: must not be empty"
+        );
+        assert_eq!(
+            WorkspaceId::new("a".repeat(65)).unwrap_err().reason(),
+            "must be at most 64 characters"
+        );
+        for bad in ["A", "a_b", "a b", "a/b", "a.b", "é", "a\n"] {
+            assert!(WorkspaceId::new(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn workspace_id_deserialization_validates() {
+        let id: WorkspaceId = serde_json::from_str(r#""ws-1""#).unwrap();
+        assert_eq!(id.to_string(), "ws-1");
+        assert!(serde_json::from_str::<WorkspaceId>(r#""WS""#).is_err());
+        assert_eq!(serde_json::to_string(&id).unwrap(), r#""ws-1""#);
     }
 }

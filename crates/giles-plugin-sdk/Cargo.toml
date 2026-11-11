@@ -1,6 +1,6 @@
 [package]
 name = "giles-plugin-sdk"
-description = "Serve a Giles channel implementation as an out-of-process gRPC plugin."
+description = "Serve a Giles channel or environment implementation as an out-of-process gRPC plugin."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

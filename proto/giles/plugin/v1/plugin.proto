@@ -5,6 +5,7 @@ syntax = "proto3";
 package giles.plugin.v1;
 
 import "giles/channel/v1/channel.proto";
+import "giles/environment/v1/environment.proto";
 import "giles/provider/v1/provider.proto";
 import "giles/types/v1/types.proto";
 
@@ -34,6 +35,8 @@ enum PluginKind {
   PLUGIN_KIND_PROVIDER = 1;
   // Serves giles.channel.v1.ChannelService.
   PLUGIN_KIND_CHANNEL = 2;
+  // Serves giles.environment.v1.EnvironmentService.
+  PLUGIN_KIND_ENVIRONMENT = 4;
 }
 
 message DescribeRequest {
@@ -61,6 +64,7 @@ message DescribeResponse {
   oneof capabilities {
     giles.provider.v1.ProviderCapabilities provider = 10;
     giles.channel.v1.ChannelCapabilities channel = 11;
+    giles.environment.v1.EnvironmentCapabilities environment = 13;
   }
 }
 
@@ -74,6 +78,8 @@ message SandboxGrants {
   repeated string read = 3;
   // Paths to write.
   repeated string write = 4;
+  // Unix domain sockets to connect to, e.g. a container runtime's /var/run/docker.sock.
+  repeated string unix = 5;
 }
 
 message ConfigureRequest {

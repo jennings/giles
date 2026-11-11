@@ -14,6 +14,8 @@
 //! requests from plugins with other handles, and an id that parses as a `MediaId` is only the
 //! plugin's claim about the content: whether to trust it (rather than hashing what `GetBlob`
 //! returns) is the core's decision, not something these helpers settle.
+//!
+//! [`environment`] has the same conversions for the environment protocol.
 
 use giles_proto::channel::v1 as pb;
 use giles_proto::types::v1::{
@@ -25,6 +27,8 @@ use giles_types::{
     OutputMode, Result, SendTarget, Timestamp,
 };
 use tonic::{Code, Status};
+
+pub mod environment;
 
 const NANOS_PER_SECOND: i128 = 1_000_000_000;
 

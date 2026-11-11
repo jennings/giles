@@ -11,11 +11,18 @@ pub enum Kind {
     Channel,
     /// A toolset (an MCP server).
     Toolset,
+    /// An environment: isolated workspaces for an agent's workspace tools.
+    Environment,
 }
 
 impl Kind {
     /// Every kind.
-    pub const ALL: [Kind; 3] = [Kind::Provider, Kind::Channel, Kind::Toolset];
+    pub const ALL: [Kind; 4] = [
+        Kind::Provider,
+        Kind::Channel,
+        Kind::Toolset,
+        Kind::Environment,
+    ];
 
     /// The kind as written in config and plugin binary names.
     pub fn as_str(self) -> &'static str {
@@ -23,6 +30,7 @@ impl Kind {
             Kind::Provider => "provider",
             Kind::Channel => "channel",
             Kind::Toolset => "toolset",
+            Kind::Environment => "environment",
         }
     }
 }

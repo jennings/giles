@@ -219,6 +219,7 @@ pub(super) fn proto_kind(kind: Kind) -> pb::InstanceKind {
         Kind::Provider => pb::InstanceKind::Provider,
         Kind::Channel => pb::InstanceKind::Channel,
         Kind::Toolset => pb::InstanceKind::Toolset,
+        Kind::Environment => pb::InstanceKind::Environment,
     }
 }
 

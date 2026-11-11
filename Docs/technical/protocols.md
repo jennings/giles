@@ -1,9 +1,9 @@
 # gRPC protocols
 
-The core talks to provider and channel plugins over gRPC, and serves an admin service to the CLI and
-the web admin pages (PLAN section 8). Toolsets speak MCP instead and have no `.proto` contract. The
-contracts are Protobuf files under `proto/`, checked with `buf` and compiled into the `giles-proto`
-crate.
+The core talks to provider, channel, and environment plugins over gRPC, and serves an admin service
+to the CLI and the web admin pages (PLAN section 8). Toolsets speak MCP instead and have no `.proto`
+contract. The contracts are Protobuf files under `proto/`, checked with `buf` and compiled into the
+`giles-proto` crate.
 
 ## Packages
 
@@ -15,6 +15,7 @@ Each package lives in `proto/giles/<package>/v1/<package>.proto`; the `buf` modu
 | `giles.plugin.v1`   | `PluginService` (`Describe`, `Configure`, `Shutdown`, blob transfer)  | `giles_proto::plugin::v1`     |
 | `giles.provider.v1` | `ProviderCapabilities` only; `ProviderService` comes with provider plugins | `giles_proto::provider::v1` |
 | `giles.channel.v1`  | `ChannelService` (`Events`, `Send`) and `ChannelCapabilities`          | `giles_proto::channel::v1`    |
+| `giles.environment.v1` | `EnvironmentService` (workspaces, `Exec`, files, `Find`, `Grep`) and `EnvironmentCapabilities` | `giles_proto::environment::v1` |
 | `giles.admin.v1`    | `AdminService`, served by the core on `run/admin.sock`                | `giles_proto::admin::v1`      |
 
 Every gRPC plugin serves `giles.plugin.v1.PluginService`, `grpc.health.v1.Health` (from the
@@ -28,6 +29,11 @@ section 8.7 belong to multi-user support and are added when it is built. Beyond 
 sketch, `StatusResponse` also reports the host's sandbox (`SandboxHost`) and every configured
 channel with its last status (`ChannelInstance`), so built-in channels show up too. The core's side
 is described in [Admin service](admin.md).
+
+`PluginKind` has `PLUGIN_KIND_ENVIRONMENT = 4` (3 stays reserved for toolsets), and
+`DescribeResponse` reports `EnvironmentCapabilities` in `environment = 13` (12 stays reserved).
+`InstanceKind` in the admin package has `INSTANCE_KIND_ENVIRONMENT = 4`. `SandboxGrants` also has
+`unix` (field 5), the Unix sockets a plugin wants to connect to, such as a container engine's.
 
 ## Conventions
 
@@ -123,6 +129,37 @@ The channel types map onto `giles.channel.v1`:
 `giles.provider.v1.ProviderCapabilities { media_types, reasoning }` describes a provider plugin as a
 whole; the per-model `ModelInfo` comes with `ProviderService`.
 
+The environment types map onto `giles.environment.v1`. The `Environment` trait takes and returns
+`giles-types` values, and `giles_plugin_sdk::convert::environment` has the conversions in both
+directions: the SDK serves the trait over the service, and the core's `RemoteEnvironment` adapter
+calls the service and implements the trait.
+
+| `giles-types`                                    | `giles.environment.v1`                                     |
+| ------------------------------------------------ | ---------------------------------------------------------- |
+| `Environment::info`                              | `Info`; `InfoResponse.options_schema_json` is the schema   |
+| `Environment::create_workspace(id, options)`     | `CreateWorkspace`; `options_json` is a JSON object, `""` is `{}` |
+| `delete_workspace`, `stop_workspace`             | `DeleteWorkspace`, `StopWorkspace`                         |
+| `Environment::start_workspace`                   | `StartWorkspace`; the response is the `StartOutcome`       |
+| `StartOutcome::{Running, Started, Recreated}`    | `StartOutcome` enum, with `detail` for the last two        |
+| `WorkspaceId`                                    | `workspace_id` string: 1 to 64 of `a-z`, `0-9`, `-`        |
+| `Workspace`, `WorkspaceState`                    | `Workspace`, `WorkspaceState`; `created_at` and the state are required |
+| `WorkspaceList { workspaces, free_bytes }`       | `ListWorkspacesResponse`, `optional free_bytes`            |
+| `Environment::exec(id, ExecRequest)`             | `Exec`: server stream of `ExecResponse`                    |
+| `ExecEvent::{Stdout, Stderr, Exit}`              | `ExecResponse` `oneof event`: `stdout`, `stderr`, `exit`   |
+| `ExecRequest { command, timeout, output_limit }` | `ExecRequest`; `timeout` is a required `google.protobuf.Duration` |
+| `ExecExit { code, timed_out, dropped_bytes }`    | `ExecExit`                                                 |
+| `read_file`, `write_file`                        | `ReadFile`, `WriteFile`; contents are `bytes`              |
+| `find`, `grep`                                   | `Find`, `Grep`; a `None` path is `""`, `glob` is `optional` |
+
+Errors are gRPC statuses, converted the way the channel kind's are: `INVALID_ARGUMENT` is
+`Error::InvalidRequest` (a refused request, or options the environment rejects), `NOT_FOUND` is
+`Error::NotFound`, `UNAVAILABLE` is `Error::Unavailable`, and anything else is `Error::Other`. The
+core may show the message to the model.
+
+`Exec` ends in one `exit` event. A plugin's stream that ends without one is a plugin bug, which the
+SDK reports as `INTERNAL`. Cancelling the call, which is how the core stops a command, drops the
+plugin's stream, and the plugin must then kill the command and everything it started.
+
 ## Versioning
 
 The package name carries the major version (PLAN section 7.8). Within `v1`, changes are additive
@@ -195,5 +232,7 @@ to match these files. The changes:
   `InboundMessage.sender_display_name`, `reply_to`, and `message_id`, and `SendRequest.reply_to`.
 - `DescribeResponse` reserves 12 (toolsets) at message level, since a `oneof` can't hold
   reservations, and `SandboxGrants` is defined in `giles.plugin.v1`.
+- `CreateWorkspace` reports an id already in use as `INVALID_ARGUMENT`, like refused options, since
+  `Error` has no "already exists" variant and the core chooses unique ids.
 - The deferred provider sketch (PLAN section 8.4) follows the same rules: `Complete` streams
   `CompleteResponse` messages, and `GenerationParams` is `giles.types.v1.GenerationParams`.
