@@ -196,6 +196,19 @@ pub fn text_of(message: &Value) -> String {
     }
 }
 
+/// The names of the tools `request` offers the model, in the order given.
+pub fn tool_names(request: &Value) -> Vec<String> {
+    request["tools"]
+        .as_array()
+        .map(|tools| {
+            tools
+                .iter()
+                .map(|tool| tool["function"]["name"].as_str().unwrap().to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The result the model was given for tool call `id` in `request`.
 pub fn tool_result(request: &Value, id: &str) -> String {
     messages(request)

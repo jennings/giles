@@ -28,7 +28,7 @@ mod tests;
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use giles_store::{NewWorkspace, Store};
 use giles_types::{Environment, StartOutcome, Timestamp, WorkspaceId};
@@ -176,7 +176,9 @@ pub struct Workspaces {
 
 struct Inner {
     store: Store,
-    registry: Arc<Registry>,
+    /// Weak, because the registry holds the core tools that hold this service: a strong
+    /// reference would keep the registry, and everything it owns, alive for ever.
+    registry: Weak<Registry>,
     clock: Arc<dyn Clock>,
     /// One lock per workspace that has been leased: leases take the shared side, the sweep the
     /// exclusive side. Entries nobody holds are dropped by the sweep.
@@ -198,7 +200,7 @@ impl Workspaces {
         Self {
             inner: Arc::new(Inner {
                 store,
-                registry,
+                registry: Arc::downgrade(&registry),
                 clock,
                 locks: Mutex::default(),
                 maintenance: tokio::sync::Mutex::new(()),
@@ -457,11 +459,12 @@ impl Workspaces {
         &self,
         name: &str,
     ) -> Result<(EnvironmentEntry, Arc<dyn Environment>), WorkspaceError> {
-        let entry = self.inner.registry.environment(name).ok_or_else(|| {
-            WorkspaceError::UnknownEnvironment {
+        let entry = self
+            .registry()
+            .and_then(|registry| registry.environment(name))
+            .ok_or_else(|| WorkspaceError::UnknownEnvironment {
                 name: name.to_owned(),
-            }
-        })?;
+            })?;
         match entry.client.clone() {
             Some(client) => Ok((entry, client)),
             None => Err(WorkspaceError::Unreachable {
@@ -470,14 +473,18 @@ impl Workspaces {
         }
     }
 
+    /// The registry, unless it is gone (the core is shutting down).
+    fn registry(&self) -> Option<Arc<Registry>> {
+        self.inner.registry.upgrade()
+    }
+
     /// Asks the plugin to delete `record`'s workspace and, if it did, marks the row `deleted`.
     /// A plugin that is unreachable or fails leaves the row `deleting` for the sweep. Returns
     /// whether the row is `deleted` now.
     async fn delete_in_plugin(&self, record: &WorkspaceRecord) -> bool {
         let Some(client) = self
-            .inner
-            .registry
-            .environment(&record.environment)
+            .registry()
+            .and_then(|registry| registry.environment(&record.environment))
             .and_then(|entry| entry.client)
         else {
             tracing::info!(

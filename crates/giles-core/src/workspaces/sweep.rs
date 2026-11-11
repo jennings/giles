@@ -151,7 +151,10 @@ impl Workspaces {
         let _serial = inner.maintenance.lock().await;
         let now = inner.clock.now();
         let mut total = SweepReport::default();
-        for entry in inner.registry.environments() {
+        let Some(registry) = self.registry() else {
+            return total;
+        };
+        for entry in registry.environments() {
             let mut report = SweepReport::default();
             match inner
                 .store
@@ -183,9 +186,8 @@ impl Workspaces {
     pub async fn reconcile(&self, environment: &str) -> Result<SweepReport, BoxError> {
         let _serial = self.inner.maintenance.lock().await;
         let entry = self
-            .inner
-            .registry
-            .environment(environment)
+            .registry()
+            .and_then(|registry| registry.environment(environment))
             .ok_or_else(|| format!("no environment named {environment:?}"))?;
         let client = entry
             .client
@@ -199,11 +201,20 @@ impl Workspaces {
 
     /// Reconciles each environment as its plugin connects (or reconnects).
     async fn reconcile_on_connect(self, shutdown: CancellationToken) {
-        let mut changes = self.inner.registry.environment_changes();
+        let Some(registry) = self.registry() else {
+            return;
+        };
+        let mut changes = registry.environment_changes();
+        drop(registry);
         let mut seen: std::collections::HashMap<InstanceName, u64> =
             std::collections::HashMap::new();
         loop {
-            for entry in self.inner.registry.environments() {
+            let Some(registry) = self.registry() else {
+                return;
+            };
+            let entries = registry.environments();
+            drop(registry);
+            for entry in entries {
                 let Some(client) = entry.client.clone() else {
                     continue;
                 };

@@ -10,10 +10,12 @@
 //! - `chat`: a message to its reply, a tool call with approval, and `/stop`.
 //! - `recovery`: killing the daemon mid-turn and starting it again.
 //! - `jobs`: a configured job delivered through the outbox.
+//! - `environments`: an agent working in a workspace of the echo environment plugin.
 
 #![cfg(feature = "provider-openai")]
 
 mod chat;
+mod environments;
 mod harness;
 mod jobs;
 mod provider;

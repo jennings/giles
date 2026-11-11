@@ -46,7 +46,7 @@ use crate::front_matter;
 use crate::memory;
 use crate::memory_dbs::MemoryDbs;
 use crate::paths::PathsError;
-use crate::registry::{IndexedTool, Registry, RegistryError, ToolSnapshot};
+use crate::registry::{IndexedTool, Registry, RegistryError, ToolSnapshot, is_environment_tool};
 use crate::skills::SkillSet;
 
 /// The core tool that reads a skill's instructions (PLAN section 6.6).
@@ -97,7 +97,8 @@ impl SessionPrompt {
 }
 
 /// The tools a session offers: the registry's snapshot at session start, filtered by the agent's
-/// `tools` allowlist globs (PLAN section 6.4: in v1, with no roles, the allowlist alone decides),
+/// `tools` allowlist globs (PLAN section 6.4: in v1, with no roles, the allowlist alone decides)
+/// and, for the environment tools, by whether it has an environment ([`SessionTools::for_agent`]),
 /// sorted by name. A tool that a toolset later drops stays listed; calling it gets "tool
 /// unavailable".
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -116,6 +117,19 @@ impl SessionTools {
                 .cloned()
                 .collect(),
         }
+    }
+
+    /// The tools of `snapshot` that `agent` is offered: those matching its `tools` allowlist,
+    /// except that the environment tools ([`ENVIRONMENT_TOOLS`](crate::registry::ENVIRONMENT_TOOLS)) need the agent to name at least
+    /// one environment, since without one they can never work.
+    pub fn for_agent(snapshot: &ToolSnapshot, agent: &AgentConfig) -> Self {
+        let mut tools = Self::from_snapshot(snapshot, &agent.tools);
+        if agent.environments.is_empty() {
+            tools
+                .tools
+                .retain(|tool| !is_environment_tool(&tool.spec.name));
+        }
+        tools
     }
 
     /// Every tool, sorted by name.
@@ -454,7 +468,7 @@ pub async fn assemble(
     agent: &AgentConfig,
     session: &Session,
 ) -> Result<SessionPrompt, PromptError> {
-    let tools = SessionTools::from_snapshot(&registry.tools().snapshot(), &agent.tools);
+    let tools = SessionTools::for_agent(&registry.tools().snapshot(), agent);
     build(registry, memory_dbs, agent, session, Arc::new(tools)).await
 }
 

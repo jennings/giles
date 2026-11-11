@@ -22,15 +22,42 @@ use crate::config::InstanceName;
 
 /// The reserved names of the core tools (PLAN section 6.5), sorted. Only these may be added
 /// with [`ToolIndex::set_core_tool`].
-pub const CORE_TOOLS: [&str; 8] = [
+pub const CORE_TOOLS: [&str; 19] = [
+    "bash",
+    "edit",
+    "environment_create",
+    "environment_delete",
+    "environment_plugins",
+    "environment_reset",
+    "environment_status",
+    "find",
+    "grep",
     "load_skill",
     "memory_add",
     "memory_edit",
     "memory_forget",
     "memory_recall",
     "memory_search",
+    "read",
     "schedule",
     "send_attachment",
+    "write",
+];
+
+/// The core tools that work in an environment workspace (PLAN section 8.8), sorted. A session
+/// offers them only to an agent whose `environments` is not empty.
+pub const ENVIRONMENT_TOOLS: [&str; 11] = [
+    "bash",
+    "edit",
+    "environment_create",
+    "environment_delete",
+    "environment_plugins",
+    "environment_reset",
+    "environment_status",
+    "find",
+    "grep",
+    "read",
+    "write",
 ];
 
 /// The longest tool name offered to a model, prefix included, in characters. Both v1 provider
@@ -43,6 +70,11 @@ pub const PREFIX_SEPARATOR: &str = "__";
 /// Whether `name` is one of the [`CORE_TOOLS`].
 pub fn is_core_tool(name: &str) -> bool {
     CORE_TOOLS.contains(&name)
+}
+
+/// Whether `name` is one of the [`ENVIRONMENT_TOOLS`].
+pub fn is_environment_tool(name: &str) -> bool {
+    ENVIRONMENT_TOOLS.contains(&name)
 }
 
 /// The name a toolset's tool is offered under: `<instance>__<tool>`.

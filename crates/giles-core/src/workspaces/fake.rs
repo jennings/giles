@@ -2,15 +2,17 @@
 //! the code that calls it.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures::stream::BoxStream;
+use futures::StreamExt as _;
+use futures::stream::{self, BoxStream};
 use giles_types::{
     Environment, EnvironmentInfo, Error, ExecEvent, ExecRequest, FindRequest, FindResult,
-    GrepRequest, GrepResult, ReadFile, Result, StartOutcome, Timestamp, Workspace, WorkspaceId,
-    WorkspaceList, WorkspaceState as PluginState,
+    GrepMatch, GrepRequest, GrepResult, ReadFile, Result, StartOutcome, Timestamp, Workspace,
+    WorkspaceId, WorkspaceList, WorkspaceState as PluginState,
 };
 use serde_json::{Value, json};
 
@@ -60,6 +62,27 @@ struct State {
     list_fails: bool,
     /// The next `start_workspace` of a stopped workspace says it recreated it.
     recreate: bool,
+    /// What `exec` does; `Exec::Refuse` until a test sets it.
+    exec: Exec,
+    /// Every `exec` request, in order.
+    execs: Vec<ExecRequest>,
+    /// Files by workspace and path as the caller wrote it (the fake doesn't resolve paths).
+    files: BTreeMap<(WorkspaceId, String), Vec<u8>>,
+    /// The `max_bytes` of every `read_file`.
+    reads: Vec<u64>,
+}
+
+/// What a fake `exec` does.
+#[derive(Clone, Default)]
+pub(crate) enum Exec {
+    /// Fails the call as not supported.
+    #[default]
+    Refuse,
+    /// Yields these events.
+    Events(Vec<ExecEvent>),
+    /// Yields one piece of stdout, `started`, and then never ends. Dropping the stream sets the
+    /// flag.
+    Hang(Arc<AtomicBool>),
 }
 
 /// An environment that keeps its workspaces in memory.
@@ -130,6 +153,44 @@ impl Fake {
 
     pub(crate) fn recreate_next_start(&self) {
         self.state().recreate = true;
+    }
+
+    /// Makes every `exec` yield `events`.
+    pub(crate) fn script_exec(&self, events: Vec<ExecEvent>) {
+        self.state().exec = Exec::Events(events);
+    }
+
+    /// Makes every `exec` hang after one piece of output. The returned flag is set when the
+    /// command's stream is dropped, as it is when the core cancels the command.
+    pub(crate) fn hang_exec(&self) -> Arc<AtomicBool> {
+        let dropped = Arc::new(AtomicBool::new(false));
+        self.state().exec = Exec::Hang(dropped.clone());
+        dropped
+    }
+
+    /// Every `exec` request so far.
+    pub(crate) fn execs(&self) -> Vec<ExecRequest> {
+        self.state().execs.clone()
+    }
+
+    /// Puts a file in a workspace.
+    pub(crate) fn put_file(&self, id: &WorkspaceId, path: &str, content: &[u8]) {
+        self.state()
+            .files
+            .insert((id.clone(), path.to_owned()), content.to_vec());
+    }
+
+    /// A file of a workspace.
+    pub(crate) fn file(&self, id: &WorkspaceId, path: &str) -> Option<Vec<u8>> {
+        self.state()
+            .files
+            .get(&(id.clone(), path.to_owned()))
+            .cloned()
+    }
+
+    /// The `max_bytes` of every `read_file` so far.
+    pub(crate) fn reads(&self) -> Vec<u64> {
+        self.state().reads.clone()
     }
 
     fn workspace(id: &WorkspaceId, held: &Held) -> Workspace {
@@ -238,25 +299,95 @@ impl Environment for Fake {
 
     async fn exec(
         &self,
-        _id: &WorkspaceId,
-        _request: ExecRequest,
+        id: &WorkspaceId,
+        request: ExecRequest,
     ) -> Result<BoxStream<'static, Result<ExecEvent>>> {
-        unused()
+        let mut state = self.state();
+        if !state.workspaces.contains_key(id) {
+            return Err(Error::NotFound(format!("workspace {id}")));
+        }
+        state.execs.push(request);
+        match state.exec.clone() {
+            Exec::Refuse => unused(),
+            Exec::Events(events) => Ok(stream::iter(events.into_iter().map(Ok)).boxed()),
+            Exec::Hang(dropped) => {
+                let guard = DropFlag(dropped);
+                Ok(stream::iter([Ok(ExecEvent::Stdout(b"started\n".to_vec()))])
+                    .chain(stream::pending().inspect(move |_: &Result<ExecEvent>| {
+                        let _ = &guard;
+                    }))
+                    .boxed())
+            }
+        }
     }
 
-    async fn read_file(&self, _id: &WorkspaceId, _path: &str, _max_bytes: u64) -> Result<ReadFile> {
-        unused()
+    async fn read_file(&self, id: &WorkspaceId, path: &str, max_bytes: u64) -> Result<ReadFile> {
+        let mut state = self.state();
+        state.reads.push(max_bytes);
+        let content = state
+            .files
+            .get(&(id.clone(), path.to_owned()))
+            .ok_or_else(|| Error::NotFound(format!("no such file: {path}")))?;
+        let kept = usize::try_from(max_bytes).unwrap_or(usize::MAX);
+        Ok(ReadFile {
+            content: content[..content.len().min(kept)].to_vec(),
+            size: content.len() as u64,
+        })
     }
 
-    async fn write_file(&self, _id: &WorkspaceId, _path: &str, _content: Vec<u8>) -> Result<()> {
-        unused()
+    async fn write_file(&self, id: &WorkspaceId, path: &str, content: Vec<u8>) -> Result<()> {
+        let mut state = self.state();
+        if !state.workspaces.contains_key(id) {
+            return Err(Error::NotFound(format!("workspace {id}")));
+        }
+        state.files.insert((id.clone(), path.to_owned()), content);
+        Ok(())
     }
 
-    async fn find(&self, _id: &WorkspaceId, _request: FindRequest) -> Result<FindResult> {
-        unused()
+    async fn find(&self, id: &WorkspaceId, request: FindRequest) -> Result<FindResult> {
+        let state = self.state();
+        let needle = request.pattern.trim_matches('*');
+        let mut paths: Vec<String> = state
+            .files
+            .keys()
+            .filter(|(owner, path)| owner == id && path.contains(needle))
+            .map(|(_, path)| path.clone())
+            .collect();
+        let limit = usize::try_from(request.limit).unwrap_or(usize::MAX);
+        let truncated = paths.len() > limit;
+        paths.truncate(limit);
+        Ok(FindResult { paths, truncated })
     }
 
-    async fn grep(&self, _id: &WorkspaceId, _request: GrepRequest) -> Result<GrepResult> {
-        unused()
+    async fn grep(&self, id: &WorkspaceId, request: GrepRequest) -> Result<GrepResult> {
+        let state = self.state();
+        let mut matches = Vec::new();
+        for ((owner, path), content) in &state.files {
+            if owner != id {
+                continue;
+            }
+            for (n, line) in String::from_utf8_lossy(content).lines().enumerate() {
+                if line.contains(&request.pattern) {
+                    matches.push(GrepMatch {
+                        path: path.clone(),
+                        line: n as u64 + 1,
+                        text: line.to_owned(),
+                    });
+                }
+            }
+        }
+        let limit = usize::try_from(request.limit).unwrap_or(usize::MAX);
+        let truncated = matches.len() > limit;
+        matches.truncate(limit);
+        Ok(GrepResult { matches, truncated })
+    }
+}
+
+/// Sets its flag when dropped.
+struct DropFlag(Arc<AtomicBool>);
+
+impl Drop for DropFlag {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
     }
 }

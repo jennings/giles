@@ -148,8 +148,12 @@ taken before still list the tools, but a call to one finds no toolset and is ans
   name is over 64 characters (`MAX_TOOL_NAME_CHARS`, both v1 provider APIs' limit), or if the
   toolset lists the name twice (the first is kept). Instance names can't contain `_`, so a prefixed
   name never collides with another instance's or with a core tool.
-- Core tools use the bare, reserved `CORE_TOOLS` (eight, sorted): `load_skill`, `memory_add`,
-  `memory_edit`, `memory_forget`, `memory_recall`, `memory_search`, `schedule`, `send_attachment`.
+- Core tools use the bare, reserved `CORE_TOOLS` (nineteen, sorted): `bash`, `edit`,
+  `environment_create`, `environment_delete`, `environment_plugins`, `environment_reset`,
+  `environment_status`, `find`, `grep`, `load_skill`, `memory_add`, `memory_edit`, `memory_forget`,
+  `memory_recall`, `memory_search`, `read`, `schedule`, `send_attachment`, `write`. The eleven that
+  work in a workspace are also in `ENVIRONMENT_TOOLS`, which a session offers only to an agent with
+  an environment ([Environment workspaces](environments.md#workspace-tools)).
   `Registry::register_core_tool(Arc<dyn CoreTool>)` keeps the implementation
   (`Registry::core_tool(name)`) and adds its `ToolSpec` with `ToolIndex::set_core_tool`, which
   rejects any other name. A spec added with `set_core_tool` alone (tests) is offered, but calls to

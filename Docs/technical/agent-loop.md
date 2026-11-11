@@ -37,9 +37,10 @@ reused byte for byte by every request of every turn.
 
 ### Tools
 
-`SessionTools::from_snapshot(registry.tools().snapshot(), agent.tools)` keeps the snapshot's tools
-whose offered name (`<instance>__<tool>` or a bare core tool) matches one of the agent's `tools`
-globs. In v1 there are no roles, so the allowlist alone decides (§6.4); call-time enforcement is the
+`SessionTools::for_agent(registry.tools().snapshot(), agent)` keeps the snapshot's tools whose
+offered name (`<instance>__<tool>` or a bare core tool) matches one of the agent's `tools` globs,
+and leaves out the workspace tools (`ENVIRONMENT_TOOLS`) unless the agent's `environments` isn't
+empty. In v1 there are no roles, so the allowlist alone decides (§6.4); call-time enforcement is the
 tool dispatcher's job. The snapshot is sorted by name, and filtering keeps the order. A tool a
 toolset later drops stays in the list; calling it gets `tool unavailable`.
 
@@ -373,9 +374,12 @@ call starts; once `skip` has fired it starts nothing, and each waiting call is a
 Calls start in model order. Each has a `CallPolicy`:
 
 - A toolset tool takes its instance's `parallel` (default `false`) and `deadline` (default 5 m).
-- A core tool is parallel-safe if it only reads (`PARALLEL_SAFE_CORE_TOOLS`: `load_skill`,
-  `memory_recall`, `memory_search`), with the default deadline. MCP's `readOnlyHint` is ignored:
-  it's untrusted (§7.10).
+- A core tool is parallel-safe if it only reads (`PARALLEL_SAFE_CORE_TOOLS`: `environment_plugins`,
+  `environment_status`, `find`, `grep`, `load_skill`, `memory_recall`, `memory_search`, `read`),
+  with the default deadline, except `bash`, whose deadline is 11 minutes (`BASH_DEADLINE`), one
+  minute above the longest `timeout` a call may set, so the dispatcher never cuts a command off
+  before the environment's own timeout does. MCP's `readOnlyHint` is ignored: it's untrusted
+  (§7.10).
 - A tool the session doesn't offer runs nothing, so it counts as parallel-safe and never holds up
   another call.
 
@@ -426,11 +430,16 @@ its spec to the tool index (`ToolIndex::set_core_tool`), and the dispatcher find
 `Registry::core_tool(name)` when the call starts.
 
 The core tools are `load_skill`, `memory_add`, `memory_edit`, `memory_forget`, `memory_recall`,
-`memory_search`, `schedule`, and `send_attachment`. Of those, `memory_recall` (with `load_skill` and
-`memory_search`) only reads and is parallel-safe; `memory_add`, `memory_edit`, and `memory_forget`
-write the agent's memory database and run alone. The four `memory_*` tools that use the memory
-database take the viewer from the turn's session and requester, so what a call can see and write is
-decided per call, not per session; their schemas, results, and errors are in
+`memory_search`, `schedule`, `send_attachment`, and the eleven workspace tools (`bash`, `edit`,
+`environment_create`, `environment_delete`, `environment_plugins`, `environment_reset`,
+`environment_status`, `find`, `grep`, `read`, and `write`, described in
+[Environment workspaces](environments.md#workspace-tools)). A session offers the workspace tools
+only to an agent whose `environments` isn't empty (`SessionTools::for_agent`); the agent's `tools`
+globs apply on top. Of the other eight, `memory_recall` (with `load_skill` and `memory_search`) only
+reads and is parallel-safe; `memory_add`, `memory_edit`, and `memory_forget` write the agent's
+memory database and run alone. The four `memory_*` tools that use the memory database take the
+viewer from the turn's session and requester, so what a call can see and write is decided per call,
+not per session; their schemas, results, and errors are in
 [Skills and Memory](skills-and-memory.md#the-memory-tools).
 
 ## Output

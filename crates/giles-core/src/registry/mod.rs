@@ -32,8 +32,9 @@ use crate::paths::{DataRoot, PathsError};
 use crate::providers::MediaSource;
 
 pub use tools::{
-    CORE_TOOLS, IndexedTool, MAX_TOOL_NAME_CHARS, PREFIX_SEPARATOR, ToolIndex, ToolNameError,
-    ToolSnapshot, ToolTarget, is_core_tool, prefix_tools, prefixed_name,
+    CORE_TOOLS, ENVIRONMENT_TOOLS, IndexedTool, MAX_TOOL_NAME_CHARS, PREFIX_SEPARATOR, ToolIndex,
+    ToolNameError, ToolSnapshot, ToolTarget, is_core_tool, is_environment_tool, prefix_tools,
+    prefixed_name,
 };
 
 /// A registry operation failed.
