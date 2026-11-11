@@ -8,9 +8,9 @@ the host first.
 ## Build context
 
 `.dockerignore` is an allowlist: the workspace manifests and lockfile, `rust-toolchain.toml`,
-`crates/`, `plugins/`, `proto/`, and the license files. Everything else stays out, including
-`target/`, `.jj/`, `.git/`, `spikes/` (not workspace members), the docs, and the CI files, so
-changes to those don't invalidate the build's layer cache.
+`.cargo/`, `crates/`, `plugins/`, `proto/`, and the license files. Everything else stays out,
+including `target/`, `.jj/`, `.git/`, `spikes/` (not workspace members), the docs, and the CI files,
+so changes to those don't invalidate the build's layer cache.
 
 ## Build stage
 
@@ -21,10 +21,22 @@ pinned toolchain from it, so the version lives only in that file and the toolcha
 only when the pin changes. Protobuf code generation uses the vendored `protoc` (see
 [Cargo workspace](workspace.md)); no system `protoc` is installed.
 
-It then copies the context and runs one `cargo build --release --locked` for the binaries the image
-ships: `giles`, `giles-channel-irc`, `giles-channel-email`, `giles-channel-whatsapp`, and
-`giles-channel-discord`. `giles-channel-echo` is a test-only plugin and stays out. The list is the
-`bins` variable in that `RUN` step; a new first-party plugin is added there.
+It then copies the context and runs `cargo build --release --locked` for the binaries the image
+ships: `giles`, `giles-channel-irc`, `giles-channel-email`, `giles-channel-whatsapp`,
+`giles-channel-discord`, and `giles-environment-docker`. `giles-channel-echo` is a test-only plugin
+and stays out. The list is the `bins` variable in that `RUN` step; a new first-party plugin is added
+there.
+
+The same step builds `giles-workspace-helper`, the static Linux helper that the Docker environment
+plugin copies into the containers it creates ([Docker environment](environment-docker.md)). The
+plugin needs one built for the architecture of the engine it talks to. The engine isn't known at
+build time, and the plugin in this image reaches an engine on another machine as a remote plugin, so
+the image carries the helper for its own architecture. The step builds it for
+`$(uname -m)-unknown-linux-musl` (`x86_64` or `aarch64`), a statically linked binary that runs in
+any container image, and installs it as `giles-workspace-helper-<arch>`. The musl targets come from
+`rust-toolchain.toml`, and `.cargo/config.toml` (which `.dockerignore` lets into the context) links
+them with `rust-lld`, so the build stage needs no cross C toolchain. The helper's name doesn't start
+with `giles-environment-`, which keeps plugin discovery from taking it for a plugin.
 
 Three BuildKit cache mounts keep rebuilds incremental: the Cargo registry and git checkouts
 (`/usr/local/cargo/registry` and `/usr/local/cargo/git`) and `target/`. Each has a fixed `id` and

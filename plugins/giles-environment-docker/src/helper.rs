@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use bytes::Bytes;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, ErrorExt as _, Result};
 
 /// Where the helper lives inside a container.
 pub const HELPER_PATH: &str = "/.giles/bin/giles-workspace-helper";

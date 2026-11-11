@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, ErrorExt as _, Result};
 use crate::image::{Allowlist, DEFAULT_PATTERNS, normalize_registry};
 
 /// Where the Docker Engine API listens when neither `socket` nor `DOCKER_HOST` says.

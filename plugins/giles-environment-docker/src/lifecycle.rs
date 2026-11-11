@@ -18,12 +18,12 @@ use jiff::Timestamp;
 use serde::Deserialize;
 use tracing::{debug, info, warn};
 
-use crate::error::{Error, Result};
+use crate::error::{Error, ErrorExt as _, Result};
 use crate::exec::Plain;
 use crate::helper::{self, HELPER_PATH};
 use crate::image::Reference;
-use crate::types::{StartOutcome, Workspace, WorkspaceList, WorkspaceState};
-use crate::{DockerEnvironment, WORKSPACE_DIR, check_workspace_id, label_map};
+use crate::{DockerEnvironment, WORKSPACE_DIR, label_map};
+use giles_types::{StartOutcome, Workspace, WorkspaceId, WorkspaceList, WorkspaceState};
 
 const LABEL_INSTANCE: &str = "giles.instance";
 const LABEL_WORKSPACE: &str = "giles.workspace";
@@ -67,12 +67,7 @@ impl DockerEnvironment {
     ///
     /// `options` is `{"image": "..."}`. An image outside the allowlist, any other option, and an id
     /// that is already in use are [`Error::InvalidRequest`].
-    pub async fn create_workspace(
-        &self,
-        id: &str,
-        options: serde_json::Value,
-    ) -> Result<Workspace> {
-        check_workspace_id(id)?;
+    pub(crate) async fn create(&self, id: &str, options: serde_json::Value) -> Result<Workspace> {
         let options: CreateOptions = serde_json::from_value(options).map_err(|e| {
             Error::invalid(format!(
                 "invalid options: {e}. Expected {{\"image\": \"...\"}}"
@@ -128,13 +123,12 @@ impl DockerEnvironment {
         }
         info!(workspace = id, image = %image.digest, "created workspace");
         let container = self.find_container(id).await?;
-        Ok(self.describe(&volume, container.as_ref(), None))
+        Ok(self.describe(WorkspaceId::new(id)?, &volume, container.as_ref(), None))
     }
 
     /// Deletes a workspace's container and volume, then the image if this plugin pulled it and no
     /// other workspace of this instance uses it. Succeeds if there is no such workspace.
-    pub async fn delete_workspace(&self, id: &str) -> Result<()> {
-        check_workspace_id(id)?;
+    pub(crate) async fn delete(&self, id: &str) -> Result<()> {
         let _guard = self.lock(id).await;
         let volume = self.find_volume(id).await?;
         let name = self.resource_name(id);
@@ -174,8 +168,7 @@ impl DockerEnvironment {
 
     /// Makes a workspace ready for commands: starts its container if it is stopped, and recreates
     /// the container from the recorded image if it is gone but the volume remains.
-    pub async fn start_workspace(&self, id: &str) -> Result<StartOutcome> {
-        check_workspace_id(id)?;
+    pub(crate) async fn start(&self, id: &str) -> Result<StartOutcome> {
         // The common case, a running container, takes no lock.
         if let Some(container) = self.find_container(id).await?
             && container.state == Some(ContainerSummaryStateEnum::RUNNING)
@@ -241,8 +234,7 @@ impl DockerEnvironment {
 
     /// Stops a workspace's container, keeping its volume and the container's own files. Succeeds
     /// if it is already stopped.
-    pub async fn stop_workspace(&self, id: &str) -> Result<()> {
-        check_workspace_id(id)?;
+    pub(crate) async fn stop(&self, id: &str) -> Result<()> {
         let _guard = self.lock(id).await;
         if self.find_volume(id).await?.is_none() {
             return Err(Error::not_found(format!("there is no workspace {id}")));
@@ -274,7 +266,7 @@ impl DockerEnvironment {
 
     /// Every workspace of this instance, with the free space where the engine keeps volumes when
     /// that can be measured (it needs a running workspace to measure from).
-    pub async fn list_workspaces(&self) -> Result<WorkspaceList> {
+    pub(crate) async fn list(&self) -> Result<WorkspaceList> {
         let volumes = self.instance_volumes().await?;
         let containers = self.instance_containers().await?;
         let usage = self.volume_usage().await;
@@ -294,7 +286,7 @@ impl DockerEnvironment {
                 free_bytes = self.free_bytes(c).await;
             }
             let used = usage.get(&volume.name).copied();
-            workspaces.push(self.describe(volume, container, used));
+            workspaces.push(self.describe(WorkspaceId::new(id.as_str())?, volume, container, used));
         }
         workspaces.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(WorkspaceList {
@@ -546,9 +538,9 @@ impl DockerEnvironment {
                 "preparing workspace {id}: mkdir exited {code}: {}",
                 String::from_utf8_lossy(&stderr).trim()
             ))),
-            Err(Error::Other(message)) if mentions_missing_file(&message) => Err(Error::invalid(
-                "the image has no /bin/sh, which workspaces need",
-            )),
+            Err(error @ Error::Other(_)) if mentions_missing_file(&error.to_string()) => Err(
+                Error::invalid("the image has no /bin/sh, which workspaces need"),
+            ),
             Err(e) => Err(e),
         }
     }
@@ -718,6 +710,7 @@ impl DockerEnvironment {
 
     fn describe(
         &self,
+        id: WorkspaceId,
         volume: &Volume,
         container: Option<&ContainerSummary>,
         disk: Option<u64>,
@@ -744,7 +737,7 @@ impl DockerEnvironment {
             format!("Container from the image {} ({digest})", label(LABEL_IMAGE))
         };
         Workspace {
-            id: label(LABEL_WORKSPACE).to_owned(),
+            id,
             description,
             working_directory: WORKSPACE_DIR.to_owned(),
             persistence: format!(

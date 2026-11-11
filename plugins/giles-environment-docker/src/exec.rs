@@ -16,10 +16,10 @@ use tokio::time::{Instant, Sleep};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, ErrorExt as _, Result};
 use crate::helper::HELPER_PATH;
-use crate::types::{ExecEvent, ExecExit, ExecRequest};
 use crate::{DockerEnvironment, WORKSPACE_DIR};
+use giles_types::{ExecEvent, ExecExit, ExecRequest};
 
 /// How long after a kill the command's output may keep flowing before the exec is abandoned.
 const KILL_GRACE: Duration = Duration::from_secs(10);
@@ -85,12 +85,14 @@ impl DockerEnvironment {
     /// At most `output_limit` bytes of output are sent; the rest is counted in
     /// [`ExecExit::dropped_bytes`]. A command still running after `timeout` is killed, and its
     /// exit says so.
-    pub async fn exec(
+    pub(crate) async fn exec_command(
         &self,
         id: &str,
         request: ExecRequest,
     ) -> Result<BoxStream<'static, Result<ExecEvent>>> {
-        crate::check_workspace_id(id)?;
+        if request.timeout.is_zero() {
+            return Err(Error::invalid("the timeout must be longer than zero"));
+        }
         let container = self.running_container(id).await?;
         let command = vec!["/bin/sh".to_owned(), "-c".to_owned(), request.command];
         self.exec_wrapped(
@@ -163,11 +165,11 @@ impl DockerEnvironment {
             input
                 .write_all(&bytes)
                 .await
-                .map_err(|e| Error::Unavailable(format!("sending input to the command: {e}")))?;
+                .map_err(|e| Error::unavailable(format!("sending input to the command: {e}")))?;
             input
                 .shutdown()
                 .await
-                .map_err(|e| Error::Unavailable(format!("closing the command's input: {e}")))?;
+                .map_err(|e| Error::unavailable(format!("closing the command's input: {e}")))?;
         }
         let state = StreamState {
             env: self.clone(),
@@ -216,6 +218,7 @@ impl DockerEnvironment {
                     collected.timed_out = exit.timed_out;
                     collected.dropped = exit.dropped_bytes;
                 }
+                _ => {}
             }
         }
         Ok(collected)
@@ -308,7 +311,7 @@ impl DockerEnvironment {
                 return Ok(code);
             }
             if Instant::now() >= deadline {
-                return Err(Error::Unavailable(
+                return Err(Error::unavailable(
                     "the engine didn't report the command's exit status".to_owned(),
                 ));
             }

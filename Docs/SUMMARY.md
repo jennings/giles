@@ -18,6 +18,7 @@
 - [Email](user/email.md)
 - [WhatsApp](user/whatsapp.md)
 - [Discord](user/discord.md)
+- [Docker environment](user/docker-environment.md)
 - [Skills and memory](user/skills-and-memory.md)
 - [Writing a plugin](user/writing-a-plugin.md)
 
@@ -48,6 +49,7 @@
 - [Email channel](technical/email.md)
 - [WhatsApp channel](technical/whatsapp.md)
 - [Discord channel](technical/discord.md)
+- [Docker environment](technical/environment-docker.md)
 - [gRPC Protocols](technical/protocols.md)
 - [Admin service](technical/admin.md)
 - [Configuration](technical/config.md)
