@@ -4,7 +4,6 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use giles_types::OutputMode;
 use tokio::sync::mpsc;
 
 use super::*;
@@ -89,8 +88,6 @@ struct FakeRun {
 fn info(version: &str) -> DescribeInfo {
     DescribeInfo {
         version: version.into(),
-        output: OutputMode::Blocks,
-        can_initiate: false,
         requested_grants: RequestedGrants::default(),
     }
 }

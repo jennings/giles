@@ -12,6 +12,14 @@ supervises it: health checks, relaunches with backoff, and the stop sequence. A
 `[channel.<instance>]` with `address` is a remote plugin that someone else runs: the host connects
 to it instead ([Remote plugins](#remote-plugins)), and supervises the connection the same way.
 
+Launching, connecting, the `Describe` check, supervision, and the `Describe` cache work on a
+`PluginInstance` (`plugin_host::instance`): the kind, name, component, `config`, and either a
+launched binary with its sandbox or a remote address. A `KindSpec` holds what differs between the
+kinds of gRPC plugin: the kind `Describe` must report, the capabilities it checks, whether
+`Configure` returns an identity namespace, and the service whose health supervision checks. A kind's
+configuration converts to a `PluginInstance` and supplies the `Attach` that registers a plugin that
+came up.
+
 ## Launch
 
 `Launcher::launch_channel(&ChannelInstance)` runs these steps under a `launch` span, inside the
@@ -401,6 +409,7 @@ admin service:
 
 ```rust
 pub struct PluginStatus {
+    pub kind: Kind,
     pub instance: InstanceName,
     pub component: String,
     pub binary: Option<PathBuf>,          // found at the last lookup, links resolved
@@ -408,7 +417,7 @@ pub struct PluginStatus {
                                           // BackingOff { until } | Failed | Stopped
     pub restarts: u32,                    // relaunches since the core started
     pub last_error: Option<String>,       // last launch failure, crash, or failed check; kept
-    pub describe: Option<DescribeInfo>,   // version, output, can_initiate, requested_grants
+    pub describe: Option<DescribeInfo>,   // version, requested_grants
     pub describe_cached: bool,            // describe came from the cache
 }
 ```
@@ -431,10 +440,10 @@ the binary's SHA-256, the instance's config hash (`ChannelInstance::config_hash`
 secrets are resolved), and the answer with its version. Each launch rewrites it. Before each launch,
 and at each binary check, supervision looks up the entry for the binary and config at hand and shows
 it in `PluginStatus::describe` (with `describe_cached`) until the plugin is up, so `giles status`
-can show capabilities and requested grants of a plugin that is failing or backing off. The lookup
-can't know the version before a launch, so it matches the binary and the config and returns the
-version recorded with them. A damaged file is a miss. The cache keeps one directory per kind, so
-instances of different kinds with one name never share a file.
+can show the requested grants of a plugin that is failing or backing off. The lookup can't know the
+version before a launch, so it matches the binary and the config and returns the version recorded
+with them. A damaged file is a miss. The cache keeps one directory per kind, so instances of
+different kinds with one name never share a file.
 
 ## Startup and shutdown
 
