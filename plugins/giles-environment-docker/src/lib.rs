@@ -3,7 +3,7 @@
 //! Colima).
 //!
 //! A workspace is a container plus a named volume mounted at `/workspace`. [`DockerEnvironment`]
-//! has one method per environment RPC. The plugin keeps no state of its own: everything it needs
+//! implements [`giles_types::Environment`]. The plugin keeps no state of its own: everything it needs
 //! to find a workspace again is in labels on the volume (which outlives the container) and the
 //! container:
 //!
@@ -25,22 +25,24 @@ mod files;
 mod helper;
 mod image;
 mod lifecycle;
-mod types;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use bollard::Docker;
+use futures::stream::BoxStream;
+use giles_types::{
+    Environment, EnvironmentInfo, ExecEvent, ExecRequest, FindRequest, FindResult, GrepRequest,
+    GrepResult, ReadFile, StartOutcome, Workspace, WorkspaceId, WorkspaceList,
+};
 use serde_json::{Value, json};
 
 pub use config::{Config, DEFAULT_NETWORK, DEFAULT_SOCKET, Registry, Settings, parse_memory};
+use error::ErrorExt as _;
 pub use error::{Error, Result};
-pub use helper::{Arch, HELPER_PATH};
+pub use helper::{Arch, HELPER_PATH, default_dir as default_helper_dir};
 pub use image::{Allowlist, DEFAULT_PATTERNS, ParseError, Reference};
-pub use types::{
-    EnvironmentInfo, ExecEvent, ExecExit, ExecRequest, FindRequest, FindResult, GrepMatch,
-    GrepRequest, GrepResult, ReadFile, StartOutcome, Workspace, WorkspaceList, WorkspaceState,
-};
 
 /// The directory commands start in, where the workspace volume is mounted.
 pub const WORKSPACE_DIR: &str = "/workspace";
@@ -100,7 +102,7 @@ impl DockerEnvironment {
         let docker =
             Docker::connect_with_unix(&socket, API_TIMEOUT_SECS, bollard::API_DEFAULT_VERSION)
                 .map_err(|e| {
-                    Error::Unavailable(format!("can't use the Docker socket {socket}: {e}"))
+                    Error::unavailable(format!("can't use the Docker socket {socket}: {e}"))
                 })?;
         let docker = docker
             .negotiate_version()
@@ -133,14 +135,6 @@ impl DockerEnvironment {
                 helper,
                 locks: Mutex::new(HashMap::new()),
             }),
-        })
-    }
-
-    /// The creation options this instance accepts. Only `image`; the schema lists the allowed
-    /// image patterns, so the model sees them.
-    pub async fn info(&self) -> Result<EnvironmentInfo> {
-        Ok(EnvironmentInfo {
-            options_schema: options_schema(&self.inner.settings.allowlist().describe()),
         })
     }
 
@@ -184,6 +178,61 @@ impl DockerEnvironment {
     }
 }
 
+#[async_trait]
+impl Environment for DockerEnvironment {
+    /// The creation options this instance accepts. Only `image`; the schema lists the allowed
+    /// image patterns, so the model sees them.
+    async fn info(&self) -> Result<EnvironmentInfo> {
+        Ok(EnvironmentInfo {
+            options_schema: options_schema(&self.settings().allowlist().describe()),
+        })
+    }
+
+    async fn create_workspace(&self, id: &WorkspaceId, options: Value) -> Result<Workspace> {
+        self.create(id.as_str(), options).await
+    }
+
+    async fn delete_workspace(&self, id: &WorkspaceId) -> Result<()> {
+        self.delete(id.as_str()).await
+    }
+
+    async fn start_workspace(&self, id: &WorkspaceId) -> Result<StartOutcome> {
+        self.start(id.as_str()).await
+    }
+
+    async fn stop_workspace(&self, id: &WorkspaceId) -> Result<()> {
+        self.stop(id.as_str()).await
+    }
+
+    async fn list_workspaces(&self) -> Result<WorkspaceList> {
+        self.list().await
+    }
+
+    async fn exec(
+        &self,
+        id: &WorkspaceId,
+        request: ExecRequest,
+    ) -> Result<BoxStream<'static, Result<ExecEvent>>> {
+        self.exec_command(id.as_str(), request).await
+    }
+
+    async fn read_file(&self, id: &WorkspaceId, path: &str, max_bytes: u64) -> Result<ReadFile> {
+        self.read(id.as_str(), path, max_bytes).await
+    }
+
+    async fn write_file(&self, id: &WorkspaceId, path: &str, content: Vec<u8>) -> Result<()> {
+        self.write(id.as_str(), path, content).await
+    }
+
+    async fn find(&self, id: &WorkspaceId, request: FindRequest) -> Result<FindResult> {
+        self.find_files(id.as_str(), request).await
+    }
+
+    async fn grep(&self, id: &WorkspaceId, request: GrepRequest) -> Result<GrepResult> {
+        self.grep_files(id.as_str(), request).await
+    }
+}
+
 /// The JSON Schema of the creation options, with `allowed` (the image patterns) in the
 /// description.
 fn options_schema(allowed: &str) -> Value {
@@ -205,22 +254,6 @@ fn options_schema(allowed: &str) -> Value {
     })
 }
 
-/// Checks a workspace id the way the protocol defines it: 1 to 64 characters of `a-z`, `0-9`, `-`.
-pub(crate) fn check_workspace_id(id: &str) -> Result<()> {
-    let valid = !id.is_empty()
-        && id.len() <= 64
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-    if valid {
-        Ok(())
-    } else {
-        Err(Error::invalid(
-            "a workspace id is 1 to 64 characters of a-z, 0-9, and \"-\"",
-        ))
-    }
-}
-
 /// Labels as the engine wants them.
 pub(crate) fn label_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
     pairs
@@ -232,16 +265,6 @@ pub(crate) fn label_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn workspace_ids_follow_the_protocol() {
-        assert!(check_workspace_id("a").is_ok());
-        assert!(check_workspace_id("0b1c-ff").is_ok());
-        assert!(check_workspace_id(&"a".repeat(64)).is_ok());
-        for bad in ["", "A", "a_b", "a b", "a/b", "../x", &"a".repeat(65)] {
-            assert!(check_workspace_id(bad).is_err(), "{bad:?}");
-        }
-    }
 
     #[test]
     fn the_schema_takes_only_an_image_and_lists_the_allowed_patterns() {

@@ -1,44 +1,31 @@
-//! The plugin's error type. Its variants mirror what the environment protocol can report, and
-//! their messages may be shown to the model.
+//! Errors are [`giles_types::Error`], whose messages may be shown to the model. This adds the
+//! constructors the backend uses.
 
-/// What went wrong.
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum Error {
-    /// The request can't succeed as made: refused options, an id in use, a bad glob. Retrying it
-    /// won't help.
-    #[error("{0}")]
-    InvalidRequest(String),
+pub use giles_types::{Error, Result};
+
+/// Constructors for [`Error`] that read like the failure they report.
+pub(crate) trait ErrorExt {
+    /// The request can't succeed as made: refused options, an id in use, a bad glob.
+    fn invalid(message: impl Into<String>) -> Self;
+
     /// A workspace or a path doesn't exist.
-    #[error("{0}")]
-    NotFound(String),
-    /// The Docker API can't be reached or failed.
-    #[error("{0}")]
-    Unavailable(String),
-    /// Any other failure.
-    #[error("{0}")]
-    Other(String),
-}
-
-/// A `Result` whose error is [`Error`].
-pub type Result<T> = std::result::Result<T, Error>;
-
-impl Error {
-    pub(crate) fn invalid(message: impl Into<String>) -> Self {
-        Self::InvalidRequest(message.into())
-    }
-
-    pub(crate) fn not_found(message: impl Into<String>) -> Self {
-        Self::NotFound(message.into())
-    }
-
-    pub(crate) fn other(message: impl Into<String>) -> Self {
-        Self::Other(message.into())
-    }
+    fn not_found(message: impl Into<String>) -> Self;
 
     /// Classifies a Docker API error: a connection or server failure is `Unavailable`, a 404 is
     /// `NotFound`, anything else `Other`. `context` says what was being done.
-    pub(crate) fn docker(context: &str, error: &bollard::errors::Error) -> Self {
+    fn docker(context: &str, error: &bollard::errors::Error) -> Self;
+}
+
+impl ErrorExt for Error {
+    fn invalid(message: impl Into<String>) -> Self {
+        Self::InvalidRequest(message.into())
+    }
+
+    fn not_found(message: impl Into<String>) -> Self {
+        Self::NotFound(message.into())
+    }
+
+    fn docker(context: &str, error: &bollard::errors::Error) -> Self {
         use bollard::errors::Error as Api;
         match error {
             Api::DockerResponseServerError {
@@ -48,11 +35,11 @@ impl Error {
             Api::DockerResponseServerError {
                 status_code,
                 message,
-            } if *status_code >= 500 => Self::Unavailable(format!("{context}: {message}")),
+            } if *status_code >= 500 => Self::unavailable(format!("{context}: {message}")),
             Api::DockerResponseServerError { message, .. } => {
-                Self::Other(format!("{context}: {message}"))
+                Self::other(format!("{context}: {message}"))
             }
-            other => Self::Unavailable(format!("{context}: {other}")),
+            other => Self::unavailable(format!("{context}: {other}")),
         }
     }
 }

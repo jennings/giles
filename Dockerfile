@@ -18,14 +18,23 @@ COPY . .
 # The binaries the image ships: the daemon and every first-party plugin meant for real use (the echo
 # channel plugin is test-only). Protobuf code generation uses the vendored `protoc`. `target/` is a
 # cache mount, which isn't part of the layer, so the binaries are copied out to /out.
+#
+# The Docker environment plugin copies a static Linux helper into the workspace containers it
+# creates, built for the architecture of the engine it talks to. In this image that is the image's
+# own architecture (the plugin reaches an engine on another machine as a remote plugin), so the
+# helper is built for it, as a musl binary that runs in any image, and installed next to the plugin
+# as `giles-workspace-helper-<arch>`.
 RUN --mount=type=cache,id=giles-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=giles-cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=giles-target,target=/src/target,sharing=locked \
     set -eu; \
-    bins="giles giles-channel-irc giles-channel-email giles-channel-whatsapp giles-channel-discord"; \
+    bins="giles giles-channel-irc giles-channel-email giles-channel-whatsapp giles-channel-discord giles-environment-docker"; \
+    arch="$(uname -m)"; \
     cargo build --release --locked $(for bin in $bins; do printf -- '-p %s ' "$bin"; done); \
+    cargo build --release --locked -p giles-workspace-helper --target "$arch-unknown-linux-musl"; \
     mkdir /out; \
-    for bin in $bins; do cp "target/release/$bin" /out/; done
+    for bin in $bins; do cp "target/release/$bin" /out/; done; \
+    cp "target/$arch-unknown-linux-musl/release/giles-workspace-helper" "/out/giles-workspace-helper-$arch"
 
 # Runtime stage.
 FROM debian:bookworm-slim

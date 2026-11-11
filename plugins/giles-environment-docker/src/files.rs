@@ -5,10 +5,10 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::error::{Error, Result};
+use crate::DockerEnvironment;
+use crate::error::{Error, ErrorExt as _, Result};
 use crate::exec::Collected;
-use crate::types::{FindRequest, FindResult, GrepMatch, GrepRequest, GrepResult, ReadFile};
-use crate::{DockerEnvironment, check_workspace_id};
+use giles_types::{FindRequest, FindResult, GrepMatch, GrepRequest, GrepResult, ReadFile};
 
 /// How long a helper call may take. Long enough for a search of a big tree.
 const HELPER_TIMEOUT: Duration = Duration::from_secs(60);
@@ -21,8 +21,7 @@ const EXIT_NOT_FOUND: i32 = 66;
 
 impl DockerEnvironment {
     /// Reads up to `max_bytes` from the start of the file at `path`.
-    pub async fn read_file(&self, id: &str, path: &str, max_bytes: u64) -> Result<ReadFile> {
-        check_workspace_id(id)?;
+    pub(crate) async fn read(&self, id: &str, path: &str, max_bytes: u64) -> Result<ReadFile> {
         let path = file_arg(path)?;
         let container = self.running_container(id).await?;
         let max = max_bytes.to_string();
@@ -56,8 +55,7 @@ impl DockerEnvironment {
 
     /// Writes `content` to the file at `path`, creating missing parent directories. An existing
     /// file keeps its permissions.
-    pub async fn write_file(&self, id: &str, path: &str, content: Vec<u8>) -> Result<()> {
-        check_workspace_id(id)?;
+    pub(crate) async fn write(&self, id: &str, path: &str, content: Vec<u8>) -> Result<()> {
         let path = file_arg(path)?;
         let container = self.running_container(id).await?;
         let out = self
@@ -73,8 +71,7 @@ impl DockerEnvironment {
     }
 
     /// Lists files whose path under the searched directory matches a glob.
-    pub async fn find(&self, id: &str, request: FindRequest) -> Result<FindResult> {
-        check_workspace_id(id)?;
+    pub(crate) async fn find_files(&self, id: &str, request: FindRequest) -> Result<FindResult> {
         let limit = request.limit.to_string();
         let mut args = vec!["find", "--pattern", &request.pattern, "--limit", &limit];
         let path;
@@ -95,8 +92,7 @@ impl DockerEnvironment {
     }
 
     /// Searches file contents with a regular expression.
-    pub async fn grep(&self, id: &str, request: GrepRequest) -> Result<GrepResult> {
-        check_workspace_id(id)?;
+    pub(crate) async fn grep_files(&self, id: &str, request: GrepRequest) -> Result<GrepResult> {
         let limit = request.limit.to_string();
         let mut args = vec!["grep", "--pattern", &request.pattern, "--limit", &limit];
         let path;
@@ -155,7 +151,7 @@ fn file_arg(path: &str) -> Result<String> {
 /// message is the helper's), and anything else, including a timeout, is unexpected.
 fn succeeded(out: Collected, what: &str) -> Result<Collected> {
     if out.timed_out {
-        return Err(Error::Unavailable(format!("{what} timed out")));
+        return Err(Error::unavailable(format!("{what} timed out")));
     }
     if out.code == 0 {
         return Ok(out);
@@ -247,7 +243,7 @@ mod tests {
         let mut slow = collected(137, "", "");
         slow.timed_out = true;
         assert!(
-            matches!(succeeded(slow, "searching"), Err(Error::Unavailable(m)) if m.contains("timed out"))
+            matches!(succeeded(slow, "searching"), Err(Error::Unavailable { message, .. }) if message.contains("timed out"))
         );
         assert!(succeeded(collected(0, "", ""), "x").is_ok());
     }

@@ -273,7 +273,7 @@ An environment gives agents isolated workspaces to run commands and edit files i
 | `sandbox`, `unsandboxed` |      | As for channels, except the network is off by default            |
 | `address`, `auth`, `insecure` |  | Run the plugin yourself, as for [remote channels](#remote-plugins) |
 
-Give an environment plugin a `unix` grant for its runtime's socket.
+The [Docker environment](docker-environment.md) shows the sandbox grants its plugin needs.
 
 `config` is an error together with `address`. A remote environment's settings are in the
 configuration file of the plugin, on the host that runs it.

@@ -1732,17 +1732,25 @@ dependencies = [
 name = "giles-environment-docker"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bollard",
  "bytes",
  "futures",
+ "giles-plugin-sdk",
+ "giles-proto",
+ "giles-types",
  "jiff",
+ "prost-types",
  "serde",
  "serde_json",
  "tar",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "toml 1.1.8+spec-1.1.0",
+ "tonic",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 

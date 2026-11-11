@@ -5,6 +5,9 @@ This page shows how to run a channel plugin that ships with Giles (`giles-channe
 Giles, and how to point Giles at it. By default Giles launches its plugins itself and doesn't need
 any of this.
 
+The steps are the same for the [Docker environment plugin](docker-environment.md), except that its
+settings go in the `[config]` table of the transport file instead of in `giles.toml`.
+
 A plugin you run yourself is a [remote plugin](configuration.md#remote-plugins). Giles neither
 starts nor sandboxes it, so it runs with your own privileges.
 

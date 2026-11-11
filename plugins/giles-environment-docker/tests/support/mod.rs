@@ -1,5 +1,7 @@
 //! Shared setup for the integration tests: finding a Docker API socket, building the Linux helper
 //! for the engine's architecture, and cleaning up what a test created.
+// Each test file uses a different part of this module.
+#![allow(dead_code)]
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -9,7 +11,13 @@ use std::time::Duration;
 use bollard::Docker;
 use bollard::query_parameters::CreateImageOptionsBuilder;
 use futures::StreamExt;
-use giles_environment_docker::{Arch, Config, DockerEnvironment, ExecEvent, ExecRequest};
+use giles_environment_docker::{Arch, Config, DockerEnvironment};
+use giles_types::{Environment, ExecEvent, ExecRequest, WorkspaceId};
+
+/// A workspace id for a literal.
+pub fn wid(id: &str) -> WorkspaceId {
+    WorkspaceId::new(id).unwrap()
+}
 
 /// The image most tests run in. The harness pulls it up front, so no test pulls it (and no test's
 /// delete removes it).
@@ -224,7 +232,7 @@ impl Scope {
     /// Creates a workspace in `IMAGE` and returns its id.
     pub async fn workspace(&self, id: &str) -> String {
         self.env
-            .create_workspace(id, serde_json::json!({ "image": IMAGE }))
+            .create_workspace(&wid(id), serde_json::json!({ "image": IMAGE }))
             .await
             .unwrap();
         id.to_owned()
@@ -240,7 +248,7 @@ impl Scope {
         let mut events = self
             .env
             .exec(
-                id,
+                &wid(id),
                 ExecRequest {
                     command: command.to_owned(),
                     timeout,
@@ -264,6 +272,7 @@ impl Scope {
                     ran.timed_out = exit.timed_out;
                     ran.dropped = exit.dropped_bytes;
                 }
+                _ => {}
             }
         }
         assert!(exited, "the stream ended without an exit event");

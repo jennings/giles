@@ -31,6 +31,13 @@ branches the sandbox tests exercise. The end-to-end suite ([End-to-end tests](e2
 inside `cargo test --workspace` and launches its echo plugin in the sandbox wherever the host has
 one.
 
+On Ubuntu the tests also run with `GILES_REQUIRE_DOCKER=1`. The Docker environment plugin's
+integration tests need a Docker API socket and skip, printing why, when none answers; GitHub's
+Ubuntu runners have Docker, and this makes the tests fail instead of skipping. The tests build the
+Linux helper for the engine's architecture with `cargo build --target <arch>-unknown-linux-musl`,
+which needs the musl targets that `rust-toolchain.toml` installs. The macOS runners have no engine,
+so there the tests skip.
+
 **Protobuf** runs on `ubuntu-latest`. It installs a pinned `buf` (`BUF_VERSION`, set in the
 workflow's `env` block, with the `bufbuild/buf-action` action in setup-only mode) and runs, from the
 repository root:
@@ -64,8 +71,9 @@ The job sets up Buildx (`docker/setup-buildx-action`), builds the image for `lin
 `docker/build-push-action`, loads it into the runner's Docker as `giles:test`, and smoke-tests it
 before anything is pushed:
 
-- `giles --version` runs, and the four plugin binaries (IRC, email, WhatsApp, Discord) are in
-  `/usr/local/bin/`.
+- `giles --version` runs, and the four channel plugin binaries (IRC, email, WhatsApp, Discord), the
+  Docker environment plugin, and its `giles-workspace-helper-x86_64` file are in `/usr/local/bin/`.
+  The helper runs (`df /`) with no libraries of the image, which shows it is a static binary.
 - `giles serve` starts with the default entrypoint, a fresh named volume at `/data` holding a
   `giles.toml` with only `http_listen = "0.0.0.0:8080"` and the owner, and the port published.
 - `giles status`, run in the container until the admin socket answers (up to 30 seconds), must

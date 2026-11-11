@@ -10,12 +10,13 @@ use std::time::{Duration, Instant};
 use bollard::models::ContainerSummaryStateEnum;
 use bollard::query_parameters::{ListContainersOptionsBuilder, ListVolumesOptionsBuilder};
 use futures::StreamExt;
-use giles_environment_docker::{
-    Config, DockerEnvironment, Error, ExecEvent, ExecRequest, FindRequest, GrepRequest,
-    StartOutcome, WorkspaceState,
+use giles_environment_docker::{Config, DockerEnvironment};
+use giles_types::{
+    Environment, Error, ExecEvent, ExecRequest, FindRequest, GrepRequest, StartOutcome,
+    WorkspaceState,
 };
 use serde_json::json;
-use support::{IMAGE, harness};
+use support::{IMAGE, harness, wid};
 
 macro_rules! scope {
     ($name:expr) => {{
@@ -92,7 +93,7 @@ async fn create_refuses_images_outside_the_allowlist_and_bad_options() {
     let (_, scope) = scope!("refuse");
     let error = scope
         .env
-        .create_workspace("w1", json!({ "image": "busybox" }))
+        .create_workspace(&wid("w1"), json!({ "image": "busybox" }))
         .await
         .unwrap_err();
     let Error::InvalidRequest(message) = error else {
@@ -113,7 +114,7 @@ async fn create_refuses_images_outside_the_allowlist_and_bad_options() {
     ] {
         let error = scope
             .env
-            .create_workspace("w1", options.clone())
+            .create_workspace(&wid("w1"), options.clone())
             .await
             .unwrap_err();
         assert!(
@@ -121,12 +122,8 @@ async fn create_refuses_images_outside_the_allowlist_and_bad_options() {
             "{options}: {error:?}"
         );
     }
-    let error = scope
-        .env
-        .create_workspace("Bad_Id", json!({ "image": IMAGE }))
-        .await
-        .unwrap_err();
-    assert!(matches!(error, Error::InvalidRequest(_)));
+    // The id type refuses a bad id before the plugin sees it.
+    assert!(giles_types::WorkspaceId::new("Bad_Id").is_err());
     assert!(
         scope
             .env
@@ -146,10 +143,10 @@ async fn create_then_exec_streams_output_and_reports_the_exit() {
     });
     let workspace = scope
         .env
-        .create_workspace("w1", json!({ "image": IMAGE }))
+        .create_workspace(&wid("w1"), json!({ "image": IMAGE }))
         .await
         .unwrap();
-    assert_eq!(workspace.id, "w1");
+    assert_eq!(workspace.id.as_str(), "w1");
     assert_eq!(workspace.working_directory, "/workspace");
     assert_eq!(workspace.state, WorkspaceState::Running);
     assert!(
@@ -197,7 +194,7 @@ async fn create_rejects_an_id_in_use() {
     scope.workspace("w1").await;
     let error = scope
         .env
-        .create_workspace("w1", json!({ "image": IMAGE }))
+        .create_workspace(&wid("w1"), json!({ "image": IMAGE }))
         .await
         .unwrap_err();
     assert!(matches!(error, Error::InvalidRequest(m) if m.contains("already exists")));
@@ -251,7 +248,7 @@ async fn dropping_the_exec_stream_kills_the_command_and_its_children() {
     let mut events = scope
         .env
         .exec(
-            "w1",
+            &wid("w1"),
             ExecRequest {
                 command: "touch /workspace/started; (sleep 301 &) ; sleep 302".to_owned(),
                 timeout: Duration::from_secs(120),
@@ -291,9 +288,10 @@ async fn cancelling_before_the_first_event_still_kills_the_command() {
     let (_, scope) = scope!("cancel");
     scope.workspace("w1").await;
     // Drop the whole exec future almost immediately, at a random point in its setup.
+    let w1 = wid("w1");
     for delay_ms in [0u64, 5, 20] {
         let exec = scope.env.exec(
-            "w1",
+            &w1,
             ExecRequest {
                 command: "sleep 303".to_owned(),
                 timeout: Duration::from_secs(120),
@@ -319,17 +317,17 @@ async fn files_can_be_written_read_found_and_searched() {
     scope.workspace("w1").await;
     let env = &scope.env;
 
-    env.write_file("w1", "notes/a.txt", b"hello\nneedle one\n".to_vec())
+    env.write_file(&wid("w1"), "notes/a.txt", b"hello\nneedle one\n".to_vec())
         .await
         .unwrap();
     env.write_file(
-        "w1",
+        &wid("w1"),
         "/workspace/b.rs",
         b"fn needle() {}\r\nfn other() {}\n".to_vec(),
     )
     .await
     .unwrap();
-    env.write_file("w1", "-dash.txt", b"-".to_vec())
+    env.write_file(&wid("w1"), "-dash.txt", b"-".to_vec())
         .await
         .unwrap();
     assert_eq!(
@@ -339,31 +337,34 @@ async fn files_can_be_written_read_found_and_searched() {
     assert_eq!(scope.run("w1", "cat ./-dash.txt").await.stdout, "-");
 
     // Relative paths resolve against /workspace; absolute ones work too.
-    let read = env.read_file("w1", "notes/a.txt", 1000).await.unwrap();
+    let read = env
+        .read_file(&wid("w1"), "notes/a.txt", 1000)
+        .await
+        .unwrap();
     assert_eq!(
         (read.content.as_slice(), read.size),
         (&b"hello\nneedle one\n"[..], 17)
     );
     let read = env
-        .read_file("w1", "/workspace/notes/a.txt", 5)
+        .read_file(&wid("w1"), "/workspace/notes/a.txt", 5)
         .await
         .unwrap();
     assert_eq!((read.content.as_slice(), read.size), (&b"hello"[..], 17));
-    let read = env.read_file("w1", "notes/a.txt", 0).await.unwrap();
+    let read = env.read_file(&wid("w1"), "notes/a.txt", 0).await.unwrap();
     assert_eq!((read.content.len(), read.size), (0, 17));
     assert!(matches!(
-        env.read_file("w1", "missing", 10).await,
+        env.read_file(&wid("w1"), "missing", 10).await,
         Err(Error::NotFound(_))
     ));
     assert!(
-        matches!(env.read_file("w1", "notes", 10).await, Err(Error::InvalidRequest(m)) if m.contains("directory"))
+        matches!(env.read_file(&wid("w1"), "notes", 10).await, Err(Error::InvalidRequest(m)) if m.contains("directory"))
     );
 
     // An existing file keeps its permissions; a new one doesn't need to be executable.
     scope
         .run("w1", "printf '#!/bin/sh\\n' > run.sh; chmod 750 run.sh")
         .await;
-    env.write_file("w1", "run.sh", b"#!/bin/sh\necho hi\n".to_vec())
+    env.write_file(&wid("w1"), "run.sh", b"#!/bin/sh\necho hi\n".to_vec())
         .await
         .unwrap();
     assert_eq!(
@@ -373,28 +374,36 @@ async fn files_can_be_written_read_found_and_searched() {
 
     // Binary content, empty content, and content bigger than a pipe buffer survive intact.
     let binary: Vec<u8> = (0..=255u8).cycle().take(3 * 1024 * 1024 + 7).collect();
-    env.write_file("w1", "big.bin", binary.clone())
+    env.write_file(&wid("w1"), "big.bin", binary.clone())
         .await
         .unwrap();
-    let read = env.read_file("w1", "big.bin", u64::MAX).await.unwrap();
+    let read = env
+        .read_file(&wid("w1"), "big.bin", u64::MAX)
+        .await
+        .unwrap();
     assert_eq!(read.size, binary.len() as u64);
     assert!(read.content == binary, "binary content changed");
-    env.write_file("w1", "empty", Vec::new()).await.unwrap();
-    assert_eq!(env.read_file("w1", "empty", 10).await.unwrap().size, 0);
+    env.write_file(&wid("w1"), "empty", Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        env.read_file(&wid("w1"), "empty", 10).await.unwrap().size,
+        0
+    );
 
     // find: sorted, relative to the searched directory, .git and .gitignore skipped.
-    env.write_file("w1", ".gitignore", b"ignored.txt\n".to_vec())
+    env.write_file(&wid("w1"), ".gitignore", b"ignored.txt\n".to_vec())
         .await
         .unwrap();
-    env.write_file("w1", "ignored.txt", b"needle\n".to_vec())
+    env.write_file(&wid("w1"), "ignored.txt", b"needle\n".to_vec())
         .await
         .unwrap();
-    env.write_file("w1", ".git/config", b"needle\n".to_vec())
+    env.write_file(&wid("w1"), ".git/config", b"needle\n".to_vec())
         .await
         .unwrap();
     let found = env
         .find(
-            "w1",
+            &wid("w1"),
             FindRequest {
                 pattern: "**/*.txt".into(),
                 path: None,
@@ -407,7 +416,7 @@ async fn files_can_be_written_read_found_and_searched() {
     assert!(!found.truncated);
     let found = env
         .find(
-            "w1",
+            &wid("w1"),
             FindRequest {
                 pattern: "*".into(),
                 path: Some("notes".into()),
@@ -419,7 +428,7 @@ async fn files_can_be_written_read_found_and_searched() {
     assert_eq!(found.paths, ["a.txt"]);
     let found = env
         .find(
-            "w1",
+            &wid("w1"),
             FindRequest {
                 pattern: "**".into(),
                 path: None,
@@ -432,7 +441,7 @@ async fn files_can_be_written_read_found_and_searched() {
     assert!(found.truncated);
     assert!(matches!(
         env.find(
-            "w1",
+            &wid("w1"),
             FindRequest {
                 pattern: "*".into(),
                 path: Some("nope".into()),
@@ -444,7 +453,7 @@ async fn files_can_be_written_read_found_and_searched() {
     ));
     assert!(matches!(
         env.find(
-            "w1",
+            &wid("w1"),
             FindRequest {
                 pattern: "[".into(),
                 path: None,
@@ -456,9 +465,10 @@ async fn files_can_be_written_read_found_and_searched() {
     ));
 
     // grep: path order then line order, binary files, .git, and ignored files skipped.
+    let w1 = wid("w1");
     let grep = |pattern: &str, path: Option<&str>, glob: Option<&str>, ci: bool, limit: u32| {
         env.grep(
-            "w1",
+            &w1,
             GrepRequest {
                 pattern: pattern.into(),
                 path: path.map(Into::into),
@@ -510,13 +520,13 @@ async fn stopping_keeps_files_and_starting_says_processes_ended() {
         )
         .await;
     assert!(matches!(
-        scope.env.start_workspace("w1").await.unwrap(),
+        scope.env.start_workspace(&wid("w1")).await.unwrap(),
         StartOutcome::Running
     ));
 
-    scope.env.stop_workspace("w1").await.unwrap();
+    scope.env.stop_workspace(&wid("w1")).await.unwrap();
     // Stopping twice is fine.
-    scope.env.stop_workspace("w1").await.unwrap();
+    scope.env.stop_workspace(&wid("w1")).await.unwrap();
     let list = scope.env.list_workspaces().await.unwrap();
     assert_eq!(list.workspaces.len(), 1);
     assert_eq!(list.workspaces[0].state, WorkspaceState::Stopped);
@@ -525,7 +535,7 @@ async fn stopping_keeps_files_and_starting_says_processes_ended() {
         scope
             .env
             .exec(
-                "w1",
+                &wid("w1"),
                 ExecRequest {
                     command: "true".into(),
                     timeout: Duration::from_secs(5),
@@ -536,7 +546,7 @@ async fn stopping_keeps_files_and_starting_says_processes_ended() {
         Err(Error::InvalidRequest(_))
     ));
 
-    let outcome = scope.env.start_workspace("w1").await.unwrap();
+    let outcome = scope.env.start_workspace(&wid("w1")).await.unwrap();
     let StartOutcome::Started { detail } = outcome else {
         panic!("expected Started, got {outcome:?}");
     };
@@ -551,7 +561,7 @@ async fn stopping_keeps_files_and_starting_says_processes_ended() {
     let list = scope.env.list_workspaces().await.unwrap();
     assert_eq!(list.workspaces[0].state, WorkspaceState::Running);
     assert!(matches!(
-        scope.env.start_workspace("w1").await.unwrap(),
+        scope.env.start_workspace(&wid("w1")).await.unwrap(),
         StartOutcome::Running
     ));
 }
@@ -595,7 +605,7 @@ async fn a_container_removed_outside_is_recreated_with_its_files() {
     assert_eq!(list.workspaces.len(), 1);
     assert_eq!(list.workspaces[0].state, WorkspaceState::Stopped);
 
-    let outcome = scope.env.start_workspace("w1").await.unwrap();
+    let outcome = scope.env.start_workspace(&wid("w1")).await.unwrap();
     let StartOutcome::Recreated { detail } = outcome else {
         panic!("expected Recreated, got {outcome:?}");
     };
@@ -611,7 +621,7 @@ async fn a_container_removed_outside_is_recreated_with_its_files() {
         .await;
     assert_eq!(ran.stdout, "precious\ncfg\n1\n", "{ran:?}");
     assert!(matches!(
-        scope.env.start_workspace("w1").await.unwrap(),
+        scope.env.start_workspace(&wid("w1")).await.unwrap(),
         StartOutcome::Running
     ));
 }
@@ -653,7 +663,8 @@ async fn concurrent_starts_recreate_the_container_once() {
         )
         .await
         .unwrap();
-    let starts = futures::future::join_all((0..5).map(|_| scope.env.start_workspace("w1"))).await;
+    let w1 = wid("w1");
+    let starts = futures::future::join_all((0..5).map(|_| scope.env.start_workspace(&w1))).await;
     let recreated = starts
         .iter()
         .filter(|s| matches!(s.as_ref().unwrap(), StartOutcome::Recreated { .. }))
@@ -669,7 +680,7 @@ async fn delete_removes_the_container_and_volume_and_is_repeatable() {
     let label = format!("giles.instance={}", scope_instance(&scope));
     assert_eq!(labeled(&scope.docker, &label).await, (2, 2));
 
-    scope.env.delete_workspace("w1").await.unwrap();
+    scope.env.delete_workspace(&wid("w1")).await.unwrap();
     assert_eq!(labeled(&scope.docker, &label).await, (1, 1));
     let list = scope.env.list_workspaces().await.unwrap();
     assert_eq!(
@@ -681,23 +692,23 @@ async fn delete_removes_the_container_and_volume_and_is_repeatable() {
     );
 
     // A missing workspace deletes fine; using it is NotFound.
-    scope.env.delete_workspace("w1").await.unwrap();
+    scope.env.delete_workspace(&wid("w1")).await.unwrap();
     assert!(matches!(
-        scope.env.start_workspace("w1").await,
+        scope.env.start_workspace(&wid("w1")).await,
         Err(Error::NotFound(_))
     ));
     assert!(matches!(
-        scope.env.stop_workspace("w1").await,
+        scope.env.stop_workspace(&wid("w1")).await,
         Err(Error::NotFound(_))
     ));
     assert!(matches!(
-        scope.env.read_file("w1", "x", 1).await,
+        scope.env.read_file(&wid("w1"), "x", 1).await,
         Err(Error::NotFound(_))
     ));
 
     // A stopped workspace, and one whose container is already gone, delete too.
-    scope.env.stop_workspace("w2").await.unwrap();
-    scope.env.delete_workspace("w2").await.unwrap();
+    scope.env.stop_workspace(&wid("w2")).await.unwrap();
+    scope.env.delete_workspace(&wid("w2")).await.unwrap();
     assert_eq!(labeled(&scope.docker, &label).await, (0, 0));
 }
 
@@ -719,21 +730,21 @@ async fn an_image_the_plugin_pulled_is_removed_with_its_last_workspace() {
         .await;
     scope
         .env
-        .create_workspace("w1", json!({ "image": BUSYBOX }))
+        .create_workspace(&wid("w1"), json!({ "image": BUSYBOX }))
         .await
         .unwrap();
     scope
         .env
-        .create_workspace("w2", json!({ "image": BUSYBOX }))
+        .create_workspace(&wid("w2"), json!({ "image": BUSYBOX }))
         .await
         .unwrap();
 
-    scope.env.delete_workspace("w1").await.unwrap();
+    scope.env.delete_workspace(&wid("w1")).await.unwrap();
     assert!(
         scope.docker.inspect_image(BUSYBOX).await.is_ok(),
         "w2 still uses it"
     );
-    scope.env.delete_workspace("w2").await.unwrap();
+    scope.env.delete_workspace(&wid("w2")).await.unwrap();
     assert!(
         scope.docker.inspect_image(BUSYBOX).await.is_err(),
         "the last workspace is gone"
@@ -742,7 +753,7 @@ async fn an_image_the_plugin_pulled_is_removed_with_its_last_workspace() {
     // An image the engine already had stays.
     scope
         .env
-        .create_workspace("w3", json!({ "image": BUSYBOX }))
+        .create_workspace(&wid("w3"), json!({ "image": BUSYBOX }))
         .await
         .unwrap();
     // (It was pulled by w3, so make it "preexisting" for the next instance.)
@@ -756,15 +767,15 @@ async fn an_image_the_plugin_pulled_is_removed_with_its_last_workspace() {
         .await;
     other
         .env
-        .create_workspace("w4", json!({ "image": BUSYBOX }))
+        .create_workspace(&wid("w4"), json!({ "image": BUSYBOX }))
         .await
         .unwrap();
-    other.env.delete_workspace("w4").await.unwrap();
+    other.env.delete_workspace(&wid("w4")).await.unwrap();
     assert!(
         scope.docker.inspect_image(BUSYBOX).await.is_ok(),
         "another instance's workspace may not remove an image it didn't pull"
     );
-    scope.env.delete_workspace("w3").await.unwrap();
+    scope.env.delete_workspace(&wid("w3")).await.unwrap();
     assert!(scope.docker.inspect_image(BUSYBOX).await.is_err());
 }
 
@@ -776,10 +787,10 @@ async fn instances_do_not_see_each_others_workspaces() {
     a.workspace("w1").await;
     assert!(b.env.list_workspaces().await.unwrap().workspaces.is_empty());
     assert!(matches!(
-        b.env.start_workspace("w1").await,
+        b.env.start_workspace(&wid("w1")).await,
         Err(Error::NotFound(_))
     ));
-    b.env.delete_workspace("w1").await.unwrap();
+    b.env.delete_workspace(&wid("w1")).await.unwrap();
     assert_eq!(a.env.list_workspaces().await.unwrap().workspaces.len(), 1);
     // The same id in both is fine.
     b.workspace("w1").await;
@@ -794,7 +805,7 @@ async fn scope_ids(scope: &support::Scope) -> Vec<String> {
         .unwrap()
         .workspaces
         .into_iter()
-        .map(|w| w.id)
+        .map(|w| w.id.as_str().to_owned())
         .collect()
 }
 
@@ -906,7 +917,9 @@ async fn connecting_to_a_missing_socket_is_unavailable() {
         ..Config::default()
     };
     let error = DockerEnvironment::connect(config, "x").await.unwrap_err();
-    assert!(matches!(error, Error::Unavailable(m) if m.contains("/nonexistent/docker.sock")));
+    assert!(
+        matches!(error, Error::Unavailable { message: m, .. } if m.contains("/nonexistent/docker.sock"))
+    );
 }
 
 #[tokio::test]
@@ -920,7 +933,7 @@ async fn a_digest_pinned_image_is_allowed_by_a_star_pattern() {
     let (_, hex) = digest.split_once('@').unwrap();
     let workspace = scope
         .env
-        .create_workspace("w1", json!({ "image": format!("alpine@{hex}") }))
+        .create_workspace(&wid("w1"), json!({ "image": format!("alpine@{hex}") }))
         .await
         .unwrap();
     assert!(
@@ -936,7 +949,7 @@ async fn a_digest_pinned_image_is_allowed_by_a_star_pattern() {
     });
     let error = strict
         .env
-        .create_workspace("w1", json!({ "image": format!("alpine@{hex}") }))
+        .create_workspace(&wid("w1"), json!({ "image": format!("alpine@{hex}") }))
         .await
         .unwrap_err();
     assert!(matches!(error, Error::InvalidRequest(_)));
@@ -949,7 +962,7 @@ async fn exec_events_end_with_exactly_one_exit() {
     let mut events = scope
         .env
         .exec(
-            "w1",
+            &wid("w1"),
             ExecRequest {
                 command: "for i in 1 2 3; do echo $i; sleep 0.2; done".into(),
                 timeout: Duration::from_secs(30),
@@ -994,7 +1007,7 @@ async fn an_image_without_a_shell_is_refused_and_leaves_nothing_behind() {
         .await;
     let error = scope
         .env
-        .create_workspace("w1", json!({ "image": NO_SHELL }))
+        .create_workspace(&wid("w1"), json!({ "image": NO_SHELL }))
         .await
         .unwrap_err();
     assert!(
@@ -1014,4 +1027,22 @@ async fn an_image_without_a_shell_is_refused_and_leaves_nothing_behind() {
     );
     // The image this attempt pulled didn't stay behind.
     assert!(scope.docker.inspect_image(NO_SHELL).await.is_err());
+}
+
+#[tokio::test]
+async fn a_zero_timeout_is_an_invalid_request() {
+    let (_, scope) = scope!("zero-timeout");
+    scope.workspace("w1").await;
+    let result = scope
+        .env
+        .exec(
+            &wid("w1"),
+            ExecRequest {
+                command: "true".into(),
+                timeout: Duration::ZERO,
+                output_limit: 10,
+            },
+        )
+        .await;
+    assert!(matches!(result, Err(Error::InvalidRequest(m)) if m.contains("timeout")));
 }
