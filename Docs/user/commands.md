@@ -6,6 +6,7 @@ Giles handles these messages itself, and they never reach the agent.
 | -------------------------- | -------------------------------------------------------------------- |
 | `/new`                     | Start a fresh session in this conversation. The old history stays stored. |
 | `/stop`                    | Stop the agent's current turn, including any tool calls it's running |
+| `/env reset`               | Delete this conversation's [workspace](environments.md) and create a new, empty one like it |
 | `yes <code>`               | Allow the tool call the agent asked approval for                     |
 | `yes! <code>`              | Allow it, and allow that tool for the rest of the session            |
 | `no <code>`                | Deny it                                                              |
@@ -26,6 +27,17 @@ If the agent is still answering when you send `/new`, that answer finishes in th
 any messages you sent before `/new`. Only later messages start the fresh session.
 
 `/stop` stops only the current turn. Messages still waiting for the agent are answered next.
+
+## Resetting the workspace
+
+`/new` keeps the conversation's [workspace](environments.md), so the agent still has its files in
+the fresh session. `/env reset` deletes the workspace, with everything in it, and creates a new one
+in the same environment with the same options. Giles replies when it's done, or tells you why it
+couldn't. If the conversation has no workspace, it says so.
+
+A reset deletes the files at once, so use it when you want the agent to start over. If the agent is
+working when you send it, the commands it is running in the old workspace fail, and its next command
+runs in the new one.
 
 ## Approving tool calls
 

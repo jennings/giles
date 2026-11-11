@@ -1,4 +1,4 @@
-//! Core commands: `/new`, `/stop`, and approval replies, which the core handles itself and never
+//! Core commands: `/new`, `/stop`, `/env reset`, and approval replies, which the core handles itself and never
 //! passes to an agent (PLAN sections 3.2, 6.2, 6.3, 6.4). This module only parses; the sessions,
 //! turn-control, and approval code acts on the result. Design:
 //! `Docs/technical/identity-and-routing.md`.
@@ -13,6 +13,9 @@ pub enum CoreCommand {
     New,
     /// `/stop`: cancel the session's running turn.
     Stop,
+    /// `/env reset`: delete the conversation's workspace and create it again with the same
+    /// environment and options.
+    EnvReset,
     /// `yes`, `yes!`, or `no`, optionally followed by a short code, answering a pending approval.
     Approval(ApprovalReply),
 }
@@ -69,8 +72,8 @@ impl PendingApprovals for NoPendingApprovals {
 /// Leading and trailing whitespace is ignored and words are ASCII case-insensitive (phones
 /// capitalize the first letter). Recognized forms, each the whole message:
 ///
-/// - `/new` and `/stop`, with nothing after them. `/new@bot`, `/new please`, `/link`, and any
-///   other `/word` are ordinary text.
+/// - `/new` and `/stop`, with nothing after them, and `/env reset`. `/new@bot`, `/new please`,
+///   `/env`, `/env reset now`, `/link`, and any other `/word` are ordinary text.
 /// - `yes`, `yes!`, or `no`, optionally followed by whitespace and a short code of ASCII letters
 ///   and digits. It's an approval reply only if `is_pending(code)` says an approval matching it
 ///   is pending; otherwise (`no` answering a question from the agent) it's ordinary text.
@@ -88,6 +91,10 @@ pub fn parse(text: &str, is_pending: impl FnOnce(Option<&str>) -> bool) -> Optio
         if first.eq_ignore_ascii_case("/stop") {
             return Some(CoreCommand::Stop);
         }
+    }
+    if first.eq_ignore_ascii_case("/env") && second.is_some_and(|s| s.eq_ignore_ascii_case("reset"))
+    {
+        return Some(CoreCommand::EnvReset);
     }
     let answer = if first.eq_ignore_ascii_case("yes") {
         Answer::Yes
@@ -136,6 +143,17 @@ mod tests {
             ("\t/stop ", Some(CoreCommand::Stop)),
             ("/New", Some(CoreCommand::New)),
             ("/STOP", Some(CoreCommand::Stop)),
+            ("/env reset", Some(CoreCommand::EnvReset)),
+            ("  /Env   RESET\n", Some(CoreCommand::EnvReset)),
+            ("/env\treset", Some(CoreCommand::EnvReset)),
+            ("/env", None),
+            ("/env reset now", None),
+            ("/env resets", None),
+            ("/env delete", None),
+            ("/envreset", None),
+            ("/ env reset", None),
+            ("env reset", None),
+            ("please /env reset", None),
             ("/new please", None),
             ("/stop now", None),
             ("/new@giles", None),

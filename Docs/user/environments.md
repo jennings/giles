@@ -72,7 +72,8 @@ the agent can carry on with the same files.
 
 A workspace goes away when:
 
-- you or the agent reset or delete it
+- you reset it with [`/env reset`](commands.md#resetting-the-workspace), or the agent resets or
+  deletes it
 - it has gone unused, and its conversation has had no messages, for the environment's `delete_after`
 - the environment loses it, for example when you remove its container by hand
 - it belongs to a scheduled job's run that ended

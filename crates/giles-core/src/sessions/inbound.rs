@@ -5,15 +5,20 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use giles_store::{InboxState, NewInboxEvent, Session, SessionId, SessionKind};
-use giles_types::{Channel, ChannelEvent, ChannelStatus, EventId, Timestamp};
+use giles_types::{
+    Channel, ChannelEvent, ChannelStatus, EventId, OutboundMessage, SendTarget, Timestamp,
+};
 use jiff::SignedDuration;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use super::{Inner, lock};
+use super::{EnvReset, Inner, lock};
 use crate::commands::CoreCommand;
 use crate::config::InstanceName;
 use crate::router::{ChannelSource, Inbound, Routed};
+
+/// How long `/env reset` waits for the channel to take its reply.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A channel's latest status event.
 #[derive(Debug, Clone, PartialEq)]
@@ -242,7 +247,7 @@ pub(super) fn idle_expired(session: &Session, idle: Duration, now: Timestamp) ->
 
 /// Acts on a command whose event is recorded and acked. Failures are logged: the event can't be
 /// redelivered any more.
-async fn command_act(inner: &Inner, to: Routed, command: CoreCommand, now: Timestamp) {
+async fn command_act(inner: &Arc<Inner>, to: Routed, command: CoreCommand, now: Timestamp) {
     let agent = &to.session.agent;
     let channel = &to.session.channel;
     match command {
@@ -261,10 +266,53 @@ async fn command_act(inner: &Inner, to: Routed, command: CoreCommand, now: Times
                 info!(%agent, channel, "/stop with no turn running; nothing to do");
             }
         }
+        // Creating the new workspace can take a while (an image pull), so it doesn't hold up the
+        // channel's other events.
+        CoreCommand::EnvReset => {
+            inner.tasks.spawn(env_reset(inner.clone(), to));
+        }
         CoreCommand::Approval(reply) => inner.approvals.answer(to, reply).await,
     }
 }
 
+/// `/env reset`: resets the conversation's workspace and tells the user what came of it. Stops
+/// at shutdown; the reset's database and plugin work is idempotent, and the user can send the
+/// command again.
+async fn env_reset(inner: Arc<Inner>, to: Routed) {
+    let agent = &to.session.agent;
+    let channel = &to.session.channel;
+    let outcome = tokio::select! {
+        biased;
+        () = inner.shutdown.cancelled() => return,
+        outcome = inner.env_resets.reset(&to.session) => outcome,
+    };
+    info!(%agent, channel, ?outcome, "workspace reset by /env reset");
+    let text = match &outcome {
+        EnvReset::Done => {
+            "The workspace was deleted and a new, empty one was created with the same options."
+        }
+        EnvReset::NoWorkspace => "This conversation has no workspace.",
+        EnvReset::Failed(message) => message,
+    };
+    let Some(channel_handle) = inner.channels.channel(channel) else {
+        warn!(
+            channel,
+            "cannot tell the user about /env reset: the channel is not registered"
+        );
+        return;
+    };
+    let message = OutboundMessage {
+        target: SendTarget::Conversation(to.session.conversation.clone()),
+        markdown: text.to_owned(),
+        attachments: Vec::new(),
+        reply_to: None,
+    };
+    match tokio::time::timeout(REPLY_TIMEOUT, channel_handle.send(message)).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => warn!(channel, %error, "cannot tell the user about /env reset"),
+        Err(_) => warn!(channel, "timed out telling the user about /env reset"),
+    }
+}
 #[cfg(test)]
 mod tests {
     use giles_types::{AgentId, ConversationId};

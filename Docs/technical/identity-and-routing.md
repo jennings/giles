@@ -20,7 +20,7 @@ let router = Router::new(&config.owner, RouteList::new(config.routes.clone()), a
 let source = ChannelSource { instance, component, identity_namespace };
 match router.classify(&source, &event_id, &message, &pending_approvals) {
     Inbound::Drop(reason) => { /* already logged; ack the event and forget it */ }
-    Inbound::Command { to, command } => { /* /new, /stop, or an approval reply */ }
+    Inbound::Command { to, command } => { /* /new, /stop, /env reset, or an approval reply */ }
     Inbound::Message(to) => { /* store in the inbox for the session to.session */ }
 }
 ```
@@ -43,9 +43,10 @@ A message that passes is `Routed { session: SessionKey { agent, channel, convers
 it has no attachments and `commands::parse` recognizes its text, it's `Inbound::Command`; otherwise
 `Inbound::Message`.
 
-Core commands are recognized after routing, not before it: `/new`, `/stop`, and approvals all act on
-a session, and the session key includes the routed agent. They still never reach the agent (§3.2). A
-command in a conversation no route matches is dropped like any other message.
+Core commands are recognized after routing, not before it: `/new`, `/stop`, `/env reset`, and
+approvals all act on a session, and the session key includes the routed agent. They still never
+reach the agent (§3.2). A command in a conversation no route matches is dropped like any other
+message.
 
 ### Logging
 
@@ -187,13 +188,14 @@ trimming whitespace, with words compared ASCII case-insensitively (phones capita
 | ------------------------------------------ | ---------------------------------------------- |
 | `/new`                                     | `CoreCommand::New`                             |
 | `/stop`                                    | `CoreCommand::Stop`                            |
+| `/env reset`                               | `CoreCommand::EnvReset`                        |
 | `yes`, `yes!`, `no`                        | `Approval { answer: Yes/YesForSession/No, code: None }`, if any approval is pending |
 | `yes 4821`, `yes! 4821`, `no 4821`         | `Approval { code: Some("4821") }`, if that code is pending |
 
-Anything else is ordinary text, including `/new please`, `/new@giles`, `/link` (no self-linking in
-v1), unknown `/words`, `yes please`, and a `yes`/`no` the lookup doesn't claim. Codes are a single
-token of ASCII letters and digits, passed to the lookup as typed. A message with attachments is
-never a command, so an attachment can't be silently lost.
+Anything else is ordinary text, including `/new please`, `/new@giles`, `/env`, `/env reset now`,
+`/link` (no self-linking in v1), unknown `/words`, `yes please`, and a `yes`/`no` the lookup doesn't
+claim. Codes are a single token of ASCII letters and digits, passed to the lookup as typed. A
+message with attachments is never a command, so an attachment can't be silently lost.
 
 Whether `yes` is an approval reply depends on state the approvals code owns, so it's an input: the
 `PendingApprovals` trait, `is_pending(to: &Routed, code: Option<&str>) -> bool`. It's implemented
@@ -203,6 +205,6 @@ for closures of that shape, by `NoPendingApprovals`, and (through `sessions::App
 With nothing pending, `yes` and `no` are ordinary messages, so they can answer the agent's own
 questions.
 
-The commands' effects belong to the inbox and sessions code (`/new`), turn control (`/stop`), and
-approvals (replies); [Sessions and turns](sessions.md) records each command's event id as a dedupe
-key before acting on it, so a redelivered command acts once.
+The commands' effects belong to the inbox and sessions code (`/new`, `/env reset`), turn control
+(`/stop`), and approvals (replies); [Sessions and turns](sessions.md) records each command's event
+id as a dedupe key before acting on it, so a redelivered command acts once.

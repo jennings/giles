@@ -2,8 +2,8 @@
 
 `giles_core::sessions` takes every channel event from the stream to a turn ([Plan](../PLAN.md) §4.5,
 §6.2, §6.3, §8.5): classify, store, ack, then act. It owns the per-session turn queue, `/new`,
-`/stop`, `idle_reset`, startup recovery, dedupe-key pruning, and the latest status of each channel.
-The agent loop plugs in as a `TurnRunner`; the decision before anything is stored is
+`/stop`, `/env reset`, `idle_reset`, startup recovery, dedupe-key pruning, and the latest status of
+each channel. The agent loop plugs in as a `TurnRunner`; the decision before anything is stored is
 [Identity and routing](identity-and-routing.md); the tables are in [Storage](storage.md).
 
 | Item                     | What it is                                                              |
@@ -71,6 +71,13 @@ Commands act after their ack, so a crash between the two loses the command but n
 - `/stop` cancels `Turn::cancel` of the turn running for the key, in whichever session it runs. With
   nothing running it's logged and ignored. Making the cancellation reach toolsets, and filling
   unanswered tool calls with `cancelled`, is the agent loop's job.
+- `/env reset` goes to `EnvResets::reset` (`Workspaces` implements it: `recreate` with
+  `DeleteReason::UserReset`) in a task of its own, since creating the new workspace can take a while
+  and mustn't hold up the channel's other events. The user gets a reply in the conversation (sent
+  through the channel registered for the key's instance, not through a turn): a new workspace was
+  made, the conversation has none, or the reset failed with the reason. It needs no session, and
+  never cancels the running turn: the turn's next workspace call opens the new workspace. `/new`
+  doesn't call it, so a fresh session keeps the workspace.
 - An approval reply goes to `Approvals::answer`. `classify` only returns one while `is_pending` says
   it's an approval reply, so with nothing waiting `yes` and `no` stay ordinary messages.
 

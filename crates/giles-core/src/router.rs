@@ -609,6 +609,7 @@ mod tests {
         let cases = [
             ("/new", Some(CoreCommand::New)),
             (" /Stop ", Some(CoreCommand::Stop)),
+            ("/env reset", Some(CoreCommand::EnvReset)),
             ("/foo", None),
             ("/new please", None),
         ];

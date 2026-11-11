@@ -108,6 +108,15 @@ impl WorkspaceError {
     }
 }
 
+/// What [`Workspaces::recreate`] did.
+#[derive(Debug)]
+pub struct Recreation {
+    /// The workspace that was deleted, as [`Workspaces::delete`] returns it.
+    pub discarded: WorkspaceRecord,
+    /// The new workspace, or why creating it failed (the owner then has none).
+    pub created: Result<WorkspaceRecord, WorkspaceError>,
+}
+
 /// A workspace, opened for a turn.
 pub struct Opened {
     /// The workspace's row. `last_used_at` is the time of this open.
@@ -378,6 +387,40 @@ impl Workspaces {
             record.state = WorkspaceState::Deleted;
         }
         Ok(Some(record))
+    }
+
+    /// Deletes the owner's workspace and creates another in the same environment with the same
+    /// options (`/env reset`). Returns `None` if the owner has no workspace. The environment
+    /// must be configured and connected, which is checked before anything is deleted, so a reset
+    /// that can't succeed doesn't cost the files. Leases don't matter: a turn that is using the
+    /// workspace finds the new one on its next call.
+    ///
+    /// # Errors
+    ///
+    /// [`WorkspaceError::NotReady`] while the workspace is being created;
+    /// [`UnknownEnvironment`](WorkspaceError::UnknownEnvironment) and
+    /// [`Unreachable`](WorkspaceError::Unreachable) if its environment can't be used (nothing was
+    /// deleted); [`Store`](WorkspaceError::Store). A failure of the new workspace's creation is in
+    /// [`Recreation::created`], since the old one is gone by then.
+    pub async fn recreate(
+        &self,
+        owner: &WorkspaceOwner,
+        reason: DeleteReason,
+    ) -> Result<Option<Recreation>, WorkspaceError> {
+        let Some(current) = self.inner.store.workspace_current(owner).await? else {
+            return Ok(None);
+        };
+        if current.state != WorkspaceState::Active {
+            return Err(WorkspaceError::NotReady);
+        }
+        self.reachable(&current.environment)?;
+        let Some(discarded) = self.delete(owner, reason).await? else {
+            return Ok(None);
+        };
+        let created = self
+            .create(owner, &current.environment, current.options)
+            .await;
+        Ok(Some(Recreation { discarded, created }))
     }
 
     /// Opens the owner's workspace for a call: takes the turn's lease on it (kept in `slot`

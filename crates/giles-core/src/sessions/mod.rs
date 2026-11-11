@@ -33,6 +33,7 @@ use crate::commands::{ApprovalReply, NoPendingApprovals};
 use crate::config::{AgentConfig, BusyMode, InstanceName, LiveConfig};
 use crate::registry::Registry;
 use crate::router::{Routed, Router};
+use crate::workspaces::{DeleteReason, Recreation, WorkspaceOwner, Workspaces};
 
 pub use inbound::ChannelStatusRecord;
 pub use turn::{JobTurn, Reply, Steering, Turn, TurnMessage, TurnOutcome, TurnRunner};
@@ -109,6 +110,63 @@ impl Approvals for NoPendingApprovals {
     }
 }
 
+/// What `/env reset` did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum EnvReset {
+    /// The conversation had a workspace: it was deleted and a new one created in the same
+    /// environment with the same options.
+    Done,
+    /// The conversation has no workspace.
+    NoWorkspace,
+    /// The reset failed or only half worked; the message is for the user.
+    Failed(String),
+}
+
+/// The workspaces code, as the inbound pipeline sees it: what `/env reset` does. The daemon's is
+/// [`Workspaces`]; [`NoEnvResets`] has no workspaces.
+#[async_trait]
+pub trait EnvResets: Send + Sync {
+    /// Deletes the workspace of the conversation `key` (the user asked) and creates it again with
+    /// the same environment and options. Called only after the command's event is recorded and
+    /// acked, once per event.
+    async fn reset(&self, key: &SessionKey) -> EnvReset;
+}
+
+#[async_trait]
+impl EnvResets for Workspaces {
+    async fn reset(&self, key: &SessionKey) -> EnvReset {
+        let owner = WorkspaceOwner::Conversation {
+            agent: key.agent.clone(),
+            channel: key.channel.clone(),
+            conversation: key.conversation.clone(),
+        };
+        match self.recreate(&owner, DeleteReason::UserReset).await {
+            Ok(None) => EnvReset::NoWorkspace,
+            Ok(Some(Recreation { created: Ok(_), .. })) => EnvReset::Done,
+            Ok(Some(Recreation {
+                created: Err(error),
+                ..
+            })) => EnvReset::Failed(format!(
+                "The workspace was deleted, but creating a new one failed: {error}. Ask the agent \
+                 to create one."
+            )),
+            Err(error) => EnvReset::Failed(format!("The workspace was not reset: {error}")),
+        }
+    }
+}
+
+/// [`EnvResets`] for a core with no workspaces: every conversation has none.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoEnvResets;
+
+#[async_trait]
+impl EnvResets for NoEnvResets {
+    async fn reset(&self, _: &SessionKey) -> EnvReset {
+        EnvReset::NoWorkspace
+    }
+}
+
 /// The per-agent settings the session code uses.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AgentPolicy {
@@ -164,6 +222,8 @@ pub struct SessionsOptions {
     pub runner: Arc<dyn TurnRunner>,
     /// Pending approvals and where replies go.
     pub approvals: Arc<dyn Approvals>,
+    /// What `/env reset` does.
+    pub env_resets: Arc<dyn EnvResets>,
     /// The time source.
     pub clock: Arc<dyn Clock>,
 }
@@ -217,6 +277,7 @@ impl Sessions {
             channels: options.channels,
             runner: options.runner,
             approvals: options.approvals,
+            env_resets: options.env_resets,
             clock: options.clock,
             shutdown,
             live: Mutex::default(),
@@ -389,6 +450,7 @@ struct Inner {
     channels: Arc<dyn ChannelLookup>,
     runner: Arc<dyn TurnRunner>,
     approvals: Arc<dyn Approvals>,
+    env_resets: Arc<dyn EnvResets>,
     clock: Arc<dyn Clock>,
     shutdown: CancellationToken,
     /// Sessions with a driver task: one is running a turn or about to look for queued rows.

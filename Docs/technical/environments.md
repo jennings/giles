@@ -49,6 +49,11 @@ creation isn't reported to the model: it saw the error.
 - `delete(owner, reason)`: frees the owner's slot immediately (`deleting`), then asks the plugin and
   marks the row `deleted`. If the plugin is unreachable or fails, the row stays `deleting` and the
   sweep or the next connection finishes it. Leases don't stop it: the owner's own turn holds one.
+- `recreate(owner, reason)`: what `/env reset` does ([Sessions and turns](sessions.md)). It checks
+  that the workspace is `active` and its environment is configured and connected, so a reset that
+  can't work deletes nothing, then calls `delete` and `create` with the same environment and
+  options. It returns the discarded record and the creation's result, which can fail after the old
+  workspace is gone.
 - `current(owner)` and `last_deleted(owner)`: what the owner has, and what it had, with when, why,
   environment, and options, so the model can say what happened and create it again.
 - `open(owner, slot)`: takes the turn's lease, calls `StartWorkspace`, notes the use

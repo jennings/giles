@@ -256,6 +256,30 @@ impl Approvals for FakeApprovals {
     }
 }
 
+/// What `/env reset` does: answers with a switchable outcome and logs the conversations it was
+/// asked about.
+struct FakeEnvResets {
+    outcome: Mutex<EnvReset>,
+    asked: Mutex<Vec<SessionKey>>,
+}
+
+impl Default for FakeEnvResets {
+    fn default() -> Self {
+        Self {
+            outcome: Mutex::new(EnvReset::Done),
+            asked: Mutex::default(),
+        }
+    }
+}
+
+#[async_trait]
+impl EnvResets for FakeEnvResets {
+    async fn reset(&self, key: &SessionKey) -> EnvReset {
+        self.asked.lock().unwrap().push(key.clone());
+        self.outcome.lock().unwrap().clone()
+    }
+}
+
 /// A store and a channel, before the session manager starts.
 struct Setup {
     dir: TempDir,
@@ -266,6 +290,7 @@ struct Setup {
     /// Whether the channel is registered for recovery (it's attached by `start` either way).
     registered: bool,
     approvals: Arc<FakeApprovals>,
+    env_resets: Arc<FakeEnvResets>,
     acks: mpsc::UnboundedReceiver<Ack>,
     sent: mpsc::UnboundedReceiver<OutboundMessage>,
 }
@@ -298,6 +323,7 @@ impl Setup {
             policy,
             registered: true,
             approvals: Arc::default(),
+            env_resets: Arc::default(),
             acks,
             sent,
         }
@@ -338,6 +364,7 @@ impl Setup {
                 }),
                 runner: Arc::new(FakeRunner { turns: turns_tx }),
                 approvals: self.approvals.clone(),
+                env_resets: self.env_resets.clone(),
                 clock: self.clock.clone(),
             },
             shutdown.clone(),
@@ -682,6 +709,96 @@ async fn new_ends_the_session_once_after_its_ack() {
     let open = h.store().find_open_session(key()).await.unwrap().unwrap();
     assert_eq!(open.id, new);
     h.assert_no_turn().await;
+}
+
+impl Harness {
+    /// The next message the manager sent through the channel.
+    async fn sent(&mut self) -> OutboundMessage {
+        tokio::time::timeout(WAIT, self.setup.sent.recv())
+            .await
+            .expect("nothing sent")
+            .unwrap()
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn env_reset_resets_the_workspace_tells_the_user_and_acts_once() {
+    let (mut h, events) = Harness::new(queue()).await;
+    send(&events, message("r1", "/env reset"));
+    h.ack().await;
+    let reply = h.sent().await;
+    assert_eq!(
+        reply.target,
+        SendTarget::Conversation(ConversationId::new(OWNER).unwrap())
+    );
+    assert!(
+        reply.markdown.contains("new, empty one"),
+        "{}",
+        reply.markdown
+    );
+    assert_eq!(*h.setup.env_resets.asked.lock().unwrap(), [key()]);
+    // A command is no message: no session, no turn, and the event is a dedupe key.
+    h.assert_no_turn().await;
+    assert!(h.store().find_open_session(key()).await.unwrap().is_none());
+    assert!(!h.key_is_free("r1").await);
+
+    // A redelivered command doesn't reset again.
+    send(&events, message("r1", "/env reset"));
+    h.ack().await;
+    h.settle().await;
+    assert_eq!(h.setup.env_resets.asked.lock().unwrap().len(), 1);
+    assert!(h.setup.sent.try_recv().is_err());
+
+    // The words are case-insensitive, and `/env reset` with more text is a message.
+    send(&events, message("r2", " /ENV Reset "));
+    h.ack().await;
+    h.sent().await;
+    assert_eq!(h.setup.env_resets.asked.lock().unwrap().len(), 2);
+    send(&events, message("m1", "/env reset please"));
+    h.ack().await;
+    assert_eq!(h.turn().await.texts, ["/env reset please"]);
+    assert_eq!(h.setup.env_resets.asked.lock().unwrap().len(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn env_reset_says_when_there_is_no_workspace_or_it_failed() {
+    let (mut h, events) = Harness::new(queue()).await;
+    *h.setup.env_resets.outcome.lock().unwrap() = EnvReset::NoWorkspace;
+    send(&events, message("r1", "/env reset"));
+    h.ack().await;
+    assert_eq!(
+        h.sent().await.markdown,
+        "This conversation has no workspace."
+    );
+
+    *h.setup.env_resets.outcome.lock().unwrap() =
+        EnvReset::Failed("The workspace was not reset: the engine is down".to_owned());
+    send(&events, message("r2", "/env reset"));
+    h.ack().await;
+    assert_eq!(
+        h.sent().await.markdown,
+        "The workspace was not reset: the engine is down"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn env_reset_leaves_the_running_turn_and_new_leaves_the_workspace() {
+    let (mut h, events) = Harness::new(queue()).await;
+    send(&events, message("e1", "one"));
+    h.ack().await;
+    let turn = h.turn().await;
+    send(&events, message("r1", "/env reset"));
+    h.ack().await;
+    h.sent().await;
+    assert!(!turn.done.is_closed(), "the turn was cancelled");
+    turn.complete();
+
+    // `/new` ends the session and leaves the workspace alone.
+    send(&events, message("n1", "/new"));
+    h.ack().await;
+    h.settle().await;
+    assert_eq!(h.setup.env_resets.asked.lock().unwrap().len(), 1);
+    assert!(h.setup.sent.try_recv().is_err(), "/new says nothing");
 }
 
 #[tokio::test(start_paused = true)]
