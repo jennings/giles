@@ -120,7 +120,9 @@ impl Profile {
             .map(|p| real(p))
             .chain(execute.iter().cloned())
             .collect();
-        let unix = spec.unix.iter().map(|p| real(p)).collect();
+        let unix: BTreeSet<PathBuf> = spec.unix.iter().map(|p| real(p)).collect();
+        // A client may check that a socket exists before connecting to it.
+        lookup.extend(unix.iter().cloned());
         let write = stops.into_iter().collect();
         Ok(Self {
             program,

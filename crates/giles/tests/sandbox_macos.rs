@@ -281,6 +281,9 @@ fn unix_sockets_need_a_grant_for_that_path() {
         ..env.spec()
     };
     assert!(unix_connects(&env, &granted, &socket));
+    // A client may check that the socket exists before connecting (the Docker client does).
+    let probe = env.sh(&granted, r#"test -S "$1"; echo "$?""#, &[&socket]);
+    assert_eq!(probe.ok(), ["0"], "{probe}");
 }
 
 /// `getaddrinfo` resolves through mDNSResponder's socket, so a network grant must reach it, and

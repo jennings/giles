@@ -151,7 +151,8 @@ unchanged.
 iff the list is non-empty, and from Landlock ABI 9 the ruleset allows connecting to exactly the
 listed sockets (which must exist at launch); below ABI 9 a plugin with any `unix` grant can connect
 to every socket it can reach. macOS: the Seatbelt profile allows connecting to exactly the listed
-paths.
+paths, and reading their metadata, because clients such as the Docker client check that the socket
+exists first.
 
 ## Environment
 
@@ -314,7 +315,7 @@ the reason is next to each.
 | `file-read*` | `/dev/random`, `/dev/urandom` | Reading randomness from the devices fails without them |
 | `file-read*` | `/private/var/select/sh` | `/bin/sh` reads it to choose the shell and prints an error on every start without it |
 | `file-read* file-write-data` | `/dev/null` | Redirects to and from `/dev/null` |
-| `file-read-metadata` | `/etc`, `/var`, and the lookup paths above | Time zones and name resolution go through the `/etc` and `/var` links (they fail without them); `getcwd` and links in grants need the rest |
+| `file-read-metadata` | `/etc`, `/var`, the lookup paths above, and each `unix` grant | Time zones and name resolution go through the `/etc` and `/var` links (they fail without them); `getcwd` and links in grants need the lookup paths; socket clients check that the socket exists |
 | `file-read*` | `(literal <command>)`, `(subpath <read>)`, `(subpath <execute>)` | The plugin binary and the grants |
 | `file-read* file-write*` | `(subpath <data_dir>)`, `(subpath <write>)` | The data directory (with its `tmp/`, the plugin's `TMPDIR`) and `write` grants |
 | `deny file-write-unlink file-write-create` | `(literal <data_dir>)`, `(literal <write>)` | The roots themselves can't be removed, renamed, or replaced ([Writable roots and links](#writable-roots-and-links)) |
