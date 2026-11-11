@@ -16,7 +16,7 @@ use giles_core::admin::{
 use giles_core::config::Kind;
 use giles_core::plugin_host::{PluginState, PluginStatus};
 use giles_core::sessions::SystemClock;
-use giles_plugin_sdk::giles_types::{OutputMode, Timestamp};
+use giles_plugin_sdk::giles_types::Timestamp;
 use giles_proto::admin::v1 as pb;
 use tokio_util::sync::CancellationToken;
 
@@ -237,8 +237,6 @@ async fn describe_answers_are_cached_for_status() {
     let describe = describe.unwrap();
     assert!(!describe_cached);
     assert_eq!(describe.version, env!("CARGO_PKG_VERSION"));
-    assert_eq!(describe.output, OutputMode::Blocks);
-    assert!(describe.can_initiate);
     core.stop().await;
     let cached = home.root.cache_dir().join("describe/channel/echo.json");
     let entry: serde_json::Value = serde_json::from_slice(&fs::read(cached).unwrap()).unwrap();

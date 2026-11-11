@@ -1,4 +1,4 @@
-//! Remote plugins (PLAN section 7.6): channel plugins someone runs themselves, reached over TCP,
+//! Remote plugins (PLAN section 7.6): gRPC plugins someone runs themselves, reached over TCP,
 //! optionally with TLS, with a bearer token or OAuth client credentials. The core connects, calls
 //! `Describe` and `Configure` as it does for a launched plugin, and to stop, calls `Shutdown` and
 //! disconnects; it never manages the process.
@@ -24,9 +24,10 @@ use tracing::{Instrument as _, info};
 use url::{Host, Url};
 
 use super::grpc::{Authorization, CallMetadata};
+use super::instance::{InstanceRuntime, PluginInstance};
 use super::oauth::{self, TokenClient};
 use super::{LaunchError, PluginConnection, describe_and_configure};
-use crate::config::{Auth, ChannelInstance, ChannelRuntime, InstanceName, Secret, scrub};
+use crate::config::{Auth, ChannelInstance, InstanceName, Kind, Secret, scrub};
 
 /// How long connecting (TCP and the TLS handshake) may take.
 pub const REMOTE_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -48,9 +49,11 @@ const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct RemotePlugin {
+    /// The kind of plugin.
+    pub kind: Kind,
     /// The instance.
     pub instance: InstanceName,
-    /// Its component, `<name>` of `giles-channel-<name>`.
+    /// Its component, `<name>` of `giles-<kind>-<name>`.
     pub component: String,
     /// The instance's `address`.
     pub url: Url,
@@ -150,7 +153,16 @@ impl super::Launcher {
         &self,
         instance: &ChannelInstance,
     ) -> Result<RemotePlugin, LaunchError> {
-        let ChannelRuntime::Remote(remote) = &instance.runtime else {
+        let instance = PluginInstance::channel(instance).ok_or(LaunchError::NotRemote)?;
+        self.connect_remote_plugin(&instance).await
+    }
+
+    /// [`connect_remote`](Self::connect_remote) for an instance of any kind.
+    pub(crate) async fn connect_remote_plugin(
+        &self,
+        instance: &PluginInstance,
+    ) -> Result<RemotePlugin, LaunchError> {
+        let InstanceRuntime::Remote(remote) = &instance.runtime else {
             return Err(LaunchError::NotRemote);
         };
         let span = tracing::info_span!("launch");
@@ -218,6 +230,7 @@ impl super::Launcher {
                 "remote plugin connected",
             );
             Ok(RemotePlugin {
+                kind: instance.kind(),
                 instance: instance.name.clone(),
                 component: instance.component.clone(),
                 url: remote.url.clone(),

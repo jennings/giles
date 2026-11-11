@@ -1,4 +1,4 @@
-//! The plugin host (PLAN sections 7.3 to 7.6): launching gRPC channel plugins, connecting to
+//! The plugin host (PLAN sections 7.3 to 7.6): launching gRPC plugins (channels), connecting to
 //! remote ones, and connecting them to the core.
 //!
 //! [`Launcher::launch_channel`] takes one configured plugin channel from discovery to a configured
@@ -7,7 +7,8 @@
 //! (or directly with `unsandboxed = true`) in its own process group with its end of a socket pair
 //! as fd 3 and a per-launch token on stdin, reads the handshake line, connects the gRPC client,
 //! and calls `Describe` and `Configure`. The result is a [`LaunchedPlugin`]: the connection, the
-//! `Describe` and `Configure` results, and the [`PluginProcess`].
+//! `Describe` and `Configure` results, and the [`PluginProcess`]. What differs between the kinds
+//! of gRPC plugin is a [`PluginInstance`] and its [`KindSpec`](instance::KindSpec).
 //!
 //! [`Launcher::connect_remote`] does the same for a remote plugin channel (one with `address`)
 //! that someone else runs: TCP, optionally TLS, a bearer token or OAuth client credentials
@@ -22,6 +23,7 @@
 
 mod describe_cache;
 mod grpc;
+mod instance;
 mod oauth;
 mod orphans;
 mod process;
@@ -40,15 +42,12 @@ use std::process::ExitStatus;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use giles_plugin_sdk::convert::output_mode_from_proto;
 use giles_plugin_sdk::tls::rustls::RootCertStore;
-use giles_proto::channel::v1::channel_service_server::SERVICE_NAME as CHANNEL_SERVICE;
 use giles_proto::handshake::{
     EXIT_NO_SHARED_PROTOCOL, HandshakeError, HandshakeLine, SOCKET_COMMAND,
 };
 use giles_proto::plugin::v1::{
-    ConfigureRequest, DescribeRequest, DescribeResponse, PluginKind, SandboxGrants,
-    ShutdownRequest, describe_response,
+    ConfigureRequest, DescribeRequest, DescribeResponse, SandboxGrants, ShutdownRequest,
 };
 use giles_store::BlobStore;
 use giles_types::Channel;
@@ -60,6 +59,7 @@ use tracing::{Instrument as _, info, warn};
 
 pub use self::describe_cache::{DescribeCache, DescribeInfo, RequestedGrants};
 pub use self::grpc::{CallMetadata, PluginConnection, PluginTransport};
+use self::instance::{InstanceRuntime, PluginInstance, check_describe};
 pub use self::process::{PluginProcess, STDERR_TARGET};
 pub use self::remote::{REMOTE_CONNECT_TIMEOUT, REMOTE_SHUTDOWN_TIMEOUT, RemotePlugin, Secrets};
 pub use self::remote_channel::{BLOB_CHUNK_TIMEOUT, RemoteChannel};
@@ -68,8 +68,7 @@ use self::supervisor::{HEALTH_TIMEOUT, Launch, LaunchFailure, Running, Supervisi
 pub use self::supervisor::{PluginState, PluginStatus};
 use crate::admin::{PluginControl, PluginRunState, PluginRuntime};
 use crate::config::{
-    ChannelInstance, ChannelRuntime, Config, InstanceName, Kind, Secret, discover_plugin,
-    plugin_binary, scrub,
+    ChannelInstance, Config, InstanceName, Kind, Secret, discover_plugin, plugin_binary, scrub,
 };
 use crate::identity::{NamespaceError, validate_namespace};
 use crate::paths::{DataRoot, PathsError};
@@ -346,10 +345,10 @@ impl Launcher {
         &self.root
     }
 
-    /// The binary a launch of channel component `component` would run now, links resolved (the
+    /// The binary a launch of the `kind` plugin `component` would run now, links resolved (the
     /// same lookup as the launch), or `None` if there is none.
-    pub fn find_binary(&self, component: &str) -> Option<PathBuf> {
-        let found = discover_plugin(&self.root, Kind::Channel, component, &*self.env)?;
+    pub fn find_binary(&self, kind: Kind, component: &str) -> Option<PathBuf> {
+        let found = discover_plugin(&self.root, kind, component, &*self.env)?;
         fs::canonicalize(found).ok()
     }
 
@@ -363,7 +362,16 @@ impl Launcher {
         &self,
         instance: &ChannelInstance,
     ) -> Result<LaunchedPlugin, LaunchError> {
-        let ChannelRuntime::Plugin(launch) = &instance.runtime else {
+        let instance = PluginInstance::channel(instance).ok_or(LaunchError::NotLaunched)?;
+        self.launch_plugin(&instance).await
+    }
+
+    /// [`launch_channel`](Self::launch_channel) for an instance of any kind.
+    pub(crate) async fn launch_plugin(
+        &self,
+        instance: &PluginInstance,
+    ) -> Result<LaunchedPlugin, LaunchError> {
+        let InstanceRuntime::Launched(launch) = &instance.runtime else {
             return Err(LaunchError::NotLaunched);
         };
         let span = tracing::info_span!("launch");
@@ -374,7 +382,7 @@ impl Launcher {
 
     async fn launch(
         &self,
-        instance: &ChannelInstance,
+        instance: &PluginInstance,
         binary_name: &str,
         sandbox: &crate::config::Sandbox,
         span: tracing::Span,
@@ -384,11 +392,11 @@ impl Launcher {
         if sandboxed && let Err(reason) = &self.sandbox {
             return Err(LaunchError::SandboxUnavailable(reason.clone()));
         }
-        let found = discover_plugin(&self.root, Kind::Channel, &instance.component, &*self.env)
+        let found = discover_plugin(&self.root, instance.kind(), &instance.component, &*self.env)
             .ok_or_else(|| LaunchError::NotFound {
-                binary: binary_name.to_owned(),
-                plugins_dir: self.root.plugins_dir(),
-            })?;
+            binary: binary_name.to_owned(),
+            plugins_dir: self.root.plugins_dir(),
+        })?;
         // The file granted, recorded, and run are the same: the binary with links resolved.
         let binary = fs::canonicalize(&found).map_err(|source| LaunchError::Prepare {
             action: "resolve",
@@ -396,7 +404,7 @@ impl Launcher {
             source,
         })?;
 
-        let pid_file = self.root.pid_file(Kind::Channel, name)?;
+        let pid_file = self.root.pid_file(instance.kind(), name)?;
         match orphans::cleanup(&pid_file, &binary).await {
             Ok(orphans::Cleanup::Killed(pid)) => {
                 warn!(pid, binary = %binary.display(), "killed an orphaned plugin process");
@@ -411,7 +419,7 @@ impl Launcher {
             }
         }
 
-        let data_dir = self.root.plugin_data_dir(Kind::Channel, name)?;
+        let data_dir = self.root.plugin_data_dir(instance.kind(), name)?;
         prepare_data_dir(&data_dir)?;
         let spec = launch_spec(&data_dir, &binary, sandbox);
         spec.validate()?;
@@ -432,7 +440,7 @@ impl Launcher {
 
         let spec_file;
         let (program, args, env) = if sandboxed {
-            spec_file = self.root.sandbox_spec_file(Kind::Channel, name)?;
+            spec_file = self.root.sandbox_spec_file(instance.kind(), name)?;
             write_private(&spec_file, spec.to_json()?.as_bytes()).map_err(|source| {
                 LaunchError::Prepare {
                     action: "write the sandbox spec",
@@ -504,6 +512,7 @@ impl Launcher {
                     "plugin launched",
                 );
                 Ok(LaunchedPlugin {
+                    kind: instance.kind(),
                     instance: instance.name.clone(),
                     component: instance.component.clone(),
                     binary,
@@ -530,7 +539,7 @@ impl Launcher {
     #[allow(clippy::too_many_arguments)]
     async fn connect(
         &self,
-        instance: &ChannelInstance,
+        instance: &PluginInstance,
         stdout: ChildStdout,
         core_end: std::os::unix::net::UnixStream,
         token: &Secret,
@@ -591,12 +600,12 @@ impl Launcher {
     }
 }
 
-/// `Describe` (checked against the component), `Configure` with the instance config, and the
-/// namespace check, over a new connection to `instance`'s plugin. Plugin text in errors is
-/// scrubbed with `secrets`.
+/// `Describe` (checked against the kind and the component), `Configure` with the instance config,
+/// and for a kind with identity namespaces the namespace check, over a new connection to
+/// `instance`'s plugin. Plugin text in errors is scrubbed with `secrets`.
 async fn describe_and_configure(
     connection: &PluginConnection,
-    instance: &ChannelInstance,
+    instance: &PluginInstance,
     secrets: &[Secret],
 ) -> Result<(DescribeResponse, String), LaunchError> {
     let secrets: Vec<&Secret> = secrets.iter().collect();
@@ -615,9 +624,11 @@ async fn describe_and_configure(
         .unwrap_or_else(|_| Err(timed_out(DESCRIBE_TIMEOUT)))
         .map_err(|status| rpc_error("Describe", status))?
         .into_inner();
-    check_describe(&describe, &instance.component).map_err(|reason| LaunchError::Mismatch {
-        binary: plugin_binary(Kind::Channel, &instance.component),
-        reason: scrub(&reason, &secrets),
+    check_describe(&describe, instance.spec, &instance.component).map_err(|reason| {
+        LaunchError::Mismatch {
+            binary: plugin_binary(instance.kind(), &instance.component),
+            reason: scrub(&reason, &secrets),
+        }
     })?;
 
     let request = ConfigureRequest {
@@ -631,19 +642,21 @@ async fn describe_and_configure(
             .map_err(|status| rpc_error("Configure", status))?
             .into_inner();
     let namespace = configured.identity_namespace;
-    validate_namespace(&instance.component, &namespace).map_err(|error| match error {
-        // The namespace is plugin text built from config; scrub it like any other.
-        NamespaceError::WrongComponent {
-            component,
-            namespace,
-        } => NamespaceError::WrongComponent {
-            component,
-            namespace: scrub(&namespace, &secrets),
-        },
-        NamespaceError::Malformed { namespace } => NamespaceError::Malformed {
-            namespace: scrub(&namespace, &secrets),
-        },
-    })?;
+    if instance.spec.identity_namespace {
+        validate_namespace(&instance.component, &namespace).map_err(|error| match error {
+            // The namespace is plugin text built from config; scrub it like any other.
+            NamespaceError::WrongComponent {
+                component,
+                namespace,
+            } => NamespaceError::WrongComponent {
+                component,
+                namespace: scrub(&namespace, &secrets),
+            },
+            NamespaceError::Malformed { namespace } => NamespaceError::Malformed {
+                namespace: scrub(&namespace, &secrets),
+            },
+        })?;
+    }
     Ok((describe, namespace))
 }
 
@@ -679,36 +692,6 @@ fn classify_exit(status: ExitStatus, sandboxed: bool) -> EarlyExit {
     } else {
         EarlyExit::Other
     }
-}
-
-/// Checks `Describe` against the binary `giles-channel-<component>`: the kind, the name, and the
-/// channel capabilities. The error is the reason.
-fn check_describe(describe: &DescribeResponse, component: &str) -> Result<(), String> {
-    let kind = PluginKind::try_from(describe.kind).unwrap_or(PluginKind::Unspecified);
-    if kind != PluginKind::Channel {
-        return Err(format!(
-            "it describes itself as {}, expected {}",
-            kind.as_str_name(),
-            PluginKind::Channel.as_str_name()
-        ));
-    }
-    if describe.name != component {
-        return Err(format!(
-            "it is named {:?}, expected {component:?}",
-            describe.name
-        ));
-    }
-    let Some(describe_response::Capabilities::Channel(capabilities)) = &describe.capabilities
-    else {
-        return Err("it describes no channel capabilities".to_owned());
-    };
-    if output_mode_from_proto(capabilities.output).is_err() {
-        return Err(format!(
-            "its output mode {} is unspecified or unknown",
-            capabilities.output
-        ));
-    }
-    Ok(())
 }
 
 /// Reads one line of at most [`MAX_HANDSHAKE_LINE`] bytes. `None` at end-of-file.
@@ -774,9 +757,11 @@ fn random_bytes<const N: usize>() -> io::Result<[u8; N]> {
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct LaunchedPlugin {
+    /// The kind of plugin.
+    pub kind: Kind,
     /// The instance.
     pub instance: InstanceName,
-    /// Its component, `<name>` of `giles-channel-<name>`.
+    /// Its component, `<name>` of `giles-<kind>-<name>`.
     pub component: String,
     /// The binary that runs, symlinks resolved.
     pub binary: PathBuf,
@@ -919,28 +904,43 @@ impl PluginHost {
             .channels
             .values()
             .filter_map(|instance| {
-                let launch: Arc<dyn Launch> = match &instance.runtime {
-                    ChannelRuntime::Plugin(_) => Arc::new(PluginLaunch {
-                        launcher: self.launcher.clone(),
-                        instance: instance.clone(),
-                        wiring: self.wiring.clone(),
-                    }),
-                    ChannelRuntime::Remote(_) => Arc::new(RemoteLaunch {
-                        launcher: self.launcher.clone(),
-                        instance: instance.clone(),
-                        wiring: self.wiring.clone(),
-                    }),
-                    ChannelRuntime::BuiltIn => return None,
-                };
-                Some(self.supervision.supervise(
-                    instance.name.clone(),
-                    instance.component.clone(),
-                    instance.config_hash,
-                    launch,
-                ))
+                let plugin = PluginInstance::channel(instance)?;
+                let attach = Arc::new(ChannelAttach {
+                    wiring: self.wiring.clone(),
+                    max_blob: instance.max_blob,
+                });
+                Some(self.supervise(plugin, attach))
             })
             .collect();
         futures::future::join_all(attempts).await;
+    }
+
+    /// Starts supervising `instance`, which `attach` registers whenever it comes up.
+    fn supervise(
+        &self,
+        instance: PluginInstance,
+        attach: Arc<dyn Attach>,
+    ) -> tokio::sync::oneshot::Receiver<()> {
+        let (name, component, config_hash) = (
+            instance.name.clone(),
+            instance.component.clone(),
+            instance.config_hash,
+        );
+        let launcher = self.launcher.clone();
+        let launch: Arc<dyn Launch> = match instance.runtime {
+            InstanceRuntime::Launched(_) => Arc::new(PluginLaunch {
+                launcher,
+                instance,
+                attach,
+            }),
+            InstanceRuntime::Remote(_) => Arc::new(RemoteLaunch {
+                launcher,
+                instance,
+                attach,
+            }),
+        };
+        self.supervision
+            .supervise(name, component, config_hash, launch)
     }
 
     /// The launcher.
@@ -999,14 +999,14 @@ fn plugin_runtime(status: PluginStatus) -> PluginRuntime {
                     network_ports: grants.network_ports,
                     read: grants.read,
                     write: grants.write,
-                    ..SandboxGrants::default()
+                    unix: grants.unix,
                 }),
             )
         }
         None => (None, None),
     };
     PluginRuntime {
-        kind: Kind::Channel,
+        kind: status.kind,
         instance: status.instance,
         binary: status.binary,
         state,
@@ -1018,17 +1018,45 @@ fn plugin_runtime(status: PluginStatus) -> PluginRuntime {
     }
 }
 
-/// The launches of one configured plugin channel, for its supervisor.
+/// What a kind does with a plugin that came up: registers it where the core finds it.
+trait Attach: Send + Sync {
+    /// Registers the launched `plugin`, replacing the registration of an earlier launch. The
+    /// error is why that isn't possible.
+    fn attach(&self, plugin: &LaunchedPlugin) -> Result<(), String>;
+
+    /// [`attach`](Self::attach) for a connected remote plugin.
+    fn attach_remote(&self, plugin: &RemotePlugin) -> Result<(), String>;
+}
+
+/// Registers the plugin as the channel of one configured instance.
+struct ChannelAttach {
+    wiring: ChannelWiring,
+    max_blob: u64,
+}
+
+impl Attach for ChannelAttach {
+    fn attach(&self, plugin: &LaunchedPlugin) -> Result<(), String> {
+        self.wiring.attach(plugin, self.max_blob)
+    }
+
+    fn attach_remote(&self, plugin: &RemotePlugin) -> Result<(), String> {
+        self.wiring.attach_remote(plugin, self.max_blob)
+    }
+}
+
+/// The launches of one configured launched plugin, for its supervisor.
 struct PluginLaunch {
     launcher: Launcher,
-    instance: ChannelInstance,
-    wiring: ChannelWiring,
+    instance: PluginInstance,
+    attach: Arc<dyn Attach>,
 }
 
 #[async_trait]
 impl Launch for PluginLaunch {
     async fn binary(&self) -> Option<(PathBuf, [u8; 32])> {
-        let path = self.launcher.find_binary(&self.instance.component)?;
+        let path = self
+            .launcher
+            .find_binary(self.instance.kind(), &self.instance.component)?;
         tokio::task::spawn_blocking(move || {
             let hash = sha256_file(&path)
                 .inspect_err(|error| {
@@ -1045,61 +1073,71 @@ impl Launch for PluginLaunch {
     async fn launch(&self) -> Result<Box<dyn Running>, LaunchFailure> {
         let plugin = self
             .launcher
-            .launch_channel(&self.instance)
+            .launch_plugin(&self.instance)
             .await
             .map_err(|error| LaunchFailure {
                 message: error.to_string(),
                 retryable: error.is_retryable(),
             })?;
-        if let Err(reason) = self.wiring.attach(&plugin, self.instance.max_blob) {
+        if let Err(reason) = self.attach.attach(&plugin) {
             if let Err(error) = plugin.stop(STOP_GRACE).await {
                 warn!(%error, "cannot stop the plugin");
             }
             return Err(LaunchFailure {
-                message: format!("cannot register the plugin's channel: {reason}"),
+                message: format!(
+                    "cannot register the plugin's {}: {reason}",
+                    self.instance.kind()
+                ),
                 retryable: false,
             });
         }
-        Ok(Box::new(Live(plugin)))
+        Ok(Box::new(Live {
+            plugin,
+            service: self.instance.spec.service,
+        }))
     }
 }
 
 /// A launched plugin under supervision.
-struct Live(LaunchedPlugin);
+struct Live {
+    plugin: LaunchedPlugin,
+    /// The gRPC service whose health is checked.
+    service: &'static str,
+}
 
 #[async_trait]
 impl Running for Live {
     fn pid(&self) -> Option<u32> {
-        Some(self.0.process.pid())
+        Some(self.plugin.process.pid())
     }
 
     fn describe(&self) -> Option<DescribeInfo> {
-        DescribeInfo::from_describe(&self.0.describe)
+        Some(DescribeInfo::from_describe(&self.plugin.describe))
     }
 
     async fn exited(&mut self) -> String {
-        match self.0.process.wait().await {
+        match self.plugin.process.wait().await {
             Ok(status) => format!("exited ({status})"),
             Err(error) => format!("can't be waited for: {error}"),
         }
     }
 
     async fn check_health(&self) -> Result<(), String> {
-        check_health(&self.0.connection, &self.0.secrets).await
+        check_health(&self.plugin.connection, self.service, &self.plugin.secrets).await
     }
 
     async fn stop(self: Box<Self>) {
-        if let Err(error) = self.0.stop(STOP_GRACE).await {
+        if let Err(error) = self.plugin.stop(STOP_GRACE).await {
             warn!(%error, "cannot stop the plugin");
         }
     }
 }
 
-/// The connections to one configured remote plugin channel, for its supervisor.
+/// The connections to one configured remote plugin, for its supervisor.
 struct RemoteLaunch {
     launcher: Launcher,
-    instance: ChannelInstance,
-    wiring: ChannelWiring,
+    instance: PluginInstance,
+    attach: Arc<dyn Attach>,
 }
 
 #[async_trait]
@@ -1114,25 +1152,35 @@ impl Launch for RemoteLaunch {
     async fn launch(&self) -> Result<Box<dyn Running>, LaunchFailure> {
         let plugin = self
             .launcher
-            .connect_remote(&self.instance)
+            .connect_remote_plugin(&self.instance)
             .await
             .map_err(|error| LaunchFailure {
                 message: error.to_string(),
                 retryable: true,
             })?;
-        if let Err(reason) = self.wiring.attach_remote(&plugin, self.instance.max_blob) {
+        if let Err(reason) = self.attach.attach_remote(&plugin) {
             plugin.stop(REMOTE_SHUTDOWN_TIMEOUT).await;
             return Err(LaunchFailure {
-                message: format!("cannot register the plugin's channel: {reason}"),
+                message: format!(
+                    "cannot register the plugin's {}: {reason}",
+                    self.instance.kind()
+                ),
                 retryable: true,
             });
         }
-        Ok(Box::new(Connected(plugin)))
+        Ok(Box::new(Connected {
+            plugin,
+            service: self.instance.spec.service,
+        }))
     }
 }
 
 /// A connected remote plugin under supervision.
-struct Connected(RemotePlugin);
+struct Connected {
+    plugin: RemotePlugin,
+    /// The gRPC service whose health is checked.
+    service: &'static str,
+}
 
 #[async_trait]
 impl Running for Connected {
@@ -1141,28 +1189,37 @@ impl Running for Connected {
     }
 
     fn describe(&self) -> Option<DescribeInfo> {
-        DescribeInfo::from_describe(&self.0.describe)
+        Some(DescribeInfo::from_describe(&self.plugin.describe))
     }
 
     async fn exited(&mut self) -> String {
-        self.0.closed().await;
+        self.plugin.closed().await;
         "disconnected".to_owned()
     }
 
     async fn check_health(&self) -> Result<(), String> {
-        check_health(&self.0.connection, &self.0.secrets.get()).await
+        check_health(
+            &self.plugin.connection,
+            self.service,
+            &self.plugin.secrets.get(),
+        )
+        .await
     }
 
     async fn stop(self: Box<Self>) {
-        self.0.stop(REMOTE_SHUTDOWN_TIMEOUT).await;
+        self.plugin.stop(REMOTE_SHUTDOWN_TIMEOUT).await;
     }
 }
 
-/// One `grpc.health.v1` check of the plugin's channel service; the error (scrubbed with
-/// `secrets`) says why it failed.
-async fn check_health(connection: &PluginConnection, secrets: &[Secret]) -> Result<(), String> {
+/// One `grpc.health.v1` check of the plugin's `service`; the error (scrubbed with `secrets`)
+/// says why it failed.
+async fn check_health(
+    connection: &PluginConnection,
+    service: &str,
+    secrets: &[Secret],
+) -> Result<(), String> {
     let request = HealthCheckRequest {
-        service: CHANNEL_SERVICE.to_owned(),
+        service: service.to_owned(),
     };
     let mut client = connection.health();
     match tokio::time::timeout(HEALTH_TIMEOUT, client.check(request)).await {
@@ -1176,7 +1233,7 @@ async fn check_health(connection: &PluginConnection, secrets: &[Secret]) -> Resu
         }
         Ok(Ok(response)) => match response.into_inner().status() {
             ServingStatus::Serving => Ok(()),
-            other => Err(format!("{CHANNEL_SERVICE} is {}", other.as_str_name())),
+            other => Err(format!("{service} is {}", other.as_str_name())),
         },
     }
 }
@@ -1200,9 +1257,6 @@ fn sha256_file(path: &Path) -> io::Result<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use std::os::unix::process::ExitStatusExt as _;
-
-    use giles_proto::channel::v1::ChannelCapabilities;
-    use giles_proto::provider::v1::ProviderCapabilities;
 
     use super::*;
 
@@ -1228,46 +1282,6 @@ mod tests {
             classify_exit(ExitStatus::from_raw(9), true),
             EarlyExit::Other
         );
-    }
-
-    fn describe(kind: PluginKind, name: &str, channel: bool) -> DescribeResponse {
-        DescribeResponse {
-            kind: kind.into(),
-            name: name.to_owned(),
-            version: "1.0".to_owned(),
-            requested_grants: None,
-            capabilities: Some(if channel {
-                describe_response::Capabilities::Channel(ChannelCapabilities {
-                    output: giles_proto::channel::v1::OutputMode::Blocks.into(),
-                    can_initiate: false,
-                })
-            } else {
-                describe_response::Capabilities::Provider(ProviderCapabilities::default())
-            }),
-        }
-    }
-
-    #[test]
-    fn describe_must_match_the_binary() {
-        assert_eq!(
-            check_describe(&describe(PluginKind::Channel, "irc", true), "irc"),
-            Ok(())
-        );
-        let err = check_describe(&describe(PluginKind::Provider, "irc", true), "irc").unwrap_err();
-        assert!(err.contains("PLUGIN_KIND_PROVIDER"), "{err}");
-        let err = check_describe(&describe(PluginKind::Channel, "irk", true), "irc").unwrap_err();
-        assert!(err.contains("\"irk\""), "{err}");
-        let err = check_describe(&describe(PluginKind::Channel, "irc", false), "irc").unwrap_err();
-        assert!(err.contains("capabilities"), "{err}");
-        let mut unknown = describe(PluginKind::Channel, "irc", true);
-        unknown.kind = 7;
-        assert!(check_describe(&unknown, "irc").is_err());
-        let mut no_output = describe(PluginKind::Channel, "irc", true);
-        no_output.capabilities = Some(describe_response::Capabilities::Channel(
-            ChannelCapabilities::default(),
-        ));
-        let err = check_describe(&no_output, "irc").unwrap_err();
-        assert!(err.contains("output mode 0"), "{err}");
     }
 
     #[test]
@@ -1314,6 +1328,7 @@ mod tests {
     fn supervision_status_maps_onto_the_admin_runtime() {
         let until = giles_types::Timestamp::UNIX_EPOCH;
         let status = PluginStatus {
+            kind: Kind::Channel,
             instance: InstanceName::new("irc").unwrap(),
             component: "irc".into(),
             binary: Some(PathBuf::from("/plugins/giles-channel-irc")),
@@ -1322,13 +1337,12 @@ mod tests {
             last_error: Some("the plugin exited (exit status: 1)".into()),
             describe: Some(DescribeInfo {
                 version: "2.0".into(),
-                output: giles_types::OutputMode::Blocks,
-                can_initiate: false,
                 requested_grants: RequestedGrants {
                     network_all: false,
                     network_ports: vec!["tcp:6697".into()],
                     read: vec!["/etc/ssl".into()],
                     write: vec!["/var/irc".into()],
+                    unix: vec!["/run/irc.sock".into()],
                 },
             }),
             describe_cached: true,
@@ -1346,7 +1360,7 @@ mod tests {
                 network_ports: vec!["tcp:6697".into()],
                 read: vec!["/etc/ssl".into()],
                 write: vec!["/var/irc".into()],
-                ..SandboxGrants::default()
+                unix: vec!["/run/irc.sock".into()],
             })
         );
 

@@ -1,8 +1,8 @@
-//! Supervision (PLAN sections 7.5 and 7.6): one task per plugin channel that launches it (or
-//! connects to it, for a remote plugin) and registers its channel, checks its health every
+//! Supervision (PLAN sections 7.5 and 7.6): one task per gRPC plugin instance that launches it (or
+//! connects to it, for a remote plugin) and registers it, checks its health every
 //! [`HEALTH_INTERVAL`], relaunches it with backoff when it crashes or fails a check, waits for a
 //! new binary after a failure that won't pass, and stops it at shutdown. Its state is kept for
-//! `giles status` ([`PluginStatus`]).
+//! `giles status` ([`PluginStatus`]). One [`Supervision`] supervises the instances of one kind.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -18,7 +18,7 @@ use tokio_util::task::TaskTracker;
 use tracing::{Instrument as _, error, info, warn};
 
 use super::describe_cache::{DescribeCache, DescribeInfo};
-use crate::config::{ConfigHash, InstanceName};
+use crate::config::{ConfigHash, InstanceName, Kind};
 
 /// How often a running plugin's health is checked (PLAN section 7.5).
 pub const HEALTH_INTERVAL: Duration = Duration::from_secs(30);
@@ -68,9 +68,11 @@ pub enum PluginState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PluginStatus {
+    /// The kind of the instance.
+    pub kind: Kind,
     /// The instance.
     pub instance: InstanceName,
-    /// Its component, `<name>` of `giles-channel-<name>`.
+    /// Its component, `<name>` of `giles-<kind>-<name>`.
     pub component: String,
     /// The binary found for it at the last launch (symlinks resolved); `None` before the first
     /// lookup or when there is none.
@@ -105,7 +107,7 @@ pub(crate) trait Launch: Send + Sync {
     /// can't be read).
     async fn binary(&self) -> Option<(PathBuf, [u8; 32])>;
 
-    /// Launches the plugin and registers its channel.
+    /// Launches the plugin and registers it.
     async fn launch(&self) -> Result<Box<dyn Running>, LaunchFailure>;
 }
 
@@ -123,7 +125,7 @@ pub(crate) trait Running: Send {
     /// Cancel-safe.
     async fn exited(&mut self) -> String;
 
-    /// One `grpc.health.v1` check of its channel service; the error says why it failed.
+    /// One `grpc.health.v1` check of its service; the error says why it failed.
     async fn check_health(&self) -> Result<(), String>;
 
     /// Stops it. A launched plugin: `Shutdown`, then `SIGTERM`, then `SIGKILL` to its process
@@ -197,6 +199,7 @@ impl Supervision {
             return attempted;
         }
         let status = Arc::new(Mutex::new(PluginStatus {
+            kind: self.cache.kind(),
             instance: instance.clone(),
             component,
             binary: None,

@@ -10,9 +10,7 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-use giles_plugin_sdk::convert::output_mode_from_proto;
-use giles_proto::plugin::v1::{DescribeResponse, describe_response};
-use giles_types::OutputMode;
+use giles_proto::plugin::v1::DescribeResponse;
 use serde::{Deserialize, Serialize};
 
 use super::grpc::hex;
@@ -20,16 +18,12 @@ use super::write_private;
 use crate::config::{ConfigHash, InstanceName, Kind};
 use crate::paths::DataRoot;
 
-/// What a channel plugin reported in `Describe`, for `giles status`.
+/// What a plugin reported in `Describe`, for `giles status`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct DescribeInfo {
     /// The plugin's own version.
     pub version: String,
-    /// How it wants assistant output delivered.
-    pub output: OutputMode,
-    /// Whether it can start conversations.
-    pub can_initiate: bool,
     /// The sandbox grants it asked for. Advisory only: never applied.
     pub requested_grants: RequestedGrants,
 }
@@ -46,28 +40,25 @@ pub struct RequestedGrants {
     pub read: Vec<String>,
     /// Paths to write.
     pub write: Vec<String>,
+    /// Unix sockets to connect to.
+    #[serde(default)]
+    pub unix: Vec<String>,
 }
 
 impl DescribeInfo {
-    /// The channel plugin's `Describe` answer, or `None` without channel capabilities and a
-    /// known output mode (the launch refuses those).
-    pub fn from_describe(describe: &DescribeResponse) -> Option<Self> {
-        let Some(describe_response::Capabilities::Channel(capabilities)) = &describe.capabilities
-        else {
-            return None;
-        };
+    /// What `describe` reported. The launch has checked its kind, name, and capabilities.
+    pub fn from_describe(describe: &DescribeResponse) -> Self {
         let grants = describe.requested_grants.clone().unwrap_or_default();
-        Some(Self {
+        Self {
             version: describe.version.clone(),
-            output: output_mode_from_proto(capabilities.output).ok()?,
-            can_initiate: capabilities.can_initiate,
             requested_grants: RequestedGrants {
                 network_all: grants.network_all,
                 network_ports: grants.network_ports,
                 read: grants.read,
                 write: grants.write,
+                unix: grants.unix,
             },
-        })
+        }
     }
 }
 
@@ -85,6 +76,7 @@ struct Entry {
 /// The `Describe` cache of one kind, in `<root>/cache/describe/<kind>/`.
 #[derive(Debug, Clone)]
 pub struct DescribeCache {
+    kind: Kind,
     dir: PathBuf,
 }
 
@@ -92,8 +84,14 @@ impl DescribeCache {
     /// The cache of the `kind` instances of `root`.
     pub fn new(root: &DataRoot, kind: Kind) -> Self {
         Self {
+            kind,
             dir: root.cache_dir().join("describe").join(kind.as_str()),
         }
+    }
+
+    /// The kind whose instances this caches.
+    pub fn kind(&self) -> Kind {
+        self.kind
     }
 
     fn file(&self, instance: &InstanceName) -> PathBuf {
@@ -154,7 +152,7 @@ impl DescribeCache {
 #[cfg(test)]
 mod tests {
     use giles_proto::channel::v1::{ChannelCapabilities, OutputMode as PbOutputMode};
-    use giles_proto::plugin::v1::{PluginKind, SandboxGrants};
+    use giles_proto::plugin::v1::{PluginKind, SandboxGrants, describe_response};
 
     use super::*;
 
@@ -165,10 +163,9 @@ mod tests {
     fn info(version: &str) -> DescribeInfo {
         DescribeInfo {
             version: version.into(),
-            output: OutputMode::Blocks,
-            can_initiate: true,
             requested_grants: RequestedGrants {
                 network_ports: vec!["tcp:6697".into()],
+                unix: vec!["/run/irc.sock".into()],
                 ..RequestedGrants::default()
             },
         }
@@ -185,7 +182,7 @@ mod tests {
                 network_ports: vec!["tcp:6697".into()],
                 read: vec![],
                 write: vec![],
-                ..SandboxGrants::default()
+                unix: vec!["/run/irc.sock".into()],
             }),
             capabilities: Some(describe_response::Capabilities::Channel(
                 ChannelCapabilities {
@@ -194,15 +191,16 @@ mod tests {
                 },
             )),
         };
-        assert_eq!(DescribeInfo::from_describe(&describe), Some(info("2.1")));
-        let mut no_output = describe.clone();
-        no_output.capabilities = Some(describe_response::Capabilities::Channel(
-            ChannelCapabilities::default(),
-        ));
-        assert_eq!(DescribeInfo::from_describe(&no_output), None);
-        let mut provider = describe;
-        provider.capabilities = None;
-        assert_eq!(DescribeInfo::from_describe(&provider), None);
+        assert_eq!(DescribeInfo::from_describe(&describe), info("2.1"));
+        let mut bare = describe;
+        bare.requested_grants = None;
+        assert_eq!(
+            DescribeInfo::from_describe(&bare),
+            DescribeInfo {
+                version: "2.1".into(),
+                requested_grants: RequestedGrants::default(),
+            }
+        );
     }
 
     #[test]
