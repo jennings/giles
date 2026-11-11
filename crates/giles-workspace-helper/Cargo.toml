@@ -1,0 +1,28 @@
+[package]
+name = "giles-workspace-helper"
+description = "The static Linux helper the Docker environment plugin copies into each workspace container."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# Glob matching for `find` and the `grep` file filter.
+globset = "0.4.21"
+# The directory walk with `.gitignore` handling, shared with ripgrep.
+ignore = "0.4.34"
+regex = { version = "1.12.2", default-features = false, features = ["std", "perf", "unicode"] }
+# `poll` (reading the child's output without waiting on background processes that hold its pipes),
+# `kill` (signalling a process group), and `statvfs` (free space). Safe wrappers, so the
+# workspace's `unsafe_code = "deny"` holds.
+rustix = { version = "1.1.6", default-features = false, features = ["std", "event", "fs", "process"] }
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
