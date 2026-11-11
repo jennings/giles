@@ -201,6 +201,7 @@ impl Runtime {
             channels: self.registry.clone(),
             runner,
             approvals,
+            env_resets: Arc::new(self.workspaces.clone()),
             clock: Arc::new(SystemClock),
         };
         let sessions = Sessions::start(options, shutdown)

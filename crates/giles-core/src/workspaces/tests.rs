@@ -364,6 +364,147 @@ async fn delete_with_the_plugin_up_removes_the_workspace_and_says_so() {
 }
 
 #[tokio::test]
+async fn recreating_deletes_the_workspace_and_makes_another_like_it() {
+    let h = Harness::new().await;
+    let owner = chat("c1");
+    assert!(
+        h.workspaces
+            .recreate(&owner, DeleteReason::UserReset)
+            .await
+            .unwrap()
+            .is_none(),
+        "no workspace, nothing to reset"
+    );
+
+    let old = h.create(&owner).await;
+    let done = h
+        .workspaces
+        .recreate(&owner, DeleteReason::UserReset)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(done.discarded.id, old.id);
+    assert_eq!(done.discarded.state, WorkspaceState::Deleted);
+    assert_eq!(done.discarded.delete_reason, Some(DeleteReason::UserReset));
+    let new = done.created.unwrap();
+    assert_ne!(new.id, old.id);
+    assert_eq!(new.environment, "box");
+    assert_eq!(new.options, json!({"image": "alpine"}));
+    assert_eq!(new.state, WorkspaceState::Active);
+    assert!(!h.fake.has(&old.id));
+    assert!(h.fake.has(&new.id));
+    assert_eq!(
+        h.workspaces.current(&owner).await.unwrap().unwrap().id,
+        new.id
+    );
+    let last = h.workspaces.last_deleted(&owner).await.unwrap().unwrap();
+    assert_eq!(last.id, old.id);
+    assert_eq!(last.delete_reason, Some(DeleteReason::UserReset));
+
+    // Another owner's workspace isn't touched.
+    let other = h.create(&chat("c2")).await;
+    h.workspaces
+        .recreate(&owner, DeleteReason::UserReset)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(h.fake.has(&other.id));
+}
+
+#[tokio::test]
+async fn recreating_checks_the_environment_before_deleting_and_reports_a_failed_creation() {
+    let h = Harness::new().await;
+    let owner = chat("c1");
+    let old = h.create(&owner).await;
+
+    // The plugin is away: refused, and nothing is lost.
+    h.disconnect();
+    let error = h
+        .workspaces
+        .recreate(&owner, DeleteReason::UserReset)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, WorkspaceError::Unreachable { .. }),
+        "{error}"
+    );
+    assert_eq!(
+        h.workspaces.current(&owner).await.unwrap().unwrap().id,
+        old.id
+    );
+    assert!(h.fake.has(&old.id));
+    h.connect();
+
+    // Creating fails: the old one is gone, and the failure is reported.
+    h.fake.fail_next_create(
+        giles_types::Error::InvalidRequest("no space left".to_owned()),
+        false,
+    );
+    let done = h
+        .workspaces
+        .recreate(&owner, DeleteReason::UserReset)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(done.discarded.id, old.id);
+    let error = done.created.unwrap_err();
+    assert_eq!(error.to_string(), "no space left");
+    assert!(h.workspaces.current(&owner).await.unwrap().is_none());
+    assert!(!h.fake.has(&old.id));
+}
+
+#[tokio::test]
+async fn the_sessions_hook_resets_the_conversations_workspace() {
+    use crate::sessions::{EnvReset, EnvResets};
+
+    let h = Harness::new().await;
+    let owner = chat("c1");
+    let WorkspaceOwner::Conversation {
+        agent,
+        channel,
+        conversation,
+    } = owner.clone()
+    else {
+        unreachable!();
+    };
+    let key = giles_store::SessionKey {
+        agent,
+        channel,
+        conversation,
+    };
+    assert_eq!(h.workspaces.reset(&key).await, EnvReset::NoWorkspace);
+
+    let old = h.create(&owner).await;
+    assert_eq!(h.workspaces.reset(&key).await, EnvReset::Done);
+    let new = h.workspaces.current(&owner).await.unwrap().unwrap();
+    assert_ne!(new.id, old.id);
+    assert_eq!(new.options, old.options);
+
+    h.disconnect();
+    let EnvReset::Failed(message) = h.workspaces.reset(&key).await else {
+        panic!("not refused");
+    };
+    assert!(
+        message.starts_with("The workspace was not reset: "),
+        "{message}"
+    );
+    assert!(message.contains("not reachable"), "{message}");
+    h.connect();
+
+    h.fake.fail_next_create(
+        giles_types::Error::InvalidRequest("no space left".to_owned()),
+        false,
+    );
+    let EnvReset::Failed(message) = h.workspaces.reset(&key).await else {
+        panic!("not reported");
+    };
+    assert!(
+        message.contains("deleted, but creating a new one failed: no space left"),
+        "{message}"
+    );
+}
+
+#[tokio::test]
 async fn opening_starts_the_workspace_takes_the_lease_and_notes_the_use() {
     let h = Harness::new().await;
     let owner = chat("c1");

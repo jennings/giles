@@ -152,3 +152,58 @@ fn stop_cancels_a_running_command_in_the_environment() {
     daemon.stop();
     provider.assert_no_surprises();
 }
+
+#[test]
+fn env_reset_replaces_the_workspace_and_new_keeps_it() {
+    let provider = FakeProvider::start();
+    let home = Home::with_environment(&provider, WITH_ENVIRONMENT);
+    let daemon = Daemon::start(&home);
+
+    // No workspace yet: the command says so, and the model isn't involved.
+    home.say("/env reset");
+    home.wait_sent("This conversation has no workspace.");
+    assert!(provider.requests().is_empty());
+
+    provider.script([
+        Reply::call("call_1", "environment_create", json!({"plugin": "box"})),
+        Reply::call(
+            "call_2",
+            "write",
+            json!({"path": "notes.txt", "content": "keep me\n"}),
+        ),
+        Reply::text("Saved, sir."),
+    ]);
+    home.say("Save a note.");
+    home.wait_sent("Saved, sir.");
+
+    // `/new` starts a fresh session, and the workspace and its files stay.
+    home.say("/new");
+    provider.script([
+        Reply::call("call_3", "read", json!({"path": "notes.txt"})),
+        Reply::text("Still there, sir."),
+    ]);
+    home.say("Is the note still there?");
+    home.wait_sent("Still there, sir.");
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 5);
+    assert_eq!(tool_result(&requests[4], "call_3"), "     1\tkeep me\n");
+
+    // `/env reset` deletes the workspace and creates a new, empty one.
+    let seen = home.sent().len();
+    home.say("/env reset");
+    home.wait_sent_after(seen, "new, empty one");
+    provider.script([
+        Reply::call("call_4", "read", json!({"path": "notes.txt"})),
+        Reply::text("Gone, sir."),
+    ]);
+    home.say("And now?");
+    home.wait_sent("Gone, sir.");
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 7);
+    let gone = tool_result(&requests[6], "call_4");
+    assert!(gone.starts_with("Error: "), "{gone}");
+    assert!(gone.contains("no file notes.txt"), "{gone}");
+
+    daemon.stop();
+    provider.assert_no_surprises();
+}
