@@ -1574,6 +1574,7 @@ is `FULL`. Main tables:
 | `usage`        | Section 11.7                                                           |
 | `web_sessions` | Web login sessions                                                     |
 | `routes`       | The ordered routing rules (section 6.1), and a marker that `giles.toml`'s `[[routes]]` were imported |
+| `workspaces`   | Environment workspaces (section 8.8): the core-assigned id, environment instance, owner (agent, channel instance, and conversation, or an isolated job session), options, state, last use, and when and why one was deleted |
 | `search`       | FTS5 index over `messages`, maintained by triggers (section 6.7)        |
 
 Per-user operations:

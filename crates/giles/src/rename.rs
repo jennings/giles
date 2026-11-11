@@ -93,14 +93,26 @@ fn format_report(root: &DataRoot, old: &str, new: &str, report: &RenameReport) -
     };
     let rows = &report.rows;
     let mut text = format!("Renamed {} instance {old:?} to {new:?}.\n", report.kind);
-    // A toolset has no rows, and an environment has none yet.
-    if !matches!(report.kind, Kind::Toolset | Kind::Environment) {
-        let _ = writeln!(
-            text,
-            "  database: {} sessions, {} inbox rows, {} outbox rows, {} usage rows, {} messages, \
-             {} routes",
-            rows.sessions, rows.inbox, rows.outbox, rows.usage, rows.messages, rows.routes
-        );
+    match report.kind {
+        // A toolset has no rows of its own.
+        Kind::Toolset => {}
+        Kind::Environment => {
+            let _ = writeln!(text, "  database: {} workspaces", rows.workspaces);
+        }
+        Kind::Channel | Kind::Provider => {
+            let _ = writeln!(
+                text,
+                "  database: {} sessions, {} inbox rows, {} outbox rows, {} workspaces, \
+                 {} usage rows, {} messages, {} routes",
+                rows.sessions,
+                rows.inbox,
+                rows.outbox,
+                rows.workspaces,
+                rows.usage,
+                rows.messages,
+                rows.routes
+            );
+        }
     }
     if report.stored_toolset {
         let _ = writeln!(
@@ -167,6 +179,7 @@ mod tests {
                 sessions: 3,
                 inbox: 10,
                 outbox: 0,
+                workspaces: 2,
                 usage: 0,
                 messages: 0,
                 routes: 4,
@@ -184,7 +197,7 @@ mod tests {
         let text = format_report(&root(), "libera", "libera-chat", &report);
         let expected = [
             "Renamed channel instance \"libera\" to \"libera-chat\".",
-            "  database: 3 sessions, 10 inbox rows, 0 outbox rows, 0 usage rows, 0 messages, 4 routes",
+            "  database: 3 sessions, 10 inbox rows, 0 outbox rows, 2 workspaces, 0 usage rows, 0 messages, 4 routes",
             "  giles.toml: [channel.libera] -> [channel.libera-chat]",
             "  giles.toml: 2 [[routes]] rule(s) updated (Giles no longer reads them once they are imported)",
             "memory.db: 5 group memories moved to \"libera-chat\"",
@@ -200,6 +213,26 @@ mod tests {
             "{text}"
         );
         assert!(text.ends_with("Start giles again to use the new name.\n"));
+    }
+
+    #[test]
+    fn an_environment_reports_the_workspaces_it_moved() {
+        let report = RenameReport {
+            kind: Kind::Environment,
+            rows: RenamedRows {
+                workspaces: 3,
+                ..RenamedRows::default()
+            },
+            config_table: true,
+            stored_toolset: false,
+            legacy_routes: 0,
+            agent_files: Vec::new(),
+            moved: Vec::new(),
+            memory_dbs: Vec::new(),
+        };
+        let text = format_report(&root(), "docker", "sandbox", &report);
+        assert!(text.contains("  database: 3 workspaces\n"), "{text}");
+        assert!(!text.contains("sessions"), "{text}");
     }
 
     #[test]

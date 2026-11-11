@@ -269,7 +269,7 @@ An environment gives agents isolated workspaces to run commands and edit files i
 | `config`       | `{}`           | Settings for the plugin, with secrets resolved as for channels   |
 | `description`  | empty          | What the model is told about the environment                     |
 | `stop_after`   | `"30m"`        | Stop a workspace after this long without use                     |
-| `delete_after` | `"30d"`        | Delete a workspace after this long without use                   |
+| `delete_after` | `"30d"`        | Delete a workspace after its conversation and the workspace have been unused this long |
 | `sandbox`, `unsandboxed` |      | As for channels, except the network is off by default            |
 | `address`, `auth`, `insecure` |  | Run the plugin yourself, as for [remote channels](#remote-plugins) |
 

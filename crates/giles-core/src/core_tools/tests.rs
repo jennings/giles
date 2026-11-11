@@ -215,6 +215,7 @@ async fn call_as(
             reply: None,
             skills: Arc::default(),
             job,
+            lease: Default::default(),
         }),
         media: Arc::default(),
     })

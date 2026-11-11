@@ -24,6 +24,8 @@ rename must move each of them.
 | `sessions.channel`                           | Session key (agent, channel, conversation)     | Updates in the transaction (channels)     |
 | `inbox.instance`                             | Dedupe key (instance, event id)                | Updates in the transaction (channels)     |
 | `outbox.instance`                            | The channel a proactive send routes to         | Updates in the transaction (channels)     |
+| `workspaces.channel`                         | The channel of a conversation that owns a workspace (null for a job run's) | Updates in the transaction (channels) |
+| `workspaces.environment`                     | The environment instance that holds a workspace | Updates in the transaction (environments) |
 | `usage.provider`                             | The provider instance of a request             | Updates in the transaction (providers)     |
 | `messages.meta` `$.provider`                 | The provider that wrote an assistant message   | Updates in the transaction (providers)     |
 | `data/<kind>/<name>/`                        | The plugin's only writable directory           | Moves (`rename(2)`)            |

@@ -18,6 +18,7 @@ use crate::router::Router;
 use crate::routes::{Routes, RoutesError};
 use crate::scheduler::{JobChanges, OutboxDelivery, Scheduler, SchedulerOptions};
 use crate::sessions::{Approvals, Clock, Sessions, SessionsOptions, SystemClock, TurnRunner};
+use crate::workspaces::{self, WorkspaceSweep, Workspaces};
 
 /// Startup failed.
 #[derive(Debug, thiserror::Error)]
@@ -65,6 +66,9 @@ pub enum StartError {
     /// The outbox couldn't drop the approval prompts left from the previous process.
     #[error("cannot start the outbox: {0}")]
     Outbox(#[source] giles_store::Error),
+    /// The workspaces left by the previous process couldn't be settled.
+    #[error("cannot recover the workspaces: {0}")]
+    Workspaces(#[source] workspaces::WorkspaceError),
 }
 
 /// How to get out of a journal mode SQLite refused, naming the config option.
@@ -105,6 +109,9 @@ pub struct Runtime {
     pub outbox: Outbox,
     /// Tells the scheduler that runtime jobs changed (the `schedule` tool).
     pub jobs: JobChanges,
+    /// The environment workspaces owners hold (PLAN section 8.8): the service the workspace tools
+    /// call. Its sweep starts with [`start_workspace_sweep`](Self::start_workspace_sweep).
+    pub workspaces: Workspaces,
 }
 
 impl Runtime {
@@ -139,6 +146,8 @@ impl Runtime {
         let registry = Arc::new(Registry::from_config(root.clone(), config.clone(), media)?);
         let routes = Arc::new(Routes::open(store.clone(), registry.live_config().clone()).await?);
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+        let workspaces = Workspaces::new(store.clone(), registry.clone(), clock.clone());
+        workspaces.recover().await.map_err(StartError::Workspaces)?;
         let runtime = Self {
             memory_dbs: MemoryDbs::new(root.clone(), mode),
             root,
@@ -148,6 +157,7 @@ impl Runtime {
             registry,
             routes,
             jobs: JobChanges::default(),
+            workspaces,
         };
         core_tools::register(&runtime)?;
         Ok(runtime)
@@ -215,6 +225,21 @@ impl Runtime {
         )
     }
 
+    /// Starts the workspace sweep (PLAN section 8.8): stops idle workspaces, deletes those whose
+    /// owner went inactive, and reconciles the table with each environment plugin as it connects
+    /// ([`Workspaces::start_sweep`]). The first sweep runs a minute from now, then every five
+    /// minutes, until `shutdown` is cancelled ([`WorkspaceSweep::closed`] waits for it). It calls
+    /// the plugins, so stop it before them.
+    pub fn start_workspace_sweep(&self, shutdown: CancellationToken) -> WorkspaceSweep {
+        self.workspaces.start_sweep(
+            SweepSchedule {
+                first_delay: workspaces::SWEEP_FIRST_DELAY,
+                interval: workspaces::SWEEP_INTERVAL,
+            },
+            shutdown,
+        )
+    }
+
     /// Starts the scheduler (PLAN section 6.11): config and runtime jobs, running their turns on
     /// `runner` through `sessions` and sending their replies and approval prompts through the
     /// outbox to the owner's default identity. Start it after the outbox and the session
@@ -236,6 +261,7 @@ impl Runtime {
                     self.registry.config().owner.clone(),
                 )),
                 changes: self.jobs.clone(),
+                workspaces: self.workspaces.clone(),
                 clock: Arc::new(SystemClock),
             },
             shutdown,

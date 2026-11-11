@@ -164,6 +164,7 @@ impl Setup {
                 reply,
                 skills,
                 job: false,
+                lease: Default::default(),
             }),
             media: Arc::new(SessionMedia::from_messages(&[history])),
         })

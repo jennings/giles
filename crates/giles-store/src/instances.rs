@@ -5,10 +5,11 @@
 //! touches only the places that kind is named in. A provider and a channel that share a name
 //! don't share rows.
 //!
-//! - A channel is named in `sessions.channel`, `inbox.instance`, `outbox.instance`, and
-//!   `routes.channel`.
+//! - A channel is named in `sessions.channel`, `inbox.instance`, `outbox.instance`,
+//!   `workspaces.channel` (the owner of a conversation's workspace), and `routes.channel`.
 //! - A provider is named in `usage.provider` and in the `provider` field of each assistant
 //!   message's `meta` JSON.
+//! - An environment is named in `workspaces.environment`.
 //! - A toolset is named in none of them. A stored toolset is a row of its own
 //!   ([`Store::toolset_rename`]), and the agents' files that mention it aren't the database's.
 //!
@@ -37,6 +38,9 @@ pub struct InstanceRows {
     pub inbox: u64,
     /// Proactive sends through the channel instance (`outbox.instance`).
     pub outbox: u64,
+    /// Workspaces of the environment instance (`workspaces.environment`), or owned by a
+    /// conversation on the channel instance (`workspaces.channel`), in any state.
+    pub workspaces: u64,
     /// Provider requests to the provider instance (`usage.provider`).
     pub usage: u64,
 }
@@ -50,6 +54,8 @@ pub struct RenamedRows {
     pub inbox: u64,
     /// `outbox` rows.
     pub outbox: u64,
+    /// `workspaces` rows.
+    pub workspaces: u64,
     /// `usage` rows.
     pub usage: u64,
     /// Assistant messages whose `meta` named the provider instance.
@@ -62,7 +68,13 @@ pub struct RenamedRows {
 impl RenamedRows {
     /// The total number of rows moved.
     pub fn total(&self) -> u64 {
-        self.sessions + self.inbox + self.outbox + self.usage + self.messages + self.routes
+        self.sessions
+            + self.inbox
+            + self.outbox
+            + self.workspaces
+            + self.usage
+            + self.messages
+            + self.routes
     }
 }
 
@@ -72,6 +84,7 @@ impl From<InstanceRows> for RenamedRows {
             sessions: rows.sessions,
             inbox: rows.inbox,
             outbox: rows.outbox,
+            workspaces: rows.workspaces,
             usage: rows.usage,
             ..Self::default()
         }
@@ -85,7 +98,7 @@ struct NameColumn {
     field: fn(&mut InstanceRows) -> &mut u64,
 }
 
-const CHANNEL_COLUMNS: [NameColumn; 3] = [
+const CHANNEL_COLUMNS: [NameColumn; 4] = [
     NameColumn {
         table: "sessions",
         column: "channel",
@@ -101,6 +114,11 @@ const CHANNEL_COLUMNS: [NameColumn; 3] = [
         column: "instance",
         field: |rows| &mut rows.outbox,
     },
+    NameColumn {
+        table: "workspaces",
+        column: "channel",
+        field: |rows| &mut rows.workspaces,
+    },
 ];
 
 const PROVIDER_COLUMNS: [NameColumn; 1] = [NameColumn {
@@ -109,13 +127,20 @@ const PROVIDER_COLUMNS: [NameColumn; 1] = [NameColumn {
     field: |rows| &mut rows.usage,
 }];
 
+const ENVIRONMENT_COLUMNS: [NameColumn; 1] = [NameColumn {
+    table: "workspaces",
+    column: "environment",
+    field: |rows| &mut rows.workspaces,
+}];
+
 /// The columns that count as data for `kind`: where a rename of it looks for rows to refuse a
 /// merge, and what [`Store::instance_rows`] lists. Routes and messages aren't among them.
 fn name_columns(kind: Kind) -> &'static [NameColumn] {
     match kind {
         Kind::Channel => &CHANNEL_COLUMNS,
         Kind::Provider => &PROVIDER_COLUMNS,
-        Kind::Toolset | Kind::Environment => &[],
+        Kind::Environment => &ENVIRONMENT_COLUMNS,
+        Kind::Toolset => &[],
     }
 }
 
@@ -234,10 +259,12 @@ impl Store {
             if existing.total() > 0 {
                 return Err(Error::conflict(format!(
                     "{new:?} already has data in the database ({} sessions, {} inbox rows, {} \
-                     outbox rows, {} usage rows, {} messages); renaming doesn't merge instances",
+                     outbox rows, {} workspaces, {} usage rows, {} messages); renaming doesn't \
+                     merge instances",
                     existing.sessions,
                     existing.inbox,
                     existing.outbox,
+                    existing.workspaces,
                     existing.usage,
                     existing.messages,
                 )));
@@ -709,6 +736,147 @@ mod tests {
             assert!(err.to_string().contains("doesn't merge"), "{err}");
             assert!(store.instance_rows(kind).await.unwrap().contains_key("old"));
         }
+    }
+
+    /// A workspace of `environment` owned by the conversation `conversation` on `channel` (or by
+    /// job session 1 if `channel` is `None`), in any state.
+    async fn workspace(store: &Store, id: &str, environment: &str, channel: Option<&str>) {
+        let (id, environment, channel) = (
+            id.to_owned(),
+            environment.to_owned(),
+            channel.map(str::to_owned),
+        );
+        store
+            .write(move |conn| {
+                conn.execute(
+                    "INSERT INTO workspaces (id, environment, agent, channel, conversation,
+                         job_session, options, state, created_at, last_used_at, deleted_at,
+                         delete_reason)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, '{}', 'deleted', 0, 0, 0, 'inactive')",
+                    params![
+                        id,
+                        environment,
+                        channel.as_ref().map(|_| "jeeves"),
+                        channel,
+                        channel.as_ref().map(|_| "c1"),
+                        channel.as_ref().map_or(Some(1), |_| None::<i64>),
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn workspaces_are_named_by_their_environment_and_their_conversations_channel() {
+        let (_dir, store) = store().await;
+        workspace(&store, "w1", "box", Some("libera")).await;
+        workspace(&store, "w2", "box", None).await;
+        workspace(&store, "w3", "other", Some("libera")).await;
+
+        let environments = store.instance_rows(Kind::Environment).await.unwrap();
+        assert_eq!(environments["box"].workspaces, 2);
+        assert_eq!(environments["other"].workspaces, 1);
+        // Only a conversation's workspace names a channel; a job's has none.
+        let channels = store.instance_rows(Kind::Channel).await.unwrap();
+        assert_eq!(channels["libera"].workspaces, 2);
+        assert_eq!(channels.len(), 1);
+        assert!(
+            store
+                .instance_rows(Kind::Provider)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn renaming_an_environment_moves_its_workspaces_and_nothing_else() {
+        let (_dir, store) = store().await;
+        workspace(&store, "w1", "box", Some("box")).await;
+        workspace(&store, "w2", "box", None).await;
+        workspace(&store, "w3", "other", Some("libera")).await;
+        usage(&store, "box").await;
+
+        let moved = store
+            .rename_instance(Kind::Environment, "box", "sandbox", |_| Ok(()))
+            .await
+            .unwrap();
+        assert_eq!(
+            moved,
+            RenamedRows {
+                workspaces: 2,
+                ..Default::default()
+            }
+        );
+        let ids = |name: &str| {
+            let name = name.to_owned();
+            let store = store.clone();
+            async move {
+                store
+                    .workspaces_of(&name)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|w| w.id.to_string())
+                    .collect::<Vec<_>>()
+            }
+        };
+        assert_eq!(ids("sandbox").await, ["w1", "w2"]);
+        assert!(ids("box").await.is_empty());
+        assert_eq!(ids("other").await, ["w3"]);
+        // The channel `box` keeps its name: only the environment was renamed.
+        let channels = store.instance_rows(Kind::Channel).await.unwrap();
+        assert_eq!(channels["box"].workspaces, 1);
+        assert_eq!(
+            store.instance_rows(Kind::Provider).await.unwrap()["box"].usage,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn renaming_a_channel_moves_the_workspaces_of_its_conversations() {
+        let (_dir, store) = store().await;
+        workspace(&store, "w1", "box", Some("libera")).await;
+        workspace(&store, "w2", "box", None).await;
+        workspace(&store, "w3", "box", Some("oftc")).await;
+
+        let moved = store
+            .rename_instance(Kind::Channel, "libera", "libera-chat", |_| Ok(()))
+            .await
+            .unwrap();
+        assert_eq!(
+            moved,
+            RenamedRows {
+                workspaces: 1,
+                ..Default::default()
+            }
+        );
+        let owners: Vec<_> = store
+            .workspaces_of("box")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|w| match w.owner {
+                crate::WorkspaceOwner::Conversation { channel, .. } => channel,
+                crate::WorkspaceOwner::Job { .. } => "job".to_owned(),
+            })
+            .collect();
+        assert_eq!(owners, ["libera-chat", "job", "oftc"]);
+    }
+
+    #[tokio::test]
+    async fn rename_refuses_to_merge_into_an_environment_that_has_workspaces() {
+        let (_dir, store) = store().await;
+        workspace(&store, "w1", "old", None).await;
+        workspace(&store, "w2", "taken", Some("web")).await;
+        let err = store
+            .rename_instance(Kind::Environment, "old", "taken", |_| Ok(()))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Conflict(_)), "{err:?}");
+        assert!(err.to_string().contains("1 workspaces"), "{err}");
     }
 
     /// A database where the instance `old` of `kind` has data and `oftc` has data of the same

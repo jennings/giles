@@ -38,6 +38,7 @@ use crate::registry::RegistryError;
 use crate::runtime::Runtime;
 use crate::sessions::{Clock, Reply, SystemClock};
 use crate::skills::SkillSet;
+use crate::workspaces::LeaseSlot;
 
 pub use load_skill::{LOAD_SKILL, LoadSkillTool, MAX_INLINE_TEXT_BYTES};
 pub use memory_add::{MEMORY_ADD, MemoryAddTool};
@@ -108,6 +109,9 @@ pub struct TurnContext {
     /// Whether the turn is a job run (in a job session or a DM); `schedule` refuses to create
     /// jobs from one, so a job can't spawn more jobs.
     pub job: bool,
+    /// Where the turn keeps the lease on its workspace, from the first workspace tool call until
+    /// the turn ends ([`Workspaces::open`]). Dropped with the turn.
+    pub lease: LeaseSlot,
 }
 
 /// One call of a core tool.

@@ -29,6 +29,8 @@ use crate::paths::DataRoot;
 use crate::router::Router;
 use crate::routes::RouteList;
 use crate::sessions::{SessionsOptions, Turn, TurnOutcome};
+use crate::workspaces::fake::Fake;
+use crate::workspaces::{DeleteReason, WorkspaceOwner, WorkspaceState};
 
 const AGENT: &str = "jeeves";
 /// Long enough that only a hang reaches it (paused time jumps straight there).
@@ -101,6 +103,9 @@ struct FakeRunner {
     changes: JobChanges,
     /// While set, a turn waits for it to be notified before it answers.
     gate: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    /// While set, a turn creates a workspace for its session in the environment `box`, as a
+    /// workspace tool would.
+    workspaces: Mutex<Option<Workspaces>>,
 }
 
 #[async_trait]
@@ -114,6 +119,13 @@ impl TurnRunner for FakeRunner {
         let gate = self.gate.lock().unwrap().clone();
         if let Some(gate) = gate {
             gate.notified().await;
+        }
+        let workspaces = self.workspaces.lock().unwrap().clone();
+        if let Some(workspaces) = workspaces {
+            workspaces
+                .create(&WorkspaceOwner::of_session(&turn.session), "box", json!({}))
+                .await
+                .unwrap();
         }
         let cancel_own = self.cancel_own.lock().unwrap().take();
         if let Some(id) = cancel_own {
@@ -195,6 +207,9 @@ struct Harness {
     ran: mpsc::UnboundedReceiver<Ran>,
     shutdown: CancellationToken,
     scheduler: Option<Scheduler>,
+    workspaces: Workspaces,
+    /// The environment `box` is connected to.
+    environment: Arc<Fake>,
 }
 
 impl Harness {
@@ -210,7 +225,8 @@ impl Harness {
         write(
             "giles.toml",
             "[owner]\nidentities = [\"fake:owner\"]\ntimezone = \"America/Los_Angeles\"\n\
-             [provider.anthropic]\n[provider.ollama]\ncomponent = \"openai\"\n[channel.fake]\n",
+             [provider.anthropic]\n[provider.ollama]\ncomponent = \"openai\"\n[channel.fake]\n\
+             [environment.box]\ncomponent = \"docker\"\naddress = \"http://127.0.0.1:9000\"\n",
         );
         for (name, contents) in files {
             write(&format!("agents/{AGENT}/{name}"), contents);
@@ -246,6 +262,17 @@ impl Harness {
         let clock = Arc::new(TestClock {
             start: Instant::now(),
         });
+        let workspaces = Workspaces::new(store.clone(), registry.clone(), clock.clone());
+        let environment = Fake::new(crate::workspaces::fake::TestClock::new());
+        registry
+            .register_environment(
+                &InstanceName::new("box").unwrap(),
+                environment.clone(),
+                giles_types::EnvironmentInfo {
+                    options_schema: json!({}),
+                },
+            )
+            .unwrap();
         let (ran_tx, ran) = mpsc::unbounded_channel();
         let changes = JobChanges::default();
         let runner = Arc::new(FakeRunner {
@@ -256,6 +283,7 @@ impl Harness {
             cancel_own: Mutex::default(),
             changes: changes.clone(),
             gate: Mutex::default(),
+            workspaces: Mutex::default(),
         });
         let shutdown = CancellationToken::new();
         let sessions = Sessions::start(
@@ -288,6 +316,8 @@ impl Harness {
             ran,
             shutdown,
             scheduler: None,
+            workspaces,
+            environment,
         }
     }
 
@@ -303,6 +333,7 @@ impl Harness {
                 runner: self.replies.clone(),
                 delivery: self.delivery.clone(),
                 changes: self.changes.clone(),
+                workspaces: self.workspaces.clone(),
                 clock: self.clock.clone(),
             },
             self.shutdown.clone(),
@@ -618,6 +649,57 @@ async fn an_isolated_reply_is_delivered_and_appended_to_the_dm_with_an_excerpt_i
     )
     .unwrap();
     assert!(h.ran().await.prompt.ends_with("Just the headlines."));
+    h.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_isolated_runs_workspace_is_deleted_when_the_run_ends() {
+    let mut h = Harness::new(
+        "[[jobs]]\nid = \"digest\"\ncron = \"0 8 * * *\"\nprompt = \"Summarize.\"\n",
+        &[],
+    )
+    .await;
+    *h.replies.workspaces.lock().unwrap() = Some(h.workspaces.clone());
+    h.start().await;
+
+    let ran = h.ran().await;
+    assert_eq!(ran.session.kind, SessionKind::Job);
+    h.settle().await;
+    let rows = h.store.workspaces_of("box").await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].owner,
+        WorkspaceOwner::Job {
+            session: ran.session.id
+        }
+    );
+    assert_eq!(rows[0].state, WorkspaceState::Deleted);
+    assert_eq!(rows[0].delete_reason, Some(DeleteReason::JobRunEnded));
+    assert!(h.environment.held().is_empty(), "the plugin deleted it");
+    h.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_dm_jobs_workspace_is_the_dms_and_stays() {
+    let mut h = Harness::new(
+        "[[jobs]]\nid = \"check-in\"\ncron = \"0 8 * * *\"\nsession = \"dm\"\n\
+         prompt = \"How's it going?\"\n",
+        &[],
+    )
+    .await;
+    *h.replies.workspaces.lock().unwrap() = Some(h.workspaces.clone());
+    let dm = h.dm(&["Hi", "Hello."]).await;
+    h.start().await;
+
+    let ran = h.ran().await;
+    assert_eq!(ran.session.id, dm.id);
+    h.settle().await;
+    let rows = h.store.workspaces_of("box").await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].owner, WorkspaceOwner::of_session(&dm));
+    assert!(matches!(rows[0].owner, WorkspaceOwner::Conversation { .. }));
+    assert_eq!(rows[0].state, WorkspaceState::Active);
+    assert_eq!(h.environment.held().len(), 1);
     h.stop().await;
 }
 
@@ -963,6 +1045,7 @@ async fn tasks_are_kept_while_an_agents_jobs_are_unchanged() {
         sessions: h.sessions.clone(),
         runner: h.replies.clone(),
         delivery: h.delivery.clone(),
+        workspaces: h.workspaces.clone(),
         clock: h.clock.clone(),
         shutdown: h.shutdown.clone(),
     });

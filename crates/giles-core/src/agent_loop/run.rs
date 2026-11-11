@@ -27,6 +27,7 @@ use crate::core_tools::TurnContext;
 use crate::media::{self, SessionMedia};
 use crate::registry::{RegistryError, ResolvedModel};
 use crate::sessions::{INTERRUPTED_RESULT, Turn, TurnMessage, TurnOutcome};
+use crate::workspaces::LeaseSlot;
 
 /// The longest provider error text a failure notice shows, in characters.
 const MAX_NOTICE_ERROR_CHARS: usize = 300;
@@ -192,6 +193,7 @@ async fn drive(agent_loop: &AgentLoop, turn: &Turn) -> Result<TurnOutcome, TurnE
             reply: turn.reply.clone(),
             skills: prompt.skills.clone(),
             job: turn.job.is_some() || session.kind == SessionKind::Job,
+            lease: LeaseSlot::default(),
         }),
     };
     let approvals = Arc::new(TurnApprovals::for_turn(

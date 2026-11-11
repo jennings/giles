@@ -95,19 +95,25 @@ which marks them as the child's text.
    `SWEEP_INTERVAL`; the interval is measured from the end of one sweep to the start of the next).
    Each run logs one `info` line (`blob sweep removed unreferenced blobs`, with `blobs`,
    `orphan_files`, and `bytes`) when it removed something, a `debug` line when it didn't, and a
-   `warn` when it failed, in which case it removed nothing and the next run is on schedule.
+   `warn` when it failed, in which case it removed nothing and the next run is on schedule. The
+   workspace sweep (`Runtime::start_workspace_sweep`, `giles_core::workspaces::WorkspaceSweep`,
+   [Environment workspaces](environments.md)) starts beside them: the first run a minute in, then
+   every five minutes, plus a reconciliation each time an environment plugin connects. (Before that,
+   `Runtime::start` settled the workspaces the previous process left: `Workspaces::recover`.)
 9. Log `giles started` with the root, admin socket path, HTTP URL, and instance and agent counts,
    plus a warning if the sockets use the `$TMPDIR` fallback.
 10. Wait until the shutdown token is cancelled, then await the HTTP server (it drains open requests
     for up to 5 s), the sessions (`Sessions::closed`: running turns are cancelled, channel pumps
-    stop between events), the outbox's sender (`Outbox::closed`), and the blob sweep
-    (`BlobSweep::closed`; a sweep that is running finishes first), then stop the plugins and their
-    supervision (`PluginHost::stop_all`: `Shutdown`, then `SIGTERM`, then `SIGKILL` to each plugin's
-    process group) and the toolsets (`ToolsetHost::stop`: stdio servers' process groups killed,
-    remote connections closed), await the admin server (it drains for up to 5 s and removes its
-    socket and token file), log `giles stopped`, release the lock, and exit with status 0. If the
-    HTTP server stops on its own first, cancel the token, stop the plugins, the toolsets, and the
-    admin server, and exit with an error.
+    stop between events), the outbox's sender (`Outbox::closed`), the blob sweep
+    (`BlobSweep::closed`; a sweep that is running finishes first), and the workspace sweep
+    (`WorkspaceSweep::closed`; it calls the environment plugins, so it stops before them, and a run
+    in progress is dropped), then stop the plugins and their supervision (`PluginHost::stop_all`:
+    `Shutdown`, then `SIGTERM`, then `SIGKILL` to each plugin's process group) and the toolsets
+    (`ToolsetHost::stop`: stdio servers' process groups killed, remote connections closed), await
+    the admin server (it drains for up to 5 s and removes its socket and token file), log
+    `giles stopped`, release the lock, and exit with status 0. If the HTTP server stops on its own
+    first, cancel the token, stop the workspace sweep, the plugins, the toolsets, and the admin
+    server, and exit with an error.
 
 The shutdown signal is a `tokio_util::sync::CancellationToken`. The first SIGINT or SIGTERM cancels
 it. Subsystems added later take a clone (or a `child_token()`), stop when it is cancelled, and are

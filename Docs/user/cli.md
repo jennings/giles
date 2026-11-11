@@ -257,7 +257,7 @@ Stop Giles first. Otherwise the command fails with `giles is already running ...
 ```console
 $ giles channel rename libera libera-chat
 Renamed channel instance "libera" to "libera-chat".
-  database: 3 sessions, 10 inbox rows, 0 outbox rows, 0 usage rows, 0 messages, 2 routes
+  database: 3 sessions, 10 inbox rows, 0 outbox rows, 1 workspaces, 0 usage rows, 0 messages, 2 routes
   giles.toml: [channel.libera] -> [channel.libera-chat]
   giles.toml: 1 [[routes]] rule(s) updated (Giles no longer reads them once they are imported)
   agents/jeeves/memory.db: 2 group memories moved to "libera-chat"
@@ -267,7 +267,8 @@ Start giles again to use the new name.
 
 The command renames:
 
-- the channel's database rows and stored [routes](configuration.md#routes)
+- the channel's database rows, the workspaces its conversations own, and stored
+  [routes](configuration.md#routes)
 - the group memories in each agent's `memory.db`
 - the channel's directories, including the per-group `MEMORY.md` files
 - the `[channel.<old>]` table in `giles.toml`, keeping its comments and formatting
@@ -304,14 +305,19 @@ fails, the error lists what to fix by hand.
 
 Renames an environment, such as `docker` in `[environment.docker]`, with Giles stopped. It moves the
 environment's directories and renames its table in `giles.toml`, keeping its comments and
-formatting, and changes the name in each agent's `environments` list. If the table has no
-`component` key, the command adds `component = "<old>"`. It works as
-[`giles channel rename`](#giles-channel-rename-old-new) does: stop Giles first, `<new>` must have no
-data, and a failed step is undone.
+formatting, and changes the name in each agent's `environments` list. The workspaces the environment
+holds stay attached to it, so agents keep their files. If the table has no `component` key, the
+command adds `component = "<old>"`. It works as
+[`giles channel rename`](#giles-channel-rename-old-new) does:
+
+- Stop Giles first.
+- `<new>` must have no data.
+- A failed step is undone.
 
 ```console
 $ giles environment rename docker sandbox
 Renamed environment instance "docker" to "sandbox".
+  database: 4 workspaces
   giles.toml: [environment.docker] -> [environment.sandbox]
   agents/jeeves/agent.toml: 1 reference(s) updated
   moved data/environment/docker -> data/environment/sandbox
@@ -329,7 +335,7 @@ Stop Giles first. Otherwise the command fails with `giles is already running ...
 ```console
 $ giles provider rename anthropic claude
 Renamed provider instance "anthropic" to "claude".
-  database: 0 sessions, 0 inbox rows, 0 outbox rows, 212 usage rows, 1840 messages, 0 routes
+  database: 0 sessions, 0 inbox rows, 0 outbox rows, 0 workspaces, 212 usage rows, 1840 messages, 0 routes
   giles.toml: [provider.anthropic] -> [provider.claude]
   agents/jeeves/agent.toml: 2 reference(s) updated
 Start giles again to use the new name.

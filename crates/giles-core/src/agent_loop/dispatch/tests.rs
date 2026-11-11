@@ -289,6 +289,7 @@ impl Setup {
                 reply: None,
                 skills: Arc::default(),
                 job: true,
+                lease: Default::default(),
             }),
             skip,
             approvals: Arc::new(approvals),
