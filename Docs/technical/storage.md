@@ -137,11 +137,11 @@ rules apply, and `before_migrate` receives that file's plan.
 - Row ids are opaque newtypes (`SessionId`, ...) over SQLite rowids.
 - Agent, user, channel instance, and conversation ids are stored as their string forms.
 
-## Schema (version 4)
+## Schema (version 5)
 
 The files in `crates/giles-store/src/migrations/` are the authority (`0001_initial.sql` has every
-table but `blobs`, `routes`, and `toolsets`, which `0002_blobs.sql`, `0003_routes.sql`, and
-`0004_toolsets.sql` add); this is their outline.
+table but `blobs`, `routes`, `toolsets`, and `workspaces`, which `0002_blobs.sql`,
+`0003_routes.sql`, `0004_toolsets.sql`, and `0005_workspaces.sql` add); this is their outline.
 
 | Table          | Columns and rules                                                                    |
 | -------------- | ------------------------------------------------------------------------------------ |
@@ -159,6 +159,7 @@ table but `blobs`, `routes`, and `toolsets`, which `0002_blobs.sql`, `0003_route
 | `routes`       | The ordered routing rules: `position` (dense, 0 first), `channel`, `kind` (`direct`, `group`), `conversation` (each null for any), `agent`. Ids are `AUTOINCREMENT`, never reused. |
 | `routes_imported` | One row, once the `[[routes]]` of `giles.toml` were imported: `at`.                  |
 | `toolsets`     | The MCP toolsets the web UI manages: `name` (primary key, `NOCASE`), `spec` (JSON text), `created_at`, `updated_at`. |
+| `workspaces`   | The environment workspaces: `id` (core-assigned, primary key), `environment`, the owner (`agent`, `channel`, `conversation`, or `job_session`; exactly one form), `options` (JSON), the plugin's `description`, `working_directory`, `persistence`, `state` (`creating`, `active`, `deleting`, `deleted`), `created_at`, `last_used_at`, `deleted_at`, `delete_reason`. Partial unique indexes allow one `creating` or `active` row per owner. See [Workspaces](#workspaces). |
 
 `identities` and `pairings` are deferred with multi-user support (PLAN 1.1, D49) and don't exist
 yet.
@@ -426,10 +427,12 @@ cache reads + cache writes), since `input_tokens` excludes cached tokens. Token 
 Instance names (PLAN 7.2) are stored in different places for each kind, and the store's operations
 take the kind and touch only that kind's places:
 
-- A channel is named in `sessions.channel`, `inbox.instance`, `outbox.instance`, and
-  `routes.channel`.
+- A channel is named in `sessions.channel`, `inbox.instance`, `outbox.instance`,
+  `workspaces.channel`, and `routes.channel`.
 - A provider is named in `usage.provider` and in the `provider` field of an assistant message's
   `meta` JSON.
+- An environment is named in `workspaces.environment`. `workspaces.channel` also names the channel
+  of a conversation that owns a workspace (a job run's workspace has no channel).
 - A toolset is named in none of these. A stored toolset is a row of its own in `toolsets`.
 
 Nothing else holds one: `inbox.payload` and `outbox.payload` carry conversations and text but no
@@ -437,12 +440,13 @@ instance name, `jobs.spec` carries a prompt and a schedule, and identities use t
 channel reports, not the instance name.
 
 `instance_rows(kind)` returns, per name, how many rows of that kind use it: sessions, inbox, and
-outbox rows for a channel, usage rows for a provider, and nothing for a toolset. It's what the
-rename commands read to see which names have data. It leaves `routes.channel` out on purpose: routes
-are settings, not data, and a route to a removed instance is kept (the routes page flags it), so
-counting it would keep that name from being given to another instance. `instance_routes` returns,
-per channel instance, how many routes name it; `giles channel rename` reads it to see that a name is
-used.
+outbox rows, and workspaces for a channel, usage rows for a provider, workspaces for an environment,
+and nothing for a toolset. Workspace rows count in every state, so a `deleted` row the sweep hasn't
+pruned yet still holds its environment's name. It's what the rename commands read to see which names
+have data. It leaves `routes.channel` out on purpose: routes are settings, not data, and a route to
+a removed instance is kept (the routes page flags it), so counting it would keep that name from
+being given to another instance. `instance_routes` returns, per channel instance, how many routes
+name it; `giles channel rename` reads it to see that a name is used.
 
 `rename_instance(kind, old, new, hook)` moves the kind's places to the new name in one `IMMEDIATE`
 transaction, runs `hook` inside it after the updates and before the commit, and returns the number
@@ -523,6 +527,44 @@ write are one transaction. `None` skips the check, for a caller that means to ov
 also moves `updated_at`, so a form loaded before a rename is stale too (and its name no longer finds
 the row). The absence check comes first: a missing toolset is `NoSuchToolset` whatever else is
 wrong.
+
+## Workspaces
+
+`workspaces` records the workspaces the core created in environment plugins (PLAN 8.8); the life
+cycle, the sweep, and the reconciliation are in [Environments](environments.md). The core assigns
+`id` (`ws-` and 20 hex digits), and the plugin labels its resources with it, so a plugin's list and
+the table meet on the id alone.
+
+An owner is a conversation (`agent`, `channel`, `conversation`: the key of a session) or an isolated
+job run (`job_session`, a `sessions.id` with no foreign key, because a run that replies `NO_REPLY`
+deletes its session while the workspace may still need cleaning up). A `CHECK` allows exactly one
+form. `state` is `creating`, `active`, `deleting` (the owner's slot is free but the plugin hasn't
+confirmed the delete), or `deleted`; `deleted_at` and `delete_reason` are set exactly when the state
+is `deleting` or `deleted`, and `description`, `working_directory` and `persistence` (what the
+plugin reported) are set once it is `active`. Two partial unique indexes, over the conversation key
+and over `job_session`, allow one `creating` or `active` row per owner. Deleted rows stay so the
+model can be told when and why, and are pruned after the instance's `delete_after`.
+
+| Method                                       | Contract                                                              |
+| -------------------------------------------- | --------------------------------------------------------------------- |
+| `workspace_insert(new)`                      | Inserts a `creating` row; `Error::Conflict` naming the owner's current workspace, or a taken id. |
+| `workspace_activate(id, ...)`                | `creating` to `active` with what the plugin reported; `Conflict` if it isn't `creating`. |
+| `workspace(id)`, `workspace_current(owner)`  | A row in any state; the owner's `creating` or `active` row.           |
+| `workspace_last_deleted(owner)`              | The owner's newest `deleting` or `deleted` row, leaving out failed creations. |
+| `workspaces_of(environment)`                 | Every row of the instance, oldest first.                              |
+| `workspace_touch(id, now)`                   | Moves an `active` row's `last_used_at` forward, never back.           |
+| `workspace_begin_delete(id, reason, now)`, `workspace_begin_delete_for(owner, reason, now)` | `creating` or `active` to `deleting`: the owner's slot is free at once. `None` if there was nothing to delete. |
+| `workspace_finish_delete(id)`                | `deleting` to `deleted`, keeping the time and reason.                 |
+| `workspace_mark_gone(id, reason, now)`       | `active` straight to `deleted`: the environment no longer has it.     |
+| `workspaces_fail_creating(until, now)`       | `creating` rows inserted at or before `until` become `deleting` (`creation_failed`). |
+| `workspaces_end_job_runs(now)`               | Every `active` job-owned row becomes `deleting` (`job_run_ended`): at startup no run is alive. |
+| `workspaces_prune(environment, before)`      | Removes `deleted` rows of the instance deleted before `before`.       |
+| `workspace_owner_activity(owner)`            | A conversation's newest message across every session of its key, ended ones included (a session's start if it has none); `None` for a job. |
+
+Because the table is in `giles.db`, a [backup](backups.md) holds it, but not the workspaces'
+contents, which live in the plugin's backend. After a restore the next reconciliation marks the rows
+whose workspaces are gone `deleted` (`removed_outside_giles`) and deletes the plugin's workspaces
+that no row names.
 
 ## Blob store
 

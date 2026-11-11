@@ -34,3 +34,4 @@ pub mod sessions;
 pub mod skills;
 mod stderr_lines;
 pub mod toolsets;
+pub mod workspaces;

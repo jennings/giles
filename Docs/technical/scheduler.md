@@ -74,9 +74,11 @@ parse is logged and skipped.
    for `dm_excerpt = N` the text of the DM's last N messages (`**User:**`/`**You:**`, tool blocks
    left out), then the prompt.
    - `isolated`: a fresh job session owned by the user (their core memories are in its prompt),
-     ended after the run. A config job's turn has no requester, so its memory tools see and write
-     shared memories only ([Skills and Memory](skills-and-memory.md#who-sees-what)); a runtime job
-     runs as its creator, with the creator's memories.
+     ended after the run. Its [environment workspace](environments.md#job-runs), if the run made
+     one, is deleted when the run ends, before the session ends; a `dm` run's workspace is the DM's
+     and stays. A config job's turn has no requester, so its memory tools see and write shared
+     memories only ([Skills and Memory](skills-and-memory.md#who-sees-what)); a runtime job runs as
+     its creator, with the creator's memories.
    - `dm`: the user's open DM session (`Sessions::open_direct`, `idle_reset` applied), held
      (`Sessions::hold`) so the run is its own turn after the turns ahead of it; `/stop` there
      cancels it. With no DM yet it runs like an isolated job.

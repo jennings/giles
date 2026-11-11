@@ -50,6 +50,7 @@
 - [WhatsApp channel](technical/whatsapp.md)
 - [Discord channel](technical/discord.md)
 - [Docker environment](technical/environment-docker.md)
+- [Environment workspaces](technical/environments.md)
 - [gRPC Protocols](technical/protocols.md)
 - [Admin service](technical/admin.md)
 - [Configuration](technical/config.md)

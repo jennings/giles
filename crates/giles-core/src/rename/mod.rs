@@ -603,8 +603,8 @@ fn store_failure(
 
 fn describe_rows(rows: InstanceRows) -> String {
     format!(
-        "{} sessions, {} inbox rows, {} outbox rows, {} usage rows in the database",
-        rows.sessions, rows.inbox, rows.outbox, rows.usage
+        "{} sessions, {} inbox rows, {} outbox rows, {} workspaces, {} usage rows in the database",
+        rows.sessions, rows.inbox, rows.outbox, rows.workspaces, rows.usage
     )
 }
 

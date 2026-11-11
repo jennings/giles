@@ -356,9 +356,10 @@ other.
 returns a stream of `(index, ToolOutput { content, is_error })`, one per call, in any order.
 Dropping it must cancel the calls still running. `context` is the `CallContext`: agent, requester,
 and the session's channel conversation. `media` is the session's media (above). `turn` is the
-`core_tools::TurnContext` core tools get (the turn's session, its `Reply`, and the skills its prompt
-lists), built once per turn. `skip` is the steering signal above; `approvals` the turn's
-`TurnApprovals`, built once per turn by `TurnApprovals::for_turn`.
+`core_tools::TurnContext` core tools get (the turn's session, its `Reply`, the skills its prompt
+lists, and the `LeaseSlot` that holds the turn's [workspace lease](environments.md#leases)), built
+once per turn. `skip` is the steering signal above; `approvals` the turn's `TurnApprovals`, built
+once per turn by `TurnApprovals::for_turn`.
 
 `PolicyDispatcher` is the daemon's (§6.3, §6.4). It doesn't spawn: the stream drives the calls, so a
 call starts only while the agent loop polls it, and dropping the stream drops every running call's
@@ -418,10 +419,10 @@ The core tools (§6.5) live in `giles_core::core_tools`, one module per tool, ea
 `CoreTool { fn spec() -> ToolSpec; async fn call(CoreCall) -> ToolOutput }`. A tool keeps its
 long-lived dependencies (store, memory databases, configuration) in its own fields; per call it gets
 the `ToolUse` id, the input, the `CallContext`, the shared `TurnContext` (`session`, `reply` where
-`send_attachment` sends, `skills` that `load_skill` answers from), and the batch's session media
-(`media`, for tools that take a media id). Failures are error results, never panics.
-`Registry::register_core_tool(Arc<dyn CoreTool>)` stores the implementation and adds its spec to the
-tool index (`ToolIndex::set_core_tool`), and the dispatcher finds it with
+`send_attachment` sends, `skills` that `load_skill` answers from, `lease` for workspace tools), and
+the batch's session media (`media`, for tools that take a media id). Failures are error results,
+never panics. `Registry::register_core_tool(Arc<dyn CoreTool>)` stores the implementation and adds
+its spec to the tool index (`ToolIndex::set_core_tool`), and the dispatcher finds it with
 `Registry::core_tool(name)` when the call starts.
 
 The core tools are `load_skill`, `memory_add`, `memory_edit`, `memory_forget`, `memory_recall`,

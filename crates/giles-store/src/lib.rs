@@ -35,6 +35,7 @@ mod time;
 mod toolsets;
 mod usage;
 mod web_sessions;
+mod workspaces;
 
 pub use blobs::{
     Blob, BlobMeta, BlobReader, BlobStore, SWEEP_GRACE, SweepGuard, SweepHold, SweepReport,
@@ -61,6 +62,7 @@ pub use sessions::{Session, SessionId, SessionKey, SessionKind, SessionSummary};
 pub use toolsets::StoredToolset;
 pub use usage::{AgentUsage, ModelUsage, UsageRecord};
 pub use web_sessions::WebSession;
+pub use workspaces::{DeleteReason, NewWorkspace, WorkspaceOwner, WorkspaceRecord, WorkspaceState};
 
 use giles_types::Timestamp;
 use rusqlite::{Params, Row, Statement};

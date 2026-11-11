@@ -39,6 +39,7 @@ use crate::identity;
 use crate::outbox::{Outbox, OutboxItem, OutboxKind};
 use crate::registry::Registry;
 use crate::sessions::{Clock, Sessions, TurnRunner};
+use crate::workspaces::Workspaces;
 
 /// The longest the scheduler sleeps before looking at the clock again, so a wall clock that
 /// jumps (a laptop waking up) delays a job by at most this much.
@@ -164,6 +165,8 @@ pub struct SchedulerOptions {
     pub delivery: Arc<dyn JobDelivery>,
     /// Signals changes to runtime jobs.
     pub changes: JobChanges,
+    /// The environment workspaces: an isolated run's is deleted when the run ends.
+    pub workspaces: Workspaces,
     /// The time source.
     pub clock: Arc<dyn Clock>,
 }
@@ -242,6 +245,7 @@ pub(crate) struct Context {
     pub(crate) sessions: Sessions,
     pub(crate) runner: Arc<dyn TurnRunner>,
     pub(crate) delivery: Arc<dyn JobDelivery>,
+    pub(crate) workspaces: Workspaces,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) shutdown: CancellationToken,
 }
@@ -261,6 +265,7 @@ impl Scheduler {
             sessions: options.sessions,
             runner: options.runner,
             delivery: options.delivery,
+            workspaces: options.workspaces,
             clock: options.clock,
             shutdown,
         });

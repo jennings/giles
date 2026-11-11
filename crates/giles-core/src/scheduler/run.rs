@@ -19,6 +19,7 @@ use crate::approvals::{ApprovalTarget, PromptOutbox};
 use crate::config::{AgentConfig, AskTo, JobPrompt, JobSession};
 use crate::identity;
 use crate::sessions::{ChannelLookup, Clock, JobTurn, Reply, Steering, Turn, TurnOutcome};
+use crate::workspaces::{DeleteReason, WorkspaceOwner};
 
 /// A reply of exactly this (surrounding white space aside) sends and stores nothing (PLAN
 /// section 6.11).
@@ -352,6 +353,17 @@ impl Run<'_> {
         // still delivers this run's reply.
         let turn = self.turn(session, self.context.shutdown.child_token(), prompt);
         let outcome = self.context.runner.run_turn(turn).await;
+        // The run is over, however it ended: its workspace goes with it. A plugin that can't be
+        // reached leaves it to the sweep.
+        let owner = WorkspaceOwner::Job { session: id };
+        if let Err(error) = self
+            .context
+            .workspaces
+            .delete(&owner, DeleteReason::JobRunEnded)
+            .await
+        {
+            warn!(job = %label, session = %id, %error, "cannot delete the job run's workspace");
+        }
         if let Err(error) = store.end_session(id, self.context.clock.now()).await {
             warn!(job = %label, session = %id, %error, "cannot end the job's session");
         }

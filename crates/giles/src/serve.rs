@@ -136,6 +136,9 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     let scheduler = runtime.start_scheduler(sessions.clone(), runner, shutdown.clone());
     // Removal of blobs nothing references any more, first a minute from now.
     let blob_sweep = runtime.start_blob_sweep(shutdown.clone());
+    // Environment workspaces: idle ones stopped, abandoned ones deleted, and each plugin
+    // reconciled as it connects. It calls the plugins, so it stops before them.
+    let workspace_sweep = runtime.start_workspace_sweep(shutdown.clone());
     // Plugin supervision (started below) and the admin service, built before the HTTP application:
     // the web admin pages call the same service the admin socket serves.
     let wiring = ChannelWiring {
@@ -275,6 +278,7 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     if let Some(result) = early_exit {
         // The server only returns on shutdown; stop everything else with it.
         shutdown.cancel();
+        workspace_sweep.closed().await;
         plugins.stop_all().await;
         toolsets.stop().await;
         stop_admin(admin_server).await;
@@ -283,12 +287,13 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     }
     http_server.await.context("the HTTP server panicked")??;
     // Running turns and job runs are cancelled with the token; wait for them, the channel pumps,
-    // the outbox's sender, and the blob sweep, then stop the plugins and their supervision, and
-    // the toolsets.
+    // the outbox's sender, the blob sweep, and the workspace sweep (which calls the environment
+    // plugins), then stop the plugins and their supervision, and the toolsets.
     scheduler.closed().await;
     sessions.closed().await;
     runtime.outbox.closed().await;
     blob_sweep.closed().await;
+    workspace_sweep.closed().await;
     plugins.stop_all().await;
     toolsets.stop().await;
     stop_admin(admin_server).await;

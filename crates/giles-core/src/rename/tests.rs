@@ -235,6 +235,7 @@ async fn all_instance_rows(
             entry.sessions += rows.sessions;
             entry.inbox += rows.inbox;
             entry.outbox += rows.outbox;
+            entry.workspaces += rows.workspaces;
             entry.usage += rows.usage;
         }
     }
@@ -567,6 +568,69 @@ async fn renaming_an_environment_rewrites_the_agents_lists_and_moves_its_directo
     assert_eq!(config.environments["sandbox"].component, "docker");
     let environments = &config.agents[&AgentId::new("jeeves").unwrap()].environments;
     assert_eq!(environments[0].as_str(), "sandbox");
+}
+
+/// A workspace of `environment` owned by the conversation `conversation` on `channel`.
+async fn seed_workspace(home: &Home, environment: &str, channel: &str) {
+    let record = home
+        .store
+        .workspace_insert(giles_store::NewWorkspace {
+            id: giles_types::WorkspaceId::new("ws-1").unwrap(),
+            environment: environment.to_owned(),
+            owner: giles_store::WorkspaceOwner::Conversation {
+                agent: AgentId::new("jeeves").unwrap(),
+                channel: channel.to_owned(),
+                conversation: ConversationId::new("#giles").unwrap(),
+            },
+            options: json!({"image": "alpine"}),
+            now: jiff::Timestamp::from_second(1_800_000_000).unwrap(),
+        })
+        .await
+        .unwrap();
+    home.store
+        .workspace_activate(&record.id, "alpine", "/work", "files persist")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn renaming_an_environment_keeps_its_workspaces_attached() {
+    let giles = GILES_TOML.to_owned() + "\n[environment.docker]\nunsandboxed = true\n";
+    let home = Home::new(&giles).await;
+    home.write("agents/jeeves/agent.toml", JEEVES);
+    seed_workspace(&home, "docker", "libera").await;
+
+    let report = home
+        .rename(Kind::Environment, "docker", "sandbox")
+        .await
+        .unwrap();
+    assert_eq!(report.rows.workspaces, 1);
+    assert!(home.store.workspaces_of("docker").await.unwrap().is_empty());
+    let moved = home.store.workspaces_of("sandbox").await.unwrap();
+    assert_eq!(moved.len(), 1);
+    assert_eq!(moved[0].state, giles_store::WorkspaceState::Active);
+    assert_eq!(moved[0].options, json!({"image": "alpine"}));
+    // The channel the conversation is on isn't the environment's business.
+    assert_eq!(home.rows().await["libera"].workspaces, 1);
+}
+
+#[tokio::test]
+async fn renaming_a_channel_keeps_the_workspaces_of_its_conversations_attached() {
+    let home = Home::populated().await;
+    seed_workspace(&home, "docker", "libera").await;
+
+    let report = home
+        .rename(Kind::Channel, "libera", "libera-chat")
+        .await
+        .unwrap();
+    assert_eq!(report.rows.workspaces, 1);
+    let owner = giles_store::WorkspaceOwner::Conversation {
+        agent: AgentId::new("jeeves").unwrap(),
+        channel: "libera-chat".to_owned(),
+        conversation: ConversationId::new("#giles").unwrap(),
+    };
+    let current = home.store.workspace_current(&owner).await.unwrap().unwrap();
+    assert_eq!(current.environment, "docker");
 }
 
 #[tokio::test]

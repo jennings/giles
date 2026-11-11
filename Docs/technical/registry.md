@@ -24,9 +24,11 @@ check has run ([The `giles` Binary](daemon.md#giles-serve-lifecycle)):
 `registry ready` with the counts of providers, channels, toolsets, tools, and pending instances.
 
 `Runtime` is `Clone` and holds `root`, `store`, `memory_dbs`, `blobs`, `registry: Arc<Registry>`,
-and `outbox` (built here, its sender started by `start_outbox`; [Outbox](outbox.md)). Errors are a
-`StartError` (`Store`, `Blobs`, `Registry`, and later `Sessions`, `Outbox`); `giles serve` prints it
-and exits.
+`outbox` (built here, its sender started by `start_outbox`; [Outbox](outbox.md)), and `workspaces`
+(the [workspace service](environments.md); `start` settles what the previous process left with
+`Workspaces::recover`, and its sweep starts with `start_workspace_sweep`). Errors are a `StartError`
+(`Store`, `Blobs`, `Registry`, `Workspaces`, and later `Sessions`, `Outbox`); `giles serve` prints
+it and exits.
 
 ## The running configuration
 

@@ -45,10 +45,10 @@ pids = 512
 - `description` is what the model reads when it chooses an environment.
 - `stop_after` stops a workspace's container after this long without use. Its files and installed
   packages stay, and the next command starts it again.
-- `delete_after` deletes a workspace, with its files, after this long without use.
-- `unix` is the engine's socket. For rootless Podman that is `/run/user/<uid>/podman/podman.sock`,
-  and for Docker Desktop or Colima it is the socket in your home directory. If you set `socket` in
-  the plugin's settings, grant the same path.
+- `delete_after` deletes a workspace, with its files, once its conversation has had no messages and
+  the workspace has not been used for this long. It can take a few minutes longer.
+- `socket` is the engine's socket, and `unix` grants the same path. For rootless Podman that is
+  `/run/user/<uid>/podman/podman.sock`.
 - `read` is the directory with the plugin and its helper files. It must be outside the Giles data
   directory, so install the plugin in a system directory such as `/usr/local/bin`.
 
