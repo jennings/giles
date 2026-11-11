@@ -1,0 +1,33 @@
+[package]
+name = "giles-environment-docker"
+description = "The Giles Docker environment plugin: isolated workspaces in containers, through the Docker Engine API."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# The Docker Engine API client. Only the unix socket transport: the plugin's `socket` setting is a
+# path, so no TLS stack comes with it.
+bollard = { version = "0.21.1", default-features = false, features = ["pipe"] }
+bytes.workspace = true
+futures.workspace = true
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Builds the archive that carries the helper into a container.
+tar = { version = "0.4.46", default-features = false }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tracing.workspace = true
+uuid = { version = "1.18.1", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+toml.workspace = true
+
+[lints]
+workspace = true
