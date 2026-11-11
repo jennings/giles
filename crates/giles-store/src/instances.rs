@@ -115,7 +115,7 @@ fn name_columns(kind: Kind) -> &'static [NameColumn] {
     match kind {
         Kind::Channel => &CHANNEL_COLUMNS,
         Kind::Provider => &PROVIDER_COLUMNS,
-        Kind::Toolset => &[],
+        Kind::Toolset | Kind::Environment => &[],
     }
 }
 
@@ -269,7 +269,7 @@ impl Store {
                         params![old, new],
                     )? as u64;
                 }
-                Kind::Toolset => {}
+                Kind::Toolset | Kind::Environment => {}
             }
             hook(&moved).map_err(Error::Hook)?;
             Ok(moved)

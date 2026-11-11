@@ -98,7 +98,7 @@ impl Builtins {
         match kind {
             Kind::Provider => self.providers,
             Kind::Channel => self.channels,
-            Kind::Toolset => &[],
+            Kind::Toolset | Kind::Environment => &[],
         }
     }
 

@@ -871,7 +871,7 @@ User-run plugins reached over TCP, with optional TLS and a bearer token or OAuth
 - Every shipped channel plugin is runnable this way: `giles-channel-<name> serve [--config <file>]`
   binds TCP, with TLS if given a certificate, and checks a static bearer token. The SDK parses its
   transport settings (`listen`, `data`, `tls_cert`, `tls_key`, `token_file`; each also a flag),
-  which are the same for every plugin. The token is `GILES_CHANNEL_<NAME>_TOKEN` or `token_file`
+  which are the same for every plugin. The token is `GILES_<KIND>_<NAME>_TOKEN` or `token_file`
   (refused if group or others can read it), and `serve` won't start without one unless `--no-auth`
   says to accept anyone. OAuth verification isn't part of it: a plugin that wants it calls
   `serve_remote` itself.
@@ -880,6 +880,11 @@ User-run plugins reached over TCP, with optional TLS and a bearer token or OAuth
   the plugin. A remote plugin builds its channel from the first `Configure` it gets and refuses a
   different config until it restarts. Reading plugin settings on the plugin's own machine, so that a
   secret never leaves it, is deferred.
+- Environment plugins are the exception to the last bullet. A remote environment plugin reads its
+  own settings from the `[config]` table of its `--config` file, and the core refuses `config`
+  together with `address` for an environment instance (the SDK also refuses a non-empty `config` in
+  `Configure`). Its settings are mostly credentials for something on the plugin's own host, such as
+  a container engine or registry logins, so they stay there instead of crossing the network.
 
 ### 7.7 Configuration and secrets
 
@@ -1255,6 +1260,31 @@ owner), and the owner also sees and edits each group conversation's memories the
 The route pages (list, add, edit, remove, and reorder the routes of section 6.1) are owner-only
 admin pages too, also without RPCs: they call the core's route management in-process, and a change
 applies to the next inbound message.
+
+### 8.8 Environment
+
+An environment plugin gives an agent isolated workspaces and serves the primitives that the core's
+workspace tools (`bash`, `read`, `write`, `edit`, `find`, `grep`) are built on. It serves
+`giles.environment.v1.EnvironmentService` next to the base service, with `PLUGIN_KIND_ENVIRONMENT`
+and an empty `EnvironmentCapabilities` in `Describe`. The core keeps the tools generic: each plugin
+decides how to run a command or a search.
+
+| RPC               | Purpose                                                                   |
+| ----------------- | ------------------------------------------------------------------------- |
+| `Info`            | The JSON Schema of the options `CreateWorkspace` takes; the model sees it  |
+| `CreateWorkspace` | Creates a workspace under an id the core chose (1 to 64 of `a-z`, `0-9`, `-`) |
+| `DeleteWorkspace` | Deletes a workspace and its files; succeeds if it is gone already          |
+| `StartWorkspace`  | Makes it ready, starting or recreating what it runs on; the core calls it before each workspace tool call, and the `StartOutcome` (running, started, recreated, with a `detail` for the model) is the lifecycle notice |
+| `StopWorkspace`   | Stops its processes and keeps its files                                    |
+| `ListWorkspaces`  | Every workspace, with disk use and the free space where they live          |
+| `Exec`            | Server stream: stdout and stderr pieces, then one exit (code, `timed_out`, `dropped_bytes`). The request carries the timeout and an output cap. Cancelling the call kills the command and everything it started |
+| `ReadFile`, `WriteFile` | Read up to `max_bytes` of a file; write a file, creating parent directories |
+| `Find`, `Grep`    | Glob and regular expression searches that skip `.git` and ignored files     |
+
+Errors are gRPC statuses whose messages the core may show the model: `INVALID_ARGUMENT` for a
+refused request, `NOT_FOUND` for a missing workspace or path, `UNAVAILABLE` when the plugin's
+backend can't be reached. In `giles-types` the service is the `Environment` trait, which the plugin
+SDK serves and the core's gRPC adapter implements, so core tests can use fakes.
 
 ## 9. HTTP and web
 

@@ -626,11 +626,13 @@ fn config_errors_name_the_key() {
         verify: bool,
     }
     let data = tempfile::tempdir().unwrap();
-    let context = |config: serde_json::Value| Configure {
-        instance: "home".into(),
-        config,
-        data_dir: data.path().to_owned(),
-        blobs: Blobs::new(Arc::new(SdkDirs::open(data.path()).unwrap())),
+    let context = |config: serde_json::Value| {
+        Configure::new(
+            "home".into(),
+            config,
+            data.path().to_owned(),
+            Blobs::new(Arc::new(SdkDirs::open(data.path()).unwrap())),
+        )
     };
     let message = |config| match context(config).parse_config::<Config>() {
         Err(Error::InvalidRequest(message)) => message,

@@ -271,6 +271,7 @@ pub(super) fn plugin_row(plugin: &pb::PluginInstance) -> PluginRow {
         pb::InstanceKind::Provider => "provider",
         pb::InstanceKind::Channel => "channel",
         pb::InstanceKind::Toolset => "MCP server",
+        pb::InstanceKind::Environment => "environment",
         pb::InstanceKind::Unspecified => "unknown kind",
     };
     let (state_word, class, mut state) = match plugin.state() {

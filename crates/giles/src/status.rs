@@ -87,6 +87,7 @@ fn format_plugin(out: &mut String, plugin: &pb::PluginInstance, tz: &TimeZone) {
         pb::InstanceKind::Provider => "provider",
         pb::InstanceKind::Channel => "channel",
         pb::InstanceKind::Toolset => "toolset",
+        pb::InstanceKind::Environment => "environment",
         pb::InstanceKind::Unspecified => "unknown kind",
     };
     if plugin.component.is_empty() {
@@ -276,6 +277,7 @@ mod tests {
                         network_ports: vec!["tcp:6697".into()],
                         read: vec!["/etc/ssl".into()],
                         write: vec![],
+                        ..SandboxGrants::default()
                     }),
                     channel_status: Some(ChannelStatus {
                         state: Some(State::Error("netsplit".into())),
@@ -387,6 +389,7 @@ Plugins:
                 network_ports: vec!["tcp:1".into()],
                 read: vec![],
                 write: vec!["/w".into()],
+                ..SandboxGrants::default()
             }),
             "network: all; write: /w"
         );

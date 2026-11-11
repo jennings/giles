@@ -185,6 +185,7 @@ mod tests {
                 network_ports: vec!["tcp:6697".into()],
                 read: vec![],
                 write: vec![],
+                ..SandboxGrants::default()
             }),
             capabilities: Some(describe_response::Capabilities::Channel(
                 ChannelCapabilities {

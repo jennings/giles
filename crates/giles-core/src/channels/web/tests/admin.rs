@@ -65,6 +65,7 @@ impl AdminRpc for FakeAdmin {
             pb::InstanceKind::Provider => "provider",
             pb::InstanceKind::Channel => "channel",
             pb::InstanceKind::Toolset => "toolset",
+            pb::InstanceKind::Environment => "environment",
         };
         let wanted = request.kind();
         let instance = request.instance;

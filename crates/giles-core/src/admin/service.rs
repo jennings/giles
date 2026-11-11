@@ -214,6 +214,7 @@ impl AdminRpc for AdminService {
             pb::InstanceKind::Provider => Kind::Provider,
             pb::InstanceKind::Channel => Kind::Channel,
             pb::InstanceKind::Toolset => Kind::Toolset,
+            pb::InstanceKind::Environment => Kind::Environment,
             pb::InstanceKind::Unspecified => {
                 return Err(Status::invalid_argument(
                     "kind: name the kind of the plugin instance (channel or toolset)",

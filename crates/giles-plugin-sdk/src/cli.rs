@@ -1,10 +1,12 @@
-//! The command line of a plugin binary (`ChannelPlugin::run`): the `socket` subcommand Giles
-//! launches plugins with, the `serve` subcommand an operator runs a remote plugin with (PLAN
-//! sections 7.4 and 7.6), and the transport settings `serve` reads from flags and a file.
+//! The command line of a plugin binary (`ChannelPlugin::run`, `EnvironmentPlugin::run`): the
+//! `socket` subcommand Giles launches plugins with, the `serve` subcommand an operator runs a
+//! remote plugin with (PLAN sections 7.4 and 7.6), and the settings `serve` reads from flags and a
+//! file.
 //!
-//! The settings here are the plugin's transport only. What the plugin does (the Discord bot
-//! token, the IRC server) comes from the instance's `config` in the core's `giles.toml`, in both
-//! modes.
+//! The settings here are the plugin's transport only. What a channel does (the Discord bot token,
+//! the IRC server) comes from the instance's `config` in the core's `giles.toml`, in both modes.
+//! An environment plugin run with `serve` is the exception: its settings are the `[config]` table
+//! of the `--config` file (PLAN section 7.6).
 
 use std::ffi::OsString;
 use std::io;
@@ -12,6 +14,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
 use giles_proto::handshake::SOCKET_COMMAND;
+use giles_types::Kind;
 use serde::Deserialize;
 
 use crate::remote::RemoteAuth;
@@ -224,16 +227,44 @@ struct ConfigFile {
     tls_cert: Option<PathBuf>,
     tls_key: Option<PathBuf>,
     token_file: Option<PathBuf>,
+    /// The plugin's own settings. Only an environment plugin has them here.
+    config: Option<toml::Table>,
 }
 
 impl ConfigFile {
-    fn load(path: &Path) -> Result<Self, CliError> {
-        let text = std::fs::read_to_string(path).map_err(|source| read_error(path, source))?;
-        toml::from_str(&text).map_err(|e| CliError::Config {
+    /// Reads the file for a plugin of `kind`: only an environment plugin may have `[config]`.
+    fn load(path: &Path, kind: Kind) -> Result<Self, CliError> {
+        let config_error = |message: String| CliError::Config {
             path: path.display().to_string(),
-            message: e.message().to_owned(),
-        })
+            message,
+        };
+        let text = std::fs::read_to_string(path).map_err(|source| read_error(path, source))?;
+        let file: Self = toml::from_str(&text).map_err(|e| config_error(e.message().to_owned()))?;
+        if kind != Kind::Environment && file.config.is_some() {
+            return Err(config_error(format!(
+                "unknown field `config`: a {kind} plugin's settings come from \
+                 `[{kind}.<name>.config]` in giles.toml"
+            )));
+        }
+        Ok(file)
     }
+}
+
+/// A TOML table as JSON. A date or time becomes its RFC 3339 text.
+fn table_to_json(table: toml::Table) -> serde_json::Value {
+    fn convert(value: toml::Value) -> serde_json::Value {
+        match value {
+            toml::Value::String(s) => s.into(),
+            toml::Value::Integer(i) => i.into(),
+            toml::Value::Float(f) => serde_json::Number::from_f64(f)
+                .map_or(serde_json::Value::Null, serde_json::Value::Number),
+            toml::Value::Boolean(b) => b.into(),
+            toml::Value::Datetime(d) => d.to_string().into(),
+            toml::Value::Array(items) => items.into_iter().map(convert).collect(),
+            toml::Value::Table(table) => table_to_json(table),
+        }
+    }
+    serde_json::Value::Object(table.into_iter().map(|(k, v)| (k, convert(v))).collect())
 }
 
 /// Everything `serve` needs, once the flags, the file, and the environment are merged and checked.
@@ -248,11 +279,19 @@ pub(crate) struct Settings {
     pub(crate) tls: Option<(PathBuf, PathBuf)>,
     /// How to check the core's token.
     pub(crate) auth: RemoteAuth,
+    /// The file's `[config]` table as a JSON object (empty if it has none), for an environment
+    /// plugin; `None` for a kind whose settings come from the core.
+    pub(crate) config: Option<serde_json::Value>,
+}
+
+/// The binary name of the plugin called `name`, e.g. `giles-channel-discord`.
+pub(crate) fn binary_name(kind: Kind, name: &str) -> String {
+    format!("giles-{kind}-{name}")
 }
 
 /// The environment variable that holds the bearer token of the plugin called `name`, e.g.
 /// `GILES_CHANNEL_DISCORD_TOKEN`.
-pub(crate) fn token_env(name: &str) -> String {
+pub(crate) fn token_env(kind: Kind, name: &str) -> String {
     let name: String = name
         .chars()
         .map(|c| {
@@ -263,19 +302,20 @@ pub(crate) fn token_env(name: &str) -> String {
             }
         })
         .collect();
-    format!("GILES_CHANNEL_{name}_TOKEN")
+    format!("GILES_{}_{name}_TOKEN", kind.as_str().to_ascii_uppercase())
 }
 
 impl ServeArgs {
-    /// Merges the flags over the `--config` file and checks the result. `plugin` is the plugin's
-    /// name (for the token variable) and `env` reads the environment.
+    /// Merges the flags over the `--config` file and checks the result. `kind` and `plugin` are
+    /// the plugin's kind and name (for the token variable) and `env` reads the environment.
     pub(crate) fn resolve(
         self,
+        kind: Kind,
         plugin: &str,
         env: &dyn Fn(&str) -> Option<OsString>,
     ) -> Result<Settings, CliError> {
         let file = match &self.config {
-            Some(path) => ConfigFile::load(path)?,
+            Some(path) => ConfigFile::load(path, kind)?,
             None => ConfigFile::default(),
         };
         let listen = self.listen.or(file.listen).ok_or(CliError::Missing {
@@ -298,16 +338,20 @@ impl ServeArgs {
             _ => return Err(CliError::TlsPair),
         };
         let auth = resolve_auth(
+            kind,
             plugin,
             self.token_file.or(file.token_file).as_deref(),
             self.no_auth,
             env,
         )?;
+        let config =
+            (kind == Kind::Environment).then(|| table_to_json(file.config.unwrap_or_default()));
         Ok(Settings {
             listen,
             data,
             tls,
             auth,
+            config,
         })
     }
 }
@@ -315,12 +359,13 @@ impl ServeArgs {
 /// Where the token comes from: exactly one of `token_file`, the plugin's variable, or no token
 /// at all with `--no-auth`.
 fn resolve_auth(
+    kind: Kind,
     plugin: &str,
     token_file: Option<&Path>,
     no_auth: bool,
     env: &dyn Fn(&str) -> Option<OsString>,
 ) -> Result<RemoteAuth, CliError> {
-    let var = token_env(plugin);
+    let var = token_env(kind, plugin);
     let from_env = env(&var);
     if no_auth {
         return if token_file.is_some() || from_env.is_some() {
@@ -420,9 +465,23 @@ pub(crate) fn tls_config(cert: &Path, key: &Path) -> Result<rustls::ServerConfig
     crate::tls::server_config(&cert_pem, &key_pem).map_err(RunError::Tls)
 }
 
-/// The help text for the binary `binary`, the plugin `plugin`.
-pub(crate) fn usage(binary: &str, plugin: &str) -> String {
-    let token_env = token_env(plugin);
+/// The help text for the plugin `plugin` of kind `kind`.
+pub(crate) fn usage(kind: Kind, plugin: &str) -> String {
+    let binary = binary_name(kind, plugin);
+    let token_env = token_env(kind, plugin);
+    let (file_keys, settings) = if kind == Kind::Environment {
+        (
+            "listen, data, tls_cert, tls_key, token_file, and a [config] table",
+            "The plugin's own settings are the [config] table of the --config file; the\n\
+             instance's `config` in giles.toml must be unset."
+                .to_owned(),
+        )
+    } else {
+        (
+            "listen, data, tls_cert, tls_key, token_file",
+            format!("The plugin's own settings come from `[{kind}.<name>.config]` in giles.toml."),
+        )
+    };
     format!(
         "\
 Usage: {binary} <command>
@@ -434,7 +493,7 @@ Commands:
 
 Options of serve (each is also a key of the --config file, in a TOML table; a flag wins):
   --config <file>      A TOML file with the options below as keys, without the dashes and with
-                       `_` for `-`: listen, data, tls_cert, tls_key, token_file.
+                       `_` for `-`: {file_keys}.
   --listen <address>   The address to listen on, e.g. 0.0.0.0:7443. Required.
   --data <dir>         The plugin's data directory. Required.
   --tls-cert <file>    The PEM certificate chain to serve TLS with. With --tls-key.
@@ -444,7 +503,7 @@ Options of serve (each is also a key of the --config file, in a TOML table; a fl
 
 The bearer token is {token_env}, or --token-file. It is the instance's
 `auth = {{ bearer = ... }}` in giles.toml. Without one, serve refuses to start unless --no-auth is
-given. The plugin's own settings come from `[channel.<name>.config]` in giles.toml.
+given. {settings}
 "
     )
 }
@@ -583,7 +642,7 @@ mod tests {
             "--token-file",
             token.to_str().unwrap(),
         ])
-        .resolve("foo", &no_env)
+        .resolve(Kind::Channel, "foo", &no_env)
         .unwrap();
         assert_eq!(settings.listen, "127.0.0.1:2");
         assert_eq!(settings.data, Path::new("/from/file"));
@@ -597,7 +656,7 @@ mod tests {
     #[test]
     fn the_flags_alone_are_enough() {
         let settings = serve(&["--listen", "[::]:7443", "--data", "d", "--no-auth"])
-            .resolve("foo", &no_env)
+            .resolve(Kind::Channel, "foo", &no_env)
             .unwrap();
         assert_eq!(settings.listen, "[::]:7443");
         assert!(settings.tls.is_none());
@@ -606,7 +665,7 @@ mod tests {
 
     fn resolve_err(words: &[&str], env: &[(&str, &str)]) -> String {
         serve(words)
-            .resolve("foo-bar", &env_of(env))
+            .resolve(Kind::Channel, "foo-bar", &env_of(env))
             .unwrap_err()
             .to_string()
     }
@@ -656,6 +715,7 @@ mod tests {
         let words = ["--listen", "x:1", "--data", "d"];
         let settings = serve(&words)
             .resolve(
+                Kind::Channel,
                 "foo-bar",
                 &env_of(&[("GILES_CHANNEL_FOO_BAR_TOKEN", "abc")]),
             )
@@ -718,7 +778,7 @@ mod tests {
             let file = token_file(dir.path(), contents, mode);
             let words = words(&file);
             let words: Vec<&str> = words.iter().map(String::as_str).collect();
-            serve(&words).resolve("foo", &no_env)
+            serve(&words).resolve(Kind::Channel, "foo", &no_env)
         };
         for (contents, token) in [("abc", "abc"), ("abc\n", "abc"), ("abc\r\n", "abc")] {
             let auth = resolve(contents, 0o400).unwrap().auth;
@@ -745,7 +805,7 @@ mod tests {
         let words = words(&missing);
         let words: Vec<&str> = words.iter().map(String::as_str).collect();
         let error = serve(&words)
-            .resolve("foo", &no_env)
+            .resolve(Kind::Channel, "foo", &no_env)
             .unwrap_err()
             .to_string();
         assert!(
@@ -756,8 +816,76 @@ mod tests {
 
     #[test]
     fn usage_names_the_binary_and_the_token_variable() {
-        let text = usage("giles-channel-foo-bar", "foo-bar");
+        let text = usage(Kind::Channel, "foo-bar");
         assert!(text.starts_with("Usage: giles-channel-foo-bar <command>"));
         assert!(text.contains("GILES_CHANNEL_FOO_BAR_TOKEN"));
+        assert!(text.contains("`[channel.<name>.config]`"));
+
+        let text = usage(Kind::Environment, "foo-bar");
+        assert!(text.starts_with("Usage: giles-environment-foo-bar <command>"));
+        assert!(text.contains("GILES_ENVIRONMENT_FOO_BAR_TOKEN"));
+        assert!(text.contains("[config] table of the --config file"));
+    }
+
+    #[test]
+    fn only_an_environment_plugin_reads_config_from_its_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("serve.toml");
+        std::fs::write(
+            &config,
+            "listen = \"x:1\"\ndata = \"d\"\n\n[config]\nname = \"a\"\nlimit = 3\nratio = 0.5\n\
+             on = true\nwhen = 2026-11-10\nlist = [1, \"b\"]\n\n[config.nested]\nk = \"v\"\n",
+        )
+        .unwrap();
+        let words = ["--config", config.to_str().unwrap(), "--no-auth"];
+
+        let settings = serve(&words)
+            .resolve(Kind::Environment, "foo", &no_env)
+            .unwrap();
+        assert_eq!(
+            settings.config,
+            Some(serde_json::json!({
+                "name": "a",
+                "limit": 3,
+                "ratio": 0.5,
+                "on": true,
+                "when": "2026-11-10",
+                "list": [1, "b"],
+                "nested": { "k": "v" },
+            }))
+        );
+
+        // A file without the table hands the plugin an empty one; other kinds have none.
+        std::fs::write(&config, "listen = \"x:1\"\ndata = \"d\"\n").unwrap();
+        let settings = serve(&words)
+            .resolve(Kind::Environment, "foo", &no_env)
+            .unwrap();
+        assert_eq!(settings.config, Some(serde_json::json!({})));
+        let settings = serve(&words)
+            .resolve(Kind::Channel, "foo", &no_env)
+            .unwrap();
+        assert_eq!(settings.config, None);
+
+        // A channel's settings come from the core, so its file has no `[config]`.
+        std::fs::write(&config, "listen = \"x:1\"\ndata = \"d\"\n[config]\nk = 1\n").unwrap();
+        let error = serve(&words)
+            .resolve(Kind::Channel, "foo", &no_env)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unknown field `config`"), "{error}");
+        assert!(error.contains("[channel.<name>.config]"), "{error}");
+    }
+
+    #[test]
+    fn the_token_variable_names_the_kind() {
+        assert_eq!(
+            token_env(Kind::Environment, "my-docker"),
+            "GILES_ENVIRONMENT_MY_DOCKER_TOKEN"
+        );
+        assert_eq!(token_env(Kind::Channel, "irc"), "GILES_CHANNEL_IRC_TOKEN");
+        assert_eq!(
+            binary_name(Kind::Environment, "docker"),
+            "giles-environment-docker"
+        );
     }
 }

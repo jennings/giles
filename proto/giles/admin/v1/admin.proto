@@ -160,6 +160,7 @@ enum InstanceKind {
   INSTANCE_KIND_PROVIDER = 1;
   INSTANCE_KIND_CHANNEL = 2;
   INSTANCE_KIND_TOOLSET = 3;
+  INSTANCE_KIND_ENVIRONMENT = 4;
 }
 
 // Where a plugin instance is in its lifecycle.

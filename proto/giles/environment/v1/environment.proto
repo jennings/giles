@@ -1,0 +1,228 @@
+// Environment plugins: isolated workspaces the core's workspace tools run in (PLAN section 8.8).
+syntax = "proto3";
+
+package giles.environment.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+// The plugin provides primitives; the core builds the model's tools on top of them. Errors carry a
+// message the core may show the model: INVALID_ARGUMENT for a refused request, NOT_FOUND for a
+// missing workspace or path, UNAVAILABLE when the plugin's backend can't be reached.
+service EnvironmentService {
+  // The workspace creation options this instance accepts. The core calls it after Configure.
+  rpc Info(InfoRequest) returns (InfoResponse);
+  // Creates a workspace under an id the core chose. Fails with INVALID_ARGUMENT if the options are
+  // refused or the id is in use.
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
+  // Deletes a workspace and everything in it. Succeeds if the workspace doesn't exist.
+  rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
+  // Makes a workspace ready for Exec and file calls, starting or recreating what it runs on. The
+  // core calls it before each workspace tool call.
+  rpc StartWorkspace(StartWorkspaceRequest) returns (StartWorkspaceResponse);
+  // Stops a workspace's processes and keeps its files. Succeeds if it is already stopped.
+  rpc StopWorkspace(StopWorkspaceRequest) returns (StopWorkspaceResponse);
+  // Every workspace this instance holds, including ones the core doesn't know about.
+  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
+  // Runs a command in a started workspace and streams its output, then its exit. The core
+  // cancelling the call kills the command and everything it started.
+  rpc Exec(ExecRequest) returns (stream ExecResponse);
+  // Reads a file.
+  rpc ReadFile(ReadFileRequest) returns (ReadFileResponse);
+  // Writes a file, creating missing parent directories.
+  rpc WriteFile(WriteFileRequest) returns (WriteFileResponse);
+  // Lists files whose path matches a glob.
+  rpc Find(FindRequest) returns (FindResponse);
+  // Searches file contents with a regular expression.
+  rpc Grep(GrepRequest) returns (GrepResponse);
+}
+
+// What an environment plugin can do, reported in Describe. Empty in v1.
+message EnvironmentCapabilities {}
+
+message InfoRequest {}
+
+message InfoResponse {
+  // JSON Schema of CreateWorkspaceRequest.options_json. The model sees it, so descriptions in it
+  // should say what each option does and which values are allowed.
+  string options_schema_json = 1;
+}
+
+// A workspace id the core chose: 1 to 64 characters of a-z, 0-9, and "-".
+message CreateWorkspaceRequest {
+  string workspace_id = 1;
+  // A JSON object matching InfoResponse.options_schema_json.
+  string options_json = 2;
+}
+
+message CreateWorkspaceResponse {
+  Workspace workspace = 1;
+}
+
+message DeleteWorkspaceRequest {
+  string workspace_id = 1;
+}
+
+message DeleteWorkspaceResponse {}
+
+message StartWorkspaceRequest {
+  string workspace_id = 1;
+}
+
+message StartWorkspaceResponse {
+  // What starting the workspace took.
+  StartOutcome outcome = 1;
+  // For STARTED and RECREATED: what the model should know, e.g. which packages are gone.
+  string detail = 2;
+}
+
+// What StartWorkspace had to do.
+enum StartOutcome {
+  START_OUTCOME_UNSPECIFIED = 0;
+  // It was running.
+  START_OUTCOME_RUNNING = 1;
+  // It was stopped and started again. Background processes from before have ended.
+  START_OUTCOME_STARTED = 2;
+  // What it ran on was gone and was recreated. Files under the working directory survived;
+  // StartWorkspaceResponse.detail says what didn't.
+  START_OUTCOME_RECREATED = 3;
+}
+
+message StopWorkspaceRequest {
+  string workspace_id = 1;
+}
+
+message StopWorkspaceResponse {}
+
+message ListWorkspacesRequest {}
+
+message ListWorkspacesResponse {
+  repeated Workspace workspaces = 1;
+  // Free space where workspaces are stored, if the plugin can tell.
+  optional uint64 free_bytes = 2;
+}
+
+// A workspace as the plugin sees it.
+message Workspace {
+  string workspace_id = 1;
+  // What the workspace is, for the model and the operator, e.g. the image and its digest.
+  string description = 2;
+  // The absolute directory commands start in and relative paths resolve against.
+  string working_directory = 3;
+  // What survives a stop and a recreate, for the model.
+  string persistence = 4;
+  google.protobuf.Timestamp created_at = 5;
+  WorkspaceState state = 6;
+  // Disk the workspace uses, if the plugin can tell.
+  optional uint64 disk_used_bytes = 7;
+}
+
+enum WorkspaceState {
+  WORKSPACE_STATE_UNSPECIFIED = 0;
+  // Ready for Exec and file calls.
+  WORKSPACE_STATE_RUNNING = 1;
+  // Stopped; StartWorkspace makes it ready again.
+  WORKSPACE_STATE_STOPPED = 2;
+}
+
+message ExecRequest {
+  string workspace_id = 1;
+  // Run with /bin/sh -c in the working directory.
+  string command = 2;
+  // How long the command may run before the plugin kills it and reports timed_out.
+  google.protobuf.Duration timeout = 3;
+  // The most stdout and stderr bytes, together, the plugin sends. The rest is counted in
+  // ExecExit.dropped_bytes and discarded.
+  uint64 output_limit = 4;
+}
+
+message ExecResponse {
+  oneof event {
+    // A piece of standard output.
+    bytes stdout = 1;
+    // A piece of standard error.
+    bytes stderr = 2;
+    // The command ended. Always the last message.
+    ExecExit exit = 3;
+  }
+}
+
+message ExecExit {
+  // The exit status. A command killed by signal N exits with 128 + N.
+  int32 code = 1;
+  // The plugin killed the command at ExecRequest.timeout.
+  bool timed_out = 2;
+  // Output bytes past ExecRequest.output_limit.
+  uint64 dropped_bytes = 3;
+}
+
+// Paths are absolute, or relative to the workspace's working directory.
+message ReadFileRequest {
+  string workspace_id = 1;
+  string path = 2;
+  // The most bytes to return, from the start of the file.
+  uint64 max_bytes = 3;
+}
+
+message ReadFileResponse {
+  bytes content = 1;
+  // The file's full size.
+  uint64 size = 2;
+}
+
+message WriteFileRequest {
+  string workspace_id = 1;
+  string path = 2;
+  // The file's new content. An existing file keeps its permissions.
+  bytes content = 3;
+}
+
+message WriteFileResponse {}
+
+message FindRequest {
+  string workspace_id = 1;
+  // A glob matched against paths relative to `path`, e.g. "**/*.rs". "**" crosses directories.
+  string pattern = 2;
+  // The directory to search. Empty: the working directory.
+  string path = 3;
+  // The most paths to return.
+  uint32 limit = 4;
+}
+
+message FindResponse {
+  // Matching files, relative to the searched directory, sorted. .git directories and files that
+  // .gitignore files exclude are skipped.
+  repeated string paths = 1;
+  // More files matched than limit.
+  bool truncated = 2;
+}
+
+message GrepRequest {
+  string workspace_id = 1;
+  // A regular expression in Rust regex syntax.
+  string pattern = 2;
+  // The file or directory to search. Empty: the working directory.
+  string path = 3;
+  // Only search files whose relative path matches this glob, if set.
+  optional string glob = 4;
+  bool case_insensitive = 5;
+  // The most matching lines to return.
+  uint32 limit = 6;
+}
+
+message GrepResponse {
+  // Matching lines in path order, then line order. Skips binary files, .git directories, and
+  // files that .gitignore files exclude.
+  repeated GrepMatch matches = 1;
+  // More lines matched than limit.
+  bool truncated = 2;
+}
+
+message GrepMatch {
+  // Relative to the searched directory.
+  string path = 1;
+  // 1-based.
+  uint64 line = 2;
+  // The line, without its line ending.
+  string text = 3;
+}

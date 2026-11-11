@@ -34,6 +34,8 @@ pub struct Grants {
     pub read: Vec<String>,
     /// Paths to write, outside the plugin's own data directory.
     pub write: Vec<String>,
+    /// Unix domain sockets to connect to, like `unix = ["/var/run/docker.sock"]`.
+    pub unix: Vec<String>,
 }
 
 impl From<Grants> for SandboxGrants {
@@ -43,6 +45,7 @@ impl From<Grants> for SandboxGrants {
             network_ports: grants.network_ports,
             read: grants.read,
             write: grants.write,
+            unix: grants.unix,
         }
     }
 }

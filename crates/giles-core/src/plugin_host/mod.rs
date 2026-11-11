@@ -999,6 +999,7 @@ fn plugin_runtime(status: PluginStatus) -> PluginRuntime {
                     network_ports: grants.network_ports,
                     read: grants.read,
                     write: grants.write,
+                    ..SandboxGrants::default()
                 }),
             )
         }
@@ -1345,6 +1346,7 @@ mod tests {
                 network_ports: vec!["tcp:6697".into()],
                 read: vec!["/etc/ssl".into()],
                 write: vec!["/var/irc".into()],
+                ..SandboxGrants::default()
             })
         );
 

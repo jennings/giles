@@ -66,6 +66,16 @@ pub mod channel {
     }
 }
 
+pub mod environment {
+    //! `giles.environment.v1`: environment plugins.
+
+    /// Version 1 of the package.
+    #[allow(missing_docs, clippy::all, clippy::pedantic)]
+    pub mod v1 {
+        tonic::include_proto!("giles.environment.v1");
+    }
+}
+
 pub mod admin {
     //! `giles.admin.v1`: the core's admin service, for the CLI and the web admin pages.
 
@@ -227,6 +237,7 @@ mod tests {
             [
                 "giles.admin.v1",
                 "giles.channel.v1",
+                "giles.environment.v1",
                 "giles.plugin.v1",
                 "giles.provider.v1",
                 "giles.types.v1",
@@ -249,6 +260,7 @@ mod tests {
             [
                 admin::v1::admin_service_server::SERVICE_NAME,
                 channel::v1::channel_service_server::SERVICE_NAME,
+                environment::v1::environment_service_server::SERVICE_NAME,
                 plugin::v1::plugin_service_server::SERVICE_NAME,
             ]
         );

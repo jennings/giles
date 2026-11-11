@@ -1,10 +1,11 @@
-//! Domain types and component traits (`Provider`, `Channel`, `Toolset`) shared by the Giles core
-//! and its plugins.
+//! Domain types and component traits (`Provider`, `Channel`, `Toolset`, `Environment`) shared by
+//! the Giles core and its plugins.
 //!
 //! - [`message`]: the content-block message model stored in transcripts (PLAN section 5).
 //! - [`provider`]: the [`Provider`] trait and the completion request and event stream.
 //! - [`channel`]: the [`Channel`] trait and the messages channels exchange with the core.
 //! - [`toolset`]: the [`Toolset`] trait, tool calls, approvals, and skills.
+//! - [`environment`]: the [`Environment`] trait: workspaces, commands, and file calls.
 //! - [`id`]: validated identifier newtypes.
 //! - [`Kind`]: the kinds of component instance.
 //!
@@ -12,6 +13,7 @@
 //! gRPC adapters convert at the boundary.
 
 pub mod channel;
+pub mod environment;
 mod error;
 pub mod id;
 mod kind;
@@ -24,9 +26,15 @@ pub use channel::{
     ConversationRef, DeltaSink, DeltaWriter, InboundMessage, LiveToolCall, OutboundMessage,
     OutputMode, SendTarget, ToolCallWriter,
 };
+pub use environment::{
+    Environment, EnvironmentInfo, ExecEvent, ExecExit, ExecRequest, FindRequest, FindResult,
+    GrepMatch, GrepRequest, GrepResult, ReadFile, StartOutcome, Workspace, WorkspaceList,
+    WorkspaceState,
+};
 pub use error::{Error, Result};
 pub use id::{
     AgentId, ApprovalId, ConversationId, EventId, IdError, MediaId, MessageId, NativeId, UserId,
+    WorkspaceId,
 };
 /// An instant in time (UTC), used for message and event times. Serialized as RFC 3339.
 pub use jiff::Timestamp;

@@ -8,8 +8,9 @@ the `Remote*` adapters) lives in `giles-core`. The wire setup it builds on is in
 
 ## Command line
 
-A plugin's `main` calls `ChannelPlugin::run(configure)`, which parses the binary's command line
-(`cli.rs`) with a hand-written parser, so the SDK needs no `clap`:
+A plugin's `main` calls `ChannelPlugin::run(configure)` or `EnvironmentPlugin::run(configure)`,
+which parse the binary's command line (`cli.rs`, shared through `run.rs`) with a hand-written
+parser, so the SDK needs no `clap`:
 
 - `socket` is how the core launches the plugin (`giles_proto::handshake::SOCKET_COMMAND`, the
   plugin's only argument). It runs `serve` below, so [Startup](#startup) applies. Nobody runs it by
@@ -40,21 +41,31 @@ core reports the exit and its stderr as a failed launch.
 | `data`                                | The data directory `RemoteServer` creates if missing. Required. |
 | `tls_cert`, `tls_key`                 | PEM certificate chain and private key. Both or neither.        |
 | `token_file`                          | A regular file holding the bearer token                         |
+| `config` (environment plugins only)   | The plugin's own settings, a TOML table. See below.            |
 
 `--no-auth` is a flag only, never a file key, so every start says that it accepts any caller.
 
 - Relative paths in the file are relative to the working directory, not to the file.
-- The settings here are the plugin's transport. The plugin's own settings, which a launched plugin
+- The settings here are the plugin's transport. A channel's own settings, which a launched channel
   also gets, come from the instance's `config` in the core's `giles.toml` through `Configure`, in
   both modes (PLAN section 7.7). `serve` has no file for them, so one place defines an instance.
-  Their secrets therefore travel to a remote plugin, which is why the core wants TLS off loopback.
+  Their secrets therefore travel to a remote plugin, which is why the core wants TLS off loopback. A
+  channel's file with a `[config]` table is refused.
+- An environment plugin is the exception (PLAN section 7.6): its own settings are the `[config]`
+  table of the `--config` file, handed to `configure` as `Configure::config()` (`{}` without the
+  table; dates become RFC 3339 strings), and the core sends none. The core refuses `config` next to
+  `address` for an environment instance, and the SDK refuses, with `INVALID_ARGUMENT` explaining
+  that a remote environment's settings live in its own config file, a `Configure` whose
+  `config_json` is a non-empty object. An environment's settings are largely credentials for
+  something on the plugin's host, such as a container engine, and don't belong on the core's side.
 - The token is `RemoteAuth::Bearer`. It comes from `token_file`, or from the environment variable
-  `GILES_CHANNEL_<NAME>_TOKEN` (the plugin name in capitals, anything but a letter or digit as `_`).
-  There's no flag for the token, as it would show in the process list. Both sources, or either with
-  `--no-auth`, is an error, as is neither without `--no-auth`. A token must be one non-empty line of
-  visible ASCII, the same rule as a launched plugin's; its trailing newline is dropped. A token file
-  with any `0o077` mode bit set is refused, as the core refuses a `secrets.toml` that others can
-  read.
+  `GILES_<KIND>_<NAME>_TOKEN` (the kind and the plugin name in capitals, anything but a letter or
+  digit in the name as `_`), e.g. `GILES_CHANNEL_DISCORD_TOKEN` and
+  `GILES_ENVIRONMENT_DOCKER_TOKEN`. There's no flag for the token, as it would show in the process
+  list. Both sources, or either with `--no-auth`, is an error, as is neither without `--no-auth`. A
+  token must be one non-empty line of visible ASCII, the same rule as a launched plugin's; its
+  trailing newline is dropped. A token file with any `0o077` mode bit set is refused, as the core
+  refuses a `secrets.toml` that others can read.
 - OAuth (`RemoteAuth::Verify`) needs issuer and key settings that differ per deployment, so `serve`
   supports only a static token. A plugin that wants OAuth calls `serve_remote` itself.
 - After binding, `serve` prints `listening on <address>` to stdout (useful with port 0), then runs
@@ -184,7 +195,7 @@ async fn main() -> ExitCode {
 ```
 
 - `ChannelPlugin::new(name, version)` with builder methods `output`, `can_initiate`, and
-  `requested_grants` (a `Grants { network_all, network_ports, read, write }`, mirroring
+  `requested_grants` (a `Grants { network_all, network_ports, read, write, unix }`, mirroring
   `SandboxGrants`). These answer `Describe` before the channel exists.
 - `run(configure)` takes `Fn(Configure) -> impl Future<Output = Result<impl Channel>>` and returns
   the process's `ExitCode`. It parses the [command line](#command-line) and runs `serve` or a remote
@@ -196,6 +207,10 @@ async fn main() -> ExitCode {
 - `Configure` gives `instance()`, `config()` (the JSON `Value`), `parse_config::<T>()` (serde,
   errors as `Error::InvalidRequest("invalid config: ...")` naming the key), `data_dir()`, and
   `blobs()`.
+- `EnvironmentPlugin::new(name, version).requested_grants(grants)`, then `run`, `serve`, or
+  `serve_remote(server, config, configure)`, each taking
+  `Fn(Configure) -> impl Future<Output = Result<impl Environment>>`. `Configure` is shared by every
+  kind.
 - `Blobs`: `put`, `put_reader`, `open`, `read`, `path`.
 - `convert`: the `giles-types` and wire conversions in both directions, plus the `Error` and
   `Status` mapping (below), public so the core's adapters and tests can share them.
@@ -221,8 +236,9 @@ unacked events are already on disk. (`serve_remote` stops on `SIGINT` or `SIGTER
 the same drain.)
 
 Health (`grpc.health.v1`): the overall service `""` and `giles.plugin.v1.PluginService` are
-`SERVING` from the start; `giles.channel.v1.ChannelService` is `NOT_SERVING` until `Configure`
-succeeds. At shutdown `""` becomes `NOT_SERVING`.
+`SERVING` from the start; the kind's service (`giles.channel.v1.ChannelService` or
+`giles.environment.v1.EnvironmentService`) is `NOT_SERVING` until `Configure` succeeds. At shutdown
+`""` becomes `NOT_SERVING`.
 
 ## Channels
 
@@ -300,6 +316,32 @@ converting it, so it accepts any handle, and it never trusts one: it fetches the
 
 `Unavailable`'s `retry_after` doesn't cross the wire in v1; the outbox retries with its own backoff.
 
+## Environments
+
+`EnvironmentPlugin` has the same entry points as `ChannelPlugin` (`new`, `requested_grants`,
+`serve`, `serve_remote`, `run`) and serves `giles.environment.v1.EnvironmentService` by adapting the
+`giles_types::Environment` its `configure` closure returns. The closure gets the same `Configure` as
+a channel's. `Describe` reports `PLUGIN_KIND_ENVIRONMENT` and empty `EnvironmentCapabilities`.
+
+- `Configure` calls the closure under a lock, as for channels, answers with an empty identity
+  namespace, and marks `EnvironmentService` serving. A repeated identical `Configure` (same instance
+  name and settings) is answered without calling the closure; any other is `FAILED_PRECONDITION`,
+  and so is every `EnvironmentService` call before the first.
+- Requests are validated before the plugin sees them: a workspace id must be 1 to 64 of `a-z`,
+  `0-9`, `-`; `options_json` must be a JSON object (`""` is `{}`); `Exec` needs its `timeout`; an
+  unknown enum or `oneof` value is `INVALID_ARGUMENT`. `CreateWorkspace` also refuses a workspace
+  the plugin returns under another id (`INTERNAL`).
+- `Exec` streams what the plugin's stream yields. It owns that stream, so when the core cancels the
+  call (tonic drops the response stream) the plugin's stream is dropped, and that is the plugin's
+  cue to kill the command and everything it started. The SDK also drops it right after the exit
+  event, which is always the last message, and after an error. A stream that ends without an exit
+  event is reported as `INTERNAL`, naming a plugin bug.
+- Errors map as in [Conversions and errors](#conversions-and-errors). `convert::environment` has the
+  field conversions in both directions (see [gRPC Protocols](protocols.md#mapping-to-giles-types)).
+- There is no persistence to manage: workspaces belong to the plugin's backend, and `ListWorkspaces`
+  is how the core finds them again after a restart. Blobs aren't used, but `Configure::blobs()`
+  exists for every kind.
+
 ## Remote plugins
 
 A plugin someone runs themselves, which the core connects to over TCP (PLAN section 7.6, the core
@@ -328,6 +370,11 @@ side in [Plugin Host](plugin-host.md#remote-plugins)), is
   stream starts with everything the last one left unacked.
 - `Shutdown` (`base::OnShutdown::Detach`) ends the current `Events` stream and nothing else: the
   core is disconnecting, and the plugin keeps serving. The health status stays `SERVING`.
+- A remote environment plugin has no config from the core. `EnvironmentPlugin::serve_remote` takes
+  the plugin's own settings as an extra `config` argument (the `[config]` table of `serve --config`
+  when `run` calls it), and refuses a `Configure` that carries any
+  ([Transport settings of `serve`](#transport-settings-of-serve)). `Shutdown` is a no-op for it: the
+  core is disconnecting, and an open `Exec` ends with the connection.
 
 ## TLS
 
