@@ -33,7 +33,7 @@ environment.
   data/               DataRoot::data_dir()
     giles.db          DataRoot::database_file()
     blobs/            DataRoot::blobs_dir()
-    <kind>/           DataRoot::plugin_data_root(kind)   channel, provider, toolset
+    <kind>/           DataRoot::plugin_data_root(kind)   channel, environment, provider, toolset
       <instance>/     DataRoot::plugin_data_dir(kind, name)
   backups/            DataRoot::backups_dir()
   trash/              DataRoot::trash_dir()         not in the layout: made at the first removal
@@ -53,12 +53,12 @@ environment.
 Building a `DataRoot` does no I/O, so a CLI client computes the same paths, including the socket
 paths, as the daemon serving that root.
 
-Per-instance state sits under the instance's kind (`channel`, `provider`, or `toolset`, from
-`Kind::as_str`), so a channel and a toolset with the same name share no data directory, pid file, or
-sandbox spec. `create_layout` creates all nine roots (`data/<kind>/`, `run/pids/<kind>/`, and
-`run/sandbox/<kind>/`). Nothing uses `data/provider/` yet, because providers are built in. Giles
-doesn't read `data/plugins/`, `run/pids/*.pid`, or `run/sandbox/*.json` from earlier releases and
-leaves them where they are.
+Per-instance state sits under the instance's kind (`channel`, `environment`, `provider`, or
+`toolset`, from `Kind::as_str`), so a channel and a toolset with the same name share no data
+directory, pid file, or sandbox spec. `create_layout` creates all twelve roots (`data/<kind>/`,
+`run/pids/<kind>/`, and `run/sandbox/<kind>/`). Nothing uses `data/provider/` yet, because providers
+are built in. Giles doesn't read `data/plugins/`, `run/pids/*.pid`, or `run/sandbox/*.json` from
+earlier releases and leaves them where they are.
 
 Accessors that take an agent, user, or instance name return `PathsError::InvalidName` unless the
 name is a single normal path component (`is_valid_name`: non-empty, no `/` or NUL, not `.` or `..`),

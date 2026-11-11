@@ -64,7 +64,7 @@ fn populate(root: &DataRoot) {
             .join("state.json"),
         "{}",
     );
-    for kind in [Kind::Provider, Kind::Toolset] {
+    for kind in [Kind::Provider, Kind::Toolset, Kind::Environment] {
         put(
             &root
                 .plugin_data_dir(kind, "irc")

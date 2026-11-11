@@ -738,6 +738,7 @@ identity, not a conversation (section 8.5).
 | ---------- | -------------------------------------------------------------- | ------------------------ |
 | `provider` | `giles-provider-<name>` binary                                  | gRPC `ProviderService`   |
 | `channel`  | `giles-channel-<name>` binary                                   | gRPC `ChannelService`    |
+| `environment` | `giles-environment-<name>` binary                            | gRPC `EnvironmentService` |
 | `toolset`  | Any MCP server: a stdio command or an HTTP URL                  | MCP (section 7.10)       |
 
 A first-party toolset is a stdio MCP server configured with `command` like any other: toolsets have
@@ -753,22 +754,23 @@ with its own config and sandbox grants. RPCs carry no instance id. Instance conf
 section 11.2.
 
 Instance names are permanent ids: sessions, the inbox, group memories, and the plugin's data
-directory are keyed by them. Providers, channels, and toolsets have separate namespaces: a provider,
-a channel, and a toolset can all be named `aperture`, and the kinds keep their rows, directories,
-pid files, and sandbox specs apart. A name is unique within its kind, ignoring case, so a
+directory are keyed by them. Providers, channels, environments, and toolsets have separate
+namespaces: one of each can be named `aperture`, and the kinds keep their rows, directories, pid
+files, and sandbox specs apart. A name is unique within its kind, ignoring case, so a
 case-insensitive file system never gives two instances of a kind one directory. Renaming one in its
 config alone would orphan all of that, so `giles <kind> rename <old> <new>` does it (`channel`,
-`provider`, or `toolset`), with the core stopped: it migrates the database rows, renames the
-directories, and renames the instance's config (in the current layout, the `[<kind>.<old>]` table in
-`giles.toml`, section 11.2). The command's kind says which instance is renamed; it only touches that
-kind's rows, directories, and table. `giles toolset rename` also works with the core running, for a
-toolset stored in the database. Giles doesn't check for a rename done in the config alone: the
-renamed instance starts with no data, and the old name's rows and directories stay where they are,
-unused. The command finishes such a hand-rename only before the renamed instance has started:
-launching it creates `data/<kind>/<new>/`, and then `<new>` has data and the command refuses.
-Renaming a provider or channel that has no `component` key keeps its component by writing
-`component = "<old>"`, since the component defaults to the instance name. A toolset has no
-component.
+`environment`, `provider`, or `toolset`), with the core stopped: it migrates the database rows,
+renames the directories, and renames the instance's config (in the current layout, the
+`[<kind>.<old>]` table in `giles.toml`, section 11.2). The command's kind says which instance is
+renamed; it only touches that kind's rows, directories, and table. `giles toolset rename` also works
+with the core running, for a toolset stored in the database. Giles doesn't check for a rename done
+in the config alone: the renamed instance starts with no data, and the old name's rows and
+directories stay where they are, unused. The command finishes such a hand-rename only before the
+renamed instance has started: launching it creates `data/<kind>/<new>/`, and then `<new>` has data
+and the command refuses. Renaming a provider, channel, or environment that has no `component` key
+keeps its component by writing `component = "<old>"`, since the component defaults to the instance
+name. A toolset has no component. Renaming an environment also rewrites the name in each agent's
+`environments` list.
 
 ### 7.3 Discovery and enablement
 
@@ -1450,6 +1452,14 @@ network = "libera.chat"
 nick = "jeeves"
 channels = ["#giles"]
 
+# An environment: isolated workspaces for agents' workspace tools (section 8.8).
+[environment.docker]
+description = "A Debian container with git and build tools"
+stop_after = "30m"                    # default
+delete_after = "30d"                   # default
+sandbox = { unix = ["/run/user/1000/podman/podman.sock"] }   # network is off by default for environments
+config = { socket = "/run/user/1000/podman/podman.sock", network = "bridge" }
+
 # Stdio toolsets only: remote MCP servers are stored in the database (section 7.10).
 [toolset.files]                        # stdio MCP server, launched under its own sandbox
 command = "/opt/homebrew/bin/mcp-server-filesystem"
@@ -1462,10 +1472,11 @@ agents = ["*"]
 tools = ["*"]
 ```
 
-Keys at the instance level belong to the core: `component` (providers and channels), `address`,
-`auth`, `insecure`, `sandbox`, `unknown_senders`, `deadline`, `idle_stop`, `max_blob`,
-`unsandboxed`, and for toolsets `command` (required), `args`, `env`, `skills`, `parallel`. Only the
-`config` table goes to a provider or channel component. A `[toolset.<instance>]` table with `url` is
+Keys at the instance level belong to the core: `component` (providers, channels, and environments),
+`address`, `auth`, `insecure`, `sandbox`, `unknown_senders`, `deadline`, `idle_stop`, `max_blob`,
+`unsandboxed`, for environments `description`, `stop_after`, and `delete_after`, and for toolsets
+`command` (required), `args`, `env`, `skills`, `parallel`. Only the `config` table goes to a
+provider, channel, or launched environment component. A `[toolset.<instance>]` table with `url` is
 ignored whatever else it holds, and each start logs a warning naming it. `component` in any other
 `[toolset.<instance>]` table is an error.
 
@@ -1482,6 +1493,7 @@ owner = "stephen"
 models = ["anthropic/claude-sonnet-4-5"]
 tools = ["memory_add", "memory_edit", "memory_forget", "memory_recall", "memory_search", "load_skill", "schedule", "github__*"]
 ask = ["github__create_*"]
+environments = ["docker"]    # optional: environment instances the agent may use (section 8.8)
 max_iterations_jobs = 25     # interactive turns: no cap unless `max_iterations` is set
 memory_cap = 2200            # characters of core memories per scope (shared, each user, each group)
 approval_timeout = "10m"

@@ -109,6 +109,11 @@ pub(crate) trait Launch: Send + Sync {
 
     /// Launches the plugin and registers it.
     async fn launch(&self) -> Result<Box<dyn Running>, LaunchFailure>;
+
+    /// Called after each plugin that `launch` returned has ended and is stopped: shut down,
+    /// restarted, crashed, or failed a health check. Withdraws what `launch` registered if it
+    /// must not outlive the plugin.
+    async fn ended(&self) {}
 }
 
 /// A launched plugin, or a connected remote plugin, as supervision sees it.
@@ -218,7 +223,10 @@ impl Supervision {
             },
         );
         // Launches log under their own `launch` span inside this one.
-        let span = tracing::info_span!("channel", name = %instance);
+        let span = match self.cache.kind() {
+            Kind::Environment => tracing::info_span!("environment", name = %instance),
+            _ => tracing::info_span!("channel", name = %instance),
+        };
         let supervisor = Supervisor {
             instance,
             config_hash,
@@ -330,23 +338,27 @@ impl Supervisor {
                 let _ = first.send(());
             }
             let (failure, crashed) = match launched {
-                Ok(plugin) => match self.watch(plugin, binary).await {
-                    Ended::Stopped => return self.stopped(),
-                    Ended::Restart => {
-                        backoff.reset();
-                        continue;
-                    }
-                    Ended::Failed { reason, ran } => {
-                        if ran >= HEALTHY_RESET {
+                Ok(plugin) => {
+                    let ended = self.watch(plugin, binary).await;
+                    self.launch.ended().await;
+                    match ended {
+                        Ended::Stopped => return self.stopped(),
+                        Ended::Restart => {
                             backoff.reset();
+                            continue;
                         }
-                        let failure = LaunchFailure {
-                            message: reason,
-                            retryable: true,
-                        };
-                        (failure, true)
+                        Ended::Failed { reason, ran } => {
+                            if ran >= HEALTHY_RESET {
+                                backoff.reset();
+                            }
+                            let failure = LaunchFailure {
+                                message: reason,
+                                retryable: true,
+                            };
+                            (failure, true)
+                        }
                     }
-                },
+                }
                 Err(failure) => (failure, false),
             };
             self.update(|status| status.last_error = Some(failure.message.clone()));

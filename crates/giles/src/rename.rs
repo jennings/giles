@@ -1,7 +1,7 @@
-//! The renames done with Giles stopped: `giles channel rename`, `giles provider rename`, and
-//! `giles toolset rename` (when no daemon runs). One driver serves them all; the command gives the
-//! kind. It renames an instance in the database, the data directories, and the configuration
-//! (PLAN section 7.2).
+//! The renames done with Giles stopped: `giles channel rename`, `giles environment rename`,
+//! `giles provider rename`, and `giles toolset rename` (when no daemon runs). One driver serves
+//! them all; the command gives the kind. It renames an instance in the database, the data
+//! directories, and the configuration (PLAN section 7.2).
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -93,8 +93,8 @@ fn format_report(root: &DataRoot, old: &str, new: &str, report: &RenameReport) -
     };
     let rows = &report.rows;
     let mut text = format!("Renamed {} instance {old:?} to {new:?}.\n", report.kind);
-    // A toolset has no rows.
-    if report.kind != Kind::Toolset {
+    // A toolset has no rows, and an environment has none yet.
+    if !matches!(report.kind, Kind::Toolset | Kind::Environment) {
         let _ = writeln!(
             text,
             "  database: {} sessions, {} inbox rows, {} outbox rows, {} usage rows, {} messages, \

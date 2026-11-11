@@ -17,7 +17,7 @@ use clap::Parser;
 
 use giles_core::config::Kind;
 
-use crate::cli::{AdminCommand, ChannelCommand, Cli, Command, ProviderCommand};
+use crate::cli::{AdminCommand, ChannelCommand, Cli, Command, EnvironmentCommand, ProviderCommand};
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -55,6 +55,12 @@ fn main() -> anyhow::Result<()> {
             logging?;
             match args.command {
                 ChannelCommand::Rename(args) => rename::run(home, Kind::Channel, &args),
+            }
+        }
+        Command::Environment(args) => {
+            logging?;
+            match args.command {
+                EnvironmentCommand::Rename(args) => rename::run(home, Kind::Environment, &args),
             }
         }
         Command::Provider(args) => {

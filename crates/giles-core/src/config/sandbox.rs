@@ -53,9 +53,12 @@ pub enum NetworkGrant {
 
 impl NetworkGrant {
     /// The grant when `sandbox.network` is unset: on for channels (and providers), off for stdio
-    /// toolsets.
-    pub(crate) fn default_for_toolset(toolset: bool) -> Self {
-        if toolset { Self::None } else { Self::All }
+    /// toolsets and environments, which reach what they serve through a pipe or a Unix socket.
+    pub(crate) fn default_for(kind: Kind) -> Self {
+        match kind {
+            Kind::Toolset | Kind::Environment => Self::None,
+            Kind::Provider | Kind::Channel => Self::All,
+        }
     }
 }
 
@@ -257,17 +260,17 @@ pub fn check_grant(
     Protected::new(root.root(), root.socket_dir(), &own).check(grant)
 }
 
-/// Validates a `sandbox` table at `path` in `file`. `toolset` picks the network default.
+/// Validates a `sandbox` table at `path` in `file`. `kind` picks the network default.
 pub(crate) fn grants(
     file: &Path,
     path: &KeyPath,
     raw: Option<SandboxSpec>,
-    toolset: bool,
+    kind: Kind,
     protected: &Protected,
 ) -> Result<Grants, ConfigError> {
     let Some(raw) = raw else {
         return Ok(Grants {
-            network: NetworkGrant::default_for_toolset(toolset),
+            network: NetworkGrant::default_for(kind),
             ..Grants::default()
         });
     };
@@ -295,7 +298,7 @@ pub(crate) fn grants(
     Ok(Grants {
         network: raw
             .network
-            .unwrap_or_else(|| NetworkGrant::default_for_toolset(toolset)),
+            .unwrap_or_else(|| NetworkGrant::default_for(kind)),
         read: paths("read", raw.read)?,
         write: paths("write", raw.write)?,
         unix: paths("unix", raw.unix)?,

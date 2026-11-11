@@ -459,6 +459,27 @@ during startup stops waiting for the first attempts. At shutdown, after the sess
 killing its process group), and waits for them; nothing is relaunched afterwards. A plugin that
 crashed stays registered (its `RemoteChannel` fails every call) until its relaunch replaces it.
 
+## Environment plugins
+
+`[environment.<instance>]` plugins (PLAN section 8.8) use the same launch, remote connection,
+supervision, and `Describe` cache, through `KindSpec` `ENVIRONMENT`: `Describe` must report
+`PLUGIN_KIND_ENVIRONMENT` with environment capabilities, `Configure` returns no identity namespace,
+and the health check is of `giles.environment.v1.EnvironmentService`. `PluginHost` keeps one
+`Supervision` per kind (the supervisor logs under `environment{name=<name>}`), and `restart` takes
+the kind.
+
+`EnvironmentAttach` wraps the plugin in a `RemoteEnvironment`, which implements
+`giles_types::Environment` with the SDK's conversions. It calls `Info` (10 s) after each successful
+`Configure` and then `Registry::register_environment(instance, client, info)`. A failed `Info` fails
+the launch, retried if the error is `Unavailable`. When a plugin ends (shutdown, restart, crash, or
+a failed check), supervision calls `Launch::ended`, which calls `Registry::unregister_environment`,
+so an environment is reachable only while its plugin is. Dropping the stream `exec` returns drops
+the gRPC call, which cancels it.
+
+The registry exposes `environment(name)` and `environments()` as `EnvironmentEntry` (name,
+description, `stop_after`, `delete_after`, `options_schema`, `connections`, `client`,
+`reachable()`), and `environment_changes()`, a `watch` that counts registrations and withdrawals.
+
 ## Tests
 
 - Unit tests: the spec built from grants, exit classification, `Describe` checks, retryability, pid

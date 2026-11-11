@@ -2,10 +2,11 @@
 //! them, the prefixed tool index, the per-agent skill index, and model resolution.
 //!
 //! [`Registry::from_config`] constructs the built-in components (PLAN section 4.1) from the
-//! configuration. Components built elsewhere (plugin channels by the plugin host, MCP toolsets
-//! by the toolset host) are added later with [`Registry::register_channel`] and
-//! [`Registry::register_toolset`]; until then the instance is [pending](Registry::pending).
-//! Lookups clone an `Arc`, so callers never hold a lock across an `await`.
+//! configuration. Components built elsewhere (plugin channels and environments by the plugin
+//! host, MCP toolsets by the toolset host) are added later with [`Registry::register_channel`],
+//! [`Registry::register_environment`], and [`Registry::register_toolset`]; until then the instance
+//! is [pending](Registry::pending). Lookups clone an `Arc`, so callers never hold a lock across an
+//! `await`.
 
 mod skills;
 pub mod tools;
@@ -16,13 +17,15 @@ mod tests;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::{Arc, PoisonError, RwLock};
+use std::time::Duration;
 
-use giles_types::{AgentId, Channel, Provider, Toolset};
+use giles_types::{AgentId, Channel, Environment, EnvironmentInfo, Provider, Toolset};
+use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::config::{
-    AgentConfig, ChannelInstance, ChannelRuntime, Config, ConfigError, InstanceName, KeyPath, Kind,
-    LiveConfig, ModelRef, ProviderInstance, UnknownKey,
+    AgentConfig, ChannelInstance, ChannelRuntime, Config, ConfigError, EnvironmentRuntime,
+    InstanceName, KeyPath, Kind, LiveConfig, ModelRef, ProviderInstance, UnknownKey,
 };
 use crate::core_tools::CoreTool;
 use crate::paths::{DataRoot, PathsError};
@@ -93,7 +96,7 @@ impl fmt::Debug for ResolvedModel {
     }
 }
 
-/// A configured channel or toolset with no implementation registered yet.
+/// A configured channel, environment, or toolset with no implementation registered yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pending {
     /// Its kind.
@@ -102,6 +105,59 @@ pub struct Pending {
     pub name: InstanceName,
     /// What will provide it.
     pub reason: &'static str,
+}
+
+/// A configured `[environment.<instance>]`, as the workspace code sees it: what the config says
+/// and what the plugin host last registered. See [`Registry::environments`].
+#[derive(Clone)]
+#[non_exhaustive]
+pub struct EnvironmentEntry {
+    /// The instance.
+    pub name: InstanceName,
+    /// What the model is told about the environment; empty if the config sets none.
+    pub description: String,
+    /// Stop a workspace after this long without use.
+    pub stop_after: Duration,
+    /// Delete a workspace after this long without use.
+    pub delete_after: Duration,
+    /// The JSON Schema of the options a workspace takes ([`EnvironmentInfo::options_schema`]),
+    /// as the plugin reported it after its last successful `Configure`. Kept while the plugin is
+    /// down; `None` until the first connection.
+    pub options_schema: Option<serde_json::Value>,
+    /// How many times the plugin has connected since the core started: 0 before the first, and
+    /// one more after each reconnection. A change means the plugin may have forgotten what
+    /// happened while it was away, so whatever was learned from it earlier is worth checking.
+    pub connections: u64,
+    /// The plugin's client while it is connected; `None` while it is down, starting, or failed.
+    pub client: Option<Arc<dyn Environment>>,
+}
+
+impl EnvironmentEntry {
+    /// Whether the plugin is connected: calls to [`client`](Self::client) can succeed.
+    pub fn reachable(&self) -> bool {
+        self.client.is_some()
+    }
+}
+
+impl fmt::Debug for EnvironmentEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EnvironmentEntry")
+            .field("name", &self.name)
+            .field("description", &self.description)
+            .field("stop_after", &self.stop_after)
+            .field("delete_after", &self.delete_after)
+            .field("reachable", &self.reachable())
+            .field("connections", &self.connections)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What the plugin host registered for one environment instance.
+#[derive(Default)]
+struct EnvironmentState {
+    client: Option<Arc<dyn Environment>>,
+    options_schema: Option<serde_json::Value>,
+    connections: u64,
 }
 
 type Map<T> = RwLock<BTreeMap<InstanceName, Arc<T>>>;
@@ -134,6 +190,9 @@ pub struct Registry {
     providers: Map<dyn Provider>,
     channels: Map<dyn Channel>,
     toolsets: Map<dyn Toolset>,
+    environments: RwLock<BTreeMap<InstanceName, EnvironmentState>>,
+    /// Counts every change to `environments`: a registration or a withdrawal.
+    environment_changes: watch::Sender<u64>,
     tools: ToolIndex,
     /// The core tools' implementations, by name.
     core_tools: RwLock<BTreeMap<String, Arc<dyn CoreTool>>>,
@@ -152,6 +211,15 @@ impl fmt::Debug for Registry {
             .field("providers", &names(&self.providers))
             .field("channels", &names(&self.channels))
             .field("toolsets", &names(&self.toolsets))
+            .field(
+                "environments",
+                &self
+                    .environments
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .keys()
+                    .collect::<Vec<_>>(),
+            )
             .field("tools", &self.tools.snapshot().len())
             .finish_non_exhaustive()
     }
@@ -167,6 +235,8 @@ impl Registry {
             providers: RwLock::default(),
             channels: RwLock::default(),
             toolsets: RwLock::default(),
+            environments: RwLock::default(),
+            environment_changes: watch::channel(0).0,
             tools: ToolIndex::new(),
             core_tools: RwLock::default(),
             #[cfg(feature = "channel-web")]
@@ -384,14 +454,61 @@ impl Registry {
         old
     }
 
+    /// Registers `client` as the connected plugin of the configured environment instance `name`,
+    /// with the `info` it reported after `Configure`, replacing any earlier client and schema. The
+    /// instance's [`connections`](EnvironmentEntry::connections) count goes up and
+    /// [`environment_changes`](Self::environment_changes) notifies. Returns the earlier client.
+    ///
+    /// # Errors
+    ///
+    /// [`RegistryError::NotConfigured`] if `[environment.<name>]` doesn't exist.
+    pub fn register_environment(
+        &self,
+        name: &InstanceName,
+        client: Arc<dyn Environment>,
+        info: EnvironmentInfo,
+    ) -> Result<Option<Arc<dyn Environment>>, RegistryError> {
+        self.check_configured(Kind::Environment, name)?;
+        let old = {
+            let mut states = self
+                .environments
+                .write()
+                .unwrap_or_else(PoisonError::into_inner);
+            let state = states.entry(name.clone()).or_default();
+            state.options_schema = Some(info.options_schema);
+            state.connections += 1;
+            state.client.replace(client)
+        };
+        self.environment_changes
+            .send_modify(|changes| *changes += 1);
+        Ok(old)
+    }
+
+    /// Withdraws the client of environment instance `name`, which has disconnected: the instance
+    /// is no longer [reachable](EnvironmentEntry::reachable), and calls through a client taken
+    /// earlier fail as the plugin's connection is gone. Its schema stays. Returns the client, or
+    /// `None` if none was registered. The instance's configuration is untouched.
+    pub fn unregister_environment(&self, name: &InstanceName) -> Option<Arc<dyn Environment>> {
+        let old = self
+            .environments
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(name)
+            .and_then(|state| state.client.take());
+        if old.is_some() {
+            self.environment_changes
+                .send_modify(|changes| *changes += 1);
+        }
+        old
+    }
+
     fn check_configured(&self, kind: Kind, name: &InstanceName) -> Result<(), RegistryError> {
         let config = self.config();
         let configured = match kind {
             Kind::Provider => config.providers.contains_key(name),
             Kind::Channel => config.channels.contains_key(name),
             Kind::Toolset => config.toolsets.contains_key(name),
-            // Environments aren't configurable yet (#87).
-            Kind::Environment => false,
+            Kind::Environment => config.environments.contains_key(name),
         };
         if configured {
             Ok(())
@@ -426,6 +543,39 @@ impl Registry {
         get(&self.toolsets, name)
     }
 
+    /// The configured environment instance `name`, with its client if it is connected.
+    pub fn environment(&self, name: &str) -> Option<EnvironmentEntry> {
+        let config = self.config();
+        let instance = config.environments.get(name)?;
+        let states = self
+            .environments
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        Some(environment_entry(instance, states.get(name)))
+    }
+
+    /// Every configured environment instance, by name, connected or not.
+    pub fn environments(&self) -> Vec<EnvironmentEntry> {
+        let config = self.config();
+        let states = self
+            .environments
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        config
+            .environments
+            .values()
+            .map(|instance| environment_entry(instance, states.get(&instance.name)))
+            .collect()
+    }
+
+    /// A receiver that wakes whenever an environment plugin connects (a registration through
+    /// [`register_environment`](Self::register_environment)) or disconnects
+    /// ([`unregister_environment`](Self::unregister_environment)). The value only counts the
+    /// changes; read [`environments`](Self::environments) to see what is connected.
+    pub fn environment_changes(&self) -> watch::Receiver<u64> {
+        self.environment_changes.subscribe()
+    }
+
     /// Every registered provider, by instance name.
     pub fn providers(&self) -> Vec<(InstanceName, Arc<dyn Provider>)> {
         all(&self.providers)
@@ -441,8 +591,8 @@ impl Registry {
         all(&self.toolsets)
     }
 
-    /// Configured channels and toolsets that nothing has registered yet, by kind and name, with
-    /// the part of Giles that will start them.
+    /// Configured channels, environments, and toolsets that nothing has registered yet, by kind
+    /// and name, with the part of Giles that will start them.
     pub fn pending(&self) -> Vec<Pending> {
         let config = self.config();
         let channels = config
@@ -460,6 +610,25 @@ impl Registry {
                     ChannelRuntime::BuiltIn => "the built-in channel was not constructed",
                 },
             });
+        let environments = config
+            .environments
+            .values()
+            .filter(|e| {
+                self.environment(e.name.as_str())
+                    .is_none_or(|e| !e.reachable())
+            })
+            .map(|e| Pending {
+                kind: Kind::Environment,
+                name: e.name.clone(),
+                reason: match e.runtime {
+                    EnvironmentRuntime::Plugin(_) => {
+                        "registered by the plugin host once the plugin is up"
+                    }
+                    EnvironmentRuntime::Remote(_) => {
+                        "registered by the plugin host once it has connected to the plugin"
+                    }
+                },
+            });
         let toolsets = config
             .toolsets
             .values()
@@ -469,7 +638,7 @@ impl Registry {
                 name: t.name.clone(),
                 reason: "registered by the toolset host",
             });
-        channels.chain(toolsets).collect()
+        channels.chain(environments).chain(toolsets).collect()
     }
 
     /// Logs one line per [pending](Self::pending) instance and a summary of what's registered.
@@ -486,6 +655,7 @@ impl Registry {
             providers = self.providers().len(),
             channels = self.channels().len(),
             toolsets = self.toolsets().len(),
+            environments = self.environments().iter().filter(|e| e.reachable()).count(),
             tools = self.tools.snapshot().len(),
             pending = self.pending().len(),
             "registry ready",
@@ -533,6 +703,22 @@ impl Registry {
             Some(model) => self.resolve_model(model),
             None => self.agent_model(agent),
         }
+    }
+}
+
+/// `instance` as the config says and `state` says it is connected.
+fn environment_entry(
+    instance: &crate::config::EnvironmentInstance,
+    state: Option<&EnvironmentState>,
+) -> EnvironmentEntry {
+    EnvironmentEntry {
+        name: instance.name.clone(),
+        description: instance.description.clone(),
+        stop_after: instance.stop_after,
+        delete_after: instance.delete_after,
+        options_schema: state.and_then(|state| state.options_schema.clone()),
+        connections: state.map_or(0, |state| state.connections),
+        client: state.and_then(|state| state.client.clone()),
     }
 }
 

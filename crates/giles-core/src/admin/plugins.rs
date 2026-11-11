@@ -11,7 +11,8 @@ use giles_proto::plugin::v1::SandboxGrants;
 use giles_types::Timestamp;
 
 use crate::config::{
-    ChannelRuntime, Config, InstanceName, Kind, NetworkGrant, Sandbox, ToolsetTransport,
+    ChannelRuntime, Config, EnvironmentRuntime, InstanceName, Kind, NetworkGrant, Sandbox,
+    ToolsetTransport,
 };
 use crate::sandbox::HostReport;
 use crate::sessions::ChannelStatusRecord;
@@ -29,9 +30,9 @@ pub trait PluginControl: Send + Sync {
     fn restart(&self, kind: Kind, instance: &str) -> bool;
 }
 
-/// Several [`PluginControl`]s as one: `serve` has a plugin host for channel plugins, a toolset
-/// host for toolsets, and the toolset manager for the stored toolsets that failed, and the admin
-/// service takes a single control.
+/// Several [`PluginControl`]s as one: `serve` has a plugin host for channel and environment
+/// plugins, a toolset host for toolsets, and the toolset manager for the stored toolsets that
+/// failed, and the admin service takes a single control.
 ///
 /// `plugins()` is every control's instances, in the order of the controls (so `ListPlugins` gives a
 /// configured instance the report of the first control that has one: a name can also be reported
@@ -118,7 +119,7 @@ pub enum PluginRunState {
 pub(super) struct Configured<'a> {
     pub(super) instance: &'a InstanceName,
     pub(super) kind: Kind,
-    /// The channel's component; empty for a toolset, which has none.
+    /// The channel's or environment's component; empty for a toolset, which has none.
     pub(super) component: &'a str,
     /// The program as configured, or the URL.
     pub(super) location: String,
@@ -156,7 +157,20 @@ pub(super) fn configured(config: &Config) -> Vec<Configured<'_>> {
             sandbox,
         }
     });
-    channels.chain(toolsets).collect()
+    let environments = config.environments.values().map(|e| {
+        let (location, sandbox) = match &e.runtime {
+            EnvironmentRuntime::Plugin(launch) => (launch.binary.clone(), Some(&launch.sandbox)),
+            EnvironmentRuntime::Remote(remote) => (remote.url.to_string(), None),
+        };
+        Configured {
+            instance: &e.name,
+            kind: Kind::Environment,
+            component: &e.component,
+            location,
+            sandbox,
+        }
+    });
+    channels.chain(environments).chain(toolsets).collect()
 }
 
 /// The `PluginInstance` of every configured plugin: the configuration, the host's sandbox, the

@@ -1657,6 +1657,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "giles-environment-echo"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "giles-core",
+ "giles-plugin-sdk",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tonic-health",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "giles-plugin-sdk"
 version = "0.1.0"
 dependencies = [

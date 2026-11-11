@@ -1,5 +1,5 @@
-//! Component instances: `[provider.<instance>]`, `[channel.<instance>]`, and
-//! `[toolset.<instance>]` (PLAN sections 7.2, 7.6, 7.10, 11.2).
+//! Component instances: `[provider.<instance>]`, `[channel.<instance>]`,
+//! `[environment.<instance>]`, and `[toolset.<instance>]` (PLAN sections 7.2, 7.6, 7.10, 11.2).
 //!
 //! Every key at the instance level belongs to the core; only `config` goes to the component. A
 //! key that has no effect on an instance of its shape (e.g. `sandbox` on a built-in channel) is an
@@ -35,6 +35,14 @@ pub const DEFAULT_MAX_BLOB: u64 = 50 << 20;
 
 /// A toolset's per-call deadline when the instance sets no `deadline`: 5 minutes.
 pub const DEFAULT_TOOL_DEADLINE: Duration = Duration::from_secs(5 * 60);
+
+/// How long an environment's workspace may sit unused before it is stopped when the instance sets
+/// no `stop_after`: 30 minutes (PLAN section 8.8).
+pub const DEFAULT_STOP_AFTER: Duration = Duration::from_secs(30 * 60);
+
+/// How long an environment's workspace may sit unused before it is deleted when the instance sets
+/// no `delete_after`: 30 days (PLAN section 8.8).
+pub const DEFAULT_DELETE_AFTER: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// A `[provider.<instance>]`. v1 providers are all built in (PLAN section 4.1).
 #[derive(Debug, Clone)]
@@ -76,6 +84,41 @@ pub struct ChannelInstance {
 pub enum ChannelRuntime {
     /// Compiled into the core.
     BuiltIn,
+    /// A plugin binary the core launches.
+    Plugin(Launch),
+    /// A plugin someone else runs, reached over TCP (PLAN section 7.6).
+    Remote(Remote),
+}
+
+/// An `[environment.<instance>]`: isolated workspaces for an agent's workspace tools, provided by
+/// a plugin (PLAN section 8.8).
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct EnvironmentInstance {
+    /// The instance name.
+    pub name: InstanceName,
+    /// The component name, e.g. `docker`: the binary is `giles-environment-<component>`.
+    pub component: String,
+    /// Where the plugin runs. Never built in: every environment is a plugin.
+    pub runtime: EnvironmentRuntime,
+    /// The `config` table for the plugin. Empty for a remote environment, whose settings live in
+    /// its own configuration file.
+    pub config: PluginConfig,
+    /// What the model is told about the environment: what it is for and what runs in it.
+    /// Empty unless set.
+    pub description: String,
+    /// Stop a workspace after this long without use. [`DEFAULT_STOP_AFTER`] unless set.
+    pub stop_after: Duration,
+    /// Delete a workspace after this long without use. [`DEFAULT_DELETE_AFTER`] unless set.
+    pub delete_after: Duration,
+    /// The hash of the instance's table as written, for the `Describe` cache (PLAN section 7.9).
+    pub config_hash: ConfigHash,
+}
+
+/// Where an environment runs.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum EnvironmentRuntime {
     /// A plugin binary the core launches.
     Plugin(Launch),
     /// A plugin someone else runs, reached over TCP (PLAN section 7.6).
@@ -203,6 +246,20 @@ pub(crate) struct RawChannel {
     max_blob: Option<ByteSize>,
     sandbox: Option<SandboxSpec>,
     unsandboxed: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct RawEnvironment {
+    component: Option<String>,
+    config: Option<toml::Value>,
+    address: Option<String>,
+    auth: Option<toml::Value>,
+    insecure: Option<bool>,
+    sandbox: Option<SandboxSpec>,
+    unsandboxed: Option<bool>,
+    description: Option<String>,
+    stop_after: Option<HumanDuration>,
+    delete_after: Option<HumanDuration>,
 }
 
 /// One toolset as written: the keys of a `[toolset.<name>]` table, deserializable from TOML and
@@ -551,6 +608,79 @@ impl Ctx<'_> {
         })
     }
 
+    pub fn environment(
+        &self,
+        name: &str,
+        raw: RawEnvironment,
+        config_hash: ConfigHash,
+    ) -> Result<EnvironmentInstance, ConfigError> {
+        let (name, path) = self.name(Kind::Environment, name)?;
+        let (component, binary) =
+            match self.component(Kind::Environment, &path, &name, raw.component)? {
+                Component::Plugin { name, binary } => (name, binary),
+                Component::BuiltIn { name } => {
+                    return Err(self.err(
+                        path.key("component"),
+                        format!("no built-in environment {name:?}; environments are plugins"),
+                    ));
+                }
+            };
+        let runtime = match raw.address {
+            Some(address) => {
+                let why = "on a remote environment (one with `address`)";
+                self.forbid(&path, "sandbox", raw.sandbox.is_some(), why)?;
+                self.forbid(&path, "unsandboxed", raw.unsandboxed.is_some(), why)?;
+                if raw.config.is_some() {
+                    return Err(self.err(
+                        path.key("config"),
+                        "not allowed on a remote environment (one with `address`): its settings \
+                         are in the configuration file of the plugin, on the host that runs it",
+                    ));
+                }
+                EnvironmentRuntime::Remote(self.remote(
+                    &path,
+                    "address",
+                    &address,
+                    raw.auth,
+                    raw.insecure,
+                    true,
+                )?)
+            }
+            None => {
+                let why = "without `address`";
+                self.forbid(&path, "auth", raw.auth.is_some(), why)?;
+                self.forbid(&path, "insecure", raw.insecure.is_some(), why)?;
+                EnvironmentRuntime::Plugin(Launch {
+                    binary,
+                    sandbox: self.sandbox(
+                        Kind::Environment,
+                        &path,
+                        &name,
+                        raw.sandbox,
+                        raw.unsandboxed,
+                    )?,
+                })
+            }
+        };
+        let duration = |key: &str, value: Option<HumanDuration>, default: Duration| match value {
+            Some(HumanDuration(d)) if d.is_zero() => {
+                Err(self.err(path.key(key), "must be longer than 0s"))
+            }
+            Some(HumanDuration(d)) => Ok(d),
+            None => Ok(default),
+        };
+        Ok(EnvironmentInstance {
+            stop_after: duration("stop_after", raw.stop_after, DEFAULT_STOP_AFTER)?,
+            delete_after: duration("delete_after", raw.delete_after, DEFAULT_DELETE_AFTER)?,
+            config: self.config(&path, raw.config)?,
+            description: raw.description.unwrap_or_default(),
+            component,
+            name,
+            runtime,
+            config_hash,
+        })
+    }
+
     pub fn toolset(
         &self,
         name: &str,
@@ -642,13 +772,7 @@ impl Ctx<'_> {
         let protected = Protected::new(self.root.root(), self.root.socket_dir(), &own);
         Ok(Sandbox {
             unsandboxed,
-            grants: sandbox::grants(
-                self.file,
-                &path.key("sandbox"),
-                raw,
-                kind == Kind::Toolset,
-                &protected,
-            )?,
+            grants: sandbox::grants(self.file, &path.key("sandbox"), raw, kind, &protected)?,
         })
     }
 

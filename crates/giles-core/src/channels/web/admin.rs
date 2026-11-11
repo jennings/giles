@@ -252,9 +252,10 @@ pub(super) struct PluginRow {
 }
 
 /// The kinds of plugin the restart route takes, as it spells them.
-const ROUTE_KINDS: [(&str, pb::InstanceKind); 3] = [
+const ROUTE_KINDS: [(&str, pb::InstanceKind); 4] = [
     ("provider", pb::InstanceKind::Provider),
     ("channel", pb::InstanceKind::Channel),
+    ("environment", pb::InstanceKind::Environment),
     ("toolset", pb::InstanceKind::Toolset),
 ];
 

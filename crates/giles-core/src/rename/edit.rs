@@ -169,10 +169,11 @@ fn component_of(doc: &DocumentMut, kind: Kind, name: &str) -> Option<String> {
 }
 
 /// Renames the references to the instance `old` in the text of an `agent.toml`: for a provider,
-/// the `<old>/<model id>` models (`models`, `compaction_model`, each job's `model`); for a
-/// toolset, the tool globs that start with `<old>__` (`tools`, `ask`), since a toolset's name is
-/// its tools' prefix ([`rewrite_toolset_globs`]). Channels aren't referenced from agents. Returns
-/// the new text and the number of changes, or `None` if there was nothing to change.
+/// the `<old>/<model id>` models (`models`, `compaction_model`, each job's `model`); for an
+/// environment, the names in `environments`; for a toolset, the tool globs that start with
+/// `<old>__` (`tools`, `ask`), since a toolset's name is its tools' prefix
+/// ([`rewrite_toolset_globs`]). Channels aren't referenced from agents. Returns the new text and
+/// the number of changes, or `None` if there was nothing to change.
 pub(super) fn rename_in_agent_toml(
     source: &str,
     kind: Kind,
@@ -199,6 +200,12 @@ pub(super) fn rename_in_agent_toml(
                         count += map_strings(model, &swap);
                     }
                 }
+            }
+        }
+        Kind::Environment => {
+            let swap = |s: &str| (s == old).then(|| new.to_owned());
+            if let Some(item) = doc.get_mut("environments") {
+                count += map_strings(item, &swap);
             }
         }
         _ => {
@@ -776,5 +783,23 @@ prompt = "Hi"
             panic!("nothing was rewritten");
         };
         assert_eq!(text, "models = [\"a/b\"]\r\ntools = [\"gh__*\"]\r\n");
+    }
+
+    #[test]
+    fn an_environment_rename_rewrites_the_environments_list() {
+        let source = "models = [\"a/b\"]\n# the box\nenvironments = [\"box\", \"other\"]\n";
+        let (text, count) = rename_in_agent_toml(source, Kind::Environment, "box", "dev")
+            .unwrap()
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(
+            text,
+            "models = [\"a/b\"]\n# the box\nenvironments = [\"dev\", \"other\"]\n"
+        );
+        assert!(
+            rename_in_agent_toml(source, Kind::Environment, "gone", "dev")
+                .unwrap()
+                .is_none()
+        );
     }
 }

@@ -51,7 +51,8 @@ pub use giles::{CoreConfig, DEFAULT_HTTP_LISTEN, Identity, OwnerConfig};
 pub use giles_types::Kind;
 pub use hash::ConfigHash;
 pub use instances::{
-    Auth, ChannelInstance, ChannelRuntime, DEFAULT_MAX_BLOB, DEFAULT_TOOL_DEADLINE, Launch,
+    Auth, ChannelInstance, ChannelRuntime, DEFAULT_DELETE_AFTER, DEFAULT_MAX_BLOB,
+    DEFAULT_STOP_AFTER, DEFAULT_TOOL_DEADLINE, EnvironmentInstance, EnvironmentRuntime, Launch,
     OAuthClientCredentials, ProviderInstance, Remote, Sandbox, StdioServer, ToolsetInstance,
     ToolsetSpec, ToolsetTransport,
 };
@@ -105,6 +106,8 @@ pub struct Config {
     pub providers: BTreeMap<InstanceName, ProviderInstance>,
     /// `[channel.<instance>]`, by instance name.
     pub channels: BTreeMap<InstanceName, ChannelInstance>,
+    /// `[environment.<instance>]`, by instance name.
+    pub environments: BTreeMap<InstanceName, EnvironmentInstance>,
     /// The toolsets: `[toolset.<instance>]` tables without `url` after [`load`](Self::load), and
     /// the toolsets stored in the database, which the toolset manager adds through
     /// [`LiveConfig`], by instance name.
@@ -209,13 +212,15 @@ impl Config {
 
         // Compared case-insensitively within a kind: on a case-insensitive file system (the macOS
         // default), `Libera` and `libera` would share a data directory and pid file. A provider,
-        // a channel, and a toolset may share a name, because each kind has its own directories.
+        // a channel, an environment, and a toolset may share a name, because each kind has its own
+        // directories.
         let mut names: BTreeMap<(Kind, String), &str> = BTreeMap::new();
         let instances = raw
             .provider
             .keys()
             .map(|n| (n, Kind::Provider))
             .chain(raw.channel.keys().map(|n| (n, Kind::Channel)))
+            .chain(raw.environment.keys().map(|n| (n, Kind::Environment)))
             .chain(toolset_specs.keys().map(|n| (n, Kind::Toolset)));
         for (name, kind) in instances {
             if let Some(other_name) = names.insert((kind, name.to_ascii_lowercase()), name) {
@@ -244,6 +249,11 @@ impl Config {
             let instance = ctx.channel(&name, instance, hash(Kind::Channel, &name))?;
             channels.insert(instance.name.clone(), instance);
         }
+        let mut environments = BTreeMap::new();
+        for (name, instance) in std::mem::take(&mut raw.environment) {
+            let instance = ctx.environment(&name, instance, hash(Kind::Environment, &name))?;
+            environments.insert(instance.name.clone(), instance);
+        }
         let mut toolsets = BTreeMap::new();
         for (name, instance) in toolset_specs {
             let instance = ctx.toolset(&name, instance, hash(Kind::Toolset, &name))?;
@@ -252,10 +262,20 @@ impl Config {
 
         // Directories holding binaries Giles runs may be read but not written by any plugin.
         let toolset_refs: Vec<&ToolsetInstance> = toolsets.values().collect();
-        toolset::check_binary_dirs(file, root, options, channels.values(), &toolset_refs, None)?;
+        toolset::check_binary_dirs(
+            file,
+            root,
+            options,
+            channels.values(),
+            environments.values(),
+            &toolset_refs,
+            None,
+        )?;
 
         let provider_names: BTreeSet<&str> = providers.keys().map(InstanceName::as_str).collect();
-        let (agents, agent_unknown) = load_agents(root, &provider_names)?;
+        let environment_names: BTreeSet<&str> =
+            environments.keys().map(InstanceName::as_str).collect();
+        let (agents, agent_unknown) = load_agents(root, &provider_names, &environment_names)?;
 
         // In file order, as they are logged: `giles.toml`, then each agent's file.
         let mut unknown_keys: Vec<UnknownKey> = unknown
@@ -271,6 +291,7 @@ impl Config {
             owner,
             providers,
             channels,
+            environments,
             toolsets,
             ignored_toolsets,
             unknown_keys,
@@ -288,9 +309,10 @@ impl Config {
     /// Validates `source` as the `agent.toml` of an agent `id` that would live in
     /// `agents/<id>/` under `root`, exactly as [`load`](Self::load) validates each agent at
     /// startup: the id as a directory name, every key, the models against this configuration's
-    /// provider instances, and job prompt files in the agent's directory. Keys Giles doesn't
-    /// recognize are ignored, as at startup. Reads nothing else and writes nothing; the web UI
-    /// checks an agent it creates with this before writing it.
+    /// provider instances, the environments against its environment instances, and job prompt
+    /// files in the agent's directory. Keys Giles doesn't recognize are ignored, as at startup.
+    /// Reads nothing else and writes nothing; the web UI checks an agent it creates with this
+    /// before writing it.
     ///
     /// # Errors
     ///
@@ -309,7 +331,15 @@ impl Config {
             ));
         }
         let providers = self.providers.keys().map(InstanceName::as_str).collect();
-        agent::parse(id, &root.agents_dir().join(id), source, &providers).map(|(agent, _)| agent)
+        let environments = self.environments.keys().map(InstanceName::as_str).collect();
+        agent::parse(
+            id,
+            &root.agents_dir().join(id),
+            source,
+            &providers,
+            &environments,
+        )
+        .map(|(agent, _)| agent)
     }
 }
 
@@ -319,6 +349,7 @@ impl Config {
 fn load_agents(
     root: &DataRoot,
     providers: &BTreeSet<&str>,
+    environments: &BTreeSet<&str>,
 ) -> Result<(BTreeMap<AgentId, AgentConfig>, Vec<UnknownKey>), ConfigError> {
     let dir = root.agents_dir();
     let entries = match fs::read_dir(&dir) {
@@ -352,7 +383,7 @@ fn load_agents(
                 "an agent directory needs an agent.toml",
             ));
         }
-        let (agent, keys) = agent::load(&name, &path, providers)?;
+        let (agent, keys) = agent::load(&name, &path, providers, environments)?;
         unknown.insert(agent.id.clone(), keys);
         agents.insert(agent.id.clone(), agent);
     }

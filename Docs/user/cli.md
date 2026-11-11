@@ -300,6 +300,24 @@ If a step fails, the command undoes the earlier ones and says what failed. If it
 example by a power loss, run the same command again to finish. If undoing a failed rename also
 fails, the error lists what to fix by hand.
 
+## `giles environment rename <old> <new>`
+
+Renames an environment, such as `docker` in `[environment.docker]`, with Giles stopped. It moves the
+environment's directories and renames its table in `giles.toml`, keeping its comments and
+formatting, and changes the name in each agent's `environments` list. If the table has no
+`component` key, the command adds `component = "<old>"`. It works as
+[`giles channel rename`](#giles-channel-rename-old-new) does: stop Giles first, `<new>` must have no
+data, and a failed step is undone.
+
+```console
+$ giles environment rename docker sandbox
+Renamed environment instance "docker" to "sandbox".
+  giles.toml: [environment.docker] -> [environment.sandbox]
+  agents/jeeves/agent.toml: 1 reference(s) updated
+  moved data/environment/docker -> data/environment/sandbox
+Start giles again to use the new name.
+```
+
 ## `giles provider rename <old> <new>`
 
 Renames a provider, such as `anthropic` in `[provider.anthropic]`, with Giles stopped. Usage records

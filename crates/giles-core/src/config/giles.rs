@@ -10,7 +10,7 @@ use jiff::tz::TimeZone;
 use serde::Deserialize;
 
 use super::error::{ConfigError, KeyPath};
-use super::instances::{RawChannel, RawProvider};
+use super::instances::{RawChannel, RawEnvironment, RawProvider};
 
 /// The HTTP listener when `[core]` sets no `http_listen`: `127.0.0.1:8080`.
 pub const DEFAULT_HTTP_LISTEN: SocketAddr =
@@ -92,6 +92,8 @@ pub(crate) struct RawGiles {
     pub provider: BTreeMap<String, RawProvider>,
     #[serde(default)]
     pub channel: BTreeMap<String, RawChannel>,
+    #[serde(default)]
+    pub environment: BTreeMap<String, RawEnvironment>,
     /// `[toolset.<name>]` tables as written: one with `url` is ignored whatever else it holds
     /// ([`is_remote_toolset`]), and the others are read as specs while loading.
     #[serde(default)]

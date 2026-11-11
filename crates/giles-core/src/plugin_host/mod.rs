@@ -29,6 +29,7 @@ mod orphans;
 mod process;
 mod remote;
 mod remote_channel;
+mod remote_environment;
 mod spec;
 pub mod supervisor;
 
@@ -50,7 +51,7 @@ use giles_proto::plugin::v1::{
     ConfigureRequest, DescribeRequest, DescribeResponse, SandboxGrants, ShutdownRequest,
 };
 use giles_store::BlobStore;
-use giles_types::Channel;
+use giles_types::{Channel, Environment as _};
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, BufReader};
 use tokio::process::ChildStdout;
 use tonic_health::pb::HealthCheckRequest;
@@ -63,12 +64,14 @@ use self::instance::{InstanceRuntime, PluginInstance, check_describe};
 pub use self::process::{PluginProcess, STDERR_TARGET};
 pub use self::remote::{REMOTE_CONNECT_TIMEOUT, REMOTE_SHUTDOWN_TIMEOUT, RemotePlugin, Secrets};
 pub use self::remote_channel::{BLOB_CHUNK_TIMEOUT, RemoteChannel};
+pub use self::remote_environment::RemoteEnvironment;
 use self::spec::{OFFERED_PROTOCOLS, launch_spec};
 use self::supervisor::{HEALTH_TIMEOUT, Launch, LaunchFailure, Running, Supervision};
 pub use self::supervisor::{PluginState, PluginStatus};
 use crate::admin::{PluginControl, PluginRunState, PluginRuntime};
 use crate::config::{
-    ChannelInstance, Config, InstanceName, Kind, Secret, discover_plugin, plugin_binary, scrub,
+    ChannelInstance, Config, EnvironmentInstance, InstanceName, Kind, Secret, discover_plugin,
+    plugin_binary, scrub,
 };
 use crate::identity::{NamespaceError, validate_namespace};
 use crate::paths::{DataRoot, PathsError};
@@ -85,6 +88,9 @@ pub const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long `Configure` may take: plugins connect to their service in it (an IRC server,
 /// WhatsApp).
 pub const CONFIGURE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long an environment plugin's `Info` may take.
+pub const INFO_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long [`LaunchedPlugin::stop`] waits after `Shutdown` before `SIGTERM` by default: the SDK
 /// drains for up to 5 seconds.
@@ -364,6 +370,20 @@ impl Launcher {
     ) -> Result<LaunchedPlugin, LaunchError> {
         let instance = PluginInstance::channel(instance).ok_or(LaunchError::NotLaunched)?;
         self.launch_plugin(&instance).await
+    }
+
+    /// [`launch_channel`](Self::launch_channel) for the environment `instance`. `Describe` must
+    /// report an environment plugin.
+    ///
+    /// # Errors
+    ///
+    /// [`LaunchError`]; the plugin is stopped (its whole process group killed) first.
+    pub async fn launch_environment(
+        &self,
+        instance: &EnvironmentInstance,
+    ) -> Result<LaunchedPlugin, LaunchError> {
+        self.launch_plugin(&PluginInstance::environment(instance))
+            .await
     }
 
     /// [`launch_channel`](Self::launch_channel) for an instance of any kind.
@@ -868,56 +888,74 @@ impl ChannelWiring {
     }
 }
 
-/// The plugin channels of a running core, each supervised ([`supervisor`]): launched (or, if
-/// remote, connected to) at startup, registered as channels, health-checked, relaunched (or
-/// reconnected) with backoff, and stopped (or disconnected) at shutdown. Its
-/// [`statuses`](Self::statuses) are what `giles status` shows.
+/// The gRPC plugins of a running core, each supervised ([`supervisor`]): launched (or, if remote,
+/// connected to) at startup, registered (a channel with the registry and the session manager, an
+/// environment with the registry), health-checked, relaunched (or reconnected) with backoff, and
+/// stopped (or disconnected) at shutdown. Its [`statuses`](Self::statuses) are what `giles status`
+/// shows.
 #[derive(Debug)]
 pub struct PluginHost {
     launcher: Launcher,
     wiring: ChannelWiring,
-    supervision: Supervision,
+    channels: Supervision,
+    environments: Supervision,
 }
 
 impl PluginHost {
-    /// A host supervising nothing yet that hands launched channels to `wiring`, with the
-    /// `Describe` cache of the launcher's data root.
+    /// A host supervising nothing yet that hands launched channels to `wiring` (and launched
+    /// environments to its registry), with the `Describe` caches of the launcher's data root.
     pub fn new(launcher: Launcher, wiring: ChannelWiring) -> Self {
-        let supervision = Supervision::new(DescribeCache::new(launcher.root(), Kind::Channel));
+        let cache = |kind| DescribeCache::new(launcher.root(), kind);
+        let (channels, environments) = (
+            Supervision::new(cache(Kind::Channel)),
+            Supervision::new(cache(Kind::Environment)),
+        );
         Self {
             launcher,
             wiring,
-            supervision,
+            channels,
+            environments,
         }
     }
 
-    /// Starts supervising every plugin channel in `config`, launched or remote, and returns once
-    /// each has had its first launch (or connection) attempt: up and registered
-    /// ([`ChannelWiring::attach`]), or failed (logged, and relaunched with backoff or once its
-    /// binary changes; a remote plugin is always retried with backoff).
+    /// Starts supervising every plugin channel and environment in `config`, launched or remote,
+    /// and returns once each has had its first launch (or connection) attempt: up and registered
+    /// ([`ChannelWiring::attach`], or [`Registry::register_environment`] once the plugin has
+    /// answered `Info`), or failed (logged, and relaunched with backoff or once its binary
+    /// changes; a remote plugin is always retried with backoff).
     ///
     /// Cancel-safe: dropping the future (a shutdown during startup) leaves supervision running
     /// until [`PluginHost::stop_all`], which also abandons launches in progress (killing their
     /// process groups).
     pub async fn start(&self, config: &Config) {
-        let attempts: Vec<_> = config
-            .channels
-            .values()
-            .filter_map(|instance| {
-                let plugin = PluginInstance::channel(instance)?;
-                let attach = Arc::new(ChannelAttach {
-                    wiring: self.wiring.clone(),
-                    max_blob: instance.max_blob,
-                });
-                Some(self.supervise(plugin, attach))
-            })
-            .collect();
+        let channels = config.channels.values().filter_map(|instance| {
+            let plugin = PluginInstance::channel(instance)?;
+            let attach = Arc::new(ChannelAttach {
+                wiring: self.wiring.clone(),
+                max_blob: instance.max_blob,
+            });
+            Some(self.supervise(&self.channels, plugin, attach))
+        });
+        let environments = config.environments.values().map(|instance| {
+            let attach = Arc::new(EnvironmentAttach {
+                registry: self.wiring.registry.clone(),
+                instance: instance.name.clone(),
+            });
+            self.supervise(
+                &self.environments,
+                PluginInstance::environment(instance),
+                attach,
+            )
+        });
+        let attempts: Vec<_> = channels.chain(environments).collect();
         futures::future::join_all(attempts).await;
     }
 
-    /// Starts supervising `instance`, which `attach` registers whenever it comes up.
+    /// Starts supervising `instance` in `supervision`, with `attach` registering it whenever it
+    /// comes up.
     fn supervise(
         &self,
+        supervision: &Supervision,
         instance: PluginInstance,
         attach: Arc<dyn Attach>,
     ) -> tokio::sync::oneshot::Receiver<()> {
@@ -939,8 +977,7 @@ impl PluginHost {
                 attach,
             }),
         };
-        self.supervision
-            .supervise(name, component, config_hash, launch)
+        supervision.supervise(name, component, config_hash, launch)
     }
 
     /// The launcher.
@@ -948,20 +985,27 @@ impl PluginHost {
         &self.launcher
     }
 
-    /// Every supervised instance's status, by instance name.
+    /// Every supervised instance's status, channels first, each kind by instance name.
     pub fn statuses(&self) -> Vec<PluginStatus> {
-        self.supervision.statuses()
+        let mut statuses = self.channels.statuses();
+        statuses.extend(self.environments.statuses());
+        statuses
     }
 
-    /// The status of supervised instance `instance`.
+    /// The status of supervised channel `instance`.
     pub fn status(&self, instance: &str) -> Option<PluginStatus> {
-        self.supervision.status(instance)
+        self.channels.status(instance)
+    }
+
+    /// The status of supervised environment `instance`.
+    pub fn environment_status(&self, instance: &str) -> Option<PluginStatus> {
+        self.environments.status(instance)
     }
 
     /// Stops supervision and every plugin concurrently ([`LaunchedPlugin::stop`] with
     /// [`STOP_GRACE`]), and waits for them. Nothing is relaunched afterwards.
     pub async fn stop_all(&self) {
-        self.supervision.stop_all().await;
+        tokio::join!(self.channels.stop_all(), self.environments.stop_all());
     }
 }
 
@@ -971,12 +1015,16 @@ impl PluginControl for PluginHost {
         self.statuses().into_iter().map(plugin_runtime).collect()
     }
 
-    /// Relaunches the channel `instance` now: stops it if it runs, and skips the backoff or the
-    /// wait for a new binary otherwise. A request during a launch takes effect once that launch
-    /// is up. `false` if `instance` isn't a supervised channel; the host supervises no other
-    /// kind.
+    /// Relaunches the channel or environment `instance` now: stops it if it runs, and skips the
+    /// backoff or the wait for a new binary otherwise. A request during a launch takes effect once
+    /// that launch is up. `false` if `instance` isn't a supervised channel or environment (as
+    /// `kind` says); the host supervises no other kind.
     fn restart(&self, kind: Kind, instance: &str) -> bool {
-        kind == Kind::Channel && self.supervision.restart(instance)
+        match kind {
+            Kind::Channel => self.channels.restart(instance),
+            Kind::Environment => self.environments.restart(instance),
+            Kind::Provider | Kind::Toolset => false,
+        }
     }
 }
 
@@ -1019,13 +1067,35 @@ fn plugin_runtime(status: PluginStatus) -> PluginRuntime {
 }
 
 /// What a kind does with a plugin that came up: registers it where the core finds it.
+#[async_trait]
 trait Attach: Send + Sync {
     /// Registers the launched `plugin`, replacing the registration of an earlier launch. The
     /// error is why that isn't possible.
-    fn attach(&self, plugin: &LaunchedPlugin) -> Result<(), String>;
+    async fn attach(&self, plugin: &LaunchedPlugin) -> Result<(), AttachError>;
 
     /// [`attach`](Self::attach) for a connected remote plugin.
-    fn attach_remote(&self, plugin: &RemotePlugin) -> Result<(), String>;
+    async fn attach_remote(&self, plugin: &RemotePlugin) -> Result<(), AttachError>;
+
+    /// The plugin has gone: withdraws what `attach` registered that must not outlive it.
+    fn detach(&self) {}
+}
+
+/// A plugin that came up can't be registered.
+struct AttachError {
+    /// Safe to log.
+    reason: String,
+    /// Whether launching again may help.
+    retryable: bool,
+}
+
+impl From<String> for AttachError {
+    /// A reason that launching again won't fix: the configuration or the plugin's answer is wrong.
+    fn from(reason: String) -> Self {
+        Self {
+            reason,
+            retryable: false,
+        }
+    }
 }
 
 /// Registers the plugin as the channel of one configured instance.
@@ -1034,13 +1104,60 @@ struct ChannelAttach {
     max_blob: u64,
 }
 
+#[async_trait]
 impl Attach for ChannelAttach {
-    fn attach(&self, plugin: &LaunchedPlugin) -> Result<(), String> {
-        self.wiring.attach(plugin, self.max_blob)
+    async fn attach(&self, plugin: &LaunchedPlugin) -> Result<(), AttachError> {
+        Ok(self.wiring.attach(plugin, self.max_blob)?)
     }
 
-    fn attach_remote(&self, plugin: &RemotePlugin) -> Result<(), String> {
-        self.wiring.attach_remote(plugin, self.max_blob)
+    async fn attach_remote(&self, plugin: &RemotePlugin) -> Result<(), AttachError> {
+        Ok(self.wiring.attach_remote(plugin, self.max_blob)?)
+    }
+}
+
+/// Registers the plugin as the environment of one configured instance, after `Info`.
+struct EnvironmentAttach {
+    registry: Arc<Registry>,
+    instance: InstanceName,
+}
+
+impl EnvironmentAttach {
+    async fn register(&self, environment: RemoteEnvironment) -> Result<(), AttachError> {
+        let environment = Arc::new(environment);
+        let info = match tokio::time::timeout(INFO_TIMEOUT, environment.info()).await {
+            Err(_) => {
+                return Err(AttachError {
+                    reason: format!("Info: no answer within {INFO_TIMEOUT:?}"),
+                    retryable: true,
+                });
+            }
+            Ok(Err(error)) => {
+                return Err(AttachError {
+                    retryable: error.is_retryable(),
+                    reason: error.to_string(),
+                });
+            }
+            Ok(Ok(info)) => info,
+        };
+        self.registry
+            .register_environment(&self.instance, environment, info)
+            .map(drop)
+            .map_err(|error| error.to_string().into())
+    }
+}
+
+#[async_trait]
+impl Attach for EnvironmentAttach {
+    async fn attach(&self, plugin: &LaunchedPlugin) -> Result<(), AttachError> {
+        self.register(RemoteEnvironment::new(plugin)).await
+    }
+
+    async fn attach_remote(&self, plugin: &RemotePlugin) -> Result<(), AttachError> {
+        self.register(RemoteEnvironment::from_remote(plugin)).await
+    }
+
+    fn detach(&self) {
+        self.registry.unregister_environment(&self.instance);
     }
 }
 
@@ -1079,22 +1196,27 @@ impl Launch for PluginLaunch {
                 message: error.to_string(),
                 retryable: error.is_retryable(),
             })?;
-        if let Err(reason) = self.attach.attach(&plugin) {
+        if let Err(error) = self.attach.attach(&plugin).await {
             if let Err(error) = plugin.stop(STOP_GRACE).await {
                 warn!(%error, "cannot stop the plugin");
             }
             return Err(LaunchFailure {
                 message: format!(
-                    "cannot register the plugin's {}: {reason}",
-                    self.instance.kind()
+                    "cannot register the plugin's {}: {}",
+                    self.instance.kind(),
+                    error.reason
                 ),
-                retryable: false,
+                retryable: error.retryable,
             });
         }
         Ok(Box::new(Live {
             plugin,
             service: self.instance.spec.service,
         }))
+    }
+
+    async fn ended(&self) {
+        self.attach.detach();
     }
 }
 
@@ -1158,12 +1280,13 @@ impl Launch for RemoteLaunch {
                 message: error.to_string(),
                 retryable: true,
             })?;
-        if let Err(reason) = self.attach.attach_remote(&plugin) {
+        if let Err(error) = self.attach.attach_remote(&plugin).await {
             plugin.stop(REMOTE_SHUTDOWN_TIMEOUT).await;
             return Err(LaunchFailure {
                 message: format!(
-                    "cannot register the plugin's {}: {reason}",
-                    self.instance.kind()
+                    "cannot register the plugin's {}: {}",
+                    self.instance.kind(),
+                    error.reason
                 ),
                 retryable: true,
             });
@@ -1172,6 +1295,10 @@ impl Launch for RemoteLaunch {
             plugin,
             service: self.instance.spec.service,
         }))
+    }
+
+    async fn ended(&self) {
+        self.attach.detach();
     }
 }
 

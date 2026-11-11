@@ -41,12 +41,13 @@ The steps:
 3. Load `secrets.toml` ([Secrets](#secrets)).
 4. Check that instance names are unique within each kind, ignoring ASCII case (macOS file systems
    are case-insensitive by default, so `Libera` and `libera` would share a directory). A provider, a
-   channel, and a toolset may share a name, because each kind has its own directories. Then validate
-   each instance into its typed form, resolving secret references. Ignored toolset tables take no
-   part. A toolset goes through `Ctx::toolset`, the same function
+   channel, an environment, and a toolset may share a name, because each kind has its own
+   directories. Then validate each instance into its typed form, resolving secret references.
+   Ignored toolset tables take no part. A toolset goes through `Ctx::toolset`, the same function
    [`validate_toolset`](#validating-one-toolset) uses.
 5. Load every agent: each directory in `agents/` not starting with `.` must have a valid name and an
-   `agent.toml`. Models are checked against the configured provider instances.
+   `agent.toml`. Models are checked against the configured provider instances, and `environments`
+   against the configured environment instances.
 6. Keep `[[routes]]` as written (`Config::legacy_routes`, unvalidated). Routes are stored in the
    database and managed in the web UI; the one-time import of these rules, which validates them, is
    [Identity and Routing](identity-and-routing.md#routing).
@@ -139,6 +140,7 @@ Each instance kind has a raw struct with every core-owned key as an `Option`, so
 | ------------------- | ---------------------------------------------------------------- |
 | `ProviderInstance`  | Built-in only (provider plugins are deferred)                    |
 | `ChannelInstance`   | `ChannelRuntime::{BuiltIn, Plugin(Launch), Remote(Remote)}`      |
+| `EnvironmentInstance` | `EnvironmentRuntime::{Plugin(Launch), Remote(Remote)}`         |
 | `ToolsetInstance`   | `ToolsetTransport::{Stdio(StdioServer), Http(Remote)}`           |
 
 Component resolution is `Builtins::resolve(kind, component)`: a name in the built-in list for that
@@ -146,7 +148,20 @@ kind is `Component::BuiltIn`; anything else is `Component::Plugin` with binary
 `giles-<kind>-<component>` (`plugin_binary`). The built-in list is a parameter, `Builtins`, so the
 core can pass the components its Cargo features compiled in; `Builtins::V1` lists every v1 built-in
 (`anthropic` and `openai` providers, `web` channel). Finding the binary in `<root>/plugins/` or on
-`$PATH` is the plugin host's job, at launch. Only providers and channels have a component.
+`$PATH` is the plugin host's job, at launch. Only providers, channels, and environments have a
+component; an environment has no built-ins, so it always runs `giles-environment-<component>`.
+
+An `[environment.<name>]` adds `description` (empty unless set), `stop_after` (30 minutes), and
+`delete_after` (30 days), parsed with the same duration syntax as `idle_stop` and `approval_timeout`
+(`HumanDuration`; zero is an error). With `address`, `sandbox`, `unsandboxed`, and `config` are
+errors, and `config` says the plugin's settings live in its own file, because the core sends no
+config to a remote environment. Without `address`, `auth` and `insecure` are errors. The sandbox
+network default is off for environments (`NetworkGrant::default_for`), since they reach their
+runtime over a Unix socket granted with `sandbox.unix`. A `read` grant on the directory of a plugin
+binary is accepted, while `write` and `unix` grants there are refused by `BinaryDirs`
+(`check_binary_dirs` covers environment plugins too). Every grant must still avoid the data root
+except the instance's own data directory, so a binary in `<root>/plugins/` can't be granted for
+reading.
 
 A stdio toolset's `command` is required and kept as written (an absolute path or a bare program
 name); resolving it on the operator's `$PATH` and adding its install prefix to the sandbox grants

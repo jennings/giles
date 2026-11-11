@@ -27,7 +27,9 @@ use super::grpc::{Authorization, CallMetadata};
 use super::instance::{InstanceRuntime, PluginInstance};
 use super::oauth::{self, TokenClient};
 use super::{LaunchError, PluginConnection, describe_and_configure};
-use crate::config::{Auth, ChannelInstance, InstanceName, Kind, Secret, scrub};
+use crate::config::{
+    Auth, ChannelInstance, EnvironmentInstance, InstanceName, Kind, Secret, scrub,
+};
 
 /// How long connecting (TCP and the TLS handshake) may take.
 pub const REMOTE_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -155,6 +157,19 @@ impl super::Launcher {
     ) -> Result<RemotePlugin, LaunchError> {
         let instance = PluginInstance::channel(instance).ok_or(LaunchError::NotRemote)?;
         self.connect_remote_plugin(&instance).await
+    }
+
+    /// [`connect_remote`](Self::connect_remote) for the environment `instance`.
+    ///
+    /// # Errors
+    ///
+    /// [`LaunchError`], messages scrubbed of the instance's secrets.
+    pub async fn connect_remote_environment(
+        &self,
+        instance: &EnvironmentInstance,
+    ) -> Result<RemotePlugin, LaunchError> {
+        self.connect_remote_plugin(&PluginInstance::environment(instance))
+            .await
     }
 
     /// [`connect_remote`](Self::connect_remote) for an instance of any kind.

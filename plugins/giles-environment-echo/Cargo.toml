@@ -1,0 +1,34 @@
+[package]
+name = "giles-environment-echo"
+description = "A test-only Giles environment plugin: in-memory workspaces and scripted commands."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+futures.workspace = true
+giles-plugin-sdk.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+# The core's plugin host, which these tests launch the plugin through, and a runtime around it.
+giles-core = { workspace = true }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["io-util", "process"] }
+tokio-util.workspace = true
+tonic-health.workspace = true
+
+# Its own sandbox trampoline (see the file), so no libtest harness.
+[[test]]
+name = "host_sandbox"
+harness = false
+
+[lints]
+workspace = true

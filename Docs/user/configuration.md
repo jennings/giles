@@ -127,26 +127,28 @@ timezone = "America/Los_Angeles"
 
 ### Instances
 
-Providers, channels, and toolsets are configured as instances, one table each:
+Providers, channels, environments, and toolsets are configured as instances, one table each:
 
 - `[provider.<name>]`
 - `[channel.<name>]`
+- `[environment.<name>]`
 - `[toolset.<name>]`
 
 **Choose instance names with care.** Sessions, history, tool names (`<instance>__<tool>`), and the
 instance's data directory are keyed by the name. To change it, use the rename command for its kind:
 
 - [`giles channel rename`](cli.md#giles-channel-rename-old-new)
+- [`giles environment rename`](cli.md#giles-environment-rename-old-new)
 - [`giles provider rename`](cli.md#giles-provider-rename-old-new)
 - [`giles toolset rename`](cli.md#rename-a-toolset)
 
-A provider, a channel, and a toolset can share a name. They are separate instances with their own
-data. Names are unique within a kind, ignoring case. `Libera` and `libera` clash.
+A provider, a channel, an environment, and a toolset can share a name. They are separate instances
+with their own data. Names are unique within a kind, ignoring case. `Libera` and `libera` clash.
 
-A provider or channel's `component` says what runs the instance, and defaults to the instance name.
-Giles uses its built-in component of that kind and name, if it has one. Otherwise the instance runs
-the plugin `giles-<kind>-<component>`, found in `<data root>/plugins/` or on `$PATH`. A toolset has
-no component. It runs its `command`.
+A provider, channel, or environment's `component` says what runs the instance, and defaults to the
+instance name. Giles uses its built-in component of that kind and name, if it has one. Otherwise the
+instance runs the plugin `giles-<kind>-<component>`, found in `<data root>/plugins/` or on `$PATH`.
+A toolset has no component. It runs its `command`.
 
 Two IRC networks are two instances of one component:
 
@@ -256,6 +258,28 @@ or sandboxes it, and the plugin keeps its own state.
 - When Giles stops, the plugin keeps running. Messages that arrive meanwhile wait in it until Giles
   connects again.
 
+#### Environments
+
+An environment gives agents isolated workspaces to run commands and edit files in. An
+`[environment.<name>]` table configures a plugin `giles-environment-<component>`. Its keys are:
+
+| Key            | Default        | Meaning                                                          |
+| -------------- | -------------- | ---------------------------------------------------------------- |
+| `component`    | the name       | The plugin to run                                                |
+| `config`       | `{}`           | Settings for the plugin, with secrets resolved as for channels   |
+| `description`  | empty          | What the model is told about the environment                     |
+| `stop_after`   | `"30m"`        | Stop a workspace after this long without use                     |
+| `delete_after` | `"30d"`        | Delete a workspace after this long without use                   |
+| `sandbox`, `unsandboxed` |      | As for channels, except the network is off by default            |
+| `address`, `auth`, `insecure` |  | Run the plugin yourself, as for [remote channels](#remote-plugins) |
+
+Give an environment plugin a `unix` grant for its runtime's socket.
+
+`config` is an error together with `address`. A remote environment's settings are in the
+configuration file of the plugin, on the host that runs it.
+
+An agent uses an environment when `environments = ["<name>"]` in its `agent.toml` lists it.
+
 #### Toolsets
 
 A toolset is an MCP server. A `[toolset.<name>]` table configures a stdio server, which Giles
@@ -327,13 +351,14 @@ idle_stop = "30m"
 
 ### Sandbox
 
-Every plugin Giles launches, channel plugins and stdio toolsets, runs in a sandbox. By default it
-can:
+Every plugin Giles launches, channel and environment plugins and stdio toolsets, runs in a sandbox.
+By default it can:
 
 - read its own binary, system libraries, TLS certificates, and DNS configuration
 - read and write its own data directory
 
-Channel plugins may use the network, and stdio toolsets may not. `sandbox` grants more:
+Channel plugins may use the network. Environment plugins and stdio toolsets may not. `sandbox`
+grants more:
 
 ```toml
 sandbox = { network = ["tcp:443"], read = ["/opt/homebrew"], write = ["/Users/me/Notes"] }
@@ -471,6 +496,7 @@ Giles ignores files in `agents/` and directories whose names start with `.`.
 | `compaction_model`    | `models`        | The model that summarizes old history when a session gets long    |
 | `tools`               | `[]`            | Tools the agent may use: globs over tool names, e.g. `"github__*"`, `"memory_*"` |
 | `ask`                 | `[]`            | Globs of tools that need your approval before each call           |
+| `environments`        | `[]`            | Environment instances the agent may use, by name                  |
 | `max_iterations`      | no limit        | Model requests with tools per interactive turn: tools run after at most N−1 of them, then one final request without tools |
 | `max_iterations_jobs` | `25`            | The same for job turns                                            |
 | `busy_mode`           | `"steer"`       | New messages during a turn: `"steer"` shows them to the model at the next tool step; `"queue"` keeps them for the next turn |

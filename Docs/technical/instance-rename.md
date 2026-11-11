@@ -1,10 +1,11 @@
 # Instance rename
 
 Instance names are permanent ids (PLAN section 7.2). `giles_core::rename` renames one,
-`rename_instance`, which `giles channel rename <old> <new>`, `giles provider rename <old> <new>`,
-and `giles toolset rename <old> <new>` (with Giles stopped) call, each for its own kind.
-`ToolsetManager::rename` renames a toolset stored in the database while Giles runs. This page covers
-what a name keys, the order of the steps, and what a failure leaves behind.
+`rename_instance`, which `giles channel rename <old> <new>`, `giles environment rename <old> <new>`,
+`giles provider rename <old> <new>`, and `giles toolset rename <old> <new>` (with Giles stopped)
+call, each for its own kind. `ToolsetManager::rename` renames a toolset stored in the database while
+Giles runs. This page covers what a name keys, the order of the steps, and what a failure leaves
+behind.
 
 ## What a name keys
 
@@ -19,6 +20,7 @@ rename must move each of them.
 | `giles.toml` `[[routes]]` `channel`          | A route of the old layout (imported once, then ignored) | Rewrites it (channels) |
 | `agent.toml` `models`, `compaction_model`, `[[jobs]]` `model` | `<provider instance>/<model id>` | Rewrites the prefix (providers) |
 | `agent.toml` `tools`, `ask`                  | Globs over `<toolset instance>__<tool>`        | Rewrites a leading `<name>__` (toolsets) |
+| `agent.toml` `environments`                  | The environment instances an agent may use     | Rewrites each name equal to `<old>` (environments) |
 | `sessions.channel`                           | Session key (agent, channel, conversation)     | Updates in the transaction (channels)     |
 | `inbox.instance`                             | Dedupe key (instance, event id)                | Updates in the transaction (channels)     |
 | `outbox.instance`                            | The channel a proactive send routes to         | Updates in the transaction (channels)     |
@@ -93,17 +95,19 @@ renamed. If the file already has a `[<kind>.<new>]` table when the renamed table
 A provider or channel with no `component` key runs the component named like the instance
 (`[channel.web]` is the built-in web channel), so a plain rename would change what runs, and for a
 channel also the identity namespace, which must start with the component's name. When the renamed
-provider or channel table lacks `component`, the edit adds `component = "<old>"`. The check after
-editing compares the component the old and the new table resolve to and refuses if they differ. A
-toolset runs its `command` and has no component, so its table is renamed as written.
+provider or channel table lacks `component`, the edit adds `component = "<old>"`, and so does it for
+an environment. The check after editing compares the component the old and the new table resolve to
+and refuses if they differ. A toolset runs its `command` and has no component, so its table is
+renamed as written.
 
 ## The steps
 
 `rename_instance(root, store, lock, kind, old, new)` takes the data root's `InstanceLock` as an
 argument: the caller proves the core is stopped by holding the same `flock` `giles serve` holds, so
 no admin socket probing is needed and a core that starts mid-rename is refused instead. The kind
-comes from the command (`giles channel rename`, `giles provider rename`, `giles toolset rename`),
-not from the name, so one driver (`rename::run` in the `giles` crate) serves all three.
+comes from the command (`giles channel rename`, `giles environment rename`, `giles provider rename`,
+`giles toolset rename`), not from the name, so one driver (`rename::run` in the `giles` crate)
+serves all four.
 
 1. **Validate, read-only.** Both names must be `[a-zA-Z0-9-]+`, and different ignoring case unless
    `old` is a stored toolset (see [Stored toolsets](#stored-toolsets)). `new` must not differ only
