@@ -1,0 +1,7 @@
+# `rust-lld` links the static Linux helper (`giles-workspace-helper`) that the Docker environment
+# plugin copies into containers, so cross-building it needs no cross C toolchain.
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
