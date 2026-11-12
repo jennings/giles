@@ -414,6 +414,7 @@ carries only the rights that apply to files.
 | The data directory and `write` grants | Everything but executing and creating device nodes: read, write, create files, directories, links, FIFOs, and sockets, remove, move within (`Refer`), truncate, device `ioctl`, connect to sockets there | The writable roots. No `MakeChar`/`MakeBlock`: a plugin with `CAP_MKNOD` (Giles run as root) could otherwise create a node for a disk and bypass every file rule |
 | The command | Read and execute | Running it |
 | `execute` grants | Read and execute | Programs the plugin may run |
+| What each link directly in an `execute` directory leads to, if it's a file | Read and execute | A program there may be a link out of the grant (Ubuntu 26.04's `/usr/bin/cat` leads to `/usr/lib/cargo/bin/coreutils/cat`), and Landlock checks the right to execute on the file the kernel ends at |
 | `read` grants | Read files, list directories | |
 | `unix` grants | Connect (ABI 9) | Exactly these sockets |
 | `/lib`, `/lib64`, `/usr/lib`, `/usr/lib64`, `/etc/ld.so.cache`, `/etc/ld.so.preload` | Read | Shared libraries and the loader's cache (a PLAN default) |
@@ -464,6 +465,10 @@ outlived it) would decide what the next launch grants.
   below a stop ends the walk without a descriptor, and the grant gives nothing, with the warning
   `not granting a sandbox path that goes through a symbolic link inside a writable grant`: the
   kernel follows the link at access time and lands on an inode nothing grants.
+- An `execute` grant that is a directory is listed once, and each link directly in it is walked the
+  same way (`ruleset::linked_programs`). A link that leads to a file grants execute on that file. A
+  link at or below a writable root, a dangling link, and a link to a directory grant nothing. Only
+  the links themselves count, so a program the grant's directory doesn't name stays denied.
 - The roots themselves can't be removed or replaced: a Landlock rule on a directory covers what's
   inside it, but removing or renaming the directory needs rights on its parent, which isn't granted.
   `data_dir_cannot_be_swapped_for_a_link` checks it; `a_racing_link_never_redirects_a_grant` runs
