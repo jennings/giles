@@ -13,8 +13,8 @@ use giles_core::admin::PluginControl as _;
 use giles_core::config::Kind;
 use giles_core::plugin_host::PluginState;
 use giles_plugin_sdk::giles_types::{
-    Error, ExecEvent, ExecRequest, FindRequest, GrepRequest, StartOutcome, WorkspaceId,
-    WorkspaceState,
+    Error, ExecEvent, ExecRequest, FindRequest, GrepRequest, StartOutcome, WorkspaceDetail,
+    WorkspaceId, WorkspaceState,
 };
 
 use self::support::{Core, Home, wait_until};
@@ -126,6 +126,10 @@ async fn the_client_serves_workspaces() {
     let listed = client.list_workspaces().await.unwrap();
     assert_eq!(listed.workspaces.len(), 1);
     assert_eq!(listed.workspaces[0].state, WorkspaceState::Stopped);
+    assert_eq!(
+        listed.workspaces[0].details.first(),
+        Some(&WorkspaceDetail::new("Kind", "echo"))
+    );
     assert_eq!(listed.free_bytes, Some(1 << 30));
     assert!(matches!(
         client.start_workspace(&id).await.unwrap(),

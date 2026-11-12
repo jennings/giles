@@ -15,8 +15,8 @@ use std::time::Duration;
 use giles_proto::environment::v1 as pb;
 use giles_types::{
     EnvironmentInfo, ExecEvent, ExecExit, ExecRequest, FindRequest, FindResult, GrepMatch,
-    GrepRequest, GrepResult, ReadFile, Result, StartOutcome, Workspace, WorkspaceId, WorkspaceList,
-    WorkspaceState,
+    GrepRequest, GrepResult, ReadFile, Result, StartOutcome, Workspace, WorkspaceDetail,
+    WorkspaceId, WorkspaceList, WorkspaceState,
 };
 
 use super::{invalid, timestamp_from_proto, timestamp_to_proto};
@@ -90,6 +90,14 @@ pub fn workspace_to_proto(workspace: Workspace) -> Result<pb::Workspace> {
         created_at: Some(timestamp_to_proto(workspace.created_at)),
         state: state.into(),
         disk_used_bytes: workspace.disk_used_bytes,
+        details: workspace
+            .details
+            .into_iter()
+            .map(|d| pb::WorkspaceDetail {
+                label: d.label,
+                value: d.value,
+            })
+            .collect(),
     })
 }
 
@@ -112,6 +120,11 @@ pub fn workspace_from_proto(workspace: pb::Workspace) -> Result<Workspace> {
         )?,
         state,
         disk_used_bytes: workspace.disk_used_bytes,
+        details: workspace
+            .details
+            .into_iter()
+            .map(|d| WorkspaceDetail::new(d.label, d.value))
+            .collect(),
     })
 }
 
@@ -357,6 +370,10 @@ mod tests {
             created_at: "2026-11-10T12:00:00.5Z".parse::<Timestamp>().unwrap(),
             state: WorkspaceState::Running,
             disk_used_bytes: Some(0),
+            details: vec![
+                WorkspaceDetail::new("Image", "debian:stable"),
+                WorkspaceDetail::new("Container", "giles-main.ws-1"),
+            ],
         }
     }
 
@@ -390,10 +407,24 @@ mod tests {
         let wire = workspace_to_proto(workspace()).unwrap();
         assert_eq!(wire.workspace_id, "ws-1");
         assert_eq!(wire.state(), pb::WorkspaceState::Running);
+        assert_eq!(
+            wire.details,
+            vec![
+                pb::WorkspaceDetail {
+                    label: "Image".into(),
+                    value: "debian:stable".into()
+                },
+                pb::WorkspaceDetail {
+                    label: "Container".into(),
+                    value: "giles-main.ws-1".into()
+                },
+            ]
+        );
         assert_eq!(workspace_from_proto(wire.clone()).unwrap(), workspace());
 
         let unknown_disk = Workspace {
             disk_used_bytes: None,
+            details: Vec::new(),
             state: WorkspaceState::Stopped,
             ..workspace()
         };

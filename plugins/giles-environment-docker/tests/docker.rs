@@ -837,6 +837,28 @@ async fn list_reports_workspaces_with_disk_and_free_space() {
         assert!(used >= 2_000_000, "{used}");
     }
     assert!(w1.created_at.as_second() > 1_700_000_000);
+    let detail = |name: &str| {
+        w1.details
+            .iter()
+            .find(|d| d.label == name)
+            .map(|d| d.value.as_str())
+    };
+    assert!(
+        detail("Image").is_some_and(|v| !v.is_empty()),
+        "{:?}",
+        w1.details
+    );
+    assert!(
+        detail("Container").is_some_and(|v| v.contains("w1")),
+        "{:?}",
+        w1.details
+    );
+    assert!(
+        detail("Volume").is_some_and(|v| v.ends_with(".w1")),
+        "{:?}",
+        w1.details
+    );
+    assert_eq!(detail("Limits"), Some("none"));
 }
 
 #[tokio::test]
@@ -885,6 +907,13 @@ async fn containers_get_the_configured_limits_and_nothing_extra() {
             || labels["giles.image-digest"].starts_with("sha256:"),
         "{labels:?}"
     );
+    let listed = scope.env.list_workspaces().await.unwrap();
+    let limits = listed.workspaces[0]
+        .details
+        .iter()
+        .find(|d| d.label == "Limits")
+        .unwrap();
+    assert_eq!(limits.value, "memory 256 MiB, 0.5 CPUs, 200 processes");
     // No network at all.
     let ran = scope
         .run("w1", "cat /sys/class/net/*/operstate | grep -c up; true")
