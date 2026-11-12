@@ -1,28 +1,31 @@
 //! Output delivery (PLAN section 6.9): what of the model's responses reaches the channel, and
 //! when. Design: `Docs/technical/agent-loop.md`, "Output".
 //!
-//! [`OutputSink`] is the seam: the agent loop hands it every streamed event of a response and
-//! then the stored message. [`output_for`] picks the sink for a turn: [`ChannelOutput`] for a
-//! turn with a conversation, nothing for an isolated job run. Only `Text` blocks reach a
-//! channel; reasoning, tool, and opaque blocks never do.
+//! [`OutputSink`] is the seam: the agent loop hands it every streamed event of a response, then
+//! the stored message, then each of its tool calls as it starts and its result once stored.
+//! [`output_for`] picks the sink for a turn: [`ChannelOutput`] for a turn with a conversation,
+//! nothing for an isolated job run. `Text` blocks reach a channel, and tool calls reach a
+//! channel whose live-output hook shows them; reasoning and opaque blocks never do.
 //!
 //! - `blocks` channels get whole chunks through [`Reply::send`], split at paragraph boundaries
 //!   outside code fences as the text streams, and the rest at the end of the message.
 //! - `deltas` channels with a live-output hook ([`Channel::deltas`], a [`DeltaSink`]) get one live
-//!   message per text block, fed with the model's text deltas. A `deltas` channel without the
-//!   hook gets `blocks` output.
+//!   message per text block, fed with the model's text deltas, and each tool call and its result
+//!   ([`DeltaSink::tool_call`]). A `deltas` channel without the hook gets `blocks` output.
 
 use std::mem;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use giles_store::{Slot, StoredMessageId};
 use giles_types::{
     Block, BlockKind, Channel, CompletionEvent, ConversationId, DeltaSink, DeltaWriter, Error,
-    Message, OutputMode, Result,
+    LiveToolCall, Message, OutputMode, Result, ToolCallWriter,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
+use super::dispatch::ToolRequest;
 use crate::sessions::{Reply, Turn};
 
 /// Receives one turn's responses as they stream.
@@ -40,6 +43,20 @@ pub trait OutputSink: Send {
     /// The response being received was cut off (cancellation or a provider error) and is not
     /// stored. The default does nothing. Dropping the sink mid-response means the same.
     async fn message_aborted(&mut self) {}
+
+    /// Call `call` of the message just stored ([`message_end`](Self::message_end)) starts
+    /// running; its result goes into `slot`. Returns whether the sink shows the call: then
+    /// [`tool_finished`](Self::tool_finished) gets its result. The default shows nothing.
+    fn tool_started(&mut self, slot: &Slot, call: &ToolRequest) -> bool {
+        let _ = (slot, call);
+        false
+    }
+
+    /// The result of a call [`tool_started`](Self::tool_started) showed, once it's stored in
+    /// `slot`. The default does nothing.
+    fn tool_finished(&mut self, slot: &Slot, content: &[Block], is_error: bool) {
+        let _ = (slot, content, is_error);
+    }
 }
 
 /// The live-output hook of `channel`, if it has one.
@@ -55,6 +72,14 @@ impl DeltaSink for ChannelDeltas {
         delta_sink(&*self.0)
             .ok_or_else(|| Error::unavailable("the channel has no live output"))?
             .start(conversation)
+    }
+
+    fn tool_call(
+        &self,
+        conversation: &ConversationId,
+        call: LiveToolCall<'_>,
+    ) -> Option<Box<dyn ToolCallWriter>> {
+        delta_sink(&*self.0)?.tool_call(conversation, call)
     }
 }
 
@@ -104,6 +129,9 @@ pub struct ChannelOutput {
     block: Option<TextBlock>,
     /// The message's complete live messages, finished at its end.
     done: Vec<Box<dyn DeltaWriter>>,
+    /// The tool calls shown and still running, by result slot. Dropped unanswered when the turn
+    /// ends, which the channel shows as stopped.
+    tools: Vec<(StoredMessageId, Box<dyn ToolCallWriter>)>,
 }
 
 /// A text block being streamed.
@@ -133,6 +161,7 @@ impl ChannelOutput {
             paragraphs: Paragraphs::default(),
             block: None,
             done: Vec::new(),
+            tools: Vec::new(),
         }
     }
 
@@ -252,6 +281,32 @@ impl OutputSink for ChannelOutput {
         self.block = None;
         self.done.clear();
         self.paragraphs = Paragraphs::default();
+    }
+
+    fn tool_started(&mut self, slot: &Slot, call: &ToolRequest) -> bool {
+        if self.cancel.is_cancelled() {
+            return false;
+        }
+        let Some(live) = &self.live else {
+            return false;
+        };
+        let id = slot.id.to_string();
+        let shown = LiveToolCall {
+            id: &id,
+            name: &call.name,
+            input: &call.input,
+        };
+        let Some(writer) = live.tool_call(self.reply.conversation(), shown) else {
+            return false;
+        };
+        self.tools.push((slot.id, writer));
+        true
+    }
+
+    fn tool_finished(&mut self, slot: &Slot, content: &[Block], is_error: bool) {
+        if let Some(index) = self.tools.iter().position(|(id, _)| *id == slot.id) {
+            self.tools.swap_remove(index).1.result(content, is_error);
+        }
     }
 }
 

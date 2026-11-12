@@ -1,10 +1,11 @@
 //! Per-chat live state: the event log every open page of a chat follows over server-sent events.
 //!
 //! Every change to what a chat page shows (a posted message, a sent message, a live message
-//! growing, an approval prompt and its answer) is one [`Event`]: an HTML fragment for the page's
-//! message list. Fragments that change an element already on the page carry `hx-swap-oob`. A page
-//! is rendered with a [cursor](Hubs::cursor) (the last event it reflects) and asks the event
-//! stream for everything after it, so nothing falls between the page load and the stream opening.
+//! growing, a tool call and its result, an approval prompt and its answer) is one [`Event`]: an
+//! HTML fragment for the page's message list. Fragments that change an element already on the
+//! page carry `hx-swap-oob`. A page is rendered with a [cursor](Hubs::cursor) (the last event it
+//! reflects) and asks the event stream for everything after it, so nothing falls between the
+//! page load and the stream opening.
 //! Each chat keeps its last [`RING`] events for that; a page further behind (or from before a
 //! restart) is told to reload.
 //!
@@ -109,6 +110,8 @@ struct State {
     approvals: Vec<Approval>,
     /// Posted messages' events still in the ring: number and event id.
     posted: Vec<(u64, EventId)>,
+    /// Tool call elements' first events still in the ring: number and element id.
+    tools: Vec<(u64, String)>,
     /// The last publish, snapshot, subscription, or lookup.
     used: Instant,
 }
@@ -133,6 +136,7 @@ impl Hub {
                 live: Vec::new(),
                 approvals: Vec::new(),
                 posted: Vec::new(),
+                tools: Vec::new(),
                 used: Instant::now(),
             }),
             feed: broadcast::Sender::new(RING),
@@ -158,6 +162,7 @@ impl Hub {
             state.floor = dropped.seq;
             let floor = state.floor;
             state.posted.retain(|(seq, _)| *seq > floor);
+            state.tools.retain(|(seq, _)| *seq > floor);
         }
         state.ring.push_back(event.clone());
         // No receivers is fine: nobody has the chat open.
@@ -216,6 +221,31 @@ impl Hub {
         self.publish(render::out_of_band(html), |state| {
             state.live.retain(|live| live.id != id);
         });
+    }
+
+    /// Appends tool call element `id` (`html` from [`render::tool_call`], running).
+    pub(super) fn tool_start(&self, id: &str, html: String) {
+        let id = id.to_owned();
+        self.publish(html, |state| {
+            let seq = state.seq;
+            state.tools.push((seq, id));
+        });
+    }
+
+    /// Replaces a tool call element with `html` (its result, or stopped).
+    pub(super) fn tool_end(&self, html: &str) {
+        self.publish(render::out_of_band(html), |_| {});
+    }
+
+    /// The tool call elements appended after event `seq` still in the ring: an event stream from
+    /// a page at `seq` replays them, so the page mustn't show them itself.
+    pub(super) fn tools_after(&self, seq: u64) -> Vec<String> {
+        lock(&self.state)
+            .tools
+            .iter()
+            .filter(|(started, _)| *started > seq)
+            .map(|(_, id)| id.clone())
+            .collect()
     }
 
     /// Appends an approval prompt (`html` is its form, without a CSRF field).

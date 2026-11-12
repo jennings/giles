@@ -83,8 +83,12 @@ Messages in a chat you open with **New chat** go to the agent your [routes](#rou
 to a particular agent instead, pick it under **Chat with** and press **Start**. That chat always
 goes to the agent you picked, and needs no route.
 
-Replies appear as the agent writes them. Tool calls and the model's reasoning aren't shown. Image
-attachments show inline, and other attachments download. Images from other sites aren't loaded.
+Replies appear as the agent writes them. Image attachments show inline, and other attachments
+download. Images from other sites aren't loaded. The model's reasoning isn't shown.
+
+Each tool the agent runs shows in the chat with its input and output. Only the first line of the
+input and the last 6 lines of the output show at first. Click **Show N more lines** or
+**Show N earlier lines** to see the rest.
 
 If something goes wrong:
 

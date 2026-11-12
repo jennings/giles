@@ -399,10 +399,12 @@ struct ChatPage<'a> {
 /// reflects.
 ///
 /// Order matters. The hub snapshot comes first: anything published after it is replayed by the
-/// event stream, so the page leaves out posts it will replay. The posts the core hasn't taken
-/// come next, then the transcript and the waiting inbox rows (one read): a post acked in between
-/// is in the inbox by then. A live message the transcript already has (it ended and was stored
-/// after the snapshot) is shown from the transcript only.
+/// event stream, so the page leaves out posts and tool calls it will replay. The posts the core
+/// hasn't taken come next, then the transcript and the waiting inbox rows (one read): a post
+/// acked in between is in the inbox by then. A live message the transcript already has (it
+/// ended and was stored after the snapshot) is shown from the transcript only. A tool call is
+/// shown once stored and its result published once stored, so the transcript is never behind an
+/// event the snapshot covers.
 async fn chat_page(State(app): State<WebApp>, user: WebUser, Path(chat): Path<String>) -> Response {
     let Some(chat) = chat_id(&chat) else {
         return not_found();
@@ -425,7 +427,7 @@ async fn chat_page(State(app): State<WebApp>, user: WebUser, Path(chat): Path<St
         Err(err) => return internal_error("cannot load a web chat", &err),
     };
     let rows = &transcript.messages;
-    let mut items = render::history(rows);
+    let mut items = render::history(rows, &hub.tools_after(snapshot.seq));
     items.extend(render::waiting(
         rows,
         &transcript.waiting,

@@ -264,7 +264,7 @@ pub trait Channel: Send + Sync {
     async fn ack(&self, event: &EventId) -> Result<()>;
     async fn send(&self, msg: OutboundMessage) -> Result<MessageId>; // always a whole message
     /// Live output (section 6.9), only on `deltas` channels: one writer per assistant text block,
-    /// fed with the model's text deltas.
+    /// fed with the model's text deltas, and optionally one per tool call, given its result.
     fn deltas(&self) -> Option<&dyn DeltaSink> { None }
 }
 
@@ -669,7 +669,8 @@ own format (section 10). Providers always stream. Each channel declares an outpu
 - `blocks`: the core sends whole chunks, flushed at paragraph boundaries outside code fences and at
   the end of the message.
 
-Reasoning and tool blocks never reach channels.
+Reasoning blocks never reach channels. Tool calls and their results reach only a `deltas` channel
+whose live-output hook shows them: the web chat shows each call's input and output as it runs.
 
 ### 6.10 Models and fallback
 

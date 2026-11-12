@@ -243,11 +243,31 @@ in use, not every chat since the start.
   every `LIVE_UPDATE_INTERVAL` (50 ms; pushes in between are coalesced, and the final text is always
   sent); `finish` replaces it with the final rendering. A writer dropped unfinished leaves its text,
   marked "Stopped before the end."
+- `DeltaSink::tool_call(conversation, LiveToolCall { id, name, input })` appends tool call element
+  `t-<id>` ("Running…"), where `id` is the call's result-slot row id, and records it in the hub
+  (`Hub::tool_start`). The writer's `result(content, is_error)` replaces the element with the
+  output; a writer dropped without one marks it "Stopped before the end."
 
 The agent loop's output delivery (`agent_loop::output`, see [Agent loop](agent-loop.md)) streams
 every assistant text block of a turn in a web chat through this hook: `start` at the block's first
-non-whitespace delta, `push` for each delta, and `finish` once the response is stored. Whole-message
-`send` keeps working on this channel either way (notices, restart notices).
+non-whitespace delta, `push` for each delta, and `finish` once the response is stored. It shows each
+tool call once the assistant message is stored, and its result once that's stored in the slot.
+Whole-message `send` keeps working on this channel either way (notices, restart notices).
+
+### Tool calls
+
+`render::tool_call(element, name, input, state)` renders a call the same way live and in the
+history. The name comes first. The input follows as text (`render::tool_input`): an object's fields
+one per line as `key: value`, a string value as is and anything else as compact JSON, in key order.
+The output is the result's text blocks joined by newlines, with trailing whitespace cut. Media
+blocks show as attachments, without their references. Input and output are escaped plain text in
+`<pre>`, never Markdown.
+
+Folding needs no script. The input's first line is shown, and the rest is in a `<details>` labeled
+"Show N more lines" below it. The output's last `TOOL_OUTPUT_LINES` (6) lines are shown, and the
+earlier ones are in a `<details>` labeled "Show N earlier lines" above them. A failed result has the
+`error` class and "Failed."; an empty one says "No output.". A live element replaced by its result
+loses the open state of its disclosures.
 
 ### Event streams and cursors
 
@@ -279,25 +299,31 @@ The chat page shows the stored transcript, not a log of what was displayed:
 `Store::conversation_transcript(instance, chat, HISTORY_LIMIT)` (the last 200 rows across every
 session of the conversation, any agent, summarized messages included, and the inbox rows still
 waiting; see [Storage](storage.md#conversations)). `render::history` shows text blocks (joined by
-blank lines) and media of user and assistant messages, and drops tool results, empty slots, tool
-calls, reasoning, and provider data (PLAN section 6.9); a message left with nothing to show is
-skipped. A user message's time prefix (`[Thu 2026-10-22 14:03 PDT] `, which the agent loop stores
-for the model) is cut with `agent_loop::history::strip_time_prefix`, here and in chat titles, and a
-media reference stored right before its media (`[media:<id> <name> <type>]`) is left out, since the
-media itself is shown. A `send_attachment` call whose result isn't an error shows as an assistant
+blank lines) and media of user and assistant messages, and drops reasoning and provider data (PLAN
+section 6.9); a message left with nothing to show is skipped. After its message's text, each
+`ToolUse` block shows as tool call `t-<slot row id>`, with the result from its slot row, or
+"Running…" while the slot is empty. A call whose slot row isn't among the loaded rows is left out. A
+user message's time prefix (`[Thu 2026-10-22 14:03 PDT] `, which the agent loop stores for the
+model) is cut with `agent_loop::history::strip_time_prefix`, here and in chat titles, and a media
+reference stored right before its media (`[media:<id> <name> <type>]`) is left out, since the media
+itself is shown. A `send_attachment` call whose result isn't an error also shows as an assistant
 message with its caption and the media it sent (looked up by id among the media of the loaded rows).
 A "New session" marker separates sessions (`/new`, idle reset). Messages sent with `send` that the
 agent loop doesn't store (notices) are only on pages that were open at the time. The chat list is
 `Store::channel_conversations(instance, user, 200)`, titled with the first line of the first user
 message (80 characters at most).
 
-The page is assembled so that a message is shown once, whatever happens while it loads:
+The page is assembled so that a message or tool call is shown once, whatever happens while it loads:
 
 1. The hub snapshot (cursor, live messages, prompts). Everything published later is replayed by the
    stream.
 2. The posts the core hasn't acked (`WebChannel::unacked`).
 3. The transcript and the waiting inbox rows, in one read transaction. A post acked after step 2 was
-   inserted into the inbox before its ack, so it's in this read.
+   inserted into the inbox before its ack, so it's in this read. The history leaves out tool calls
+   the stream will replay (`Hub::tools_after(cursor)`). The agent loop publishes a call only after
+   storing its assistant message, and a result only after storing it, so an event the snapshot
+   covers is always in this read. A result published after the snapshot replaces the element again
+   with the same content.
 4. The user's messages not in the transcript yet (`render::waiting`): waiting rows, then unacked
    posts, without the posts the stream will replay (`Hub::posted_after(cursor)`), and without any
    the transcript already has. A started row is in the transcript if a user row has its receive time

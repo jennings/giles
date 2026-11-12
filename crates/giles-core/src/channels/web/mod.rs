@@ -37,9 +37,10 @@ use futures::StreamExt;
 use futures::channel::mpsc;
 use futures::stream::BoxStream;
 use giles_types::{
-    Channel, ChannelEvent, ChannelInfo, ChannelStatus, ConversationId, ConversationKind,
-    ConversationRef, DeltaSink, DeltaWriter, Error, EventId, InboundMessage, MessageId, NativeId,
-    OutboundMessage, OutputMode, Result, SendTarget, Timestamp, UserId,
+    Block, Channel, ChannelEvent, ChannelInfo, ChannelStatus, ConversationId, ConversationKind,
+    ConversationRef, DeltaSink, DeltaWriter, Error, EventId, InboundMessage, LiveToolCall,
+    MessageId, NativeId, OutboundMessage, OutputMode, Result, SendTarget, Timestamp,
+    ToolCallWriter, UserId,
 };
 use tokio::time::Instant;
 
@@ -541,6 +542,28 @@ impl DeltaSink for WebChannel {
             finished: false,
         }))
     }
+
+    /// Shows the call in every open page of the chat as element `t-<id>`, running.
+    fn tool_call(
+        &self,
+        conversation: &ConversationId,
+        call: LiveToolCall<'_>,
+    ) -> Option<Box<dyn ToolCallWriter>> {
+        let element = render::tool_element(call.id);
+        let input = render::tool_input(call.input);
+        let hub = self.hub(conversation);
+        hub.tool_start(
+            &element,
+            render::tool_call(&element, call.name, &input, render::ToolState::Running),
+        );
+        Some(Box::new(LiveTool {
+            hub,
+            element,
+            name: call.name.to_owned(),
+            input,
+            finished: false,
+        }))
+    }
 }
 
 /// A live assistant message on the chat's pages ([`DeltaSink::start`]).
@@ -590,6 +613,42 @@ impl Drop for LiveMessage {
     fn drop(&mut self) {
         if !self.finished {
             self.end(render::State::CutOff);
+        }
+    }
+}
+
+/// A running tool call on the chat's pages ([`DeltaSink::tool_call`]).
+struct LiveTool {
+    hub: Arc<hub::Hub>,
+    element: String,
+    name: String,
+    /// As [`render::tool_input`] shows it.
+    input: String,
+    finished: bool,
+}
+
+impl LiveTool {
+    fn end(&mut self, state: render::ToolState<'_>) {
+        self.finished = true;
+        self.hub.tool_end(&render::tool_call(
+            &self.element,
+            &self.name,
+            &self.input,
+            state,
+        ));
+    }
+}
+
+impl ToolCallWriter for LiveTool {
+    fn result(mut self: Box<Self>, content: &[Block], is_error: bool) {
+        self.end(render::ToolState::Done { content, is_error });
+    }
+}
+
+impl Drop for LiveTool {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.end(render::ToolState::Stopped);
         }
     }
 }

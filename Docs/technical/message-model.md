@@ -169,12 +169,20 @@ pub trait Channel: Send + Sync {
 
 pub trait DeltaSink: Send + Sync {
     fn start(&self, conversation: &ConversationId) -> Result<Box<dyn DeltaWriter>>;
+    fn tool_call(&self, conversation: &ConversationId, call: LiveToolCall<'_>)
+        -> Option<Box<dyn ToolCallWriter>> { None }
 }
 
 #[async_trait]
 pub trait DeltaWriter: Send {
     fn push(&mut self, text: &str);
     async fn finish(self: Box<Self>) -> Result<MessageId>;
+}
+
+pub struct LiveToolCall<'a> { pub id: &'a str, pub name: &'a str, pub input: &'a Value }
+
+pub trait ToolCallWriter: Send {
+    fn result(self: Box<Self>, content: &[Block], is_error: bool);
 }
 ```
 
@@ -187,6 +195,11 @@ pub trait DeltaWriter: Send {
   writer unfinished (the turn was stopped or failed) leaves what was pushed on the channel, marked
   as cut off. `send` still delivers whole messages on a deltas channel: notices, approval prompts,
   and any reply the core doesn't stream.
+- `tool_call` shows a tool call as it runs; the default `None` shows nothing. The agent loop calls
+  it for each call it runs, once the assistant message is stored, and hands the writer the
+  `ToolResult` content once that's stored. `id` is the result slot's row id, so a channel that also
+  renders the transcript can match the two. Dropping the writer without a result (the turn was
+  stopped) shows the call as stopped. In v1 only the web channel shows tool calls.
 - `ChannelInfo` has the `identity_namespace` (e.g. `whatsapp`, `irc:libera.chat`; the core accepts
   it only if it starts with the channel component's name), `output: OutputMode` (`Deltas` or
   `Blocks`), and `can_initiate`. A plugin reports the namespace in `ConfigureResponse`; the

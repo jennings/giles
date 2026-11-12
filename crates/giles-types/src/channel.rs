@@ -1,7 +1,8 @@
 //! The [`Channel`] trait: a messaging service (PLAN sections 4.4, 5, 8.5).
 //!
 //! Channels never see model messages. They exchange [`InboundMessage`]s and [`OutboundMessage`]s,
-//! which the core converts. Channel events are stored as JSON in the `inbox` table and outbound
+//! which the core converts; a live-output channel is also shown tool calls ([`LiveToolCall`]).
+//! Channel events are stored as JSON in the `inbox` table and outbound
 //! messages in the `outbox` table, so these types serialize the same way as the message model
 //! (`"type"` tags in `snake_case`, `None` fields omitted).
 
@@ -11,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Result;
 use crate::id::{ConversationId, EventId, MessageId, NativeId};
-use crate::message::MediaRef;
+use crate::message::{Block, MediaRef};
 use jiff::Timestamp;
 
 /// A messaging service: web chat, IRC, email, WhatsApp.
@@ -47,11 +48,23 @@ pub trait Channel: Send + Sync {
 }
 
 /// Where a [`OutputMode::Deltas`] channel takes live assistant output (PLAN section 6.9): one
-/// [`DeltaWriter`] per assistant text block, fed with the model's text deltas.
+/// [`DeltaWriter`] per assistant text block, fed with the model's text deltas, and optionally the
+/// agent's tool calls as they run.
 pub trait DeltaSink: Send + Sync {
     /// Starts a live assistant message in `conversation` and returns the writer that fills it.
     /// The channel shows the message as soon as it starts.
     fn start(&self, conversation: &ConversationId) -> Result<Box<dyn DeltaWriter>>;
+
+    /// Shows `call` in `conversation` as running and returns the writer that shows its result.
+    /// `None` (the default): the channel doesn't show tool calls.
+    fn tool_call(
+        &self,
+        conversation: &ConversationId,
+        call: LiveToolCall<'_>,
+    ) -> Option<Box<dyn ToolCallWriter>> {
+        let _ = (conversation, call);
+        None
+    }
 }
 
 /// One live assistant message, from [`DeltaSink::start`].
@@ -66,6 +79,26 @@ pub trait DeltaWriter: Send {
 
     /// Ends the message and returns its id on the channel.
     async fn finish(self: Box<Self>) -> Result<MessageId>;
+}
+
+/// A tool call the agent runs, as [`DeltaSink::tool_call`] shows it.
+#[derive(Debug, Clone, Copy)]
+pub struct LiveToolCall<'a> {
+    /// Unique among the calls the channel instance is shown, and stable: the core passes the row
+    /// id of the call's result in its transcript, so a page built from the transcript can match
+    /// it.
+    pub id: &'a str,
+    /// The tool name, with its instance prefix (PLAN section 6.5).
+    pub name: &'a str,
+    /// The arguments.
+    pub input: &'a serde_json::Value,
+}
+
+/// One running tool call, from [`DeltaSink::tool_call`]. Dropping the writer without a
+/// [`result`](Self::result) (the turn was stopped) shows the call as stopped.
+pub trait ToolCallWriter: Send {
+    /// Shows the call's result: the `content` of its `ToolResult` block.
+    fn result(self: Box<Self>, content: &[Block], is_error: bool);
 }
 
 /// What a channel is and can do, declared once.
