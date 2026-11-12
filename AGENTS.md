@@ -17,6 +17,12 @@
 - Update documentation in the same commit when the system changed:
   - Update user documentation for any user-facing change.
   - Update technical documentation for implementation changes.
+- Every setting of a Giles agent must be editable in the web UI. Nobody should have to edit an
+  agent's `agent.toml` by hand.
+  - A change that adds an `agent.toml` key, or changes what one accepts, also adds or updates its
+    field on the web agent forms in the same commit or stack.
+  - User documentation shows the web UI as the way to change an agent setting, and `agent.toml` as
+    the alternative.
 
 ## Writing user documentation
 
