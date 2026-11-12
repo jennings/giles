@@ -10,3 +10,5 @@
 !proto/
 !LICENSE-MIT
 !LICENSE-APACHE
+# The plugin image's Dockerfile is read by the build, not copied into it.
+plugins/giles-environment-docker/Dockerfile

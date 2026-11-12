@@ -16,8 +16,7 @@ socket is as powerful as the engine.
 That socket is root on that machine.
 
 If Giles runs in [its container image](container.md), don't mount an engine socket into it.
-[Run the plugin on another machine](#run-the-plugin-on-another-machine) that has a rootless engine
-instead.
+[Run the plugin in its own container](#run-the-plugin-in-its-own-container) instead.
 
 ## Set up the plugin on the Giles machine
 
@@ -61,22 +60,99 @@ machine uses the `unix://` address in `DOCKER_HOST` first.
 ## Let an agent use it
 
 Agents don't get an environment by default. Name the environments an agent may use in its
-`agent.toml`:
+`agent.toml`, and allow the tools that work in them:
 
 ```toml
 environments = ["docker"]
+tools = ["environment_*", "bash", "read", "write", "edit", "find", "grep"]
 ```
 
-The agent then has tools to create a workspace, run commands, and work with files, described in
-[Environments](environments.md). The model chooses the image when it creates a workspace.
+If the agent already has a `tools` list, add these entries to it. The agent then has tools to create
+a workspace, run commands, and work with files, described in [Environments](environments.md). The
+model chooses the image when it creates a workspace.
 
-## Run the plugin on another machine
+## Run the plugin in its own container
 
-Running the plugin on the machine that has the engine keeps the engine's socket away from Giles. It
-is the setup to use when Giles runs in its container image. Install `giles-environment-docker` and
-the `giles-workspace-helper-*` files that come with it on that machine, and follow
-[Running a plugin on another machine](remote-plugins.md) for the token and TLS. For an environment
-plugin the settings go in the `[config]` table of the file you pass to `serve --config`:
+The `giles-environment-docker` image runs the plugin for Giles to connect to. It keeps the engine's
+socket away from Giles, and it is the setup to use when Giles runs in its container image.
+
+Make a token for Giles to authenticate with, and keep it for `giles.toml`:
+
+```sh
+openssl rand -hex 32
+```
+
+Create a network for the two containers, and start the plugin on it with the engine's socket at
+`/var/run/docker.sock`:
+
+```sh
+docker network create giles
+docker run --detach --name giles-environment-docker --restart unless-stopped \
+  --network giles \
+  --volume /run/user/1000/podman/podman.sock:/var/run/docker.sock \
+  --env GILES_ENVIRONMENT_DOCKER_TOKEN="<token>" \
+  ghcr.io/jennings/giles-environment-docker:latest
+```
+
+For rootless Podman, run it with `podman run` as the user that owns the socket. On a host with
+SELinux, such as Fedora, also pass `--security-opt label=disable`, or the plugin can't open the
+socket. Add `--network giles` to the command that starts Giles too.
+
+In `giles.toml`, the instance has the plugin's address and the token, stored as the secret
+`docker-remote` ([Secrets](configuration.md#secrets)):
+
+```toml
+[environment.docker]
+description = "Disposable Linux containers for running code and building software."
+address = "http://giles-environment-docker:7443"
+insecure = true
+auth = { bearer = { secret = "docker-remote" } }
+```
+
+`insecure = true` allows plain HTTP, which stays on the `giles` network. The plugin's messages are
+in `docker logs giles-environment-docker`.
+
+### Change the plugin's settings
+
+The plugin's settings go in the `[config]` table of a file that you mount and pass with `--config`.
+Giles refuses an instance that has both `address` and `config`, because the plugin's settings live
+with the plugin:
+
+```toml
+[config]
+images = ["ghcr.io/acme/tools:*"]
+memory = "2g"
+```
+
+```sh
+docker run --detach --name giles-environment-docker --restart unless-stopped \
+  --network giles \
+  --volume /run/user/1000/podman/podman.sock:/var/run/docker.sock \
+  --volume "$PWD/giles-environment-docker.toml:/etc/giles-environment-docker.toml:ro" \
+  --env GILES_ENVIRONMENT_DOCKER_TOKEN="<token>" \
+  ghcr.io/jennings/giles-environment-docker:latest --config /etc/giles-environment-docker.toml
+```
+
+Registry logins and environment variables go in this file too. Leave `socket` unset.
+
+### Reach the plugin from another machine
+
+**Use TLS when Giles reaches the plugin over a network.** Publish the port with
+`--publish 7443:7443`, and add the certificate to the file with `tls_cert` and `tls_key`, mounted
+into the container. Then use an `https://` address and drop `insecure`:
+
+```toml
+[environment.docker]
+description = "Disposable Linux containers for running code and building software."
+address = "https://builder.example.com:7443"
+auth = { bearer = { secret = "docker-remote" } }
+```
+
+### Run the plugin without a container
+
+Install `giles-environment-docker` and the `giles-workspace-helper-*` files next to it, and run
+`giles-environment-docker serve --config <file>`. The file holds the settings in
+[Running a plugin on another machine](remote-plugins.md) and the plugin's `[config]` table:
 
 ```toml
 listen = "0.0.0.0:7443"
@@ -90,18 +166,6 @@ socket = "/run/user/1000/podman/podman.sock"
 images = ["ghcr.io/acme/tools:*"]
 memory = "2g"
 ```
-
-In `giles.toml`, the instance has only the address and the token. Giles refuses an instance that has
-both `address` and `config`, because the plugin's settings live on its own machine:
-
-```toml
-[environment.docker]
-description = "Disposable Linux containers for running code and building software."
-address = "https://builder.example.com:7443"
-auth = { bearer = { secret = "docker-remote" } }
-```
-
-Registry logins and environment variables stay on the machine that runs the plugin.
 
 ## Choose which images are allowed
 
