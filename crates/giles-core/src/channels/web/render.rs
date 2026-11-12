@@ -1,19 +1,25 @@
-//! HTML fragments of the chat pages: messages, attachments, approval prompts, the compose form,
-//! and the transcript history. Model output always goes through the sanitizing CommonMark
-//! renderer with only local images allowed (PLAN section 9).
+//! HTML fragments of the chat pages: messages, tool calls, attachments, approval prompts, the
+//! compose form, and the transcript history. Model output always goes through the sanitizing
+//! CommonMark renderer with only local images allowed (PLAN section 9); tool input and output are
+//! shown as escaped plain text.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 
 use askama::Template;
 use giles_plugin_sdk::render::{html, is_local_image};
-use giles_store::{ConversationMessage, Entry, InboxEntry, SessionId};
+use giles_store::{ConversationMessage, Entry, InboxEntry, SessionId, StoredMessageId};
 use giles_types::{Block, ChannelEvent, EventId, InboundMessage, MediaRef, Role, Timestamp};
+use serde_json::Value;
 use tracing::error;
 
 use super::hub::Live;
 use crate::agent_loop::history;
 use crate::core_tools::SEND_ATTACHMENT;
 use crate::media::{self, SessionMedia};
+
+/// How many of a tool's last output lines a tool call shows unfolded.
+pub(super) const TOOL_OUTPUT_LINES: usize = 6;
 
 /// Media types `/blobs/<id>` shows inline (and the page shows as `<img>`): raster images only, the
 /// same set the renderer accepts as `data:` images. Everything else is a download.
@@ -201,13 +207,177 @@ pub(super) fn out_of_band(fragment: &str) -> String {
     format!(r#"{tag} hx-swap-oob="true"{rest}"#)
 }
 
+/// The DOM id of the tool call whose result is transcript row `slot`, the same live and in the
+/// history.
+pub(super) fn tool_element(slot: impl std::fmt::Display) -> String {
+    format!("t-{slot}")
+}
+
+/// A tool call's input as text: an object's fields one per line (`key: value`, a string value
+/// as is, anything else as JSON), any other value as JSON. Empty for no arguments.
+pub(super) fn tool_input(input: &Value) -> String {
+    let mut out = String::new();
+    match input {
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(key);
+                out.push_str(": ");
+                match value {
+                    Value::String(text) => out.push_str(text),
+                    other => {
+                        let _ = write!(out, "{other}");
+                    }
+                }
+            }
+        }
+        Value::Null => {}
+        Value::String(text) => out.push_str(text),
+        other => {
+            let _ = write!(out, "{other}");
+        }
+    }
+    out
+}
+
+/// Where a tool call is.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum ToolState<'a> {
+    /// Running: no result yet.
+    Running,
+    /// The turn stopped before the result.
+    Stopped,
+    /// Its result: the `ToolResult` block's content.
+    Done {
+        content: &'a [Block],
+        is_error: bool,
+    },
+}
+
+/// Text shown in part: `shown`, and `folded` behind a disclosure labeled `label`.
+struct Folded<'a> {
+    shown: &'a str,
+    folded: Option<&'a str>,
+    label: String,
+}
+
+impl<'a> Folded<'a> {
+    fn whole(text: &'a str) -> Self {
+        Self {
+            shown: text,
+            folded: None,
+            label: String::new(),
+        }
+    }
+
+    /// The first line shown, the rest folded.
+    fn first_line(text: &'a str) -> Self {
+        let Some((first, rest)) = text.split_once('\n') else {
+            return Self::whole(text);
+        };
+        Self {
+            shown: first.strip_suffix('\r').unwrap_or(first),
+            folded: Some(rest),
+            label: lines_label(rest.lines().count(), "more"),
+        }
+    }
+
+    /// The last `n` lines shown (`n` > 0), the earlier ones folded.
+    fn last_lines(text: &'a str, n: usize) -> Self {
+        let Some((at, _)) = text.rmatch_indices('\n').nth(n - 1) else {
+            return Self::whole(text);
+        };
+        let earlier = text[..at].strip_suffix('\r').unwrap_or(&text[..at]);
+        Self {
+            shown: &text[at + 1..],
+            folded: Some(earlier),
+            label: lines_label(earlier.lines().count(), "earlier"),
+        }
+    }
+}
+
+/// "Show 1 more line", "Show 3 earlier lines".
+fn lines_label(count: usize, which: &str) -> String {
+    let s = if count == 1 { "" } else { "s" };
+    format!("Show {count} {which} line{s}")
+}
+
+#[derive(Template)]
+#[template(path = "web/tool_call.html")]
+struct ToolCallFragment<'a> {
+    id: &'a str,
+    name: &'a str,
+    input: Option<Folded<'a>>,
+    output: Option<Folded<'a>>,
+    attachments: String,
+    running: bool,
+    error: bool,
+    status: Option<&'static str>,
+}
+
+/// Tool call element `id` ([`tool_element`]): the tool's name, its `input` ([`tool_input`]) with
+/// only the first line unfolded, and by `state` its output with only the last
+/// [`TOOL_OUTPUT_LINES`] lines unfolded, then the media it returned.
+pub(super) fn tool_call(id: &str, name: &str, input: &str, state: ToolState<'_>) -> String {
+    let input = input.trim_end();
+    let mut output = String::new();
+    let mut media = Vec::new();
+    let (running, error, status) = match state {
+        ToolState::Running => (true, false, Some("Running…")),
+        ToolState::Stopped => (false, false, Some("Stopped before the end.")),
+        ToolState::Done { content, is_error } => {
+            for (index, block) in content.iter().enumerate() {
+                match block {
+                    Block::Text { text } if is_reference_of(text, content.get(index + 1)) => {}
+                    Block::Text { text } => {
+                        if !output.is_empty() {
+                            output.push('\n');
+                        }
+                        output.push_str(text);
+                    }
+                    Block::Image { media: m }
+                    | Block::Audio { media: m }
+                    | Block::Document { media: m, .. } => media.push(m),
+                    _ => {}
+                }
+            }
+            let empty = output.trim_end().is_empty() && media.is_empty();
+            let status = if is_error {
+                Some("Failed.")
+            } else if empty {
+                Some("No output.")
+            } else {
+                None
+            };
+            (false, is_error, status)
+        }
+    };
+    let output = output.trim_end();
+    fragment(&ToolCallFragment {
+        id,
+        name,
+        input: (!input.is_empty()).then(|| Folded::first_line(input)),
+        output: (!output.is_empty()).then(|| Folded::last_lines(output, TOOL_OUTPUT_LINES)),
+        attachments: if media.is_empty() {
+            String::new()
+        } else {
+            attachments(&media)
+        },
+        running,
+        error,
+        status,
+    })
+}
+
 /// The text and media of a stored message as the chat shows it: text blocks joined by blank lines,
 /// and images and documents. A user message's time prefix (`[Thu 2026-10-22 14:03 PDT] `, added
 /// for the model by the agent loop) is left out, and so is each media reference stored before its
 /// media (`[media:<id> <name> <type>]`, [`media::attachment`]): the page shows the media itself.
 /// A `send_attachment` call that succeeded shows what it sent: its caption and its media
-/// ([`Sent`]). Other tool calls, tool results, reasoning, and provider data never reach the page
-/// (PLAN section 6.9). `None` if nothing is left to show.
+/// ([`Sent`]). Tool calls and their results are shown apart ([`history`]); reasoning and provider
+/// data never reach the page (PLAN section 6.9). `None` if nothing is left to show.
 fn visible<'a>(
     session: SessionId,
     role: Role,
@@ -307,29 +477,90 @@ fn is_reference_of(text: &str, next: Option<&Block>) -> bool {
     }
 }
 
-/// The stored transcript as message elements, with a marker where a new session (`/new`, idle
-/// reset) begins.
-pub(super) fn history(rows: &[ConversationMessage]) -> Vec<String> {
+/// The tool-result rows of a transcript, by session and `ToolUse` id: the row, and its result
+/// unless the slot is still empty.
+type ToolResults<'a> =
+    HashMap<(SessionId, &'a str), (StoredMessageId, Option<(&'a [Block], bool)>)>;
+
+fn tool_results(rows: &[ConversationMessage]) -> ToolResults<'_> {
+    let mut results = HashMap::new();
+    for row in rows {
+        match &row.message.entry {
+            Entry::EmptySlot { tool_use_id } => {
+                results.insert((row.session, tool_use_id.as_str()), (row.message.id, None));
+            }
+            Entry::Message(stored) => {
+                for block in &stored.content {
+                    if let Block::ToolResult {
+                        tool_use_id,
+                        content,
+                        is_error,
+                    } = block
+                    {
+                        results.insert(
+                            (row.session, tool_use_id.as_str()),
+                            (row.message.id, Some((content.as_slice(), *is_error))),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    results
+}
+
+/// The stored transcript as message and tool call elements, with a marker where a new session
+/// (`/new`, idle reset) begins. Each tool call follows its message's text, with its result (or
+/// as running, while its slot is empty); calls whose result row isn't loaded are left out, and
+/// so are the elements in `replayed`, which the page's event stream adds.
+pub(super) fn history(rows: &[ConversationMessage], replayed: &[String]) -> Vec<String> {
     let sent = Sent::new(rows);
+    let results = tool_results(rows);
     let mut items = Vec::new();
     let mut session = None;
     for row in rows {
         let Entry::Message(stored) = &row.message.entry else {
             continue;
         };
-        let Some((text, media)) = visible(row.session, stored.role, &stored.content, &sent) else {
+        let shown = visible(row.session, stored.role, &stored.content, &sent);
+        let calls: Vec<String> = stored
+            .content
+            .iter()
+            .filter_map(|block| {
+                let Block::ToolUse { id, name, input } = block else {
+                    return None;
+                };
+                let (slot, result) = results.get(&(row.session, id.as_str()))?;
+                let element = tool_element(slot);
+                if replayed.contains(&element) {
+                    return None;
+                }
+                let state = match result {
+                    Some((content, is_error)) => ToolState::Done {
+                        content,
+                        is_error: *is_error,
+                    },
+                    None => ToolState::Running,
+                };
+                Some(tool_call(&element, name, &tool_input(input), state))
+            })
+            .collect();
+        if shown.is_none() && calls.is_empty() {
             continue;
-        };
+        }
         if session.is_some_and(|s| s != row.session) {
             items.push(r#"<p class="session-break">New session</p>"#.to_owned());
         }
         session = Some(row.session);
-        let who = match stored.role {
-            Role::User => Who::User,
-            _ => Who::Assistant,
-        };
-        let id = format!("m-h{}", row.message.id);
-        items.push(message(&id, who, &body(&text, &media), State::Done));
+        if let Some((text, media)) = shown {
+            let who = match stored.role {
+                Role::User => Who::User,
+                _ => Who::Assistant,
+            };
+            let id = format!("m-h{}", row.message.id);
+            items.push(message(&id, who, &body(&text, &media), State::Done));
+        }
+        items.extend(calls);
     }
     items
 }
@@ -510,8 +741,16 @@ mod tests {
         Block::Text { text: t.into() }
     }
 
+    /// The id attribute of each element (the class of a session break).
+    fn ids(items: &[String]) -> Vec<&str> {
+        items
+            .iter()
+            .map(|item| item.split('"').nth(1).unwrap())
+            .collect()
+    }
+
     #[test]
-    fn history_shows_text_and_media_but_not_tool_traffic() {
+    fn history_shows_text_media_and_tool_calls_but_not_reasoning() {
         let rows = vec![
             row(1, 1, Role::User, vec![text("hello **there**")]),
             row(
@@ -540,7 +779,19 @@ mod tests {
                     is_error: false,
                 }],
             ),
-            row(1, 4, Role::Assistant, vec![text("done")]),
+            row(
+                1,
+                4,
+                Role::Assistant,
+                vec![
+                    text("checking"),
+                    Block::ToolUse {
+                        id: "t2".into(),
+                        name: "y".into(),
+                        input: serde_json::json!({}),
+                    },
+                ],
+            ),
             ConversationMessage {
                 session: SessionId::new(1),
                 message: StoredMessage {
@@ -560,17 +811,136 @@ mod tests {
                 }],
             ),
         ];
-        let items = history(&rows);
-        assert_eq!(items.len(), 4, "{items:#?}");
-        assert!(items[0].starts_with(r#"<article id="m-h1" class="msg user">"#));
+        let items = history(&rows, &[]);
+        assert_eq!(
+            ids(&items),
+            ["m-h1", "t-3", "m-h4", "t-5", "session-break", "m-h6"]
+        );
         assert!(items[0].contains("<strong>there</strong>"));
-        assert!(items[1].starts_with(r#"<article id="m-h4" class="msg assistant">"#));
-        assert_eq!(items[2], r#"<p class="session-break">New session</p>"#);
-        assert!(items[3].contains("<img src=\"/blobs/"), "{}", items[3]);
-        let all = items.concat();
-        for hidden in ["secret thoughts", "tool input", "tool output"] {
-            assert!(!all.contains(hidden), "{hidden}");
-        }
+        assert!(
+            items[1].contains("<pre>cmd: tool input</pre>") && items[1].contains("tool output"),
+            "{}",
+            items[1]
+        );
+        assert!(items[3].contains("Running"), "{}", items[3]);
+        assert!(items[5].contains("<img src=\"/blobs/"), "{}", items[5]);
+        assert!(!items.concat().contains("secret thoughts"));
+
+        // A call the event stream will add is left out.
+        let items = history(&rows, &["t-3".into()]);
+        assert_eq!(
+            ids(&items),
+            ["m-h1", "m-h4", "t-5", "session-break", "m-h6"]
+        );
+    }
+
+    #[test]
+    fn a_tool_call_shows_the_first_input_line_and_the_last_output_lines() {
+        let input = tool_input(&serde_json::json!({
+            "timeout": 30,
+            "command": "cargo test \\\n  --all\r\n<b>",
+        }));
+        assert_eq!(input, "command: cargo test \\\n  --all\r\n<b>\ntimeout: 30");
+        let output: String = (1..=10).map(|n| format!("line {n}\n")).collect();
+        let html = tool_call(
+            "t-1",
+            "shell__exec",
+            &input,
+            ToolState::Done {
+                content: &[text(&output)],
+                is_error: false,
+            },
+        );
+        assert!(
+            html.starts_with(r#"<article id="t-1" class="tool">"#),
+            "{html}"
+        );
+        assert!(html.contains("shell__exec"), "{html}");
+        assert!(html.contains(r"<pre>command: cargo test \</pre>"), "{html}");
+        assert!(
+            html.contains(
+                "<summary>Show 3 more lines</summary><pre>  --all\r\n&#60;b&#62;\ntimeout: 30</pre>"
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                "<summary>Show 4 earlier lines</summary><pre>line 1\nline 2\nline 3\nline 4</pre>"
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains("<pre>line 5\nline 6\nline 7\nline 8\nline 9\nline 10</pre>"),
+            "{html}"
+        );
+        assert!(!html.contains("msg-status"), "{html}");
+
+        // Short enough: nothing folded.
+        let html = tool_call(
+            "t-1",
+            "x",
+            "ls",
+            ToolState::Done {
+                content: &[text("a\nb\nc\nd\ne\nf\n")],
+                is_error: false,
+            },
+        );
+        assert!(!html.contains("<details>"), "{html}");
+        assert!(html.contains("<pre>a\nb\nc\nd\ne\nf</pre>"), "{html}");
+    }
+
+    #[test]
+    fn a_tool_call_shows_its_state() {
+        let running = tool_call("t-1", "x", "", ToolState::Running);
+        assert!(
+            running.starts_with(r#"<article id="t-1" class="tool live">"#),
+            "{running}"
+        );
+        assert!(running.contains("Running"), "{running}");
+        assert!(!running.contains("tool-input"), "no input: {running}");
+        let stopped = tool_call("t-1", "x", "", ToolState::Stopped);
+        assert!(stopped.contains("Stopped"), "{stopped}");
+        let failed = tool_call(
+            "t-1",
+            "x",
+            "",
+            ToolState::Done {
+                content: &[text("no such file")],
+                is_error: true,
+            },
+        );
+        assert!(failed.contains(r#"class="tool error""#), "{failed}");
+        assert!(
+            failed.contains("no such file") && failed.contains("Failed"),
+            "{failed}"
+        );
+        let empty = tool_call(
+            "t-1",
+            "x",
+            "",
+            ToolState::Done {
+                content: &[text("\n")],
+                is_error: false,
+            },
+        );
+        assert!(empty.contains("No output"), "{empty}");
+
+        // Media it returned is shown, without its reference.
+        let photo = media("image/png", Some("plot.png"));
+        let mut content = vec![text("saved")];
+        content.extend(crate::media::attachment(photo));
+        let html = tool_call(
+            "t-1",
+            "x",
+            "",
+            ToolState::Done {
+                content: &content,
+                is_error: false,
+            },
+        );
+        assert!(html.contains("<pre>saved</pre>"), "{html}");
+        assert!(html.contains("<img"), "{html}");
+        assert!(!html.contains("[media:"), "{html}");
     }
 
     #[test]
@@ -598,7 +968,7 @@ mod tests {
                 vec![text(&format!("{prefix} quoted"))],
             ),
         ];
-        let items = history(&rows);
+        let items = history(&rows, &[]);
         assert_eq!(items.len(), 3, "{items:#?}");
         assert!(items[0].contains("<p>hello</p>"), "{}", items[0]);
         assert!(!items[0].contains("PDT"), "{}", items[0]);
@@ -625,7 +995,7 @@ mod tests {
             // A reference not followed by its media is text the model wrote.
             row(1, 2, Role::Assistant, vec![text(&reference)]),
         ];
-        let items = history(&rows);
+        let items = history(&rows, &[]);
         assert_eq!(items.len(), 2, "{items:#?}");
         assert!(items[0].contains("<p>look</p>"), "{}", items[0]);
         assert!(items[0].contains("<img"), "{}", items[0]);
@@ -652,7 +1022,7 @@ mod tests {
             row(1, 1, Role::User, upload),
             row(1, 2, Role::Assistant, vec![send("t1")]),
             row(1, 3, Role::User, vec![result("t1", false)]),
-            // A failed send shows nothing.
+            // A failed send shows only the call.
             row(1, 4, Role::Assistant, vec![send("t2")]),
             row(1, 5, Role::User, vec![result("t2", true)]),
             // The same id in another session, failed there: the first session's success
@@ -660,9 +1030,11 @@ mod tests {
             row(2, 6, Role::Assistant, vec![send("t1")]),
             row(2, 7, Role::User, vec![result("t1", true)]),
         ];
-        let items = history(&rows);
-        assert_eq!(items.len(), 2, "{items:#?}");
-        assert!(items[1].starts_with(r#"<article id="m-h2" class="msg assistant">"#));
+        let items = history(&rows, &[]);
+        assert_eq!(
+            ids(&items),
+            ["m-h1", "m-h2", "t-3", "t-5", "session-break", "t-7"]
+        );
         assert!(items[1].contains("<strong>cat</strong>"), "{}", items[1]);
         assert!(items[1].contains("<img"), "{}", items[1]);
     }

@@ -14,7 +14,7 @@ model stops asking for tools. The session code that hands it turns is in
 | `ToolDispatcher`              | Runs one message's calls: `dispatch(ToolBatch) -> stream of (index, ToolOutput)` |
 | `PolicyDispatcher`            | The daemon's dispatcher: call-time checks, parallel runs, deadlines |
 | `CallPolicy`                  | A call's `parallel` and `deadline`, from its toolset or the core tool list |
-| `OutputSink`                  | Receives a turn's streamed events and finished messages            |
+| `OutputSink`                  | Receives a turn's streamed events, finished messages, and tool calls as they run |
 | `output::output_for`          | Picks a turn's sink: `ChannelOutput`, or none for an isolated job  |
 | `ChannelOutput`               | Sends assistant text through `Turn::reply`: `blocks` or `deltas`   |
 | `history::user_message`       | An inbound message's stored form, with its time prefix             |
@@ -439,12 +439,13 @@ and sends nothing. Otherwise `ChannelOutput` sends into the turn's conversation,
 registered for the instance right now declares `OutputMode::Deltas` and has a live-output hook; a
 `deltas` channel without one (or not registered yet) gets `blocks` output.
 
-Only `Text` blocks reach a channel: the sink follows `BlockStart`/`TextDelta`/`BlockStop` of text
-blocks and ignores reasoning, tool input, and every other event. Each text block is its own Markdown
-text: leading whitespace is dropped (a whitespace-only block sends nothing), and the `BlockStop`
-text is authoritative, so text the deltas missed is added then (deltas that don't match it are
-logged and left as sent). Sends stop once `Turn::cancel` fires, also mid-send; a failed send is
-logged and the message is stored either way.
+Of the response's blocks, only `Text` blocks reach a channel: the sink follows
+`BlockStart`/`TextDelta`/`BlockStop` of text blocks and ignores reasoning, tool input, and every
+other event. Each text block is its own Markdown text: leading whitespace is dropped (a
+whitespace-only block sends nothing), and the `BlockStop` text is authoritative, so text the deltas
+missed is added then (deltas that don't match it are logged and left as sent). Sends stop once
+`Turn::cancel` fires, also mid-send; a failed send is logged and the message is stored either way.
+Tool calls go out apart from the response, as they run (below).
 
 **`blocks`**: chunks go out through `Reply::send`, in order, as soon as they're complete. A chunk
 ends at a run of blank lines (whitespace only; `\n` or `\r\n`) outside a fenced code block, once the
@@ -473,6 +474,16 @@ message (`DeltaSink::start(conversation)`) at its first non-whitespace text, the
 `push`ed as it arrives. The writers are `finish`ed, in order, when the message is complete
 (`message_end`), so a live message is marked done only once the response is stored. If `start`
 fails, it's logged and that block goes out as `blocks`.
+
+**Tool calls** reach only a `deltas` channel whose hook implements `DeltaSink::tool_call` (the web
+channel). `run_tools` hands the sink each call before the batch is dispatched
+(`OutputSink::tool_started(slot, call)`), and the sink starts one writer per call with
+`LiveToolCall { id, name, input }`, where `id` is the result slot's row id, the key a page built
+from the transcript uses for the same call. Once a result is stored in its slot, `tool_finished`
+hands the writer the stored content (references included) and `is_error`. A writer dropped without a
+result (the turn was cancelled) shows the call as stopped. Calls that never run (`max_tokens`, the
+iteration cap) aren't shown live; their synthetic results show on the next page load. The stored
+content is cloned for a shown call only, since the store takes it by value.
 
 **Aborted responses** (`/stop`, shutdown, a provider error, or the sink dropped mid-response):
 nothing more goes out. In `blocks` mode the unsent text, even a complete paragraph still waiting for

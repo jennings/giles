@@ -313,7 +313,15 @@ async fn drive(agent_loop: &AgentLoop, turn: &Turn) -> Result<TurnOutcome, TurnE
         }
 
         let denied = match run_tools(
-            agent_loop, turn, &prompt, &context, &approvals, media, calls, &slots,
+            agent_loop,
+            turn,
+            &prompt,
+            &context,
+            &approvals,
+            media,
+            calls,
+            &slots,
+            output.as_mut(),
         )
         .await?
         {
@@ -433,10 +441,10 @@ enum BatchEnd {
 }
 
 /// Runs the calls of one assistant message, filling each slot as its result arrives (each media
-/// block of a result after its reference, [`media::with_references`]). The requester's new
-/// messages are only looked at here
-/// ([`Steering::peek`](crate::sessions::Steering::peek)); they join the turn at the boundary, so
-/// a turn stopped before then leaves them queued for the next one.
+/// block of a result after its reference, [`media::with_references`]) and handing `output` each
+/// call as it starts and its result once stored. The requester's new messages are only looked at
+/// here ([`Steering::peek`](crate::sessions::Steering::peek)); they join the turn at the
+/// boundary, so a turn stopped before then leaves them queued for the next one.
 ///
 /// - With `busy_mode = "steer"`, once the requester has a message queued the calls that haven't
 ///   started yet are skipped (the dispatcher's `skip` signal); running calls finish.
@@ -453,6 +461,7 @@ async fn run_tools(
     media: Arc<SessionMedia>,
     calls: Vec<ToolRequest>,
     slots: &[Slot],
+    output: &mut dyn OutputSink,
 ) -> Result<BatchEnd, TurnError> {
     debug_assert!(
         calls
@@ -466,7 +475,12 @@ async fn run_tools(
     let mut seen = newest(&peek_steering(turn).await);
     let mut denied = false;
     let mut filled = vec![false; calls.len()];
-    let mut outputs = agent_loop.dispatcher.dispatch(ToolBatch {
+    let shown: Vec<bool> = calls
+        .iter()
+        .zip(slots)
+        .map(|(call, slot)| output.tool_started(slot, call))
+        .collect();
+    let mut results = agent_loop.dispatcher.dispatch(ToolBatch {
         calls,
         tools: prompt.tools.clone(),
         context: context.call.clone(),
@@ -504,22 +518,24 @@ async fn run_tools(
                 seen = seen.max(newest(&queued));
                 continue;
             }
-            next = outputs.next() => next,
+            next = results.next() => next,
         };
-        let Some((index, output)) = next else {
+        let Some((index, result)) = next else {
             break;
         };
         match (slots.get(index), filled.get_mut(index)) {
             (Some(slot), Some(done)) if !*done => {
+                let content = media::with_references(result.content);
+                // Shown only once stored, so a page built from the transcript meanwhile catches
+                // up from the event.
+                let shown_content = shown[index].then(|| content.clone());
                 agent_loop
                     .store
-                    .fill_slot(
-                        slot.id,
-                        media::with_references(output.content),
-                        output.is_error,
-                        agent_loop.clock.now(),
-                    )
+                    .fill_slot(slot.id, content, result.is_error, agent_loop.clock.now())
                     .await?;
+                if let Some(content) = shown_content {
+                    output.tool_finished(slot, &content, result.is_error);
+                }
                 *done = true;
             }
             _ => warn!(
