@@ -479,6 +479,26 @@ than the admin service: there are no agent RPCs yet (PLAN section 8.7).
   `*` covers it and `github__create_*` doesn't) shows the box ticked and disabled, and `compose`
   leaves that box out. A posted `tool:` field that no box stands for is ignored. Saving rewrites
   `tools` only if the resulting list differs from the file's.
+- Environments are chosen with checkboxes too (`agents::environment_picker`), between Models and
+  Tools, on both forms. A box is posted as `environment:<instance>`, read from the same flattened
+  map as the tool boxes (`picked_environments`). The boxes are the instances of the running
+  configuration (`Config::environments`, so a rename shows at once), each with its `description`
+  escaped like any text. A name `agent.toml` lists that isn't configured gets a ticked box marked
+  "not configured", so the form never hides what the file says (as the Models text shows an unknown
+  provider): saving it is refused by `validate_agent` like a hand-written file, and unticking it
+  removes it. The field is left out only if no instance is configured and no name is ticked. The
+  posted names become `NewAgent::environments` / `AgentEdit::environments`, sorted
+  (`environment_picker::compose`).
+- Because the session offers the environment tools (`ENVIRONMENT_TOOLS`) only to an agent with an
+  environment, the forms carry two `notice` paragraphs under the Environments boxes:
+  `EnvironmentPicker::notes` decides which the server shows (an environment ticked but no
+  environment tool allowed, which counts a box that "Other tools" covers; an environment tool
+  allowed but no environment ticked), and the other has `hidden`. A tool box for an environment tool
+  carries `data-environment-tool`, and `assets/agent-form.js` re-decides on every change of a box
+  and every keystroke in "Other tools", matching the typed globs like `agent_loop::glob`. The notes
+  inform; nothing blocks a save, and the runtime gate (`SessionTools::for_agent`) is unchanged.
+  `CORE_TOOL_NOTES` ends the note of each environment tool with "Needs an environment.", which a
+  test checks.
 - The form asks for the name before the id. The id is derived from the name by
   `agents::agent_id_from_name`, a pure function: lowercase (`str::to_lowercase`), each space to `-`,
   every other character outside `a-z`, `0-9`, `-` removed. Nothing is trimmed or collapsed, ids are
@@ -488,8 +508,9 @@ than the admin service: there are no agent RPCs yet (PLAN section 8.7).
   from the name, so a form posted without scripts, or by `curl`, works, and an invalid form comes
   back showing the id that was used.
 - Live in the browser, `assets/agent-form.js` (embedded like the stylesheet, at
-  `/static/agent-form-<hash>.js`, loaded `defer` through the layout's `head` block because the CSP
-  is `script-src 'self'`) writes the same derivation into the Id as the owner types in the Name:
+  `/static/agent-form-<hash>.js`, loaded `defer` through the layout's `head` block of both forms
+  because the CSP is `script-src 'self'`) also keeps the environment notes current, and writes the
+  same derivation into the Id as the owner types in the Name:
   `text.toLowerCase().replace(/ /g, '-').replace(/[^a-z0-9-]/g, '')`. It follows while the Id is
   empty or equals what the name derives (also on a form shown again after an error); typing in the
   Id stops it, and emptying the Id resumes it. The expression is the Rust function written in
@@ -525,23 +546,25 @@ the path must be a configured agent, exactly (anything else, `..` included, is a
 no id field.
 
 - **What the form is rendered from.** The files on disk, not the running configuration: `agent.toml`
-  is read with `toml_edit` for `name`, `models`, `tools`, `ask`, `timezone` (a key that isn't a
-  string or list of strings shows empty), and `SOUL.md` (CRLF shown as LF). `AgentForm::version` is
-  the SHA-256 of both files (name, whether it exists, length, and bytes of each), carried in a
-  hidden field. `read_text` refuses what the form must not write through: a symbolic link (the
-  rename would replace the link), anything but a regular file, more than `MAX_EDIT_FILE_BYTES` (1
-  MiB), text that isn't UTF-8, and TOML that doesn't parse (`EditError::Unsupported`, a 409 page on
-  `GET`).
+  is read with `toml_edit` for `name`, `models`, `tools`, `ask`, `environments`, `timezone` (a key
+  that isn't a string or list of strings shows empty), and `SOUL.md` (CRLF shown as LF).
+  `AgentForm::version` is the SHA-256 of both files (name, whether it exists, length, and bytes of
+  each), carried in a hidden field. `read_text` refuses what the form must not write through: a
+  symbolic link (the rename would replace the link), anything but a regular file, more than
+  `MAX_EDIT_FILE_BYTES` (1 MiB), text that isn't UTF-8, and TOML that doesn't parse
+  (`EditError::Unsupported`, a 409 page on `GET`).
 - **`edited_toml`.** A pure function from the text and the edit to the new text, with `toml_edit`. A
   managed key whose value already equals the field is not touched (so an unchanged form gives the
   file back byte for byte, and the text is returned as is rather than re-serialized when nothing
   changed); a changed one gets a new value that copies the decor of the old one (the space and the
   comment after it), keeping its place; a missing one is appended to the top-level table
   (`toml_edit` prints key-values before sub-tables, so never inside `[[jobs]]`); an empty one
-  (`name`, `tools`, `ask`, `timezone`) is removed. `models` is always written, even empty, so
-  validation says "at least one model". Removing a key takes its leading comment with it, except at
-  the first key of the file (a header: kept) and up to the last blank line above the key (standalone
-  notes: kept); what is kept moves to the next key's decor.
+  (`name`, `tools`, `ask`, `environments`, `timezone`) is removed. `environments` is compared as a
+  set (`set_members`): the names that stay keep the file's order and new ones follow them, so a
+  hand-written order survives a save that changes nothing. `models` is always written, even empty,
+  so validation says "at least one model". Removing a key takes its leading comment with it, except
+  at the first key of the file (a header: kept) and up to the last blank line above the key
+  (standalone notes: kept); what is kept moves to the next key's decor.
 - **Line ends.** `toml_edit` reads every `\r\n` as `\n`, so `edited_toml` edits a file with CRLF
   line ends as LF and writes the result back with CRLF; the rest of the file keeps its line ends.
 - **`edit`** (under the manager's one lock, shared with creation and removal): reads the files and

@@ -76,6 +76,8 @@ pub struct NewAgent {
     pub tools: Vec<String>,
     /// Tool globs that need approval.
     pub ask: Vec<String>,
+    /// Environment instances the agent may use; empty for none.
+    pub environments: Vec<String>,
     /// An IANA time zone; empty for none.
     pub timezone: String,
     /// `SOUL.md`.
@@ -151,6 +153,8 @@ pub fn agent_toml(agent: &NewAgent) -> String {
         tools: &'a [String],
         #[serde(skip_serializing_if = "<[String]>::is_empty")]
         ask: &'a [String],
+        #[serde(skip_serializing_if = "<[String]>::is_empty")]
+        environments: &'a [String],
         #[serde(skip_serializing_if = "Option::is_none")]
         timezone: Option<&'a str>,
     }
@@ -162,6 +166,7 @@ pub fn agent_toml(agent: &NewAgent) -> String {
         models: &agent.models,
         tools: &agent.tools,
         ask: &agent.ask,
+        environments: &agent.environments,
         timezone: present(&agent.timezone),
     })
     .expect("strings and lists of strings always serialize")
@@ -396,12 +401,13 @@ mod tests {
         let parsed: toml::Table = toml::from_str(&source).unwrap();
         assert_eq!(parsed["name"].as_str(), Some("Bunter \"the\" Butler\n[x]"));
         assert_eq!(parsed["models"].as_array().unwrap().len(), 2, "{source}");
-        for key in ["tools", "ask", "timezone", "soul", "id"] {
+        for key in ["tools", "ask", "environments", "timezone", "soul", "id"] {
             assert!(!parsed.contains_key(key), "{key} in {source}");
         }
         let full = agent_toml(&NewAgent {
             tools: vec!["memory_add".into()],
             ask: vec!["github__*".into()],
+            environments: vec!["docker".into(), "box".into()],
             timezone: " Europe/London ".into(),
             name: "  ".into(),
             ..agent
@@ -409,6 +415,8 @@ mod tests {
         let parsed: toml::Table = toml::from_str(&full).unwrap();
         assert_eq!(parsed["tools"][0].as_str(), Some("memory_add"));
         assert_eq!(parsed["ask"][0].as_str(), Some("github__*"));
+        assert_eq!(parsed["environments"][0].as_str(), Some("docker"));
+        assert_eq!(parsed["environments"][1].as_str(), Some("box"));
         assert_eq!(parsed["timezone"].as_str(), Some("Europe/London"));
         assert!(!parsed.contains_key("name"), "{full}");
     }

@@ -14,30 +14,65 @@ use std::collections::BTreeSet;
 
 use crate::agent_loop::glob;
 use crate::config::Config;
-use crate::registry::prefixed_name;
+use crate::registry::{is_environment_tool, prefixed_name};
 
 /// What each core tool does, for the form. Sorted like
-/// [`CORE_TOOLS`](crate::registry::CORE_TOOLS), which a test checks.
+/// [`CORE_TOOLS`](crate::registry::CORE_TOOLS), which a test checks. The environment tools
+/// ([`ENVIRONMENT_TOOLS`](crate::registry::ENVIRONMENT_TOOLS)) end with what they need: an agent
+/// is offered them only with an environment (a test checks that each says so).
 const CORE_TOOL_NOTES: [(&str, &str); 19] = [
-    ("bash", "Run a shell command in its environment."),
-    ("edit", "Replace text in a file in its environment."),
-    ("environment_create", "Create its environment workspace."),
-    ("environment_delete", "Delete its environment workspace."),
-    ("environment_plugins", "List the environments it can use."),
-    ("environment_reset", "Replace its workspace with a new one."),
-    ("environment_status", "Show its environment workspace."),
-    ("find", "Find files in its environment."),
-    ("grep", "Search file contents in its environment."),
+    (
+        "bash",
+        "Run a shell command in its environment. Needs an environment.",
+    ),
+    (
+        "edit",
+        "Replace text in a file in its environment. Needs an environment.",
+    ),
+    (
+        "environment_create",
+        "Create its environment workspace. Needs an environment.",
+    ),
+    (
+        "environment_delete",
+        "Delete its environment workspace. Needs an environment.",
+    ),
+    (
+        "environment_plugins",
+        "List the environments it can use. Needs an environment.",
+    ),
+    (
+        "environment_reset",
+        "Replace its workspace with a new one. Needs an environment.",
+    ),
+    (
+        "environment_status",
+        "Show its environment workspace. Needs an environment.",
+    ),
+    (
+        "find",
+        "Find files in its environment. Needs an environment.",
+    ),
+    (
+        "grep",
+        "Search file contents in its environment. Needs an environment.",
+    ),
     ("load_skill", "Load a skill's instructions."),
     ("memory_add", "Remember something new."),
     ("memory_edit", "Change a memory."),
     ("memory_forget", "Delete a memory."),
     ("memory_recall", "Search the memories it can see."),
     ("memory_search", "Search the text of earlier conversations."),
-    ("read", "Read a file in its environment."),
+    (
+        "read",
+        "Read a file in its environment. Needs an environment.",
+    ),
     ("schedule", "Schedule prompts for itself to run later."),
     ("send_attachment", "Send a file to the conversation."),
-    ("write", "Write a file in its environment."),
+    (
+        "write",
+        "Write a file in its environment. Needs an environment.",
+    ),
 ];
 
 /// What a toolset's checkbox says about it.
@@ -77,6 +112,12 @@ impl ToolChoice {
             ToolState::Via(glob) => Some(glob),
             _ => None,
         }
+    }
+
+    /// Whether the tool works only in an environment: an agent without one isn't offered it (see
+    /// [`EnvironmentPicker`](super::EnvironmentPicker)).
+    pub fn needs_environment(&self) -> bool {
+        is_environment_tool(&self.value)
     }
 }
 
@@ -204,6 +245,25 @@ mod tests {
     fn every_core_tool_has_one_note_in_order() {
         let names: Vec<&str> = CORE_TOOL_NOTES.iter().map(|(name, _)| *name).collect();
         assert_eq!(names, CORE_TOOLS);
+    }
+
+    #[test]
+    fn the_environment_tools_say_they_need_an_environment_and_no_other_tool_does() {
+        for (name, note) in CORE_TOOL_NOTES {
+            assert_eq!(
+                note.ends_with(" Needs an environment."),
+                is_environment_tool(name),
+                "{name}: {note}"
+            );
+        }
+        let picker = ToolPicker::new(&config(&[]), &set(&[]), &[]);
+        let needing: Vec<&str> = picker
+            .core
+            .iter()
+            .filter(|tool| tool.needs_environment())
+            .map(|tool| tool.value.as_str())
+            .collect();
+        assert_eq!(needing, crate::registry::ENVIRONMENT_TOOLS);
     }
 
     #[test]

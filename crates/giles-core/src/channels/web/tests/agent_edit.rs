@@ -9,7 +9,7 @@ use super::*;
 
 /// What `jeeves`' `agent.toml` is made to say first: comments, a multi-line list, keys the form
 /// doesn't manage, and the job whose prompt file the test configuration has.
-const JEEVES: &str = r#"# Jeeves, the household agent.
+pub(super) const JEEVES: &str = r#"# Jeeves, the household agent.
 name = "Jeeves"   # shown in chats
 models = [
     "fake/test-model",   # first choice
@@ -27,16 +27,16 @@ prompt_file = "prompts/morning.md"
 "#;
 
 impl Env {
-    fn jeeves_dir(&self) -> std::path::PathBuf {
+    pub(super) fn jeeves_dir(&self) -> std::path::PathBuf {
         self.root().agents_dir().join("jeeves")
     }
 
-    fn read_jeeves(&self, file: &str) -> String {
+    pub(super) fn read_jeeves(&self, file: &str) -> String {
         std::fs::read_to_string(self.jeeves_dir().join(file)).unwrap()
     }
 
     /// Makes `jeeves`' files the commented ones above, and a `SOUL.md`.
-    fn hand_write_jeeves(&self) {
+    pub(super) fn hand_write_jeeves(&self) {
         std::fs::write(self.jeeves_dir().join("agent.toml"), JEEVES).unwrap();
         std::fs::write(
             self.jeeves_dir().join("SOUL.md"),
@@ -46,7 +46,11 @@ impl Env {
     }
 
     /// The edit form of `agent`, as the owner gets it: the status, the page.
-    async fn edit_page(&self, manager: &Arc<AgentManager>, agent: &str) -> (StatusCode, String) {
+    pub(super) async fn edit_page(
+        &self,
+        manager: &Arc<AgentManager>,
+        agent: &str,
+    ) -> (StatusCode, String) {
         let (status, html, _) = self
             .agents_call(
                 manager,
@@ -59,7 +63,7 @@ impl Env {
     }
 
     /// Posts `fields` to the edit form of `agent` as the owner.
-    async fn edit_post(
+    pub(super) async fn edit_post(
         &self,
         manager: &Arc<AgentManager>,
         agent: &str,
@@ -76,7 +80,7 @@ impl Env {
 }
 
 /// The `version` a rendered edit form carries.
-fn version_of(html: &str) -> String {
+pub(super) fn version_of(html: &str) -> String {
     let marker = r#"name="version" value=""#;
     let start = html
         .find(marker)
@@ -86,7 +90,7 @@ fn version_of(html: &str) -> String {
 }
 
 /// A form body for `jeeves` as the form posts it (everything but the `csrf`).
-fn jeeves_fields(version: &str, name: &str, models: &str, rest: &str) -> String {
+pub(super) fn jeeves_fields(version: &str, name: &str, models: &str, rest: &str) -> String {
     format!("version={version}&name={name}&models={models}{rest}")
 }
 

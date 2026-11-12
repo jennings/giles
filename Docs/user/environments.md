@@ -11,7 +11,13 @@ create it.
 
 ## Let an agent use an environment
 
-Name the environments an agent may use in its `agent.toml`, and allow the tools that work in them:
+Open the agent's **Edit** page in the [web interface](web.md#agents), tick the environments it may
+use under **Environments**, and tick the tools that work in them under **Tools**: `bash`, `read`,
+`write`, `edit`, `find`, `grep`, and the four `environment_*` tools. The **New agent** page has the
+same fields. If you tick an environment but none of its tools, or the tools but no environment, the
+page tells you.
+
+The form writes the same settings you can put in the agent's `agent.toml` yourself:
 
 ```toml
 environments = ["docker"]
