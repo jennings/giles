@@ -2056,6 +2056,129 @@ async fn the_agent_loop_streams_a_reply_live_to_the_page() {
     sessions.closed().await;
 }
 
+/// A provider that asks for one call to a tool the agent doesn't have, then answers.
+struct ToolCallingProvider;
+
+#[async_trait]
+impl giles_types::Provider for ToolCallingProvider {
+    async fn list_models(&self) -> giles_types::Result<Vec<giles_types::ModelInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn complete(
+        &self,
+        req: giles_types::CompletionRequest,
+    ) -> giles_types::Result<BoxStream<'static, giles_types::Result<giles_types::CompletionEvent>>>
+    {
+        use giles_types::{CompletionEvent, StopReason, Usage};
+        let answered = req
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .any(|b| matches!(b, Block::ToolResult { .. }));
+        let (block, stop) = if answered {
+            (Block::text("Done."), StopReason::EndTurn)
+        } else {
+            (
+                Block::ToolUse {
+                    id: "call-1".into(),
+                    name: "shell__exec".into(),
+                    input: serde_json::json!({"command": "ls\n-la"}),
+                },
+                StopReason::ToolUse,
+            )
+        };
+        let events = [
+            CompletionEvent::BlockStart {
+                index: 0,
+                kind: block.kind(),
+                tool: None,
+            },
+            CompletionEvent::BlockStop { index: 0, block },
+            CompletionEvent::Usage(Usage::default()),
+            CompletionEvent::Stop(stop),
+        ];
+        Ok(futures::stream::iter(events).map(Ok).boxed())
+    }
+}
+
+/// A turn's tool call reaches the open page as it starts, then its result; a reload shows it
+/// once, from the transcript.
+#[tokio::test]
+async fn the_agent_loop_shows_tool_calls_on_the_page() {
+    let (env, sessions) = daemon(Arc::new(ToolCallingProvider)).await;
+    let mut sse = Sse::open(&env, &format!("/chats/{}/events", chat()), &[]).await;
+    let response = env
+        .htmx_post(&format!("/chats/{}/messages", chat()), "text=ping")
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(sse.next().await.data.contains("<p>ping</p>"));
+
+    let started = tokio::time::timeout(WAIT, sse.next()).await.unwrap().data;
+    assert!(started.starts_with(r#"<article id="t-"#), "{started}");
+    assert!(started.contains(r#"class="tool live""#), "{started}");
+    assert!(started.contains("shell__exec"), "{started}");
+    assert!(started.contains("<pre>command: ls</pre>"), "{started}");
+    assert!(
+        started.contains("<summary>Show 1 more line</summary><pre>-la</pre>"),
+        "{started}"
+    );
+    let element = started.split('"').nth(1).unwrap().to_owned();
+
+    let ended = tokio::time::timeout(WAIT, sse.next()).await.unwrap().data;
+    assert!(
+        ended.starts_with(&format!(
+            r#"<article hx-swap-oob="true" id="{element}" class="tool error">"#
+        )),
+        "{ended}"
+    );
+    assert!(ended.contains("Failed"), "{ended}");
+
+    let reply = tokio::time::timeout(WAIT, sse.next()).await.unwrap().data;
+    assert!(reply.contains("msg assistant"), "{reply}");
+    loop {
+        let event = tokio::time::timeout(WAIT, sse.next()).await.unwrap().data;
+        if event.contains("<p>Done.</p>") && !event.contains("Writing") {
+            break;
+        }
+    }
+
+    let page = body_text(env.get(&format!("/chats/{}", chat())).await).await;
+    assert_eq!(
+        page.matches(&format!(r#"id="{element}""#)).count(),
+        1,
+        "{page}"
+    );
+    let shown = page.split(&format!(r#"id="{element}""#)).nth(1).unwrap();
+    assert!(shown.starts_with(r#" class="tool error">"#), "{page}");
+    assert!(page.find(&element) < page.find("<p>Done.</p>"), "{page}");
+
+    env.shutdown.cancel();
+    sessions.closed().await;
+}
+
+#[tokio::test]
+async fn a_tool_call_dropped_without_its_result_shows_as_stopped() {
+    let env = env().await;
+    let mut sse = Sse::open(&env, &format!("/chats/{}/events", chat()), &[]).await;
+    let sink = env.channel.deltas().unwrap();
+    let input = serde_json::json!({});
+    let call = giles_types::LiveToolCall {
+        id: "7",
+        name: "slow",
+        input: &input,
+    };
+    let writer = sink.tool_call(&chat(), call).unwrap();
+    assert!(sse.next().await.data.contains("Running"));
+    drop(writer);
+    let stopped = sse.next().await.data;
+    assert!(
+        stopped.starts_with(r#"<article hx-swap-oob="true" id="t-7" class="tool">"#),
+        "{stopped}"
+    );
+    assert!(stopped.contains("Stopped"), "{stopped}");
+}
+
 /// The owner may start a chat with any configured agent; the chat keeps it.
 #[tokio::test]
 async fn a_chat_can_be_started_with_any_agent_and_keeps_it() {

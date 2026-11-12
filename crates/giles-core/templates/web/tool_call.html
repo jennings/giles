@@ -1,0 +1,23 @@
+<article id="{{ id }}" class="tool{% if running %} live{% endif %}{% if error %} error{% endif %}">
+<p class="tool-name">{{ name }}</p>
+{%- if let Some(input) = input %}
+<div class="tool-input">
+<pre>{{ input.shown }}</pre>
+{%- if let Some(rest) = input.folded %}
+<details><summary>{{ input.label }}</summary><pre>{{ rest }}</pre></details>
+{%- endif %}
+</div>
+{%- endif %}
+{%- if let Some(output) = output %}
+<div class="tool-output">
+{%- if let Some(earlier) = output.folded %}
+<details><summary>{{ output.label }}</summary><pre>{{ earlier }}</pre></details>
+{%- endif %}
+<pre>{{ output.shown }}</pre>
+</div>
+{%- endif %}
+{{- attachments|safe -}}
+{%- if let Some(status) = status %}
+<p class="msg-status">{{ status }}</p>
+{%- endif %}
+</article>

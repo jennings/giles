@@ -142,6 +142,60 @@ button,
   align-self: center;
 }
 
+/* A tool call: its name, input (first line), and output (last lines). */
+.tool {
+  align-self: flex-start;
+  box-sizing: border-box;
+  width: 85%;
+  padding: 0.2rem 0.8rem;
+  border-left: 3px solid color-mix(in srgb, currentColor 30%, transparent);
+  font-size: 0.9em;
+}
+
+.tool.error {
+  border-left-color: color-mix(in srgb, #ef4444 70%, transparent);
+}
+
+.tool-name {
+  margin: 0.2rem 0;
+  font-family: ui-monospace, monospace;
+  font-weight: bold;
+}
+
+.tool pre {
+  margin: 0;
+  padding: 0.1rem 0.5rem;
+  overflow-x: auto;
+  background: color-mix(in srgb, currentColor 7%, transparent);
+}
+
+.tool-input,
+.tool-output {
+  margin: 0.3rem 0;
+}
+
+.tool-output pre {
+  background: color-mix(in srgb, currentColor 4%, transparent);
+}
+
+.tool summary {
+  padding: 0 0.5rem;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.tool .msg-status {
+  margin: 0.2rem 0;
+}
+
+.tool.live .msg-status {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.tool img {
+  max-width: 100%;
+}
+
 .approval {
   align-self: flex-start;
   max-width: 85%;
