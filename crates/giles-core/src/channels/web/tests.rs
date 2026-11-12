@@ -1925,10 +1925,10 @@ impl giles_types::Provider for SlowProvider {
     }
 }
 
-/// The daemon's wiring (runtime, agent loop, sessions, web app) with a fake provider: a post
-/// becomes a turn whose streamed text reaches the open page live, then the transcript.
-#[tokio::test]
-async fn the_agent_loop_streams_a_reply_live_to_the_page() {
+/// The daemon's wiring (runtime, agent loop, sessions, web app) with `provider` as the model of
+/// the only agent, which every message is routed to. Cancel `env.shutdown` and wait for the
+/// sessions to close at the end.
+async fn daemon(provider: Arc<dyn giles_types::Provider>) -> (Env, crate::sessions::Sessions) {
     let dir = tempfile::tempdir().unwrap();
     let root = crate::paths::DataRoot::new(dir.path(), &dir.path().join("tmp")).unwrap();
     root.create_layout().unwrap();
@@ -1963,7 +1963,7 @@ async fn the_agent_loop_streams_a_reply_live_to_the_page() {
         .unwrap();
     runtime
         .registry
-        .register_provider(&InstanceName::new("fake").unwrap(), Arc::new(SlowProvider))
+        .register_provider(&InstanceName::new("fake").unwrap(), provider)
         .unwrap();
     let shutdown = CancellationToken::new();
     let approvals = Arc::new(crate::approvals::ApprovalBoard::default());
@@ -1991,7 +1991,13 @@ async fn the_agent_loop_streams_a_reply_live_to_the_page() {
         shutdown,
         _dir: dir,
     };
+    (env, sessions)
+}
 
+/// A post becomes a turn whose streamed text reaches the open page live, then the transcript.
+#[tokio::test]
+async fn the_agent_loop_streams_a_reply_live_to_the_page() {
+    let (env, sessions) = daemon(Arc::new(SlowProvider)).await;
     let mut sse = Sse::open(&env, &format!("/chats/{}/events", chat()), &[]).await;
     let response = env
         .htmx_post(&format!("/chats/{}/messages", chat()), "text=ping")
