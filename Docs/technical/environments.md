@@ -34,8 +34,10 @@ digits) and the plugin labels its resources with it, so reconciliation needs no 
 `deleted_at` and `delete_reason` are set on `deleting` and `deleted` rows. The reasons
 (`DeleteReason`): `user_reset`, `model_reset`, `model_delete`, `inactive` (the sweep),
 `job_run_ended`, `removed_outside_giles` (reconciliation, or a call that found the workspace
-missing), `chat_archived` (reserved for the chat-archive hook), and `creation_failed`. A failed
-creation isn't reported to the model: it saw the error.
+missing), `chat_archived` (reserved for the chat-archive hook), `creation_failed`, and `operator`
+(deleted on the web UI's workspaces page). A failed creation isn't reported to the model: it saw the
+error. An operator's delete is: `DeleteReason::Operator` reads "an operator deleted it" in the
+model's error. (Migration 0006 added the reason; the table's `CHECK` had to be rebuilt.)
 
 ## Calls
 
@@ -61,6 +63,23 @@ creation isn't reported to the model: it saw the error.
   when the workspace was started or recreated. The core tools call it before each workspace tool
   call. If the plugin says the workspace doesn't exist, the row becomes `deleted`
   (`removed_outside_giles`) and the call fails with `WorkspaceError::Gone`.
+- The operator calls, in `workspaces/manage.rs`, for
+  [the web UI's workspaces page](web-channel.md#workspaces-page): `overview()`, `stop_by_id(id)`,
+  `delete_by_id(id)`, `managed_workspace(id)`, and `in_use(id)`. They act on `active` workspaces by
+  id and ignore leases, because an operator may stop or delete a workspace a running turn is using
+  (the page asks first). `stop_by_id` calls `StopWorkspace` and touches nothing else. `delete_by_id`
+  takes the exclusive hold if no turn has a lease (so the sweep stays away), then, like `delete`,
+  frees the slot at once with `operator`, asks the plugin to stop the workspace, which ends the
+  turn's running command, and to delete it. A plugin that is unreachable leaves the row `deleting`.
+  The turn's next `open` finds no `active` row and fails with `NoWorkspace`, so the model gets the
+  deleted-workspace error with the operator reason. A stopped workspace is started by the turn's
+  next `open`, which notes it to the model as for any stop. `overview()` reads every row, asks every
+  connected plugin for `ListWorkspaces` at the same time without caching, and joins them: a row's
+  `Live` is `Known` (the plugin's `Workspace`, with disk use and `details`), `Missing` (the plugin
+  answered without it), or `Unknown` (the plugin is down or failed, which also gives its environment
+  a `problem` for the page). `in_use` is whether the workspace's lock has a reader. It lists only
+  `creating` and `active` rows; deleted rows and workspaces the plugin holds without a row aren't
+  shown (reconciliation deals with them).
 - `recover()`: called once at startup. A `creating` row means the previous process died while
   creating, and an `active` job row means its run died with it; both become `deleting`.
 

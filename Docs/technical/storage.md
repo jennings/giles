@@ -137,7 +137,7 @@ rules apply, and `before_migrate` receives that file's plan.
 - Row ids are opaque newtypes (`SessionId`, ...) over SQLite rowids.
 - Agent, user, channel instance, and conversation ids are stored as their string forms.
 
-## Schema (version 5)
+## Schema (version 6)
 
 The files in `crates/giles-store/src/migrations/` are the authority (`0001_initial.sql` has every
 table but `blobs`, `routes`, `toolsets`, and `workspaces`, which `0002_blobs.sql`,
@@ -558,6 +558,7 @@ model can be told when and why, and are pruned after the instance's `delete_afte
 | `workspace_mark_gone(id, reason, now)`       | `active` straight to `deleted`: the environment no longer has it.     |
 | `workspaces_fail_creating(until, now)`       | `creating` rows inserted at or before `until` become `deleting` (`creation_failed`). |
 | `workspaces_end_job_runs(now)`               | Every `active` job-owned row becomes `deleting` (`job_run_ended`): at startup no run is alive. |
+| `workspaces_all()`                           | Every row of every instance, in every state, oldest first: what the workspaces page shows. |
 | `workspaces_prune(environment, before)`      | Removes `deleted` rows of the instance deleted before `before`.       |
 | `workspace_owner_activity(owner)`            | A conversation's newest message across every session of its key, ended ones included (a session's start if it has none); `None` for a job. |
 

@@ -355,3 +355,31 @@ lists those globs. Rewrite them, for example to `github__*`, and try again.
 
 You can't rename a server that you configure in `giles.toml` here. Stop Giles and run
 [`giles toolset rename`](cli.md#rename-a-toolset) for that.
+
+## Workspaces
+
+**Workspaces** in the admin menu lists the [workspaces](environments.md) your agents have, so you
+can see what they use and stop or delete one. Only the owner can open it.
+
+Each workspace shows:
+
+- **Environment** and **Owner**: the agent and the conversation, which links to the web chat when it
+  is one, or the job run.
+- **Created** and **Last used**.
+- **In use**: whether a running turn is using it now.
+- The state (running or stopped), **Disk used**, and the environment's **Description**,
+  **Working directory**, and **Details**. For the [Docker environment](docker-environment.md) the
+  details are the image, its digest, the container, the volume, and the limits.
+
+The environments at the top show the free space where their workspaces live. If an environment isn't
+connected or fails when the page asks it, the page names it, and what comes from it shows as
+unknown. Reload the page to ask again.
+
+**Stop** stops the workspace and keeps its files. The agent's next command starts it again and tells
+the agent that it was stopped. If a turn is using the workspace, Giles asks first, because stopping
+ends the command the turn is running and its background processes.
+
+**Delete** opens a page that says what deleting does. Press **Delete workspace** to remove the
+workspace and everything in it. If a turn is using the workspace, the page says so: deleting stops
+the turn's command and then deletes the workspace. The agent's next workspace call says that an
+operator deleted the workspace, and the agent can create another.

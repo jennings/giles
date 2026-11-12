@@ -22,6 +22,7 @@ mod qr;
 mod render;
 mod routes;
 mod toolsets;
+mod workspaces;
 
 #[cfg(test)]
 mod tests;

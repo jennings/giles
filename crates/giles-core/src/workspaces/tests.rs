@@ -8,7 +8,7 @@ use std::time::Duration;
 use giles_store::{SessionKind, Store};
 use giles_types::{
     AgentId, Block, ConversationId, EnvironmentInfo, Error, Message, MessageMeta, Role, Timestamp,
-    WorkspaceId,
+    WorkspaceDetail, WorkspaceId,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -1090,4 +1090,250 @@ async fn options_round_trip_through_the_table_as_given() {
         .await
         .unwrap();
     assert_eq!(h.record(&record.id).await.options, options);
+}
+
+// -- The operator's view: overview, stop, delete --
+
+#[tokio::test]
+async fn the_overview_joins_the_rows_with_what_the_plugin_says_and_who_holds_a_lease() {
+    let h = Harness::new().await;
+    let free = h.create(&chat("free")).await;
+    let busy = h.create(&chat("busy")).await;
+    h.fake.report_space(Some(5 << 30), Some(4096));
+    let slot = LeaseSlot::default();
+    h.workspaces.open(&busy.owner, &slot).await.unwrap();
+
+    let overview = h.workspaces.overview().await.unwrap();
+    let rows: Vec<_> = overview
+        .workspaces
+        .iter()
+        .map(|w| (w.record.id.clone(), w.in_use))
+        .collect();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.contains(&(busy.id.clone(), true)), "{rows:?}");
+    assert!(rows.contains(&(free.id.clone(), false)), "{rows:?}");
+    let live = overview
+        .workspaces
+        .iter()
+        .find(|w| w.record.id == free.id)
+        .unwrap();
+    let Live::Known(known) = &live.live else {
+        panic!("{:?}", live.live);
+    };
+    assert_eq!(known.disk_used_bytes, Some(4096));
+    assert_eq!(known.details, vec![WorkspaceDetail::new("Box", "fake")]);
+    let environment = overview
+        .environments
+        .iter()
+        .find(|e| e.name == "box")
+        .unwrap();
+    assert_eq!(environment.free_bytes, Some(5 << 30));
+    assert_eq!(environment.problem, None);
+
+    // The lease ends with the turn.
+    drop(slot);
+    let overview = h.workspaces.overview().await.unwrap();
+    assert!(overview.workspaces.iter().all(|w| !w.in_use));
+}
+
+#[tokio::test]
+async fn the_overview_says_unknown_for_an_environment_that_is_down_or_failing() {
+    let h = Harness::new().await;
+    let record = h.create(&chat("c1")).await;
+
+    h.fake.fail_lists(true);
+    let overview = h.workspaces.overview().await.unwrap();
+    assert_eq!(overview.workspaces[0].live, Live::Unknown);
+    let problem = overview
+        .environments
+        .iter()
+        .find(|e| e.name == "box")
+        .unwrap()
+        .problem
+        .clone()
+        .unwrap();
+    assert!(problem.contains("failed to list"), "{problem}");
+    h.fake.fail_lists(false);
+
+    h.disconnect();
+    let overview = h.workspaces.overview().await.unwrap();
+    assert_eq!(overview.workspaces[0].live, Live::Unknown);
+    let problems: Vec<_> = overview
+        .environments
+        .iter()
+        .map(|e| (e.name.as_str(), e.problem.as_deref()))
+        .collect();
+    assert!(
+        problems.contains(&("box", Some("is not connected right now"))),
+        "{problems:?}"
+    );
+    assert!(
+        problems.contains(&("far", Some("is not connected right now"))),
+        "{problems:?}"
+    );
+
+    // What the plugin lacks is told apart from not knowing.
+    h.connect();
+    h.fake.remove(&record.id);
+    let overview = h.workspaces.overview().await.unwrap();
+    assert_eq!(overview.workspaces[0].live, Live::Missing);
+}
+
+#[tokio::test]
+async fn an_operator_stop_stops_the_workspace_and_changes_nothing_else() {
+    let h = Harness::new().await;
+    let owner = chat("c1");
+    let record = h.create(&owner).await;
+    h.clock.advance(HOUR);
+
+    h.workspaces.stop_by_id(&record.id).await.unwrap();
+    assert_eq!(h.fake.running(&record.id), Some(false));
+    assert_eq!(h.record(&record.id).await, record, "the row is untouched");
+
+    // The next call starts it again.
+    let opened = h
+        .workspaces
+        .open(&owner, &LeaseSlot::default())
+        .await
+        .unwrap();
+    assert!(opened.notice.unwrap().contains("stopped"));
+    assert_eq!(h.fake.running(&record.id), Some(true));
+}
+
+#[tokio::test]
+async fn stopping_a_workspace_a_turn_is_using_stops_it_under_the_turn() {
+    let h = Harness::new().await;
+    let owner = chat("c1");
+    let record = h.create(&owner).await;
+    let slot = LeaseSlot::default();
+    h.workspaces.open(&owner, &slot).await.unwrap();
+    assert!(h.workspaces.in_use(&record.id));
+
+    h.workspaces.stop_by_id(&record.id).await.unwrap();
+    assert_eq!(h.fake.running(&record.id), Some(false));
+    // The turn's next call starts it again, with the lease it already holds.
+    let opened = h.workspaces.open(&owner, &slot).await.unwrap();
+    assert!(opened.notice.is_some());
+    assert_eq!(h.fake.running(&record.id), Some(true));
+}
+
+#[tokio::test]
+async fn stopping_needs_a_connected_active_workspace() {
+    let h = Harness::new().await;
+    let record = h.create(&chat("c1")).await;
+    let missing = WorkspaceId::new("ws-nope").unwrap();
+    assert!(matches!(
+        h.workspaces.stop_by_id(&missing).await,
+        Err(ManageError::NotFound)
+    ));
+    h.disconnect();
+    assert!(matches!(
+        h.workspaces.stop_by_id(&record.id).await,
+        Err(ManageError::Unreachable { .. })
+    ));
+    h.connect();
+    h.workspaces.delete_by_id(&record.id).await.unwrap();
+    assert!(matches!(
+        h.workspaces.stop_by_id(&record.id).await,
+        Err(ManageError::NotFound)
+    ));
+}
+
+#[tokio::test]
+async fn an_operator_delete_uses_the_operator_reason_and_frees_the_owner() {
+    let h = Harness::new().await;
+    let owner = chat("c1");
+    let record = h.create(&owner).await;
+
+    let deleted = h.workspaces.delete_by_id(&record.id).await.unwrap();
+    assert_eq!(deleted.state, WorkspaceState::Deleted);
+    assert_eq!(deleted.delete_reason, Some(DeleteReason::Operator));
+    assert!(!h.fake.has(&record.id));
+    assert!(h.workspaces.current(&owner).await.unwrap().is_none());
+    let last = h.workspaces.last_deleted(&owner).await.unwrap().unwrap();
+    assert_eq!(last.delete_reason, Some(DeleteReason::Operator));
+    assert!(matches!(
+        h.workspaces.open(&owner, &LeaseSlot::default()).await,
+        Err(WorkspaceError::NoWorkspace)
+    ));
+    // The owner can create again.
+    h.create(&owner).await;
+
+    // A second delete finds nothing.
+    assert!(matches!(
+        h.workspaces.delete_by_id(&record.id).await,
+        Err(ManageError::NotFound)
+    ));
+}
+
+#[tokio::test]
+async fn deleting_a_workspace_a_turn_is_using_stops_it_first_and_the_turn_finds_it_gone() {
+    let h = Harness::new().await;
+    let owner = chat("c1");
+    let record = h.create(&owner).await;
+    let slot = LeaseSlot::default();
+    h.workspaces.open(&owner, &slot).await.unwrap();
+    assert!(h.workspaces.in_use(&record.id));
+
+    let deleted = h.workspaces.delete_by_id(&record.id).await.unwrap();
+    assert_eq!(deleted.state, WorkspaceState::Deleted);
+    let log = h.fake.log();
+    let tail = &log[log.len() - 2..];
+    assert_eq!(
+        tail,
+        [
+            format!("stop {}", record.id),
+            format!("delete {}", record.id)
+        ]
+    );
+    assert!(!h.fake.has(&record.id));
+    // The turn still holds its lease, and its next call finds no workspace.
+    assert!(matches!(
+        h.workspaces.open(&owner, &slot).await,
+        Err(WorkspaceError::NoWorkspace)
+    ));
+}
+
+#[tokio::test]
+async fn an_operator_delete_while_the_plugin_is_down_is_finished_later() {
+    let h = Harness::new().await;
+    let owner = chat("c1");
+    let record = h.create(&owner).await;
+    h.disconnect();
+
+    let deleted = h.workspaces.delete_by_id(&record.id).await.unwrap();
+    assert_eq!(deleted.state, WorkspaceState::Deleting);
+    assert_eq!(deleted.delete_reason, Some(DeleteReason::Operator));
+    assert!(h.workspaces.current(&owner).await.unwrap().is_none());
+    assert!(h.fake.has(&record.id), "the plugin wasn't told yet");
+
+    h.connect();
+    h.workspaces.reconcile("box").await.unwrap();
+    assert!(!h.fake.has(&record.id));
+    assert_eq!(h.record(&record.id).await.state, WorkspaceState::Deleted);
+}
+
+#[tokio::test]
+async fn a_workspace_still_being_created_is_not_stopped_or_deleted_by_an_operator() {
+    let h = Harness::new().await;
+    let id = WorkspaceId::new("ws-making").unwrap();
+    h.store
+        .workspace_insert(giles_store::NewWorkspace {
+            id: id.clone(),
+            environment: "box".into(),
+            owner: chat("c1"),
+            options: json!({}),
+            now: h.clock_now(),
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        h.workspaces.stop_by_id(&id).await,
+        Err(ManageError::StillCreating)
+    ));
+    assert!(matches!(
+        h.workspaces.delete_by_id(&id).await,
+        Err(ManageError::StillCreating)
+    ));
+    assert_eq!(h.record(&id).await.state, WorkspaceState::Creating);
 }

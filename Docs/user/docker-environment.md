@@ -74,6 +74,9 @@ If the agent already has a `tools` list, add these entries to it. The agent then
 a workspace, run commands, and work with files, described in [Environments](environments.md). The
 model chooses the image when it creates a workspace.
 
+The [Workspaces page](web.md#workspaces) lists the workspaces with their image, container, volume,
+and limits, and stops or deletes them.
+
 ## Run the plugin in its own container
 
 The `giles-environment-docker` image runs the plugin for Giles to connect to. It keeps the engine's

@@ -436,6 +436,29 @@ async fn a_workspace_tool_without_a_workspace_says_how_to_make_one() {
 }
 
 #[tokio::test]
+async fn an_operator_deleting_the_workspace_mid_turn_is_reported_on_the_next_call() {
+    let setup = Setup::new().await;
+    let (turn, id) = setup.with_workspace().await;
+    setup.started_with(vec![out("hi\n"), exit(0)]);
+    // The turn is using the workspace: its first call took the lease.
+    ok(&turn
+        .run(&setup.tool(BashTool), json!({"command": "echo hi"}))
+        .await);
+    assert!(setup.workspaces.in_use(&id));
+
+    setup.workspaces.delete_by_id(&id).await.unwrap();
+    assert!(!setup.fake.has(&id));
+
+    let output = turn
+        .run(&setup.tool(BashTool), json!({"command": "echo hi"}))
+        .await;
+    let message = err(&output);
+    assert!(message.contains("was deleted at "), "{message}");
+    assert!(message.contains("an operator deleted it"), "{message}");
+    assert!(message.contains("environment_create"), "{message}");
+}
+
+#[tokio::test]
 async fn after_a_deletion_the_error_says_when_why_and_what_it_was() {
     let setup = Setup::new().await;
     let (turn, id) = setup.with_workspace().await;

@@ -183,7 +183,8 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     // create, edit, and remove agents in the running configuration (the registry's, which the web
     // app also reads), the route pages, which change the routes the router reads, and the toolset
     // pages, which change the stored toolsets through the manager and show how each is doing from
-    // the admin service.
+    // the admin service, and the workspaces page, which lists, stops, and deletes environment
+    // workspaces.
     #[cfg(feature = "channel-web")]
     let builder = match &web {
         Some(web) => {
@@ -206,12 +207,13 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
                 manager,
             );
             let builder = web.install_routes(builder, runtime.routes.clone());
-            web.install_toolsets(
+            let builder = web.install_toolsets(
                 builder,
                 toolset_manager.clone(),
                 admin.clone(),
                 runtime.registry.clone(),
-            )
+            );
+            web.install_workspaces(builder, runtime.workspaces.clone())
         }
         None => builder,
     };

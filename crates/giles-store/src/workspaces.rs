@@ -153,6 +153,8 @@ pub enum DeleteReason {
     /// Creating it failed or never finished. Nothing the model needs to be told: it saw the
     /// error, or the process died.
     CreationFailed,
+    /// An operator deleted it on the workspaces page of the web UI.
+    Operator,
 }
 
 impl DeleteReason {
@@ -167,6 +169,7 @@ impl DeleteReason {
             Self::RemovedOutsideGiles => "removed_outside_giles",
             Self::ChatArchived => "chat_archived",
             Self::CreationFailed => "creation_failed",
+            Self::Operator => "operator",
         }
     }
 
@@ -180,6 +183,7 @@ impl DeleteReason {
             "removed_outside_giles" => Self::RemovedOutsideGiles,
             "chat_archived" => Self::ChatArchived,
             "creation_failed" => Self::CreationFailed,
+            "operator" => Self::Operator,
             other => return Err(Error::corrupt(format!("unknown delete reason {other:?}"))),
         })
     }
@@ -197,6 +201,7 @@ impl fmt::Display for DeleteReason {
             Self::RemovedOutsideGiles => "it was removed outside Giles",
             Self::ChatArchived => "its chat was archived",
             Self::CreationFailed => "creating it failed",
+            Self::Operator => "an operator deleted it",
         })
     }
 }
@@ -462,6 +467,18 @@ impl Store {
         .await
     }
 
+    /// Every workspace of every environment instance, in every state, oldest first: what the
+    /// workspaces page shows.
+    pub async fn workspaces_all(&self) -> Result<Vec<WorkspaceRecord>> {
+        self.read(move |conn| {
+            let mut stmt = conn.prepare_cached(&format!(
+                "SELECT {COLUMNS} FROM workspaces ORDER BY created_at, id"
+            ))?;
+            query_all(&mut stmt, [], from_row)
+        })
+        .await
+    }
+
     /// Notes that an `active` workspace was used at `now`. The time never moves back.
     pub async fn workspace_touch(&self, id: &WorkspaceId, now: Timestamp) -> Result<()> {
         let id = id.clone();
@@ -669,6 +686,35 @@ mod tests {
             .workspace_activate(&id(id_), "alpine", "/work", "files persist")
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn every_workspace_is_listed_in_every_state_oldest_first() {
+        let (_dir, store) = store().await;
+        active(&store, "ws-2", conversation("c2"), 20).await;
+        active(&store, "ws-1", conversation("c1"), 10).await;
+        store
+            .workspace_insert(new("ws-3", job(3), 30))
+            .await
+            .unwrap();
+        store
+            .workspace_begin_delete(&id("ws-1"), DeleteReason::Operator, at(40))
+            .await
+            .unwrap();
+        store.workspace_finish_delete(&id("ws-1")).await.unwrap();
+
+        let all = store.workspaces_all().await.unwrap();
+        let listed: Vec<_> = all.iter().map(|w| (w.id.as_str(), w.state)).collect();
+        assert_eq!(
+            listed,
+            [
+                ("ws-1", WorkspaceState::Deleted),
+                ("ws-2", WorkspaceState::Active),
+                ("ws-3", WorkspaceState::Creating),
+            ]
+        );
+        assert_eq!(all[0].delete_reason, Some(DeleteReason::Operator));
+        assert_eq!(DeleteReason::Operator.to_string(), "an operator deleted it");
     }
 
     #[tokio::test]
