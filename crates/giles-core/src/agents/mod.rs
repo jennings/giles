@@ -5,6 +5,7 @@
 
 pub mod create;
 pub mod edit;
+pub mod environment_picker;
 pub mod files;
 mod manager;
 pub mod remove;
@@ -15,6 +16,7 @@ pub use create::{
     agent_toml, split_list,
 };
 pub use edit::{AgentEdit, AgentForm, EditError, MAX_EDIT_FILE_BYTES, edited_toml};
+pub use environment_picker::{EnvironmentChoice, EnvironmentNotes, EnvironmentPicker};
 pub use files::{
     AgentFile, AgentFiles, Content, FileKind, MAX_DEPTH, MAX_FILE_BYTES, MAX_FILES,
     MAX_TOTAL_BYTES, list_files,

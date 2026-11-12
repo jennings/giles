@@ -3,7 +3,8 @@
 //! running configuration ([`LiveConfig`](crate::config::LiveConfig)), so the next session uses it.
 //! A session that is running keeps the tools and `system` it started with (PLAN section 6.3).
 //!
-//! The form manages `name`, `models`, `tools`, `ask`, and `timezone`, and `SOUL.md`. Everything
+//! The form manages `name`, `models`, `tools`, `ask`, `environments`, and `timezone`, and
+//! `SOUL.md`. Everything
 //! else in `agent.toml` is the owner's and stays as written: [`edited_toml`] changes only those
 //! keys in the text, with `toml_edit`, so comments, `[[jobs]]`, `busy_mode`, `memory_cap`,
 //! `compaction_model`, and any key a later version adds survive, and a key whose value the form
@@ -61,6 +62,8 @@ pub struct AgentForm {
     pub tools: Vec<String>,
     /// `ask`.
     pub ask: Vec<String>,
+    /// `environments`.
+    pub environments: Vec<String>,
     /// `timezone`, empty if unset.
     pub timezone: String,
     /// `SOUL.md` with `\n` line ends; empty if there is none.
@@ -85,6 +88,8 @@ pub struct AgentEdit {
     pub tools: Vec<String>,
     /// Tool globs that need approval; empty for none.
     pub ask: Vec<String>,
+    /// Environment instances the agent may use; empty for none.
+    pub environments: Vec<String>,
     /// An IANA time zone; empty for none.
     pub timezone: String,
     /// `SOUL.md`.
@@ -189,6 +194,7 @@ struct Managed {
     models: Vec<String>,
     tools: Vec<String>,
     ask: Vec<String>,
+    environments: Vec<String>,
     timezone: String,
 }
 
@@ -227,6 +233,7 @@ fn managed_of(source: &str) -> Result<Managed, EditError> {
         models: list("models"),
         tools: list("tools"),
         ask: list("ask"),
+        environments: list("environments"),
         timezone: string("timezone"),
     })
 }
@@ -234,8 +241,9 @@ fn managed_of(source: &str) -> Result<Managed, EditError> {
 /// `source` with the managed keys set as `edit` says and nothing else touched: a key whose value
 /// is already what `edit` wants is left exactly as written; a changed one gets its new value
 /// keeping its position, key, and the comment after it; a missing one is added after the others
-/// of the file's top level; an emptied one (`name`, `tools`, `ask`, `timezone`) is removed.
-/// `models` is always written, even empty, so validation reports the empty list.
+/// of the file's top level; an emptied one (`name`, `tools`, `ask`, `environments`, `timezone`)
+/// is removed. `models` is always written, even empty, so validation reports the empty list.
+/// `environments` is a set: the names that stay keep the file's order.
 ///
 /// # Errors
 ///
@@ -259,6 +267,7 @@ pub fn edited_toml(source: &str, edit: &AgentEdit) -> Result<String, EditError> 
         set_string(root, "name", edit.name.trim()),
         set_list(root, "tools", &edit.tools, false),
         set_list(root, "ask", &edit.ask, false),
+        set_members(root, "environments", &edit.environments),
         set_string(root, "timezone", edit.timezone.trim()),
     ];
     // Untouched, the text stays as it is: serializing the document would, for one, add the final
@@ -306,6 +315,30 @@ fn set_list(table: &mut Table, key: &str, values: &[String], keep_empty: bool) -
     let array: Array = values.iter().map(String::as_str).collect();
     replace(table, key, Value::Array(array));
     true
+}
+
+/// Sets `key` to the list `values`, or removes it if `values` is empty, where only which names are
+/// in the list matters, not their order (`environments`: the form's boxes carry no order). Names
+/// already in the file stay in the file's order, new ones follow in `values`' order. So a list that
+/// has the names `values` has is left as written. Whether it changed anything.
+fn set_members(table: &mut Table, key: &str, values: &[String]) -> bool {
+    let current: Vec<String> = table
+        .get(key)
+        .and_then(Item::as_array)
+        .map(|array| {
+            array
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut ordered: Vec<String> = Vec::with_capacity(values.len());
+    for name in current.iter().chain(values) {
+        if values.contains(name) && !ordered.contains(name) {
+            ordered.push(name.clone());
+        }
+    }
+    set_list(table, key, &ordered, false)
 }
 
 /// Removes `key`, with the comment on its line and the comment lines right above it, except for
@@ -564,6 +597,7 @@ impl AgentManager {
             models: managed.models,
             tools: managed.tools,
             ask: managed.ask,
+            environments: managed.environments,
             timezone: managed.timezone,
             soul: files
                 .soul
@@ -664,6 +698,7 @@ prompt = "Summarize the week."
             models: managed.models,
             tools: managed.tools,
             ask: managed.ask,
+            environments: managed.environments,
             timezone: managed.timezone,
             soul: String::new(),
             version: String::new(),
@@ -788,6 +823,66 @@ prompt = "Summarize the week."
             "{edited}"
         );
         assert_eq!(parsed["jobs"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn environments_are_added_at_the_end_replaced_in_place_and_removed_when_emptied() {
+        let source = "models = [\"a/b\"]\nenvironments = [\"docker\"]   # where it works\ntools = [\"bash\"]\n";
+        assert_eq!(managed_of(source).unwrap().environments, ["docker"]);
+
+        // Added after the other keys of the top level.
+        let mut edit = edit_of(
+            "models = [\"a/b\"]\n\n[[jobs]]\nid = \"x\"\ncron = \"0 8 * * *\"\nprompt = \"p\"\n",
+        );
+        edit.environments = vec!["docker".into(), "box".into()];
+        let edited = edited_toml(
+            "models = [\"a/b\"]\n\n[[jobs]]\nid = \"x\"\ncron = \"0 8 * * *\"\nprompt = \"p\"\n",
+            &edit,
+        )
+        .unwrap();
+        let parsed: toml::Table = toml::from_str(&edited).unwrap();
+        assert_eq!(
+            parsed["environments"].as_array().unwrap().len(),
+            2,
+            "{edited}"
+        );
+        assert_eq!(parsed["jobs"].as_array().unwrap().len(), 1, "{edited}");
+
+        // Replaced where it is, keeping the comment after it.
+        let mut edit = edit_of(source);
+        edit.environments = vec!["box".into()];
+        assert_eq!(
+            edited_toml(source, &edit).unwrap(),
+            "models = [\"a/b\"]\nenvironments = [\"box\"]   # where it works\ntools = [\"bash\"]\n"
+        );
+
+        // Emptied, the key goes with its comment, and the rest stays.
+        edit.environments.clear();
+        assert_eq!(
+            edited_toml(source, &edit).unwrap(),
+            "models = [\"a/b\"]\ntools = [\"bash\"]\n"
+        );
+    }
+
+    #[test]
+    fn environments_are_a_set_so_a_hand_written_order_is_never_rewritten() {
+        let source = "models = [\"a/b\"]\nenvironments = [\"far\", \"box\", \"docker\"]\n";
+        // The form posts the names it has ticked, in the order of its boxes.
+        let mut edit = edit_of(source);
+        edit.environments = vec!["box".into(), "docker".into(), "far".into()];
+        assert_eq!(edited_toml(source, &edit).unwrap(), source);
+
+        // A name that goes leaves the others where they were; one that comes follows them.
+        edit.environments = vec!["box".into(), "far".into()];
+        assert_eq!(
+            edited_toml(source, &edit).unwrap(),
+            "models = [\"a/b\"]\nenvironments = [\"far\", \"box\"]\n"
+        );
+        edit.environments = vec!["alpha".into(), "box".into(), "docker".into(), "far".into()];
+        assert_eq!(
+            edited_toml(source, &edit).unwrap(),
+            "models = [\"a/b\"]\nenvironments = [\"far\", \"box\", \"docker\", \"alpha\"]\n"
+        );
     }
 
     #[test]

@@ -40,6 +40,7 @@ use crate::sessions::{
 
 mod admin;
 mod agent_edit;
+mod agent_environments;
 mod agent_remove;
 mod agents;
 mod memory;
@@ -99,8 +100,8 @@ const AGENTS: [(&str, &str); 2] = [
 ];
 
 /// Writes a configuration under `dir` for an owner with `identities`: a provider `fake`, a web
-/// channel, and [`AGENTS`]; then loads it.
-fn load_config(dir: &std::path::Path, identities: &[&str]) -> crate::config::Config {
+/// channel, and [`AGENTS`], then `extra` (TOML appended to `giles.toml`); then loads it.
+fn load_config(dir: &std::path::Path, identities: &[&str], extra: &str) -> crate::config::Config {
     let root = crate::paths::DataRoot::new(dir, &dir.join("tmp")).unwrap();
     let default = format!("{:?}", identities[0]);
     let identities = identities
@@ -115,7 +116,7 @@ fn load_config(dir: &std::path::Path, identities: &[&str]) -> crate::config::Con
              [provider.fake]\ncomponent = \"openai\"\n\
              config = {{ base_url = \"http://127.0.0.1:9/v1\" }}\n\
              [channel.web]\n\
-             [toolset.files]\ncommand = \"/x\"\n"
+             [toolset.files]\ncommand = \"/x\"\n{extra}"
         ),
     )
     .unwrap();
@@ -140,6 +141,11 @@ fn load_config(dir: &std::path::Path, identities: &[&str]) -> crate::config::Con
 
 /// A web channel with `config`, for an owner with `identities`.
 async fn env_with(config: WebConfig, identities: &[&str]) -> Env {
+    env_with_toml(config, identities, "").await
+}
+
+/// [`env_with`], with `extra` (TOML) appended to `giles.toml`.
+async fn env_with_toml(config: WebConfig, identities: &[&str], extra: &str) -> Env {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().join("giles.db")).await.unwrap();
     let blobs = BlobStore::open(dir.path().join("blobs"), store.clone())
@@ -153,7 +159,7 @@ async fn env_with(config: WebConfig, identities: &[&str]) -> Env {
     ));
     let shutdown = CancellationToken::new();
     let root = crate::paths::DataRoot::new(dir.path(), &dir.path().join("tmp")).unwrap();
-    let config = Arc::new(load_config(dir.path(), identities));
+    let config = Arc::new(load_config(dir.path(), identities, extra));
     let registry = Arc::new(crate::registry::Registry::new(root, config));
     let app = WebApp::new(
         channel.clone(),

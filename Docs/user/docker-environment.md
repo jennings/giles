@@ -59,8 +59,11 @@ machine uses the `unix://` address in `DOCKER_HOST` first.
 
 ## Let an agent use it
 
-Agents don't get an environment by default. Name the environments an agent may use in its
-`agent.toml`, and allow the tools that work in them:
+Agents don't get an environment by default. Open the agent's **Edit** page in the
+[web interface](web.md#agents), tick **docker** under **Environments**, and tick `bash`, `read`,
+`write`, `edit`, `find`, `grep`, and the four `environment_*` tools under **Tools**.
+
+To set it in the agent's `agent.toml` instead, name the environment and allow the tools:
 
 ```toml
 environments = ["docker"]

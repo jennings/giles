@@ -27,8 +27,9 @@ use super::memory;
 use super::pages::{WebApp, agent_label, error_page, no_store};
 use crate::agents::{
     AgentEdit, AgentFile, AgentForm, AgentManager, Content, CreateError, DEFAULT_SOUL, EditError,
-    MAX_FILE_BYTES, MAX_FILES, MAX_TOTAL_BYTES, NewAgent, RemovalPreview, RemoveError, Removed,
-    ToolPicker, agent_id_from_name, list_files, split_list, tool_picker,
+    EnvironmentNotes, EnvironmentPicker, MAX_FILE_BYTES, MAX_FILES, MAX_TOTAL_BYTES, NewAgent,
+    RemovalPreview, RemoveError, Removed, ToolPicker, agent_id_from_name, environment_picker,
+    list_files, split_list, tool_picker,
 };
 use crate::config::{AgentConfig, Config};
 use crate::http::{self, RouterBuilder};
@@ -52,12 +53,41 @@ fn picked(checks: &HashMap<String, String>) -> BTreeSet<String> {
         .collect()
 }
 
-/// The posted fields of ticked tool checkboxes for `picked`, for a form shown from the files.
-fn checks_of(picked: &BTreeSet<String>) -> HashMap<String, String> {
-    picked
-        .iter()
-        .map(|entry| (format!("{CHECK_PREFIX}{entry}"), "on".to_owned()))
+/// An environment checkbox's name in a posted form is this, then the instance it stands for
+/// (`environment:docker`). Browsers send only the ticked boxes.
+const ENVIRONMENT_PREFIX: &str = "environment:";
+
+/// The instances of the environment checkboxes a post ticked.
+fn picked_environments(checks: &HashMap<String, String>) -> BTreeSet<String> {
+    checks
+        .keys()
+        .filter_map(|name| name.strip_prefix(ENVIRONMENT_PREFIX))
+        .map(str::to_owned)
         .collect()
+}
+
+/// The posted fields of ticked checkboxes for the tool entries `picked` and the environments
+/// `environments`, for a form shown from the files.
+fn checks_of(picked: &BTreeSet<String>, environments: &[String]) -> HashMap<String, String> {
+    let tools = picked.iter().map(|entry| format!("{CHECK_PREFIX}{entry}"));
+    let environments = environments
+        .iter()
+        .map(|name| format!("{ENVIRONMENT_PREFIX}{name}"));
+    tools
+        .chain(environments)
+        .map(|field| (field, "on".to_owned()))
+        .collect()
+}
+
+/// The checkboxes of the environments `checks` ticked, and the notes they and `picker` call for.
+fn environment_boxes(
+    config: &Config,
+    checks: &HashMap<String, String>,
+    picker: &ToolPicker,
+) -> (EnvironmentPicker, EnvironmentNotes) {
+    let environments = EnvironmentPicker::new(config, &picked_environments(checks));
+    let notes = environments.notes(picker);
+    (environments, notes)
 }
 
 impl WebApp {
@@ -284,7 +314,8 @@ struct CreateForm {
     models: String,
     /// The "Other tools" text: the entries that have no checkbox.
     tools: String,
-    /// The tool checkboxes that were ticked ([`CHECK_PREFIX`]).
+    /// The tool and environment checkboxes that were ticked ([`CHECK_PREFIX`],
+    /// [`ENVIRONMENT_PREFIX`]).
     #[serde(flatten)]
     checks: HashMap<String, String>,
     ask: String,
@@ -313,6 +344,8 @@ impl Default for CreateForm {
 struct NewAgentPage<'a> {
     csrf: &'a str,
     picker: ToolPicker,
+    environments: EnvironmentPicker,
+    notes: EnvironmentNotes,
     form: &'a CreateForm,
     error: Option<String>,
     /// `<provider>/<model>` the providers list, offered as suggestions.
@@ -326,9 +359,13 @@ async fn render_form(
     error: Option<String>,
 ) -> Response {
     let config = pages.manager.config().get();
+    let picker = ToolPicker::new(&config, &picked(&form.checks), &split_list(&form.tools));
+    let (environments, notes) = environment_boxes(&config, &form.checks, &picker);
     http::render(&NewAgentPage {
         csrf: &user.csrf,
-        picker: ToolPicker::new(&config, &picked(&form.checks), &split_list(&form.tools)),
+        picker,
+        environments,
+        notes,
         form,
         error,
         known_models: pages.manager.known_models().await,
@@ -369,6 +406,7 @@ async fn create(
         models: split_list(&form.models),
         tools: tool_picker::compose(&config, &picked(&form.checks), &split_list(&form.tools)),
         ask: split_list(&form.ask),
+        environments: environment_picker::compose(&picked_environments(&form.checks)),
         timezone: form.timezone.clone(),
         // Browsers submit a textarea's line breaks as CRLF; the file keeps plain LF.
         soul: form.soul.replace("\r\n", "\n"),
@@ -407,7 +445,8 @@ struct EditForm {
     models: String,
     /// The "Other tools" text: the entries that have no checkbox.
     tools: String,
-    /// The tool checkboxes that were ticked ([`CHECK_PREFIX`]).
+    /// The tool and environment checkboxes that were ticked ([`CHECK_PREFIX`],
+    /// [`ENVIRONMENT_PREFIX`]).
     #[serde(flatten)]
     checks: HashMap<String, String>,
     ask: String,
@@ -419,7 +458,7 @@ struct EditForm {
 
 impl EditForm {
     /// The form for an agent as its files have it: the tools that have a checkbox ticked, the
-    /// rest in the text box.
+    /// rest in the text box, and the environments it names ticked.
     fn of(agent: AgentForm, config: &Config) -> Self {
         let list = |items: &[String]| items.join(", ");
         let (tools, other) = tool_picker::split(config, &agent.tools);
@@ -427,7 +466,7 @@ impl EditForm {
             csrf: None,
             models: list(&agent.models),
             tools: list(&other),
-            checks: checks_of(&tools),
+            checks: checks_of(&tools, &agent.environments),
             ask: list(&agent.ask),
             name: agent.name,
             timezone: agent.timezone,
@@ -444,6 +483,8 @@ struct EditAgentPage<'a> {
     id: &'a str,
     label: String,
     picker: ToolPicker,
+    environments: EnvironmentPicker,
+    notes: EnvironmentNotes,
     form: &'a EditForm,
     error: Option<String>,
     /// The files changed since the form was opened: offer a reload.
@@ -464,11 +505,15 @@ async fn render_edit_form(
     let label = AgentId::new(id)
         .map(|agent| agent_label(&config, &agent))
         .unwrap_or_else(|_| id.to_owned());
+    let picker = ToolPicker::new(&config, &picked(&form.checks), &split_list(&form.tools));
+    let (environments, notes) = environment_boxes(&config, &form.checks, &picker);
     http::render(&EditAgentPage {
         csrf: &user.csrf,
         id,
         label,
-        picker: ToolPicker::new(&config, &picked(&form.checks), &split_list(&form.tools)),
+        picker,
+        environments,
+        notes,
         form,
         error,
         stale,
@@ -542,6 +587,7 @@ async fn edit(
         models: split_list(&form.models),
         tools: tool_picker::compose(&config, &picked(&form.checks), &split_list(&form.tools)),
         ask: split_list(&form.ask),
+        environments: environment_picker::compose(&picked_environments(&form.checks)),
         timezone: form.timezone.clone(),
         // Browsers submit a textarea's line breaks as CRLF; the file keeps plain LF.
         soul: form.soul.replace("\r\n", "\n"),

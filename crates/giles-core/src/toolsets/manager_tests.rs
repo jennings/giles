@@ -888,6 +888,7 @@ async fn an_agent_edit_waits_for_the_lock_the_toolset_manager_shares() {
         models: form.models,
         tools: form.tools,
         ask: form.ask,
+        environments: form.environments,
         timezone: form.timezone,
         soul: form.soul,
         version: form.version,

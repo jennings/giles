@@ -140,9 +140,15 @@ text.
 - **Id**: the agent's directory name, made of letters, digits, and `-`. It fills in from the name as
   you type, and you can edit it. You can't change it once the agent exists.
 - **Models**: `<provider>/<model>`, several separated by commas.
+- **Environments**: tick the [environments](environments.md) the agent may use for a workspace. The
+  form lists the environments in `giles.toml` with their descriptions, and hides this field when
+  there are none. The agent has the environment tools only if you tick an environment and also tick
+  the tools below. If you tick one without the other, the form says so under the field. It still
+  saves.
 - **Tools**: tick the tools the agent may use. An agent can't use a tool you leave unticked, so a
   new agent has none until you tick some. Each [MCP server](#mcp-servers) is one box that allows all
-  of its tools.
+  of its tools. The environment tools (`bash`, `read`, and the rest that say they need an
+  environment) work only for an agent with an environment.
 - **Other tools**: optional names or globs the boxes can't show, such as `github__create_*`,
   separated by commas or spaces. A box that one of these already allows is ticked and greyed out.
 - **Ask first**: optional tool names or globs that need your approval before each call, separated by
@@ -168,10 +174,13 @@ Saving takes effect without a restart:
 
 - New chats and the next run of the agent's [jobs](configuration.md#jobs) use the new settings. A
   chat already going keeps the settings it started with. Use `/new` to start a fresh one.
-- Giles changes only what the form has: `name`, `models`, `tools`, `ask`, `timezone`, and `SOUL.md`.
-  The rest of `agent.toml`, comments included, stays as you wrote it.
+- Giles changes only what the form has: `name`, `models`, `tools`, `ask`, `environments`,
+  `timezone`, and `SOUL.md`. The rest of `agent.toml`, comments included, stays as you wrote it.
 - If you edit `agent.toml` or `SOUL.md` by hand while the form is open, saving is refused with
   "changed on disk". Use the form's link to reload the current values.
+
+An environment that `agent.toml` names but `giles.toml` doesn't configure stays ticked on the form,
+marked as not configured. Saving is refused until you untick it.
 
 Changes you make to `agent.toml` by hand, such as to `[[jobs]]`, take effect at the next restart, or
 when you next save this form.

@@ -2,6 +2,10 @@
 
 {% block title %}Edit {{ id }} - Agents - Giles{% endblock %}
 
+{% block head %}
+<script src="{{ crate::http::assets::agent_form_script_path() }}" defer></script>
+{% endblock %}
+
 {% block content %}
 {% include "web/admin_nav.html" %}
 <h1>Edit {{ label }}</h1>
