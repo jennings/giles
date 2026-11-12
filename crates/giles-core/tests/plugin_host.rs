@@ -420,10 +420,15 @@ async fn a_failed_launch_kills_the_plugins_whole_process_group() {
 async fn orphans_running_the_plugin_binary_are_killed_and_others_left_alone() {
     let home = Home::new(&unsandboxed("sleepy"));
     // The "plugin" is a copy of `sleep`: run with no arguments it exits at once, which fails the
-    // launch after the cleanup this test is about.
-    let binary = home.root.plugins_dir().join("giles-channel-sleepy");
-    fs::copy("/bin/sleep", &binary).unwrap();
-    let binary = binary.canonicalize().unwrap();
+    // launch after the cleanup this test is about. The copy keeps the name `sleep`, and the
+    // plugin's name links to it: a multi-call coreutils (uutils, Ubuntu 26.04's) picks the tool
+    // by its executable's name. The launcher runs the link's target, which the pid file records.
+    let copy = home.root.plugins_dir().join("bin/sleep");
+    fs::create_dir(copy.parent().unwrap()).unwrap();
+    fs::copy("/bin/sleep", &copy).unwrap();
+    let link = home.root.plugins_dir().join("giles-channel-sleepy");
+    std::os::unix::fs::symlink(&copy, &link).unwrap();
+    let binary = link.canonicalize().unwrap();
     let pid_file = home.root.pid_file(Kind::Channel, "sleepy").unwrap();
     let record = |pid: u32| fs::write(&pid_file, format!("{pid}\n{}\n", binary.display())).unwrap();
 
