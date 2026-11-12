@@ -109,6 +109,33 @@ is the source offer for its binary: the repository at the image's commit (the
 `whatsapp-rust` revision. The files come from the repository (`plugins/giles-channel-whatsapp/` for
 the last two), and the smoke test checks that they're in the image.
 
+## The Docker environment image
+
+`plugins/giles-environment-docker/Dockerfile` builds a second image,
+`ghcr.io/jennings/giles-environment-docker`, with the same build context. It runs the Docker
+environment plugin in `serve` mode ([Plugin SDK](plugin-sdk.md)) for a Giles core to reach with
+`address`, so the engine socket is mounted into the plugin's container and never into Giles's.
+
+- **Build stage.** The same Rust base and pinned toolchain. It builds only
+  `giles-environment-docker` and `giles-workspace-helper`, the helper for both `x86_64` and
+  `aarch64` (`<arch>-unknown-linux-musl`, linked by `rust-lld`). The plugin picks the helper for the
+  engine's architecture, which can differ from the image's: the published amd64 image runs under
+  emulation on an arm64 Docker Desktop. Its `target/` cache mount has its own id, so the two builds
+  don't queue on one lock.
+- **Runtime stage.** `debian:bookworm-slim` with `tini`, the binaries in `/usr/local/bin/`, and the
+  licenses. The entrypoint is `giles-environment-docker serve --listen 0.0.0.0:7443 --data /data`;
+  arguments such as `--config <file>` are appended, and flags win over the file's `listen` and
+  `data`. The token comes from `GILES_ENVIRONMENT_DOCKER_TOKEN` or `token_file`.
+- **Root.** The process runs as root. Its power comes from the mounted socket, and an unprivileged
+  uid can't open a socket owned by `root:docker` or, under rootless Podman, by the host user that
+  root in the container maps to. On SELinux hosts the container also needs
+  `--security-opt label=disable` to open the socket.
+- **No volume.** The plugin keeps its state in labels on the engine's resources
+  ([Docker environment](environment-docker.md)), so `/data` is scratch space.
+
+The `.dockerignore` keeps this Dockerfile out of the context, so editing it doesn't invalidate the
+`COPY . .` layer of either image.
+
 ## The sandbox in a container
 
 The plugin sandbox needs no extra privileges: Docker's default seccomp profile allows the

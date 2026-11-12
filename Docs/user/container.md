@@ -63,3 +63,9 @@ Plugin sandbox: Landlock ABI 6 and seccomp filters
 ```
 
 To run a plugin without sandboxing, set `channel.<name>.unsandboxed = true` in `giles.toml`.
+
+## Agent workspaces
+
+Don't mount a container engine's socket into the Giles container. To give agents a workspace, run
+the [Docker environment image](docker-environment.md#run-the-plugin-in-its-own-container) next to
+Giles.

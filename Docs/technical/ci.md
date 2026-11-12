@@ -95,6 +95,20 @@ The image is `linux/amd64` only: an arm64 build under QEMU emulation would take 
 `linux/arm64` needs an arm64 runner (`ubuntu-24.04-arm`) building natively, with the two digests
 merged into one manifest list.
 
+The `environment-docker-image` job builds and publishes the
+[Docker environment image](container-image.md#the-docker-environment-image) the same way, as
+`ghcr.io/jennings/giles-environment-docker` with the same tags. It has its own concurrency group and
+its own `gha` cache scope, so the two image jobs run side by side without evicting each other's
+layers. Its smoke test plays the Giles core against the runner's Docker engine before anything is
+pushed:
+
+- Both `giles-workspace-helper-*` files are in the image, and the `x86_64` one runs.
+- The container starts with `/var/run/docker.sock` mounted and the token in
+  `GILES_ENVIRONMENT_DOCKER_TOKEN`, and logs `listening on`.
+- `grpcurl` (a pinned release) calls `Configure`, `CreateWorkspace` with `alpine:3.20`,
+  `StartWorkspace`, and `Exec` (`echo hello`, whose output must come back), then `DeleteWorkspace`.
+  No container or volume labeled with the test instance may be left.
+
 A package pushed to a personal account starts private. To let anyone pull it, the owner makes it
 public once in the package's settings on GitHub (Package settings, Danger Zone, Change visibility).
 The image's `org.opencontainers.image.source` label links the package to the repository, so the
