@@ -60,6 +60,11 @@ struct State {
     /// `delete_workspace` and `list_workspaces` fail while set.
     delete_fails: bool,
     list_fails: bool,
+    /// What `list_workspaces` reports for free space and for each workspace's disk use.
+    free_bytes: Option<u64>,
+    disk_used: Option<u64>,
+    /// The details of every workspace; the default is one `Box: fake` row.
+    details: Option<Vec<WorkspaceDetail>>,
     /// The next `start_workspace` of a stopped workspace says it recreated it.
     recreate: bool,
     /// What `exec` does; `Exec::Refuse` until a test sets it.
@@ -149,6 +154,18 @@ impl Fake {
 
     pub(crate) fn fail_lists(&self, fails: bool) {
         self.state().list_fails = fails;
+    }
+
+    /// What listing reports: free space, and the disk each workspace uses.
+    pub(crate) fn report_space(&self, free_bytes: Option<u64>, disk_used: Option<u64>) {
+        let mut state = self.state();
+        state.free_bytes = free_bytes;
+        state.disk_used = disk_used;
+    }
+
+    /// The details every listed workspace has.
+    pub(crate) fn set_details(&self, details: Vec<WorkspaceDetail>) {
+        self.state().details = Some(details);
     }
 
     pub(crate) fn recreate_next_start(&self) {
@@ -292,9 +309,16 @@ impl Environment for Fake {
             workspaces: state
                 .workspaces
                 .iter()
-                .map(|(id, held)| Self::workspace(id, held))
+                .map(|(id, held)| {
+                    let mut workspace = Self::workspace(id, held);
+                    workspace.disk_used_bytes = state.disk_used;
+                    if let Some(details) = &state.details {
+                        workspace.details.clone_from(details);
+                    }
+                    workspace
+                })
                 .collect(),
-            free_bytes: None,
+            free_bytes: state.free_bytes,
         })
     }
 

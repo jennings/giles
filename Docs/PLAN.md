@@ -1278,7 +1278,7 @@ decides how to run a command or a search.
 | `DeleteWorkspace` | Deletes a workspace and its files; succeeds if it is gone already          |
 | `StartWorkspace`  | Makes it ready, starting or recreating what it runs on; the core calls it before each workspace tool call, and the `StartOutcome` (running, started, recreated, with a `detail` for the model) is the lifecycle notice |
 | `StopWorkspace`   | Stops its processes and keeps its files                                    |
-| `ListWorkspaces`  | Every workspace, with disk use and the free space where they live          |
+| `ListWorkspaces`  | Every workspace, with disk use, display-ready `details`, and the free space where they live |
 | `Exec`            | Server stream: stdout and stderr pieces, then one exit (code, `timed_out`, `dropped_bytes`). The request carries the timeout and an output cap. Cancelling the call kills the command and everything it started |
 | `ReadFile`, `WriteFile` | Read up to `max_bytes` of a file; write a file, creating parent directories |
 | `Find`, `Grep`    | Glob and regular expression searches that skip `.git` and ignored files     |

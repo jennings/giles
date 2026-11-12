@@ -51,6 +51,11 @@ the live-output hook.
 | `POST /admin/agents/<agent>/memory` | Adds a memory (CSRF-checked), 303 back. |
 | `POST /admin/agents/<agent>/memory/edit` | Changes a memory's content and flags (CSRF-checked), 303 back; 409 if it changed since the form. |
 | `POST /admin/agents/<agent>/memory/forget` | Forgets a memory (CSRF-checked), 303 back. |
+| `GET /admin/workspaces`        | Every environment workspace with its live state ([Workspaces page](#workspaces-page)). |
+| `GET /admin/workspaces/<id>/stop` | The confirmation for stopping a workspace a turn is using; a redirect to the list otherwise. |
+| `POST /admin/workspaces/<id>/stop` | Stops the workspace (CSRF-checked), 303 to the list.         |
+| `GET /admin/workspaces/<id>/delete` | What deleting does, with a warning if a turn is using it, and the button. |
+| `POST /admin/workspaces/<id>/delete` | Deletes the workspace (CSRF-checked), 303 to the list.     |
 | `GET /admin/routes`            | Every route in order ([Route pages](#route-pages)).              |
 | `GET /admin/routes/new`        | The form that adds a route.                                      |
 | `POST /admin/routes`           | Adds the route (CSRF-checked), 303 to the list.                  |
@@ -760,6 +765,37 @@ it.
 - A move that would hide a route is refused with the reason, as is an edit; reordering therefore
   passes only through valid lists.
 
+## Workspaces page
+
+In `workspaces.rs`: `web.install_workspaces(builder, Workspaces)`, which `serve` calls last, with
+the runtime's `Workspaces`. Like the other admin pages: the authentication middleware,
+`may_administer` on every route including the POSTs, `no-store` on every answer, and `check_csrf` on
+every POST. [Environment workspaces](environments.md#calls) describes the calls behind it.
+
+- The list is one block per `creating` or `active` workspace, newest first, not a table: the fields
+  (environment, owner, created, last used, in use, disk used, description, working directory,
+  details) don't fit a table in the page's width. The owner is the agent (a link to its page if it
+  is configured), the channel, and the conversation, which links to `/chats/<id>` when the channel
+  is this web instance and the conversation is a chat id; a job run shows its session. Above the
+  list, each environment shows its free space, or why it isn't known (not connected, failed, no
+  longer configured). A workspace the plugin didn't answer for shows `unknown` for its state, disk
+  use, and details, and what Giles stored of its description. There is no timeout of its own and no
+  cache: the page waits for the plugins like any call to them does.
+- What a plugin reports (description, working directory, `details`) is the plugin's text: the
+  template escapes it and nothing interprets it. `details` is rendered as a nested definition list
+  in the plugin's order.
+- Stop is a plain `POST` form, except for a workspace a turn is using (`Workspaces::in_use`), where
+  the button is a link to `GET .../stop`, a confirmation that says stopping ends the running command
+  and background processes. That page redirects to the list for a workspace nothing is using, so a
+  stale link doesn't show a warning that no longer applies. Delete always goes through
+  `GET .../delete`, which says what deleting does and adds the in-use warning (stop the command,
+  then delete) when a turn is using the workspace. The `POST`s don't check for a lease again: the
+  warning was the confirmation, and the calls handle either case.
+- Ids in paths are workspace ids, so a page opened before another change can't act on a different
+  workspace. One that is gone or isn't a valid id is 404 "There is no such workspace"; one still
+  being created, or whose environment isn't connected or configured (stop only), is 409; a plugin
+  that fails the call is 502; a database failure is logged and answered 500.
+
 ## Toolset pages
 
 The web UI calls stored toolsets MCP servers: the admin menu entry, the pages, and their addresses
@@ -931,6 +967,19 @@ plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`, `l
   stored; a duplicate, a shadowed route, and a route that would hide another are 409; edit, remove
   (not by `GET`), and move change which route wins in the router's list; a move that would hide a
   route is refused; ids that aren't numbers or routes are 404.
+- Workspaces page (`tests/workspaces.rs`, over the test configuration and the in-memory fake
+  environment connected as `box`, with `far` never connecting): anonymous requests get 401 and a
+  non-owner 403 on every route including the POSTs, with nothing changed; every POST needs the CSRF
+  token; the list shows the workspace with its live state, disk use, free space, description,
+  details, agent and web-chat links, and the job-run and other-channel owners without a chat link; a
+  failing or disconnected environment shows `unknown` and is named, with what Giles stored still
+  shown; plugin text is escaped; stopping a workspace nothing is using needs no confirmation, and
+  stopping one a turn is using asks first (the button is a link, the page says what ends), then
+  stops without changing the row; deleting has a plain confirmation, or the in-use warning, then
+  deletes with the operator reason (stop first when in use, and the turn's next `open` fails), is
+  finished later when the environment is down, and leaves the page without the workspace; ids that
+  are gone, invalid, or still being created, and a stop with the environment down, answer as
+  described above.
 - Toolset pages (`tests/toolsets.rs`, over the test configuration, a real `ToolsetManager` whose
   remote servers never answer, and the admin tests' fake service): anonymous requests get 401 and a
   non-owner 403 on every route including the POSTs, with nothing changed; every POST needs the CSRF

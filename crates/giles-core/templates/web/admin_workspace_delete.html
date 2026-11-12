@@ -1,0 +1,38 @@
+{% extends "layout.html" %}
+
+{% block title %}Delete {{ id }} - Workspaces - Giles{% endblock %}
+
+{% block content %}
+{% include "web/admin_nav.html" %}
+<h1>Delete workspace <code>{{ id }}</code>?</h1>
+<dl class="facts">
+<dt>Environment</dt>
+<dd><code>{{ environment }}</code></dd>
+<dt>Owner</dt>
+<dd>
+{%- if let Some((agent_id, agent_label, exists)) = owner.agent %}
+{%- if exists %}<a href="/admin/agents/{{ agent_id }}">{{ agent_label }}</a>{% else %}<code>{{ agent_id }}</code>{% endif %} in {{ owner.channel }},
+{%- if let Some(chat) = owner.chat %} <a href="{{ chat }}">conversation <code>{{ owner.conversation }}</code></a>{% else %} conversation <code>{{ owner.conversation }}</code>{% endif %}
+{%- else if let Some(job) = owner.job %}
+job run (session {{ job }})
+{%- endif %}
+</dd>
+{%- if !description.is_empty() %}
+<dt>Description</dt>
+<dd>{{ description }}</dd>
+{%- endif %}
+</dl>
+{%- if in_use %}
+<p class="state-warn">A running turn is using this workspace. Deleting it stops the command the turn is running and ends its background processes, then deletes the workspace.</p>
+{%- endif %}
+<p>Deleting the workspace does this:</p>
+<ul>
+<li>Removes everything in it, files included. This can't be undone.</li>
+<li>Tells the agent on its next workspace call that an operator deleted it. The agent can create another workspace.</li>
+</ul>
+<form class="inline-form" method="post" action="/admin/workspaces/{{ id }}/delete">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button type="submit">Delete workspace</button>
+</form>
+<a href="/admin/workspaces#workspace-{{ id }}">Cancel</a>
+{% endblock %}

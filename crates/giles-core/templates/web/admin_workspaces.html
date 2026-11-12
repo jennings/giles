@@ -1,0 +1,89 @@
+{% extends "layout.html" %}
+
+{% block title %}Workspaces - Giles{% endblock %}
+
+{% block content %}
+{% include "web/admin_nav.html" %}
+<h1>Workspaces</h1>
+<p>A workspace is where an agent runs commands and keeps files when it has an environment. Here you see each one with what its environment says about it now, and you can stop or delete it. Stopping keeps the files, and the agent's next command starts the workspace again. Deleting removes everything in it, and the agent is told on its next workspace call that an operator deleted it.</p>
+{%- if !environments.is_empty() %}
+<dl class="facts">
+{%- for environment in environments %}
+<dt>Environment <code>{{ environment.name }}</code></dt>
+<dd>
+{%- if let Some(problem) = environment.problem %}
+<span class="state-warn">{{ problem }}.</span> What comes from it shows as unknown.
+{%- else if let Some(free) = environment.free %}
+{{ free }} free
+{%- else %}
+free space unknown
+{%- endif %}
+</dd>
+{%- endfor %}
+</dl>
+{%- endif %}
+
+{%- if workspaces.is_empty() %}
+<p>No workspaces. An agent creates one when it first needs one.</p>
+{%- else %}
+{%- for workspace in workspaces %}
+<div class="admin-item" id="workspace-{{ workspace.id }}">
+<h3><code>{{ workspace.id }}</code> <span class="state-{{ workspace.state_class }}">{{ workspace.state }}</span>{% if workspace.in_use %} <span class="state-warn">In use</span>{% endif %}</h3>
+<dl class="facts">
+<dt>Environment</dt>
+<dd><code>{{ workspace.environment }}</code></dd>
+<dt>Owner</dt>
+<dd>
+{%- if let Some((agent_id, agent_label, exists)) = workspace.owner.agent %}
+{%- if exists %}<a href="/admin/agents/{{ agent_id }}">{{ agent_label }}</a>{% else %}<code>{{ agent_id }}</code>{% endif %} in {{ workspace.owner.channel }},
+{%- if let Some(chat) = workspace.owner.chat %} <a href="{{ chat }}">conversation <code>{{ workspace.owner.conversation }}</code></a>{% else %} conversation <code>{{ workspace.owner.conversation }}</code>{% endif %}
+{%- else if let Some(job) = workspace.owner.job %}
+job run (session {{ job }})
+{%- endif %}
+</dd>
+<dt>Created</dt>
+<dd>{{ workspace.created }}</dd>
+<dt>Last used</dt>
+<dd>{{ workspace.last_used }}</dd>
+<dt>In use</dt>
+<dd>{% if workspace.in_use %}yes, a running turn is using it{% else %}no{% endif %}</dd>
+<dt>Disk used</dt>
+<dd>{{ workspace.disk }}</dd>
+{%- if !workspace.description.is_empty() %}
+<dt>Description</dt>
+<dd>{{ workspace.description }}</dd>
+{%- endif %}
+{%- if !workspace.working_directory.is_empty() %}
+<dt>Working directory</dt>
+<dd><code>{{ workspace.working_directory }}</code></dd>
+{%- endif %}
+<dt>Details</dt>
+<dd>
+{%- if let Some(details) = workspace.details %}
+{%- if details.is_empty() %}
+<span class="detail">none</span>
+{%- else %}
+<dl class="facts">
+{%- for detail in details %}
+<dt>{{ detail.label }}</dt>
+<dd>{{ detail.value }}</dd>
+{%- endfor %}
+</dl>
+{%- endif %}
+{%- else %}
+unknown
+{%- endif %}
+</dd>
+</dl>
+{%- if workspace.can_act %}
+{%- if workspace.in_use %}
+<a class="button" href="/admin/workspaces/{{ workspace.id }}/stop" aria-label="Stop workspace {{ workspace.id }}">Stop</a>
+{%- else %}
+<form class="inline-form" method="post" action="/admin/workspaces/{{ workspace.id }}/stop"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" aria-label="Stop workspace {{ workspace.id }}">Stop</button></form>
+{%- endif %}
+<a class="button" href="/admin/workspaces/{{ workspace.id }}/delete" aria-label="Delete workspace {{ workspace.id }}">Delete</a>
+{%- endif %}
+</div>
+{%- endfor %}
+{%- endif %}
+{% endblock %}

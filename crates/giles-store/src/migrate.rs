@@ -42,6 +42,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "0005_workspaces",
         sql: include_str!("migrations/0005_workspaces.sql"),
     },
+    Migration {
+        name: "0006_workspace_operator_reason",
+        sql: include_str!("migrations/0006_workspace_operator_reason.sql"),
+    },
 ];
 
 /// The schema version this binary writes.
@@ -273,5 +277,49 @@ mod tests {
         ] {
             assert!(tables(&conn).iter().any(|t| t == table), "missing {table}");
         }
+    }
+
+    #[test]
+    fn the_operator_reason_migration_keeps_workspaces_and_allows_the_reason() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn, &MIGRATIONS[..5], None).unwrap();
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, environment, agent, channel, conversation, options,
+                 description, state, created_at, last_used_at, deleted_at, delete_reason)
+             VALUES ('ws-1', 'box', 'jeeves', 'web', 'c1', '{}', 'a box', 'deleted', 1, 1, 2,
+                 'model_delete'),
+                    ('ws-2', 'box', 'jeeves', 'web', 'c1', '{}', 'a box', 'active', 3, 3, NULL,
+                 NULL);",
+        )
+        .unwrap();
+        let rejected = conn.execute(
+            "UPDATE workspaces SET delete_reason = 'operator' WHERE id = 'ws-1'",
+            [],
+        );
+        assert!(rejected.is_err(), "0005 doesn't know the reason");
+
+        assert_eq!(migrate(&mut conn, MIGRATIONS, None).unwrap(), 5);
+        assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
+        let ids: Vec<String> = conn
+            .prepare("SELECT id FROM workspaces ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(ids, ["ws-1", "ws-2"]);
+        conn.execute(
+            "UPDATE workspaces SET delete_reason = 'operator' WHERE id = 'ws-1'",
+            [],
+        )
+        .unwrap();
+        // The one-active-workspace-per-owner index came along.
+        let second = conn.execute(
+            "INSERT INTO workspaces (id, environment, agent, channel, conversation, options,
+                 description, state, created_at, last_used_at)
+             VALUES ('ws-3', 'box', 'jeeves', 'web', 'c1', '{}', 'a box', 'active', 4, 4)",
+            [],
+        );
+        assert!(second.is_err());
     }
 }

@@ -96,6 +96,13 @@ report when it gives one, and the free space where volumes live. The Engine API 
 space, so the plugin runs the helper's `df /workspace` in a running workspace and reports `None`
 when none is running.
 
+Each workspace also carries `details` for [the workspaces page](web-channel.md#workspaces-page), in
+this order: **Image** (the requested reference), **Image digest** (the pinned one, when there is
+one), **Container** (the name, and the first 12 characters of the engine's id, or a note that the
+container is recreated on the next use), **Volume** (its name), and **Limits** (the memory, CPUs,
+and processes configured now, or `none`). The limits are the plugin's settings, which new and
+recreated containers get, not read back from the container.
+
 ## Images
 
 The allowlist and the reference parser are pure functions in `image.rs`.

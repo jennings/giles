@@ -3,7 +3,9 @@
 //! creates, opens, and deletes workspaces for their owners, keeps the `workspaces` table
 //! (Docs/technical/storage.md) in step with the plugins, and hands out leases that keep the
 //! sweep from stopping or deleting a workspace a turn is using. The sweep and the reconciliation
-//! on connect are in [`sweep`]; Docs/technical/environments.md describes the whole life cycle.
+//! on connect are in [`sweep`], and what the web UI's workspaces page does (an overview, and
+//! stopping and deleting a workspace on an operator's say-so, leased or not) is in [`manage`];
+//! Docs/technical/environments.md describes the whole life cycle.
 //!
 //! A workspace has one owner: a conversation (agent, channel instance, conversation id, the key
 //! of a session) or an isolated job run ([`WorkspaceOwner::of_session`]). The core assigns the
@@ -22,6 +24,7 @@
 
 #[cfg(test)]
 pub(crate) mod fake;
+mod manage;
 mod sweep;
 #[cfg(test)]
 mod tests;
@@ -39,6 +42,7 @@ use crate::registry::{EnvironmentEntry, Registry};
 use crate::sessions::Clock;
 
 pub use giles_store::{DeleteReason, WorkspaceOwner, WorkspaceRecord, WorkspaceState};
+pub use manage::{EnvironmentView, Live, ManageError, Overview, WorkspaceView};
 pub use sweep::{RECONCILE_GRACE, SWEEP_FIRST_DELAY, SWEEP_INTERVAL, SweepReport, WorkspaceSweep};
 
 /// Why a workspace call failed. The messages are written for the model: a core tool shows

@@ -71,6 +71,12 @@ Giles keeps limits on what the agent sees, the same for every environment:
   refuses files over 8 MiB.
 - `find` and `grep` return at most 200 results, and `grep` cuts lines over 500 characters.
 
+## See and delete workspaces
+
+**Workspaces** in the [web interface's admin pages](web.md#workspaces) lists every workspace with
+its owner, state, and disk use, and has buttons to stop or delete one. Deleting a workspace there
+removes its files, and the agent is told that an operator deleted it.
+
 ## How long a workspace lasts
 
 A workspace belongs to its conversation. `/new` starts a fresh session and keeps the workspace, so
@@ -79,7 +85,7 @@ the agent can carry on with the same files.
 A workspace goes away when:
 
 - you reset it with [`/env reset`](commands.md#resetting-the-workspace), or the agent resets or
-  deletes it
+  deletes it, or you [delete it](web.md#workspaces) on the admin pages
 - it has gone unused, and its conversation has had no messages, for the environment's `delete_after`
 - the environment loses it, for example when you remove its container by hand
 - it belongs to a scheduled job's run that ended

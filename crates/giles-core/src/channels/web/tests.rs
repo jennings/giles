@@ -46,6 +46,7 @@ mod agents;
 mod memory;
 mod routes;
 mod toolsets;
+mod workspaces;
 
 const INSTANCE: &str = "web";
 const CSRF: &str = "csrf-token-for-tests";

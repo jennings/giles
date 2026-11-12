@@ -148,7 +148,7 @@ fn failed(err: &ToolsetManagerError, title: &str) -> Response {
 }
 
 /// A time on the pages, in UTC.
-fn when(at: Timestamp) -> String {
+pub(super) fn when(at: Timestamp) -> String {
     at.strftime("%Y-%m-%d %H:%M:%S UTC").to_string()
 }
 
