@@ -104,6 +104,29 @@ pub struct Workspace {
     pub state: WorkspaceState,
     /// Disk the workspace uses, in bytes, if the environment can tell.
     pub disk_used_bytes: Option<u64>,
+    /// What else the operator may want to know, in the order to show it. The core shows these as
+    /// they are and never interprets them.
+    pub details: Vec<WorkspaceDetail>,
+}
+
+/// One display-ready fact about a workspace, shown to the operator as "label: value". The model
+/// doesn't see it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceDetail {
+    /// A short name, e.g. `Image`.
+    pub label: String,
+    /// The text to show, e.g. `debian:stable`.
+    pub value: String,
+}
+
+impl WorkspaceDetail {
+    /// A detail with the given label and value.
+    pub fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            value: value.into(),
+        }
+    }
 }
 
 /// Whether a workspace is ready for commands.

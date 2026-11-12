@@ -28,8 +28,8 @@ pub use channel::{
 };
 pub use environment::{
     Environment, EnvironmentInfo, ExecEvent, ExecExit, ExecRequest, FindRequest, FindResult,
-    GrepMatch, GrepRequest, GrepResult, ReadFile, StartOutcome, Workspace, WorkspaceList,
-    WorkspaceState,
+    GrepMatch, GrepRequest, GrepResult, ReadFile, StartOutcome, Workspace, WorkspaceDetail,
+    WorkspaceList, WorkspaceState,
 };
 pub use error::{Error, Result};
 pub use id::{

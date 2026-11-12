@@ -28,7 +28,7 @@ use futures::stream::{self, BoxStream, StreamExt as _};
 use giles_plugin_sdk::giles_types::{
     Environment, EnvironmentInfo, Error, ExecEvent, ExecExit, ExecRequest, FindRequest, FindResult,
     GrepMatch, GrepRequest, GrepResult, ReadFile, Result, StartOutcome, Timestamp, Workspace,
-    WorkspaceId, WorkspaceList, WorkspaceState,
+    WorkspaceDetail, WorkspaceId, WorkspaceList, WorkspaceState,
 };
 use giles_plugin_sdk::{Configure, EnvironmentPlugin, async_trait};
 use serde::Deserialize;
@@ -135,6 +135,10 @@ impl Environment for Echo {
             created_at: Timestamp::now(),
             state: WorkspaceState::Running,
             disk_used_bytes: None,
+            details: vec![
+                WorkspaceDetail::new("Kind", "echo"),
+                WorkspaceDetail::new("Options", options.to_string()),
+            ],
         };
         workspaces.insert(
             id.as_str().to_owned(),

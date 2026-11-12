@@ -12,7 +12,8 @@ use giles_proto::plugin::v1::plugin_service_server::PluginServiceServer;
 use giles_proto::plugin::v1::{ConfigureRequest, DescribeRequest};
 use giles_types::{
     EnvironmentInfo, Error, ExecExit, ExecRequest, FindRequest, FindResult, GrepMatch, GrepRequest,
-    GrepResult, ReadFile, StartOutcome, Timestamp, Workspace, WorkspaceList, WorkspaceState,
+    GrepResult, ReadFile, StartOutcome, Timestamp, Workspace, WorkspaceDetail, WorkspaceList,
+    WorkspaceState,
 };
 use serde_json::json;
 use tokio::sync::oneshot;
@@ -54,6 +55,7 @@ fn workspace(id: &WorkspaceId) -> Workspace {
         created_at: "2026-11-10T12:00:00Z".parse::<Timestamp>().unwrap(),
         state: WorkspaceState::Running,
         disk_used_bytes: Some(4096),
+        details: vec![WorkspaceDetail::new("Image", "fake")],
     }
 }
 

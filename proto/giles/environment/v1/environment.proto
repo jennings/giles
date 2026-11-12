@@ -115,6 +115,19 @@ message Workspace {
   WorkspaceState state = 6;
   // Disk the workspace uses, if the plugin can tell.
   optional uint64 disk_used_bytes = 7;
+  // What else the operator may want to know about the workspace, in the order to show it, e.g. the
+  // image, its digest, and the container. The core shows these as they are and never interprets
+  // them.
+  repeated WorkspaceDetail details = 8;
+}
+
+// One display-ready fact about a workspace, shown to the operator as "label: value". Only people
+// read it: the model doesn't see it and the core doesn't act on it.
+message WorkspaceDetail {
+  // A short name, e.g. "Image".
+  string label = 1;
+  // The text to show, e.g. "debian:stable".
+  string value = 2;
 }
 
 enum WorkspaceState {

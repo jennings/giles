@@ -143,6 +143,7 @@ calls the service and implements the trait.
 | `StartOutcome::{Running, Started, Recreated}`    | `StartOutcome` enum, with `detail` for the last two        |
 | `WorkspaceId`                                    | `workspace_id` string: 1 to 64 of `a-z`, `0-9`, `-`        |
 | `Workspace`, `WorkspaceState`                    | `Workspace`, `WorkspaceState`; `created_at` and the state are required |
+| `Workspace::details`, `WorkspaceDetail`          | `repeated WorkspaceDetail`: display-ready `{label, value}` rows, shown to the operator as they are |
 | `WorkspaceList { workspaces, free_bytes }`       | `ListWorkspacesResponse`, `optional free_bytes`            |
 | `Environment::exec(id, ExecRequest)`             | `Exec`: server stream of `ExecResponse`                    |
 | `ExecEvent::{Stdout, Stderr, Exit}`              | `ExecResponse` `oneof event`: `stdout`, `stderr`, `exit`   |

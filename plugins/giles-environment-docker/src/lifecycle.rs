@@ -23,7 +23,9 @@ use crate::exec::Plain;
 use crate::helper::{self, HELPER_PATH};
 use crate::image::Reference;
 use crate::{DockerEnvironment, WORKSPACE_DIR, label_map};
-use giles_types::{StartOutcome, Workspace, WorkspaceId, WorkspaceList, WorkspaceState};
+use giles_types::{
+    StartOutcome, Workspace, WorkspaceDetail, WorkspaceId, WorkspaceList, WorkspaceState,
+};
 
 const LABEL_INSTANCE: &str = "giles.instance";
 const LABEL_WORKSPACE: &str = "giles.workspace";
@@ -748,8 +750,71 @@ impl DockerEnvironment {
             created_at,
             state,
             disk_used_bytes: disk,
+            details: self.details(volume, container),
         }
     }
+
+    /// The facts about a workspace an operator may want, in the order to show them. The limits
+    /// are the ones configured now, which new and recreated containers get.
+    fn details(
+        &self,
+        volume: &Volume,
+        container: Option<&ContainerSummary>,
+    ) -> Vec<WorkspaceDetail> {
+        let label = |key: &str| volume.labels.get(key).map_or("", String::as_str);
+        let mut details = vec![WorkspaceDetail::new("Image", label(LABEL_IMAGE))];
+        if !label(LABEL_DIGEST).is_empty() {
+            details.push(WorkspaceDetail::new("Image digest", label(LABEL_DIGEST)));
+        }
+        let id = label(LABEL_WORKSPACE);
+        let container_text = match container.and_then(|c| c.id.as_deref()) {
+            Some(engine_id) => format!(
+                "{} ({})",
+                self.resource_name(id),
+                &engine_id[..engine_id.len().min(12)]
+            ),
+            None => "none (recreated on the next use)".to_owned(),
+        };
+        details.push(WorkspaceDetail::new("Container", container_text));
+        details.push(WorkspaceDetail::new("Volume", &volume.name));
+        details.push(WorkspaceDetail::new("Limits", self.limits_text()));
+        details
+    }
+
+    fn limits_text(&self) -> String {
+        let settings = self.settings();
+        let mut limits = Vec::new();
+        if let Some(bytes) = settings.memory_bytes {
+            limits.push(format!("memory {}", binary_size(bytes)));
+        }
+        if let Some(nano) = settings.nano_cpus {
+            limits.push(format!("{} CPUs", nano as f64 / 1e9));
+        }
+        if let Some(pids) = settings.pids_limit {
+            limits.push(format!("{pids} processes"));
+        }
+        if limits.is_empty() {
+            "none".to_owned()
+        } else {
+            limits.join(", ")
+        }
+    }
+}
+
+/// A byte count in the largest binary unit that divides it exactly, e.g. `2 GiB`.
+fn binary_size(bytes: i64) -> String {
+    const UNITS: [(&str, i64); 4] = [
+        ("TiB", 1 << 40),
+        ("GiB", 1 << 30),
+        ("MiB", 1 << 20),
+        ("KiB", 1 << 10),
+    ];
+    for (unit, size) in UNITS {
+        if bytes >= size && bytes % size == 0 {
+            return format!("{} {unit}", bytes / size);
+        }
+    }
+    format!("{bytes} B")
 }
 
 fn is_missing(error: &bollard::errors::Error) -> bool {

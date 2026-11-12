@@ -12,7 +12,7 @@ use futures::stream::{self, BoxStream};
 use giles_types::{
     Environment, EnvironmentInfo, Error, ExecEvent, ExecRequest, FindRequest, FindResult,
     GrepMatch, GrepRequest, GrepResult, ReadFile, Result, StartOutcome, Timestamp, Workspace,
-    WorkspaceId, WorkspaceList, WorkspaceState as PluginState,
+    WorkspaceDetail, WorkspaceId, WorkspaceList, WorkspaceState as PluginState,
 };
 use serde_json::{Value, json};
 
@@ -206,6 +206,7 @@ impl Fake {
                 PluginState::Stopped
             },
             disk_used_bytes: None,
+            details: vec![WorkspaceDetail::new("Box", "fake")],
         }
     }
 }
