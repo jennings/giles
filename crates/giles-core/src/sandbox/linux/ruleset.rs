@@ -160,7 +160,16 @@ pub(super) fn restrict(spec: &Spec, program: &Path) -> Result<(), SandboxError> 
         ruleset = add_path(ruleset, path, root, Grant::Write, Origin::Spec("write"))?;
     }
     for (path, grant, origin) in path_grants(spec, program) {
-        ruleset = add_path(ruleset, path, resolve(path, &stops), grant, origin)?;
+        let resolved = resolve(path, &stops);
+        let linked = if origin == Origin::Spec("execute") {
+            linked_programs(&resolved, &stops)
+        } else {
+            Vec::new()
+        };
+        ruleset = add_path(ruleset, path, resolved, grant, origin)?;
+        for (link, target) in linked {
+            ruleset = add_path(ruleset, &link, target, Grant::Execute, origin)?;
+        }
     }
     if let Network::Tcp(ports) = &spec.network {
         for &port in ports {
@@ -175,6 +184,36 @@ pub(super) fn restrict(spec: &Spec, program: &Path) -> Result<(), SandboxError> 
     }
     debug!(?status, "Landlock ruleset applied");
     Ok(())
+}
+
+/// The programs the links directly in `dir` lead to, when `dir` is an `execute` grant that
+/// resolved to a directory. Granting `/usr/bin` means its programs may run, but on some systems
+/// they're links out of it (Ubuntu 26.04's `/usr/bin/cat` leads to
+/// `/usr/lib/cargo/bin/coreutils/cat`), and Landlock checks the right to execute on the file the
+/// kernel ends at. Each link is walked like any grant, so one at or below a writable root isn't
+/// followed. Only files count: links to directories, dangling links, and a directory that can't
+/// be listed add nothing.
+fn linked_programs(dir: &Resolved, stops: &[PathBuf]) -> Vec<(PathBuf, Resolved)> {
+    if !matches!(dir.target, Target::Found { dir: true, .. }) {
+        return Vec::new();
+    }
+    let entries = match std::fs::read_dir(&dir.real) {
+        Ok(entries) => entries,
+        Err(err) => {
+            debug!(path = %dir.real.display(), error = %err, "can't list an execute grant");
+            return Vec::new();
+        }
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_symlink()))
+        .map(|entry| {
+            let link = entry.path();
+            let target = resolve(&link, stops);
+            (link, target)
+        })
+        .filter(|(_, target)| matches!(target.target, Target::Found { dir: false, .. }))
+        .collect()
 }
 
 /// A ruleset handling every filesystem right, scoping, and the network rights `network` needs
@@ -324,5 +363,34 @@ mod tests {
         // The writable roots are added separately, before everything else.
         assert_eq!(find("/w"), None);
         assert_eq!(find("/data"), None);
+    }
+
+    /// A link in an `execute` directory grants the file it leads to, and nothing else.
+    #[test]
+    fn links_in_an_execute_directory_grant_the_programs_they_lead_to() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = std::fs::canonicalize(dir.path()).unwrap();
+        let (bin, lib) = (real.join("bin"), real.join("lib"));
+        std::fs::create_dir_all(lib.join("sub")).unwrap();
+        std::fs::create_dir(&bin).unwrap();
+        std::fs::write(lib.join("cat"), "").unwrap();
+        std::fs::write(bin.join("own"), "").unwrap();
+        symlink("../lib/cat", bin.join("cat")).unwrap();
+        symlink(lib.join("sub"), bin.join("sub")).unwrap();
+        symlink("../lib/gone", bin.join("gone")).unwrap();
+
+        let linked = |stops: &[PathBuf]| -> Vec<(PathBuf, PathBuf)> {
+            linked_programs(&resolve(&bin, stops), stops)
+                .into_iter()
+                .map(|(link, target)| (link, target.real))
+                .collect()
+        };
+        assert_eq!(linked(&[]), [(bin.join("cat"), lib.join("cat"))]);
+        // Inside a writable root the links aren't followed: the plugin may have planted them.
+        assert!(linked(std::slice::from_ref(&real)).is_empty());
+        // A file grant has no links in it.
+        assert!(linked_programs(&resolve(&lib.join("cat"), &[]), &[]).is_empty());
     }
 }

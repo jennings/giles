@@ -365,6 +365,32 @@ fn only_granted_programs_run() {
     assert_eq!(probe.ok(), ["ran", "planted-denied"]);
 }
 
+/// A link in an `execute` directory runs the program it leads to, even outside every grant (as
+/// Ubuntu 26.04's `/usr/bin/cat` leads into `/usr/lib/cargo/bin/coreutils`). Its neighbors there
+/// still don't run.
+#[test]
+fn links_in_an_execute_directory_run_their_programs() {
+    require_landlock!();
+    let env = Env::new();
+    let (bin, lib) = (env.path("bin"), env.path("lib"));
+    fs::create_dir(&bin).unwrap();
+    fs::create_dir(&lib).unwrap();
+    for name in ["linked", "other"] {
+        let script = lib.join(name);
+        fs::write(&script, format!("#!/bin/sh\necho {name}\n")).unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::os::unix::fs::symlink("../lib/linked", bin.join("linked")).unwrap();
+    let mut spec = env.spec();
+    spec.execute.push(bin.clone());
+    let probe = env.sh(
+        &spec,
+        r#""$1/linked"; "$2/other" || echo other-denied"#,
+        &[&bin, &lib],
+    );
+    assert_eq!(probe.ok(), ["linked", "other-denied"]);
+}
+
 /// Connects to each address and reports which connections went through, both as the probe saw
 /// it and as the listeners saw it.
 fn tcp_probe(env: &Env, network: Network, listeners: &[TcpListener]) -> Vec<bool> {
