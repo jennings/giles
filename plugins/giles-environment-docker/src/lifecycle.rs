@@ -676,21 +676,15 @@ impl DockerEnvironment {
 
     /// Sizes of volumes by name, from the engine's disk usage report. Empty when it can't say.
     async fn volume_usage(&self) -> HashMap<String, u64> {
-        let Ok(usage) = self.docker().df(None).await else {
-            return HashMap::new();
-        };
-        usage
-            .volume_usage
-            .and_then(|volumes| volumes.items)
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|item| {
-                let name = item.get("Name")?.as_str()?.to_owned();
-                let size = item.get("UsageData")?.get("Size")?.as_i64()?;
-                // The engine reports -1 for a size it hasn't measured.
-                u64::try_from(size).ok().map(|size| (name, size))
-            })
-            .collect()
+        let socket = self.settings().socket();
+        let version = self.docker().client_version();
+        match crate::disk_usage::volume_sizes(socket, version, crate::API_TIMEOUT).await {
+            Ok(sizes) => sizes,
+            Err(error) => {
+                warn!(%error, "can't read the engine's disk usage report; volume sizes are unknown");
+                HashMap::new()
+            }
+        }
     }
 
     /// Free space where the container's volume is stored, measured from inside it.

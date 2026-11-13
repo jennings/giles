@@ -19,6 +19,7 @@
 //! kill a cancelled command, and it runs `find`, `grep`, and the file calls.
 
 mod config;
+mod disk_usage;
 mod error;
 mod exec;
 mod files;
@@ -50,6 +51,9 @@ pub const WORKSPACE_DIR: &str = "/workspace";
 /// How long a request to the engine may take before it is abandoned. (Streaming bodies, such as an
 /// image pull or a command's output, aren't limited by it.)
 const API_TIMEOUT_SECS: u64 = 120;
+/// [`API_TIMEOUT_SECS`] as a duration, for requests made without bollard.
+pub(crate) const API_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(API_TIMEOUT_SECS);
 
 /// A Docker engine hosting workspaces for one `[environment.<name>]` instance.
 ///

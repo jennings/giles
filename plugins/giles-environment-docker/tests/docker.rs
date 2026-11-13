@@ -832,10 +832,11 @@ async fn list_reports_workspaces_with_disk_and_free_space() {
     );
     let w1 = &list.workspaces[0];
     assert_eq!(w1.state, WorkspaceState::Running);
-    // Some engines can't measure a volume; those that can, count what is in it.
-    if let Some(used) = w1.disk_used_bytes {
-        assert!(used >= 2_000_000, "{used}");
-    }
+    // Docker's and Podman's local volume driver measure volumes; the size counts what is in it.
+    let used = w1
+        .disk_used_bytes
+        .expect("the engine reports the volume's size");
+    assert!(used >= 2_000_000, "{used}");
     assert!(w1.created_at.as_second() > 1_700_000_000);
     let detail = |name: &str| {
         w1.details
