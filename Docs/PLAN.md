@@ -1439,10 +1439,10 @@ Keys at the instance level belong to the core: `component` (providers and channe
 ignored whatever else it holds, and each start logs a warning naming it. `component` in any other
 `[toolset.<instance>]` table is an error.
 
-A key in `giles.toml` that the core doesn't know is ignored with a startup warning; a known key with
-a value of the wrong type stops startup. The exceptions stay strict: `sandbox` tables (a typo would
-widen the sandbox), `auth` without a method, `[[routes]]` not yet imported, the web channel's
-`proxy` table, and `agent.toml`.
+A key in `giles.toml` or `agent.toml` that the core doesn't know is ignored with a startup warning,
+wherever it is (`sandbox` tables, the web channel's `proxy` table, and `[[routes]]` rules when they
+are imported included); a known key with a value of the wrong type stops startup, and so does an
+`auth` table without a method.
 
 `agents/<agent>/agent.toml`:
 

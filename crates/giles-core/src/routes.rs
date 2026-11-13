@@ -43,7 +43,7 @@ use serde::Deserialize;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
-use crate::config::{Config, InstanceName, LiveConfig};
+use crate::config::{Config, InstanceName, KeyPath, LiveConfig};
 
 /// The longest conversation id a route accepts, in bytes.
 pub const MAX_CONVERSATION_BYTES: usize = 512;
@@ -496,7 +496,6 @@ fn from_stored(stored: &StoredRoute) -> Result<Route, String> {
 
 /// What `[[routes]]` in `giles.toml` can hold.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct LegacyRoute {
     channel: Option<String>,
     kind: Option<String>,
@@ -505,7 +504,7 @@ struct LegacyRoute {
 }
 
 /// The `[[routes]]` rules of `giles.toml`, validated like routes made in the web UI, but with
-/// shadowed routes kept as written.
+/// shadowed routes kept as written. A key a rule doesn't have is logged and ignored.
 fn import_rules(legacy: &[toml::Value], config: &Config) -> Result<Vec<Route>, RoutesError> {
     let at = |index, key, reason: String| RoutesError::Import {
         file: "giles.toml".to_owned(),
@@ -517,10 +516,15 @@ fn import_rules(legacy: &[toml::Value], config: &Config) -> Result<Vec<Route>, R
         .iter()
         .enumerate()
         .map(|(index, value)| {
-            let raw: LegacyRoute = value
-                .clone()
-                .try_into()
-                .map_err(|e: toml::de::Error| at(index, None, e.message().to_owned()))?;
+            let mut unknown = Vec::new();
+            let raw: LegacyRoute = serde_ignored::deserialize(value.clone(), |key| {
+                unknown.push(KeyPath::from(&key));
+            })
+            .map_err(|e: toml::de::Error| at(index, None, e.message().to_owned()))?;
+            for key in unknown {
+                let key = KeyPath::root().key("routes").index(index).join(&key);
+                warn!("giles.toml: unknown key `{key}` (ignored)");
+            }
             for (key, value) in [
                 ("channel", &raw.channel),
                 ("kind", &raw.kind),
@@ -1513,6 +1517,14 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_rule_with_an_unknown_key_is_imported_without_it() {
+        let h = Harness::with("[[routes]]\nagent = \"jeeves\"\nuser = \"me\"\n").await;
+        let views = h.routes.view().await.unwrap();
+        assert_eq!(views.len(), 1);
+        assert_eq!(RouteSpec::of(&views[0].route), spec("", "", "", "jeeves"));
+    }
+
+    #[tokio::test]
     async fn the_import_happens_once_and_the_file_is_not_read_again() {
         let h = Harness::with(LEGACY).await;
         let first = h.routes.view().await.unwrap();
@@ -1591,10 +1603,6 @@ mod tests {
                 "routes[1].kind: must not be empty",
             ),
             ("channel = \"web\"", "routes[1]: missing field `agent`"),
-            (
-                "agent = \"jeeves\"\nuser = \"me\"",
-                "routes[1]: unknown field `user`",
-            ),
         ];
         for (rule, want) in cases {
             let config = LiveConfig::new(Arc::new(config(

@@ -5,10 +5,10 @@
 //! section 1.1), except agents created, edited, or removed in the web UI, which change the running
 //! configuration through [`LiveConfig`]. Every problem is a [`ConfigError`] naming the file, the
 //! key path, and the reason.
-//! Unknown keys in `giles.toml` are ignored and reported ([`Config::unknown_keys`]), except inside
-//! an instance's free-form `config` table, which belongs to the component; a recognized key with a
-//! value of the wrong type is an error, as is every key of `agent.toml`. A `[toolset.<name>]`
-//! table with `url` is ignored whatever else it holds, and reported separately
+//! Unknown keys in `giles.toml` and `agent.toml` are ignored and reported
+//! ([`Config::unknown_keys`]), except inside an instance's free-form `config` table, which belongs
+//! to the component; a recognized key with a value of the wrong type is an error. A
+//! `[toolset.<name>]` table with `url` is ignored whatever else it holds, and reported separately
 //! ([`Config::ignored_toolset_tables`]): remote toolsets are stored in the database. Secret
 //! references are resolved during loading; resolved values are held as [`Secret`]s or in a
 //! [`PluginConfig`], whose `Debug` output is redacted.
@@ -111,8 +111,8 @@ pub struct Config {
     pub toolsets: BTreeMap<InstanceName, ToolsetInstance>,
     /// Every `[toolset.<name>]` table of `giles.toml` with `url`, in file order.
     ignored_toolsets: Vec<IgnoredToolsetTable>,
-    /// Every key of `giles.toml` that Giles doesn't recognize. They are ignored; the daemon logs
-    /// each once at startup.
+    /// Every key of `giles.toml` and the agents' `agent.toml` files that Giles doesn't recognize.
+    /// They are ignored; the daemon logs each once at startup.
     pub unknown_keys: Vec<UnknownKey>,
     /// `[[routes]]` as written, unvalidated. Routes are managed in the web UI and stored in the
     /// database; these are imported once by [`Routes::open`](crate::routes::Routes::open) and then
@@ -255,15 +255,16 @@ impl Config {
         toolset::check_binary_dirs(file, root, options, channels.values(), &toolset_refs, None)?;
 
         let provider_names: BTreeSet<&str> = providers.keys().map(InstanceName::as_str).collect();
-        let agents = load_agents(root, &provider_names)?;
+        let (agents, agent_unknown) = load_agents(root, &provider_names)?;
 
-        // In file order, as they are logged.
+        // In file order, as they are logged: `giles.toml`, then each agent's file.
         let mut unknown_keys: Vec<UnknownKey> = unknown
             .into_iter()
             .chain(ctx.unknown.into_inner())
             .map(|key| UnknownKey::new(file, source, key))
             .collect();
         unknown_keys.sort_by_key(UnknownKey::order);
+        unknown_keys.extend(agent_unknown);
 
         Ok(Self {
             core,
@@ -287,8 +288,9 @@ impl Config {
     /// Validates `source` as the `agent.toml` of an agent `id` that would live in
     /// `agents/<id>/` under `root`, exactly as [`load`](Self::load) validates each agent at
     /// startup: the id as a directory name, every key, the models against this configuration's
-    /// provider instances, and job prompt files in the agent's directory. Reads nothing else and
-    /// writes nothing; the web UI checks an agent it creates with this before writing it.
+    /// provider instances, and job prompt files in the agent's directory. Keys Giles doesn't
+    /// recognize are ignored, as at startup. Reads nothing else and writes nothing; the web UI
+    /// checks an agent it creates with this before writing it.
     ///
     /// # Errors
     ///
@@ -307,23 +309,25 @@ impl Config {
             ));
         }
         let providers = self.providers.keys().map(InstanceName::as_str).collect();
-        agent::parse(id, &root.agents_dir().join(id), source, &providers)
+        agent::parse(id, &root.agents_dir().join(id), source, &providers).map(|(agent, _)| agent)
     }
 }
 
 /// Loads every agent: each directory in `agents/` whose name doesn't start with `.`. Files there
-/// are ignored.
+/// are ignored. Also returns the keys of their `agent.toml` files that Giles doesn't recognize, by
+/// agent id, then in file order.
 fn load_agents(
     root: &DataRoot,
     providers: &BTreeSet<&str>,
-) -> Result<BTreeMap<AgentId, AgentConfig>, ConfigError> {
+) -> Result<(BTreeMap<AgentId, AgentConfig>, Vec<UnknownKey>), ConfigError> {
     let dir = root.agents_dir();
     let entries = match fs::read_dir(&dir) {
         Ok(entries) => entries,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Default::default()),
         Err(e) => return Err(ConfigError::io(&dir, "list", e)),
     };
     let mut agents = BTreeMap::new();
+    let mut unknown = BTreeMap::new();
     for entry in entries {
         let entry = entry.map_err(|e| ConfigError::io(&dir, "list", e))?;
         let path = entry.path();
@@ -348,10 +352,11 @@ fn load_agents(
                 "an agent directory needs an agent.toml",
             ));
         }
-        let agent = agent::load(&name, &path, providers)?;
+        let (agent, keys) = agent::load(&name, &path, providers)?;
+        unknown.insert(agent.id.clone(), keys);
         agents.insert(agent.id.clone(), agent);
     }
-    Ok(agents)
+    Ok((agents, unknown.into_values().flatten().collect()))
 }
 
 /// Reads a configuration file as UTF-8.
@@ -367,18 +372,10 @@ fn read_file(path: &Path) -> Result<String, ConfigError> {
     })
 }
 
-/// Parses `source` (the contents of `file`) as `T`, tracking the key path of any error.
-fn parse_toml<T: DeserializeOwned>(file: &Path, source: &str) -> Result<T, ConfigError> {
-    let deserializer =
-        toml::Deserializer::parse(source).map_err(|e| ConfigError::syntax(file, source, &e))?;
-    serde_path_to_error::deserialize(deserializer)
-        .map_err(|e| ConfigError::deserialize(file, source, &e))
-}
-
-/// Like [`parse_toml`], but keys `T` doesn't have are not errors: they are returned, in the order
-/// the parser meets them. A key `T` has with a value it can't take is still an error, found
-/// whether or not unknown keys come before it. Only the outermost unknown key is returned (not the
-/// keys inside an unknown table).
+/// Parses `source` (the contents of `file`) as `T`, tracking the key path of any error. Keys `T`
+/// doesn't have are not errors: they are returned, in the order the parser meets them. A key `T`
+/// has with a value it can't take is still an error, found whether or not unknown keys come
+/// before it. Only the outermost unknown key is returned (not the keys inside an unknown table).
 fn parse_toml_lenient<T: DeserializeOwned>(
     file: &Path,
     source: &str,

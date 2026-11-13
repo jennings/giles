@@ -122,12 +122,9 @@ fn parse_port(entry: &str) -> Result<u16, String> {
 }
 
 /// A `sandbox` table as written, before its paths are checked: the raw form of
-/// [`Sandbox`](super::Sandbox).
-///
-/// Strict, unlike the rest of `giles.toml`: a misspelled `network` or `min_abi` would silently
-/// leave the default (network on, no ABI floor) and widen the plugin's sandbox.
+/// [`Sandbox`](super::Sandbox). Like the rest of `giles.toml`, a key it doesn't have is ignored
+/// and reported.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SandboxSpec {
     /// `network`: `true`, `false`, or a list of `"tcp:<port>"`. Unset means the kind's default.
     #[serde(skip_serializing_if = "Option::is_none")]

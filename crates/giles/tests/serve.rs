@@ -353,26 +353,6 @@ fn invalid_config_fails_with_the_file_and_key() {
 }
 
 #[test]
-fn a_misspelled_sandbox_key_stops_startup() {
-    let env = Env::new();
-    let home = env.path("home");
-    write_config(
-        &home,
-        "[owner]\nidentities = [\"web:owner\"]\n[toolset.t]\ncommand = \"/bin/true\"\n\
-         sandbox = { netwrok = false }\n",
-    );
-    let output = output_within_timeout(env.command(&["serve", "--home", home.to_str().unwrap()]));
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let expected = format!(
-        "{}:5:{}: toolset.t.sandbox.netwrok: unknown field `netwrok`",
-        home.join("giles.toml").display(),
-        "sandbox = { ".len() + 1
-    );
-    assert!(stderr.contains(&expected), "{stderr}");
-}
-
-#[test]
 fn unknown_config_keys_are_logged_once_and_do_not_stop_startup() {
     let env = Env::new();
     let home = env.path("home");
@@ -380,12 +360,21 @@ fn unknown_config_keys_are_logged_once_and_do_not_stop_startup() {
         &home,
         "typo = 1\n[core]\nhttp_listen = \"127.0.0.1:0\"\nhttp_listn = 2\n\
          [owner]\nidentities = [\"web:owner\"]\nnmae = \"me\"\n\
-         [toolset.t]\ncommand = \"/bin/true\"\nsandbox = { read = [\"/usr\"] }\n\
+         [toolset.t]\ncommand = \"/bin/true\"\nsandbox = { read = [\"/usr\"], netwrok = false }\n\
          [channel.web]\nconfig = { public_ur = \"x\" }\n\
          [provider.anthropic]\nconfig = { api_key = \"sk-x\", modle = 1 }\n\
          [provider.local]\ncomponent = \"openai\"\n\
-         config = { models = { m = { contxt = 1 } } }\n",
+         config = { models = { m = { contxt = 1 } } }\n\
+         [[routes]]\nagent = \"jeeves\"\nuser = \"me\"\n",
     );
+    let agent = home.join("agents/jeeves");
+    fs::create_dir_all(&agent).unwrap();
+    fs::write(
+        agent.join("agent.toml"),
+        "models = [\"anthropic/m\"]\nmodles = []\n\
+         [[jobs]]\nid = \"j\"\ncron = \"0 8 * * *\"\nprompt = \"p\"\ndeliver_to = \"me\"\n",
+    )
+    .unwrap();
     let file = home.join("giles.toml").display().to_string();
     let (status, log) =
         Daemon::start(env.command(&["serve", "--home", home.to_str().unwrap()])).stop("TERM");
@@ -394,15 +383,26 @@ fn unknown_config_keys_are_logged_once_and_do_not_stop_startup() {
         "typo",
         "core.http_listn",
         "owner.nmae",
+        "toolset.t.sandbox.netwrok",
         "channel.web.config.public_ur",
         "provider.anthropic.config.modle",
         "provider.local.config.models.m.contxt",
+        "routes[0].user",
+        "modles",
+        "jobs[0].deliver_to",
     ] {
         let expected = format!("unknown key `{key}` (ignored)");
         assert_eq!(log.matches(&expected).count(), 1, "{expected}\n{log}");
     }
     assert!(
         log.contains(&format!("{file}:1:1: unknown key `typo` (ignored)")),
+        "{log}"
+    );
+    assert!(
+        log.contains(&format!(
+            "{}:2:1: unknown key `modles` (ignored)",
+            agent.join("agent.toml").display()
+        )),
         "{log}"
     );
 }

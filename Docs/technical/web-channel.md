@@ -116,10 +116,9 @@ keys in `config.rs`.
 
 ### Configuration
 
-`WebConfig::from_json` parses the instance's `config` table (unknown keys are collected into
-`WebConfig::unknown_keys` and logged by the registry, except in `proxy`, whose `RawProxy` keeps
-`deny_unknown_fields` because it configures a listener and a shared secret; errors name the key and
-are scrubbed of secrets):
+`WebConfig::from_json` parses the instance's `config` table (unknown keys, `proxy` included, are
+collected into `WebConfig::unknown_keys` and logged by the registry; errors name the key and are
+scrubbed of secrets):
 
 - `public_url`: an `http`/`https` origin, normalized (lowercase host, no trailing slash); a path,
   query, fragment, or user info is an error. Login links start with it; `https` makes the cookie

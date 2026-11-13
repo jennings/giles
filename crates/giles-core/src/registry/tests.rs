@@ -384,18 +384,12 @@ fn builds_the_web_channel_once() {
     assert_eq!(registry.web_channel().unwrap().instance().as_str(), "chat");
     assert!(registry.pending().is_empty());
 
-    // `proxy` stays strict.
+    // An unknown key in `proxy`, like anywhere else in the table, is ignored (and logged).
     let home = Home::new(
         "[channel.web]\nconfig = { proxy = { identity_header = \"x-user\", lisen = 1 } }\n",
     );
-    let err = home.build().unwrap_err();
-    assert_config_error(
-        &err,
-        &home.path("giles.toml"),
-        (4, 1),
-        "channel.web.config",
-        "proxy.lisen: unknown field `lisen`",
-    );
+    let registry = home.build().unwrap();
+    assert!(registry.web_channel().unwrap().config().proxy.is_some());
 
     let home = Home::new("[channel.web]\n[channel.chat]\ncomponent = \"web\"\n");
     let err = home.build().unwrap_err();

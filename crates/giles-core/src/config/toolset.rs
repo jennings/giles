@@ -470,11 +470,7 @@ mod tests {
             ),
             ("skills = [\"/a\", 2]\n", "skills[1]", "invalid type"),
             ("ulr = \"x\"\n", "ulr", "unknown key"),
-            (
-                "[sandbox]\nredd = []\n",
-                "sandbox.redd",
-                "unknown field `redd`",
-            ),
+            ("[sandbox]\nredd = []\n", "sandbox.redd", "unknown key"),
             ("deadline = \"soon\"\n", "deadline", ""),
         ] {
             let err = ToolsetSpec::from_toml(text).unwrap_err();
