@@ -92,9 +92,15 @@ The helper's `idle` process has no signal handlers, so SIGTERM ends it at once.
 that failed halfway can be repeated.
 
 `list_workspaces` reports state from the container, the volume's size from the engine's disk usage
-report when it gives one, and the free space where volumes live. The Engine API has no call for free
-space, so the plugin runs the helper's `df /workspace` in a running workspace and reports `None`
-when none is running.
+report, and the free space where volumes live. The Engine API has no call for free space, so the
+plugin runs the helper's `df /workspace` in a running workspace and reports `None` when none is
+running.
+
+The disk usage report (`GET /system/df`) has two shapes. From API 1.52 (Docker 29) the volumes are
+in `VolumeUsage.Items`, and only when the request sets `verbose`. Older engines list them in a
+top-level `Volumes` array, which bollard's model has no field for. So `disk_usage.rs` requests
+`/v<negotiated>/system/df?verbose=1` itself, with hyper over the engine socket, and reads either
+shape from the JSON. A failed request is logged, and every size is then `None`.
 
 Each workspace also carries `details` for [the workspaces page](web-channel.md#workspaces-page), in
 this order: **Image** (the requested reference), **Image digest** (the pinned one, when there is
