@@ -35,9 +35,8 @@ pub struct WebConfig {
     pub public_url: Option<String>,
     /// The trusted-proxy listener, if configured.
     pub proxy: Option<ProxyConfig>,
-    /// Keys of the config table that the web channel doesn't know: ignored, and reported by the
-    /// caller. Empty unless [`WebConfig::from_json`] found some. The `proxy` table is strict, so
-    /// none are ever inside it.
+    /// Keys of the config table that the web channel doesn't know, at any depth: ignored, and
+    /// reported by the caller. Empty unless [`WebConfig::from_json`] found some.
     pub unknown_keys: Vec<KeyPath>,
 }
 
@@ -73,10 +72,7 @@ struct Raw {
     proxy: Option<RawProxy>,
 }
 
-/// Strict, unlike the rest of the table: this configures a listener and its shared secret, and a
-/// misspelled `secret_header` or `listen` would leave the proxy listener unprotected or elsewhere.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawProxy {
     identity_header: String,
     listen: Option<SocketAddr>,
@@ -85,9 +81,8 @@ struct RawProxy {
 }
 
 impl WebConfig {
-    /// Parses the instance's `config` table (`PluginConfig::to_json`). Unknown keys are not errors:
-    /// they are ignored and listed in [`unknown_keys`](Self::unknown_keys). The exception is the
-    /// `proxy` table, where an unknown key is an error.
+    /// Parses the instance's `config` table (`PluginConfig::to_json`). Unknown keys are not errors,
+    /// at any depth: they are ignored and listed in [`unknown_keys`](Self::unknown_keys).
     ///
     /// # Errors
     ///
@@ -224,10 +219,11 @@ mod tests {
         // A known key with a bad value is an error, even next to an unknown key.
         let err = WebConfig::from_json(&json!({"bogus": 1, "public_url": 5})).unwrap_err();
         assert!(err.starts_with("public_url: "), "{err}");
-        // `proxy` stays strict: it configures a listener and a shared secret.
-        let err = WebConfig::from_json(&json!({"proxy": {"identity_header": "x-user", "x": 1}}))
-            .unwrap_err();
-        assert!(err.starts_with("proxy.x: unknown field `x`"), "{err}");
+        // In `proxy` too.
+        let config =
+            WebConfig::from_json(&json!({"proxy": {"identity_header": "x-user", "x": 1}})).unwrap();
+        assert_eq!(config.unknown_keys[0].to_string(), "proxy.x");
+        assert!(config.proxy.is_some());
     }
 
     #[test]

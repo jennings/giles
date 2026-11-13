@@ -20,15 +20,18 @@ Error: /home/me/.giles/giles.toml:12:12: channel.libera.max_blob: invalid size "
 number of bytes or an integer and a unit (B, KiB, MiB, GiB), e.g. "50 MiB"
 ```
 
-A key Giles doesn't recognize in `giles.toml` doesn't stop it. Giles ignores the key and logs a
-warning, so check the log after an edit. A misspelled key leaves its setting at the default.
+A key Giles doesn't recognize, in `giles.toml` or an `agent.toml`, doesn't stop it. Giles ignores
+the key and logs a warning, so check the log after an edit. A misspelled key leaves its setting at
+the default.
 
 ```text
 WARN /home/me/.giles/giles.toml:7:1: unknown key `core.http_listn` (ignored)
 WARN /home/me/.giles/giles.toml:12:30: unknown key `provider.anthropic.config.modle` (ignored)
+WARN /home/me/.giles/agents/jeeves/agent.toml:3:1: unknown key `aks` (ignored)
 ```
 
-In `agent.toml`, an unknown key is an error.
+**Check the log for misspelled `sandbox` and `ask` keys.** A misspelled `sandbox.network = false`
+leaves the plugin's network open, and a misspelled `ask` lets those tools run without asking you.
 
 ## Value formats
 

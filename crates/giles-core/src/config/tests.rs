@@ -532,28 +532,21 @@ fn a_known_key_with_the_wrong_type_still_fails_whatever_else_is_wrong() {
 }
 
 #[test]
-fn a_misspelled_sandbox_key_is_an_error_not_a_warning() {
-    // A typo in `network` or `min_abi` would leave the default and widen the sandbox, so the
-    // `sandbox` table stays strict, with the error positioned at the key.
-    let cases = [
-        (
-            "[channel.irc]\nsandbox = { netwrok = false }",
+fn a_misspelled_sandbox_key_is_ignored_and_reported() {
+    let home = Home::new(&format!(
+        "{MINIMAL}[channel.irc]\nsandbox = {{ netwrok = false }}\n\
+         [toolset.t]\ncommand = \"/x\"\nsandbox = {{ read = [\"/r\"], rite = [], min_ab = 3 }}\n"
+    ));
+    let config = home.load_ok();
+    assert_eq!(
+        unknown_keys(&config),
+        [
             "channel.irc.sandbox.netwrok",
-        ),
-        (
-            "[toolset.t]\ncommand = \"/x\"\nsandbox = { min_ab = 3 }",
             "toolset.t.sandbox.min_ab",
-        ),
-        (
-            "[toolset.t]\ncommand = \"/x\"\nsandbox = { read = [\"/r\"], rite = [] }",
             "toolset.t.sandbox.rite",
-        ),
-    ];
-    for (toml, key) in cases {
-        let home = Home::new(&format!("{MINIMAL}{toml}\n"));
-        assert_error(&home, "giles.toml", key, "unknown field");
-        assert!(home.load().unwrap_err().position.is_some());
-    }
+        ]
+    );
+    assert!(config.unknown_keys.iter().all(|k| k.position.is_some()));
 }
 
 #[test]
@@ -1043,11 +1036,15 @@ fn validate_agent_checks_a_source_as_loading_does() {
     assert!(unknown.position.is_some(), "{unknown}");
     let glob = error("bunter", "models = [\"anthropic/m\"]\ntools = [\"a b\"]");
     assert_eq!(glob.key.to_string(), "tools[0]");
-    let unknown_key = error("bunter", "models = [\"anthropic/m\"]\nowner = \"x\"");
-    assert!(
-        unknown_key.reason.contains("unknown field"),
-        "{unknown_key}"
-    );
+    // A key Giles doesn't recognize is ignored, as at startup.
+    let ignored = config
+        .validate_agent(
+            &home.root,
+            "bunter",
+            "models = [\"anthropic/m\"]\nowner = \"x\"",
+        )
+        .unwrap();
+    assert_eq!(ignored.id.as_str(), "bunter");
 }
 
 #[test]
@@ -1473,11 +1470,6 @@ fn agent_rules() {
             "invalid tool glob",
         ),
         (
-            format!("{model}\nowner = \"stephen\""),
-            "owner",
-            "unknown field `owner`",
-        ),
-        (
             format!("{model}\n[[jobs]]\ncron = \"0 8 * * *\"\nprompt = \"p\""),
             "jobs[0]",
             "missing field `id`",
@@ -1551,17 +1543,57 @@ fn agent_rules() {
             "jobs[0].model",
             "no provider instance",
         ),
-        (
-            format!("{model}\n{job}\ndeliver_to = \"stephen\""),
-            "jobs[0].deliver_to",
-            "unknown field `deliver_to`",
-        ),
     ];
     for (toml, key, reason) in cases {
         let home = with_provider();
         home.agent("jeeves", &toml);
         assert_error(&home, "agents/jeeves/agent.toml", key, reason);
     }
+}
+
+#[test]
+fn unknown_agent_keys_are_ignored_and_reported_after_those_of_giles_toml() {
+    let home = with_provider();
+    home.agent(
+        "jeeves",
+        "models = [\"anthropic/m\"]\nowner = \"stephen\"\n\
+         [[jobs]]\nid = \"j\"\ncron = \"0 8 * * *\"\nprompt = \"p\"\ndeliver_to = \"stephen\"\n",
+    )
+    .agent("bunter", "models = [\"anthropic/m\"]\ntoools = [\"x\"]\n");
+    let source = std::fs::read_to_string(home.path("giles.toml")).unwrap();
+    std::fs::write(home.path("giles.toml"), format!("typo = 1\n{source}")).unwrap();
+    let config = home.load_ok();
+    assert_eq!(config.agents.len(), 2);
+    assert_eq!(
+        config.agents[&AgentId::new("jeeves").unwrap()].jobs.len(),
+        1
+    );
+    let shown: Vec<String> = config
+        .unknown_keys
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            format!(
+                "{}:1:1: unknown key `typo` (ignored)",
+                home.path("giles.toml").display()
+            ),
+            format!(
+                "{}:2:1: unknown key `toools` (ignored)",
+                home.path("agents/bunter/agent.toml").display()
+            ),
+            format!(
+                "{}:2:1: unknown key `owner` (ignored)",
+                home.path("agents/jeeves/agent.toml").display()
+            ),
+            format!(
+                "{}:7:1: unknown key `jobs[0].deliver_to` (ignored)",
+                home.path("agents/jeeves/agent.toml").display()
+            ),
+        ]
+    );
 }
 
 #[test]
@@ -1950,7 +1982,6 @@ fn sandbox_rules() {
         ("network = \"on\"", "network", "true, false, or a list"),
         ("network = [\"udp:53\"]", "network", "tcp:<port>"),
         ("min_abi = 0", "min_abi", "at least 1"),
-        ("exec = []", "exec", "unknown field `exec`"),
     ];
     for (toml, key, reason) in grants {
         let home = Home::new(&format!(

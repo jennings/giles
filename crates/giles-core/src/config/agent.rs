@@ -12,7 +12,7 @@ use jiff::civil::Time;
 use jiff::tz::TimeZone;
 use serde::{Deserialize, Serialize};
 
-use super::error::{ConfigError, KeyPath};
+use super::error::{ConfigError, KeyPath, UnknownKey};
 use super::giles::parse_timezone;
 use super::model::ModelRef;
 use super::names::{invalid_name_reason, is_valid_name};
@@ -197,7 +197,6 @@ pub fn parse_cron(pattern: &str) -> Result<Cron, String> {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawAgent {
     name: Option<String>,
     models: Vec<ModelRef>,
@@ -219,7 +218,6 @@ struct RawAgent {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawJob {
     id: String,
     cron: String,
@@ -236,26 +234,27 @@ struct RawJob {
 }
 
 /// Loads `agent.toml` from `dir` for agent `id`. `providers` are the configured provider instances
-/// every model must name.
+/// every model must name. Also returns the keys Giles doesn't recognize, which are ignored.
 pub(crate) fn load(
     id: &str,
     dir: &Path,
     providers: &BTreeSet<&str>,
-) -> Result<AgentConfig, ConfigError> {
+) -> Result<(AgentConfig, Vec<UnknownKey>), ConfigError> {
     let source = super::read_file(&dir.join("agent.toml"))?;
     parse(id, dir, &source, providers)
 }
 
 /// Validates `source` as the `agent.toml` in `dir` of agent `id`, as [`load`] does once it has
-/// read the file. Job prompt files are looked up in `dir`.
+/// read the file. Job prompt files are looked up in `dir`. A key Giles doesn't recognize is not
+/// an error: it's ignored and returned, in file order. A recognized key with a bad value is.
 pub(crate) fn parse(
     id: &str,
     dir: &Path,
     source: &str,
     providers: &BTreeSet<&str>,
-) -> Result<AgentConfig, ConfigError> {
+) -> Result<(AgentConfig, Vec<UnknownKey>), ConfigError> {
     let file = dir.join("agent.toml");
-    let raw: RawAgent = super::parse_toml(&file, source)?;
+    let (raw, unknown): (RawAgent, Vec<KeyPath>) = super::parse_toml_lenient(&file, source)?;
     let err =
         |path: KeyPath, reason: String| ConfigError::at(&file, path, reason).located(&file, source);
     let root = KeyPath::root();
@@ -380,7 +379,7 @@ pub(crate) fn parse(
         });
     }
 
-    Ok(AgentConfig {
+    let agent = AgentConfig {
         id: AgentId::new(id).map_err(|e| ConfigError::file(&file, e.to_string()))?,
         dir: dir.to_path_buf(),
         name: raw.name,
@@ -396,7 +395,13 @@ pub(crate) fn parse(
         timezone,
         idle_reset,
         jobs,
-    })
+    };
+    let mut unknown: Vec<UnknownKey> = unknown
+        .into_iter()
+        .map(|key| UnknownKey::new(&file, source, key))
+        .collect();
+    unknown.sort_by_key(UnknownKey::order);
+    Ok((agent, unknown))
 }
 
 /// Resolves a job's `prompt_file`: a relative path inside the agent's directory, with no `..`,

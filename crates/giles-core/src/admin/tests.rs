@@ -1809,10 +1809,10 @@ async fn set_toolset_names_the_key_of_a_spec_that_is_refused() {
             "ulr: unknown key",
         ),
         (
-            "a misspelled key in a strict table",
+            "a misspelled key in a nested table",
             "new",
             "[sandbox]\nredd = [\"/x\"]\n",
-            "sandbox.redd: unknown field `redd`",
+            "sandbox.redd: unknown key",
         ),
     ] {
         let err = set_toolset(&mut client, set_request(name, spec_toml, None))

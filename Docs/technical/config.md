@@ -72,9 +72,7 @@ It displays as `<file>:<line>:<column>: <key>: <reason>`, leaving out what isn't
 - TOML syntax errors use the parser's message and span. The parser's own `Display` is never used,
   because it quotes the source line.
 - Type errors come from serde. The document is deserialized through `serde_path_to_error`, which
-  tracks the key path, and the `toml` error's span gives the position. `agent.toml` is strict: its
-  `Raw*` structs keep `#[serde(deny_unknown_fields)]`, so an unknown key there is one of these
-  errors.
+  tracks the key path, and the `toml` error's span gives the position.
 - Semantic errors (a route naming a missing agent, a key that doesn't apply to an instance's shape)
   are raised after deserialization with the key path. `ConfigError::located` then fills in the
   position: on the error path only, the file is parsed again into toml's span-keeping `DeTable`, and
@@ -86,42 +84,48 @@ brackets (`toolset.files.skills[1]`, `owner."odd key"`).
 
 ## Unknown keys
 
-`giles.toml` alone is lenient about keys it doesn't know: `Config::unknown_keys` lists each as an
-`UnknownKey { file, position, key }`, displayed as
+Configuration files are lenient about keys Giles doesn't know: `Config::unknown_keys` lists each as
+an `UnknownKey { file, position, key }`, displayed as
 `<file>:<line>:<column>: unknown key `<key path>` (ignored)`. The position is found with
-`error::locate`, as for errors. Only a load that succeeds returns them; an error in the file,
-wherever it is, wins over any number of unknown keys, so a typo next to a wrong-typed key doesn't
-change the error.
+`error::locate`, as for errors. The list holds the keys of `giles.toml` in file order, then those of
+each `agent.toml`, by agent id and in file order. Only a load that succeeds returns them; an error
+in a file, wherever it is, wins over any number of unknown keys, so a typo next to a wrong-typed key
+doesn't change the error.
 
 `serde_ignored` reports a key when the derived `Deserialize` skips it, so it covers every typed
-table (`[core]`, `[owner]`, instance tables) and recognizes exactly what the `Raw*` structs declare.
-A table serde skips as a whole is one entry (`[cores]` is `cores`, not `cores.x`). Hand-checked
-tables report theirs through `Ctx::unknown`: the keys of an `auth` table next to its method, and of
-an `oauth` table.
+table (`[core]`, `[owner]`, instance tables and their `sandbox` tables, `agent.toml` and its
+`[[jobs]]`) and recognizes exactly what the `Raw*` structs declare. No configuration struct uses
+`deny_unknown_fields`. A table serde skips as a whole is one entry (`[cores]` is `cores`, not
+`cores.x`). Hand-checked tables report theirs through `Ctx::unknown`: the keys of an `auth` table
+next to its method, and of an `oauth` table. An `auth` table with no `bearer` or `oauth` is still an
+error: it isn't an unknown key, and ignoring it would leave a remote without credentials.
 
-Some tables stay strict, because a typo there would not be harmless:
+A misspelled key leaves its setting at the default. For a few settings the default is the less safe
+one: a misspelled `sandbox.network = false` leaves a channel's network open, and a misspelled `ask`
+lets the agent call those tools without approval. The user guide tells operators to check the log
+for these, and #103 tracks making such defaults secure.
 
-- `SandboxSpec` keeps `#[serde(deny_unknown_fields)]`: a misspelled `network` or `min_abi` would
-  leave the default (network on, no ABI floor) and widen the plugin's sandbox. The error is
-  positioned at the key like any other.
-- An `auth` table with no `bearer` or `oauth` is an error: ignoring it would leave a remote without
-  credentials.
-- `[[routes]]` stay raw `toml::Value`s here, so `giles.toml` loading says nothing about them; the
-  import (`routes::import_rules`, `LegacyRoute` with `deny_unknown_fields`) rejects a stray key,
-  because a misspelled `channel` or `conversation` would make a route match everything.
-- `agent.toml` (see above) and the web channel's `proxy` table.
+`[[routes]]` stay raw `toml::Value`s here, so `giles.toml` loading says nothing about them. The
+one-time import (`routes::import_rules`) logs each key a rule doesn't have as a warning with its
+full path (`routes[0].user`) and imports the rule without it.
 
 An instance's `config` table is opaque to loading. The built-in components check it when the
 registry builds them, and are lenient the same way: `AnthropicConfig::from_json`,
-`OpenAiConfig::from_json` (also in `models.<id>` tables) and `WebConfig::from_json` (except `proxy`)
-put unknown keys in their `unknown_keys` instead of failing. `Registry::from_config` turns them into
-`UnknownKey`s with full paths (`provider.anthropic.config.modle`), and logs each once at `warn`;
-they are not added to `Config::unknown_keys`, which only carries what loading `giles.toml` found.
-Out-of-process plugins validate their own `config` in `Configure` and fail only their instance.
+`OpenAiConfig::from_json` (also in `models.<id>` tables) and `WebConfig::from_json` (`proxy`
+included) put unknown keys in their `unknown_keys` instead of failing. `Registry::from_config` turns
+them into `UnknownKey`s with full paths (`provider.anthropic.config.modle`), and logs each once at
+`warn`; they are not added to `Config::unknown_keys`, which only carries what loading the files
+found. Out-of-process plugins validate their own `config` in `Configure` and fail only their
+instance.
 
 `giles serve` logs the `UnknownKey`s found while loading once, right after the load, at `warn`;
 there is no status field for them. The configuration is read only at startup, so later changes (an
-agent created in the web UI) log nothing again.
+agent created or edited in the web UI) log nothing again: `Config::validate_agent` ignores unknown
+keys without reporting them.
+
+Text given to `giles toolset set` and the admin API (`ToolsetSpec::from_toml`) is not a
+configuration file read at startup: a key the spec doesn't have, nested ones included, is refused
+there, so a typo isn't stored silently.
 
 The hash of an instance's table (`ConfigHash`) covers the table as written, unknown keys included,
 so editing one only refreshes the toolset's cached tool list.
