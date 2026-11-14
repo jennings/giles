@@ -181,12 +181,12 @@ fn parse_at(text: &str, tz: &TimeZone) -> Result<Timestamp, String> {
         .map_err(|error| format!("invalid time {text:?}: {error}"))
 }
 
-fn show_time(at: Timestamp, tz: &TimeZone) -> String {
+pub(crate) fn show_time(at: Timestamp, tz: &TimeZone) -> String {
     at.to_zoned(tz.clone()).strftime(TIME_FORMAT).to_string()
 }
 
 /// `text` on one line, cut to [`MAX_LISTED_PROMPT_CHARS`].
-fn short(text: &str) -> String {
+pub(crate) fn short(text: &str) -> String {
     let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
     match line.char_indices().nth(MAX_LISTED_PROMPT_CHARS) {
         Some((at, _)) => format!("{}…", &line[..at]),
