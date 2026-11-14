@@ -136,6 +136,25 @@ environment plugin in `serve` mode ([Plugin SDK](plugin-sdk.md)) for a Giles cor
 The `.dockerignore` keeps this Dockerfile out of the context, so editing it doesn't invalidate the
 `COPY . .` layer of either image.
 
+## Compose file
+
+`compose.yaml` at the repository root runs both images as the services `giles` and
+`giles-environment-docker` on the project's default network, where Giles reaches the plugin by its
+service name over plain HTTP
+([Running in a container](../user/container.md#run-giles-with-docker-compose)).
+Each service names its published image and the Dockerfile that builds it, so `docker compose up`
+pulls the images and `--build` builds them from the checkout, tagged with the published names.
+
+- **Token.** `GILES_ENVIRONMENT_DOCKER_TOKEN` from `.env` goes into both containers. The plugin
+  reads it as its token, and `giles.toml` refers to it with `{ env = ... }` as the bearer
+  credential, so the token needs no `secrets.toml` entry.
+- **Socket.** `CONTAINER_ENGINE_SOCKET` has no default. Compose refuses to start without it, so the
+  file never mounts the rootful `/var/run/docker.sock` of the Giles host by accident.
+- **SELinux.** The plugin's service sets `label=disable`, which the socket needs on SELinux hosts
+  and other hosts ignore.
+- **Data root.** `./giles-home` is bind-mounted at `/data`. It, `.env`, `compose.override.yaml`, and
+  `giles-environment-docker.toml` are in `.gitignore`.
+
 ## The sandbox in a container
 
 The plugin sandbox needs no extra privileges: Docker's default seccomp profile allows the

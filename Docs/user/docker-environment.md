@@ -80,7 +80,10 @@ and limits, and stops or deletes them.
 ## Run the plugin in its own container
 
 The `giles-environment-docker` image runs the plugin for Giles to connect to. It keeps the engine's
-socket away from Giles, and it is the setup to use when Giles runs in its container image.
+socket away from Giles, and it is the setup to use when Giles runs in its container image. To run
+both containers with Docker Compose, follow
+[Run Giles with Docker Compose](container.md#run-giles-with-docker-compose) instead of the steps
+below.
 
 Make a token for Giles to authenticate with, and keep it for `giles.toml`:
 

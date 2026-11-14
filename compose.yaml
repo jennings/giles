@@ -1,0 +1,43 @@
+# Giles and the Docker environment plugin, each in its own container: the engine socket is mounted
+# into the plugin's container only. `docker compose up` pulls the published images, and
+# `docker compose up --build` builds them from this checkout instead. See
+# Docs/user/container.md#run-giles-with-docker-compose.
+#
+# Set these in `.env` next to this file:
+#
+# - CONTAINER_ENGINE_SOCKET: the engine's socket on the host, such as
+#   /run/user/1000/podman/podman.sock for rootless Podman.
+# - GILES_ENVIRONMENT_DOCKER_TOKEN: the token Giles authenticates to the plugin with
+#   (`openssl rand -hex 32`). giles.toml refers to it as `{ env = "GILES_ENVIRONMENT_DOCKER_TOKEN" }`.
+
+name: giles
+
+services:
+  giles:
+    image: ghcr.io/jennings/giles:latest
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - giles-environment-docker
+    volumes:
+      # Owned by uid and gid 10001, the image's `giles` user.
+      - ./giles-home:/data
+    ports:
+      # giles.toml must set `http_listen = "0.0.0.0:8080"`.
+      - 127.0.0.1:8080:8080
+    environment:
+      GILES_ENVIRONMENT_DOCKER_TOKEN: ${GILES_ENVIRONMENT_DOCKER_TOKEN:?set GILES_ENVIRONMENT_DOCKER_TOKEN in .env}
+
+  giles-environment-docker:
+    image: ghcr.io/jennings/giles-environment-docker:latest
+    build:
+      context: .
+      dockerfile: plugins/giles-environment-docker/Dockerfile
+    restart: unless-stopped
+    volumes:
+      - ${CONTAINER_ENGINE_SOCKET:?set CONTAINER_ENGINE_SOCKET in .env}:/var/run/docker.sock
+    # Lets the plugin open the socket on SELinux hosts, such as Fedora.
+    security_opt:
+      - label=disable
+    environment:
+      GILES_ENVIRONMENT_DOCKER_TOKEN: ${GILES_ENVIRONMENT_DOCKER_TOKEN:?set GILES_ENVIRONMENT_DOCKER_TOKEN in .env}
