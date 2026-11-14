@@ -13,6 +13,7 @@ mod agents;
 mod auth;
 mod config;
 mod hub;
+mod jobs;
 mod links;
 mod login;
 mod memory;

@@ -106,6 +106,19 @@ When an agent asks before running a tool, the chat shows the request with three 
 
 The buttons send [the same replies](commands.md) you could type, and typing them works too.
 
+## Scheduled jobs
+
+**Scheduled jobs** on the chat list shows your jobs with every agent in one table. It lists the jobs
+an agent scheduled for you with the `schedule` tool. The owner also sees the
+[`[[jobs]]`](configuration.md#jobs) of every agent, marked `agent.toml`.
+
+Each row shows the agent, the job, its schedule, and its next and last run, soonest next run first.
+Times are in the time zone the job runs in. The next run skips times outside the job's
+`active_hours`.
+
+The page only shows jobs. To cancel a job, ask its agent. To change a `[[jobs]]` entry, edit
+`agent.toml`.
+
 ## Admin pages
 
 **Status** on the chat list opens the admin pages. Only the owner can open them.

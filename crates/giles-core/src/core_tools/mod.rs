@@ -18,7 +18,7 @@ mod memory_edit;
 mod memory_forget;
 mod memory_recall;
 mod memory_search;
-mod schedule;
+pub(crate) mod schedule;
 mod send_attachment;
 
 #[cfg(test)]

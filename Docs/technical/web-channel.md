@@ -33,6 +33,7 @@ the live-output hook.
 | `POST /chats/<id>/approvals`   | An approval button: posts `<answer> <code>` (CSRF-checked).      |
 | `GET /chats/<id>/events`       | Server-sent events for the page.                                 |
 | `GET /blobs/<sha256>`          | An attachment.                                                   |
+| `GET /jobs`                    | The user's scheduled jobs with every agent ([Jobs page](#jobs-page)). |
 | `GET /login/<token>`           | A login link: a page with a button that posts the token.         |
 | `POST /login`                  | Uses up the link (`token`), sets the session cookie, 303 to `/`. |
 | `POST /logout`                 | Ends a cookie login (CSRF-checked), 303 to `/`.                  |
@@ -381,6 +382,27 @@ policy), `nosniff` (from the security headers), `Content-Disposition: inline` fo
 for anything else, and `Cache-Control: private, max-age=31536000, immutable` (the URL is the content
 hash). An HTML or SVG blob therefore downloads, and even opened directly it runs in a sandboxed
 opaque origin.
+
+## Jobs page
+
+In `jobs.rs`, routed with the chat pages (`WebApp::routes`), so it's behind the authentication
+middleware but not `may_administer`-gated. It lists, in one table, every job that delivers to the
+signed-in user, across all agents, with the agent as a column. It's read-only: runtime jobs change
+through the `schedule` tool and config jobs in `agent.toml` ([Scheduler](scheduler.md)).
+
+- **Whose jobs**: the runtime jobs the user created (`Store::jobs(None, Some(user))`, every agent),
+  and for the owner every agent's config jobs, which deliver to the owner. Both become a `JobDef`
+  (`from_config`, `from_runtime`), so the page reads them the way the scheduler does. A stored spec
+  `from_runtime` refuses, and a runtime job of an agent that isn't configured, show a "Doesn't run"
+  note and no next run.
+- **Times**: in the zone the job runs in (`message_timezone`), formatted like the `schedule` tool's
+  `list` (`core_tools::schedule::show_time`; prompts are cut with its `short`). The next run is
+  `next_run`: a one-shot job's time (it's in the table until it has run, so it's shown even once
+  it has passed), or the next cron time inside the job's active hours, trying at most a week of
+  every-minute times (`ACTIVE_HOURS_SEARCH`) before it says there is none. The last run is the
+  job's `job_runs` row (`Store::job_last_run`, one read per job).
+- **Order**: soonest next run first, then by agent id; jobs without a next run come last.
+- Every answer is `no-store`. A store error is a logged 500.
 
 ## Admin pages
 
@@ -894,9 +916,9 @@ Templates are in `crates/giles-core/templates/web/`: pages `chats.html`, `chat.h
 `login_required.html`, `login.html`, `admin_status.html`, `admin_plugins.html`, `admin_agents.html`,
 `admin_agent.html`, `admin_agent_new.html`, `admin_routes.html`, `admin_route_form.html`,
 `admin_toolsets.html`, `admin_toolset.html`, `admin_toolset_form.html`, `admin_toolset_remove.html`,
-`admin_toolset_rename.html` (extending `layout.html`; `admin_nav.html` is included by the admin
-pages), and fragments `message.html`, `approval.html`, `compose.html`, `attachments.html` (rendered
-by `render.rs`). Nothing inline: no scripts, styles, or `hx-on` handlers (the CSP and
+`admin_toolset_rename.html`, `jobs.html` (extending `layout.html`; `admin_nav.html` is included by
+the admin pages), and fragments `message.html`, `approval.html`, `compose.html`, `attachments.html`
+(rendered by `render.rs`). Nothing inline: no scripts, styles, or `hx-on` handlers (the CSP and
 `allowEval: false` forbid them). The chat page is `hx-ext="sse"` with `sse-connect`; `#messages` has
 `sse-swap="message"` and `hx-swap="beforeend"`. The compose form replaces itself
 (`hx-target="this"`, `hx-swap="outerHTML"`); approval forms use `hx-swap="none"`. Every form also
@@ -924,6 +946,9 @@ plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`, `l
 - Approvals: prompt fragment and page form, CSRF and validation, `yes! <code>` posted, the "Sent"
   replacement, `resolve_approval` outcomes (and `false` for unknown prompts and chats), plain-post
   redirect.
+- Jobs page (`tests/jobs.rs`): one list across agents, soonest first, with config jobs for the
+  owner only, a "Doesn't run" note for a job of an unconfigured agent, and no other user's jobs;
+  `jobs.rs` unit tests cover the next run inside active hours.
 - History: the time prefix is cut from user messages and chat titles; a post shows once on reload
   while unacked, queued, started, and stored (`render::waiting` unit tests cover replayed and
   already-stored posts).

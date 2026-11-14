@@ -1,0 +1,34 @@
+{% extends "layout.html" %}
+
+{% block title %}Scheduled jobs - Giles{% endblock %}
+
+{% block content %}
+{%- if admin %}
+{% include "web/admin_nav.html" %}
+{%- else %}
+<nav class="admin-nav"><a href="/">Chats</a> <a href="/jobs">Jobs</a></nav>
+{%- endif %}
+<div class="page-head">
+<h1>Scheduled jobs</h1>
+</div>
+{%- if jobs.is_empty() %}
+<p>No scheduled jobs. Ask an agent to schedule one, such as "remind me at 5".</p>
+{%- else %}
+<table class="admin-table jobs">
+<thead><tr><th>Agent</th><th>Job</th><th>Schedule</th><th>Next run</th><th>Last run</th><th>Runs in</th><th>Prompt</th></tr></thead>
+<tbody>
+{%- for job in jobs %}
+<tr>
+<td>{{ job.agent }}</td>
+<td>{% if job.from_config %}<code>{{ job.job }}</code> <span class="detail">agent.toml</span>{% else %}{{ job.job }}{% endif %}</td>
+<td>{% if let Some(cron) = job.cron %}<code>{{ cron }}</code>{% else %}Once{% endif %}{% if let Some(hours) = job.active_hours %} <span class="detail">{{ hours }} only</span>{% endif %}</td>
+<td>{% if let Some(problem) = job.problem %}<span class="state-warn">{{ problem }}</span>{% else if let Some(next) = job.next %}<time datetime="{{ next.iso }}">{{ next.text }}</time>{% else %}<span class="detail">None</span>{% endif %}</td>
+<td>{% if let Some(last) = job.last %}<time datetime="{{ last.iso }}">{{ last.text }}</time>{% else %}<span class="detail">Never</span>{% endif %}</td>
+<td>{{ job.session }}</td>
+<td>{% if let Some(file) = job.prompt_file %}From <code>{{ file }}</code>{% else %}{{ job.prompt }}{% endif %}</td>
+</tr>
+{%- endfor %}
+</tbody>
+</table>
+{%- endif %}
+{% endblock %}

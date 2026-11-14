@@ -155,6 +155,7 @@ impl WebApp {
             .route("/chats/{chat}/approvals", post(post_approval))
             .route("/chats/{chat}/events", get(events))
             .route("/blobs/{id}", get(blob))
+            .route("/jobs", get(super::jobs::jobs_page))
             .merge(super::login::routes())
             .with_state(self.clone())
     }
