@@ -1,3 +1,7 @@
 /target
 .DS_Store
 /Docs/book/
+/giles-home/
+/.env
+/compose.override.yaml
+/giles-environment-docker.toml

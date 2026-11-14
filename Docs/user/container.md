@@ -68,4 +68,77 @@ To run a plugin without sandboxing, set `channel.<name>.unsandboxed = true` in `
 
 Don't mount a container engine's socket into the Giles container. To give agents a workspace, run
 the [Docker environment image](docker-environment.md#run-the-plugin-in-its-own-container) next to
-Giles.
+Giles. [Docker Compose](#run-giles-with-docker-compose) runs the two together.
+
+## Run Giles with Docker Compose
+
+The repository's `compose.yaml` runs Giles and the Docker environment plugin in two containers. Run
+these steps in a clone of the repository:
+
+```sh
+git clone https://github.com/jennings/giles.git
+cd giles
+```
+
+Create `.env` with the engine's socket and a token for Giles to authenticate to the plugin with:
+
+```sh
+cat > .env <<EOF
+CONTAINER_ENGINE_SOCKET=/run/user/1000/podman/podman.sock
+GILES_ENVIRONMENT_DOCKER_TOKEN=$(openssl rand -hex 32)
+EOF
+chmod 600 .env
+```
+
+[Choose the engine](docker-environment.md#choose-a-container-engine) before you set
+`CONTAINER_ENGINE_SOCKET`. The socket above is rootless Podman's for uid 1000.
+
+Create the data directory `giles-home` with a `giles.toml` that points the `docker` environment at
+the plugin's container:
+
+```toml
+[core]
+http_listen = "0.0.0.0:8080"
+
+[owner]
+identities = ["web:owner"]
+
+[environment.docker]
+description = "Disposable Linux containers for running code and building software."
+address = "http://giles-environment-docker:7443"
+insecure = true
+auth = { bearer = { env = "GILES_ENVIRONMENT_DOCKER_TOKEN" } }
+```
+
+```sh
+mkdir giles-home
+$EDITOR giles-home/giles.toml
+sudo chown -R 10001:10001 giles-home
+```
+
+Start both containers:
+
+```sh
+docker compose up --detach
+```
+
+This pulls the published images. To build them from your checkout instead, run
+`docker compose up --detach --build`. With rootless Podman, run `podman compose` as the user that
+owns the socket.
+
+The web interface is on `http://127.0.0.1:8080`. Check that Giles reaches the plugin with
+`docker compose exec giles giles status`, which shows the `docker` instance as `running`.
+
+To [change the plugin's settings](docker-environment.md#change-the-plugins-settings), put them in
+`giles-environment-docker.toml` and add the file in `compose.override.yaml`, which Docker Compose
+reads after `compose.yaml`:
+
+```yaml
+services:
+  giles-environment-docker:
+    volumes:
+      - ./giles-environment-docker.toml:/etc/giles-environment-docker.toml:ro
+    command: ["--config", "/etc/giles-environment-docker.toml"]
+```
+
+Then run `docker compose up --detach` again.
