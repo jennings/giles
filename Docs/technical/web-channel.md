@@ -182,15 +182,16 @@ answered.
 
 ## Login
 
-PLAN section 3.4. A browser signs in with a one-time invite or recovery link or with a username and
-password, or the trusted-proxy header marks the user. Passkeys and identity providers add more ways
-to sign in. The login *code* flow (a code sent to the user's default channel) is dropped. Code:
-`login.rs` (middleware, the login page, `start_session`, and logout), `invite.rs` (the link pages
-and the setup page), `signin.rs` (the sign-in methods the pages offer), `password.rs` (the rules and
-the hashing), `password_pages.rs` (the password routes), `passkey.rs` (the relying party and the
-ceremonies), `pending.rs` (the table the ceremonies are kept in), `passkey_pages.rs` (the passkey
-setup routes), `passkey_signin.rs` (the passkey sign-in routes), `limits.rs` (the limits on
-guessing), `proxy.rs`, the cookie and nonce helpers in `auth.rs`, and the keys in `config.rs`.
+PLAN section 3.4. A browser signs in with a one-time invite or recovery link, a username and
+password, a passkey, or an OpenID Connect identity provider, or the trusted-proxy header marks the
+user. The login *code* flow (a code sent to the user's default channel) is dropped. Code: `login.rs`
+(middleware, the login page, `start_session`, and logout), `invite.rs` (the link pages and the setup
+page), `signin.rs` (the sign-in methods the pages offer), `password.rs` (the rules and the hashing),
+`password_pages.rs` (the password routes), `passkey.rs` (the relying party and the ceremonies),
+`pending.rs` (the table the ceremonies are kept in), `passkey_pages.rs` (the passkey setup routes),
+`passkey_signin.rs` (the passkey sign-in routes), `oidc.rs` (the OpenID Connect protocol),
+`oidc_pages.rs` (its routes), `limits.rs` (the limits on guessing), `proxy.rs`, the cookie and nonce
+helpers in `auth.rs`, and the keys in `config.rs`.
 
 ### Configuration
 
@@ -258,12 +259,13 @@ entries the page says that this login can't add a way to sign in, and that a new
 ### The login page
 
 `GET /login` (`login.rs`, template `login.html`) lists the ways to sign in.
-`WebApp::login_options()` (`signin.rs`) gives the methods that are a link to another page, each a
-label and the page of its method; with none, the page has no list. Below it is the password form,
-which is on the page itself ([Passwords](#passwords)), and always the paragraph that says to open an
-invite or recovery link and how the operator makes one. A request that needs a login and has none
-gets the 401 login-required page, which only says so and links to `/login`. The page answers
-`Cache-Control: no-store`, and 303 to `/` for a browser that is logged in.
+`WebApp::login_options(nonce)` (`signin.rs`) gives the methods that are a link to another page, each
+a label and the page of its method (one for each enabled [identity provider](#openid-connect)); with
+none, the page has no list. Below it is the password form, which is on the page itself
+([Passwords](#passwords)), and always the paragraph that says to open an invite or recovery link and
+how the operator makes one. A request that needs a login and has none gets the 401 login-required
+page, which only says so and links to `/login`. The page answers `Cache-Control: no-store`, and 303
+to `/` for a browser that is logged in.
 
 The page issues the [sign-in nonce](#sign-in-csrf): `login::render_login` puts
 `auth::nonce_for_form` in the password form and sets the cookie (`auth::nonce_cookie`), as
@@ -556,6 +558,118 @@ the fields the server reads (`id`, `rawId`, `type`, the response's fields, the t
 `credProps`), as base64url. Where the browser has no WebAuthn or isn't at the RP's origin
 (`data-origin`), the passkey controls stay hidden and the page says why. The CSP needed no change
 (`script-src 'self'`, no inline script; [HTTP server](http.md)).
+
+### OpenID Connect
+
+Identity providers are rows of `oidc_providers`
+([OpenID Connect providers](storage.md#openid-connect-providers) holds what is stored), and each
+user connects one account at a provider to their Doozers user. A sign-in is the authorization code
+flow with PKCE (S256), `state`, and `nonce`. Code: `oidc.rs` is the protocol and `oidc_pages.rs` the
+routes and the entries on the login and setup pages; `pending.rs` holds the sign-ins in flight.
+
+**The library.** The protocol is the [`openidconnect`](https://docs.rs/openidconnect) crate: it
+reads the discovery document and compares its issuer, builds the authorization request, exchanges
+the code, and verifies the ID token (signature, `iss`, `aud`, `exp`, `nonce`). The alternative was
+to build on the OAuth code of the MCP toolsets and write a JWT and JWK verifier. A verifier is the
+part of a sign-in that goes wrong in ways nobody sees until they are attacked (algorithm confusion,
+key selection by `kid`, audience rules), and a maintained crate with its own tests carries less
+security-critical code of ours than a new one would. What Doozers writes is small: an HTTP adapter,
+the checks listed below, and the flow state. The crate costs a few dependencies that the build
+already had (`oauth2`, `rsa`, `p256`, `p384`, `ed25519-dalek`, `chrono`), and none of its `reqwest`
+support, which would add a second HTTP client: it is built without the `reqwest` feature, and
+`oidc::Http` implements its `AsyncHttpClient` over the client of [`net`](http.md).
+
+**Requests.** Everything goes through `net::tls_client_builder` (the bundled roots, no redirects)
+with a 15-second timeout and a 1 MiB limit on the body. The issuer must be an `https` URL without a
+query or fragment, or `http` on a loopback host, which is for trying Doozers out. For an `https`
+issuer, the adapter refuses every request that isn't `https`, and discovery refuses a document with
+an authorization endpoint, token endpoint, or key set that isn't. Doozers doesn't limit the
+addresses a provider's endpoints resolve to, because a provider on a private network is a normal
+setup, and the admin who adds it is the one who trusts it.
+
+**Discovery.** `Oidc::discover` fetches `<issuer>/.well-known/openid-configuration`. The document's
+`issuer` must equal the configured one exactly, so a document served for another issuer is refused,
+and the provider must have a token endpoint, support the `code` response type and (when it lists
+methods at all) PKCE with S256, and list a signing algorithm Doozers accepts. The result and the
+provider's keys are kept in memory for an hour, by issuer. The token endpoint's authentication is
+HTTP Basic, the specification's default, unless the document lists only `client_secret_post`.
+
+**ID token.** `Oidc::complete` exchanges the code with the PKCE verifier and the client secret, and
+verifies the ID token with the library's public-client verifier:
+
+- Only RSA (`RS*`, `PS*`), `ES256`, `ES384`, and `EdDSA` are allowed. HMAC is refused, because the
+  client secret isn't a signing key and a provider with no secret would hand the key to anyone, and
+  the library refuses `alg: none` whatever it is told.
+- The signature is checked against the provider's keys. The `kid` and `alg` of the header choose
+  among them only as far as the library allows, and a key that doesn't fit the algorithm doesn't
+  count.
+- `iss` must equal the configured issuer, and `aud` must contain the client id and nothing else (a
+  token with another audience is refused: no other audience is trusted). `azp`, when it is there,
+  must be the client id, and is required if there were several audiences.
+- `exp` is judged against the time of the sign-in minus a 60-second skew, and `iat` may not be more
+  than 60 seconds ahead.
+- `nonce` must be the one of this sign-in (compared as digests), and a token with none is refused.
+- The subject must not be empty.
+
+A callback that carries `iss` (RFC 9207) must carry the configured issuer.
+
+**Keys.** A token whose `kid` isn't in the cached key set refreshes the set, and is checked again.
+The refresh happens at most once a minute for a provider, so a stream of forged `kid`s can't make
+Doozers hit the provider, and a provider that rotates keys needs no restart. It is made under a lock
+and remembers when the keys the token was checked against were fetched. Of several tokens signed
+with the same new key, the first fetches, and the others find the keys already fetched and check
+again, instead of being refused because the fetch was a moment ago.
+
+**The flow.** Both ways in start with a `GET` that only redirects, so the page's
+`form-action 'self'` doesn't stop it, and end at the one callback of the provider,
+`<public_url>/auth/oidc/<id>/callback` (the address links use when there is no `public_url`):
+
+- `GET /login/oidc/<id>?nonce=` signs in. The login page's link carries the page's sign-in nonce,
+  which must match the browser's `SameSite=Strict` nonce cookie (`auth::check_nonce`), checked
+  before the start is counted or anything is kept. Another site can send a visitor to a start
+  address, but not with that cookie, so it can't use up the visitor's limit on starts (and that of
+  everyone behind the same address) or fill the table of sign-ins in flight.
+- `GET /setup/oidc/<id>?csrf=` connects an account to the user who is logged in. The setup page's
+  link carries the CSRF token of the login, and the login must have come from an invite or recovery
+  link (`may_add_sign_in_method`), the same rule as for a password or a passkey.
+
+A start discovers the provider, makes a `Flow` (the nonce, the PKCE verifier, the provider, its
+issuer then, and whether it is a sign-in or a connection by which user), keeps it in a `Pending`
+table for 10 minutes under 128 random bits, which is the `state`, and sends the browser to the
+authorization endpoint with the scopes (`openid` and the provider's). At most 10,000 are kept.
+Starts are limited like passkey starts: 60 per 15 minutes per client address. The flow is bound to
+the browser by the `doozers_oidc` cookie (a random 128-bit value, reused if the browser has one, so
+a second tab, or a restart of the sign-in, still works): `HttpOnly`, the whole site (the start
+routes read it too), 10 minutes, `Secure` over HTTPS, and `SameSite=Lax`, not `Strict`, because the
+provider's redirect back is a cross-site navigation, which a `Strict` cookie doesn't ride. That is
+what stops a callback URL from an attacker's own sign-in from finishing in the victim's browser
+(login CSRF); the sign-in nonce can't do it, because it is `Strict`. A finished sign-in leaves the
+cookie, which says which browser and nothing more, so another tab's sign-in is still bound to it.
+
+The callback takes the flow out of the table first, whatever else is wrong: the `state` must exist,
+be unexpired, and have been bound to this browser's cookie, and it is gone afterwards, so a
+replayed, forged, late, or foreign callback is refused before the code is used, and a guess costs
+the entry it guessed. The flow's provider must be the one in the path, and the provider must still
+exist and be enabled. A connection must also come back to the login that began it (the same user and
+CSRF token). Then the client secret is read from the secret store (the name in
+`oidc_providers.client_secret`), the code is exchanged, and the token is verified.
+
+**Sign-in.** The user is whoever connected the account, found by (provider, issuer, subject) and
+nothing else: no email address, name, or username is read. An account nobody connected, a user who
+is disabled, and a user who can't sign in to the web chat get the same 403, so the page says nothing
+about who has an account, and no account is ever created by a sign-in. The user gets a 30-day
+session with method `oidc` through `login::start_session`, which logs out the browser's old session,
+so a login can't be fixed in advance. The setup page doesn't offer to connect an account from such a
+session.
+
+**Connect.** `Store::user_oidc_connect` is the core operation: it connects the account to the user,
+replacing the user's account at that provider, and refuses an account that is another user's. The
+setup page uses it now, and the account page will use it for a user who is already logged in.
+
+**Failures.** The pages that refuse say little: the provider's `error` is logged, and the user is
+told it didn't sign them in. A provider that can't be reached when a sign-in starts, or whose client
+secret can't be read, gets a 502 and a line in the log. Nothing in a URL, a page, or a log line
+holds a code, a token, or a secret.
 
 ### Rate limits
 
@@ -1604,6 +1718,28 @@ plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`, `i
   password form behind "Use a password instead" and loads the script only when passkeys are
   available. `passkey.rs` has unit tests for the origin rules, user handles, and which binding a
   ceremony belongs to, and `pending.rs` for the table (single use, binding, expiry, the cap).
+- OpenID Connect (`tests/oidc.rs`, against `tests/fake_oidc.rs`, a provider in the test process on a
+  loopback port with a discovery document, a key set, and a token endpoint that signs ES256 ID
+  tokens and checks the client, the redirect URI, the single-use code, and PKCE): an invited user
+  connects an account and signs in with it later, with the provider's own request checked (PKCE,
+  state, nonce, the callback, the cookie); an account nobody connected, a disabled user, and a
+  replaced account are refused alike; a connection is the user's, one account per provider, and
+  can't take another user's; each failure of an ID token (a bad signature, another key, an unknown
+  `kid`, another issuer or audience, several audiences, another `azp`, expired, issued in the
+  future, no or another nonce, `alg: none`, an HMAC with the client secret, no ID token, an empty
+  subject) is refused while a good one and the small differences allowed are accepted; a callback
+  with no binding, another browser's, a forged, replayed, or other provider's `state`, an `error`,
+  or another issuer is refused; a connection finishes only in its own login and only from a link's
+  login; a disabled provider is neither offered nor used; the client secret goes in the way the
+  provider's document says, and a wrong or missing one signs nobody in; a provider with no secret
+  works with PKCE alone; starts need the login page's nonce, which costs nothing when it is missing
+  or wrong, and are limited; a second tab keeps the first sign-in working (the test browser sends a
+  cookie only to the paths it names); keys are refreshed once a minute for an unknown `kid`, and
+  tokens with the same new `kid`, signed in at once, all find the key one of them fetched; and the
+  discovery document is kept for an hour and refused for each reason it can be unusable. `oidc.rs`
+  has unit tests of the HTTP adapter's rules (an `https` issuer's requests must be `https`, a
+  redirect isn't followed, a body over 1 MiB is refused) and of the endpoint schemes a document may
+  name.
 - Proxy: the identity header ignored on the main listener and honored on the proxy app, unknown
   identities refused, posts carry the header's identity and need its CSRF token; a TCP listener
   needs the exact secret; binding (socket mode 0600, `InUse`, stale socket replaced, non-socket left

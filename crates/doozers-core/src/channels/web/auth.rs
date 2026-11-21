@@ -32,6 +32,12 @@ pub const SESSION_COOKIE: &str = "doozers_session";
 /// The cookie that holds the nonce of a sign-in form.
 pub const NONCE_COOKIE: &str = "doozers_login_nonce";
 
+/// The cookie that binds an OpenID Connect sign-in in flight to the browser that started it.
+pub(super) const OIDC_COOKIE: &str = "doozers_oidc";
+
+/// How long a sign-in with OpenID Connect may take, and so how long its cookie lasts.
+pub(super) const OIDC_TTL: Duration = Duration::from_secs(10 * 60);
+
 /// How long a sign-in form's nonce cookie lasts.
 const NONCE_TTL: Duration = Duration::from_secs(15 * 60);
 
@@ -172,6 +178,24 @@ pub(super) fn clear_nonce_cookie(https: bool) -> HeaderValue {
         "{NONCE_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict{secure}"
     ))
     .expect("a valid header value")
+}
+
+/// Whether `value` is well formed as the value of the [`OIDC_COOKIE`]: what [`new_nonce`] makes.
+pub(super) fn is_binding(value: &str) -> bool {
+    is_nonce(value)
+}
+
+/// `Set-Cookie` for the binding of an OpenID Connect sign-in: `HttpOnly`, and `SameSite=Lax`, not
+/// `Strict`, because the provider's redirect back is a cross-site navigation that a `Strict`
+/// cookie doesn't ride. It is for the whole site, because the start routes read it too (a second
+/// tab reuses the browser's binding), for [`OIDC_TTL`], and is `Secure` when served over HTTPS.
+pub(super) fn binding_cookie(value: &str, https: bool) -> HeaderValue {
+    let max_age = OIDC_TTL.as_secs();
+    let secure = if https { "; Secure" } else { "" };
+    HeaderValue::from_str(&format!(
+        "{OIDC_COOKIE}={value}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Lax{secure}"
+    ))
+    .expect("a hex value is a valid header value")
 }
 
 impl<S: Send + Sync> FromRequestParts<S> for WebUser {

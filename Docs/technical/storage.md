@@ -640,8 +640,8 @@ made-up ids from real ones, so the key is stored.
 `oidc_providers` holds the identity providers an admin configures, and `user_oidc_connections` says
 which account at a provider signs in as which user. The store keeps only what the admin typed. The
 provider's endpoints, keys, and signing algorithms come from its discovery document, which the core
-fetches, and the client secret is in the [secret store](#secrets) under the name in `client_secret`,
-never in this table.
+fetches ([OpenID Connect](web-channel.md#openid-connect)), and the client secret is in the
+[secret store](#secrets) under the name in `client_secret`, never in this table.
 
 A connection is the account `subject` at the `issuer`, under the provider the sign-in came through.
 A sign-in is matched on exactly those three and never on an email address or a name, because the

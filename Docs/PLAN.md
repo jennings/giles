@@ -224,6 +224,15 @@ Channels also drop messages that must never start a turn: echoes of the agent's 
   username field, and has a "Sign in with a passkey" button; a username asks the server for that
   user's passkeys, and a name that has none gets made-up credential ids, so the answer doesn't say
   who exists. Passwords fold behind "Use a password instead" where passkeys are offered.
+- OpenID Connect: admins add identity providers (`oidc_providers`: issuer, client id, the name of
+  the client secret in the secret store, scopes), whose endpoints and keys come from the issuer's
+  discovery document. A sign-in is the authorization code flow with PKCE (S256), `state`, and
+  `nonce`, at `<public_url>/auth/oidc/<id>/callback`; the ID token's signature (RSA, ECDSA, or
+  EdDSA, never HMAC or `none`), `iss`, `aud`, `exp`, and `nonce` are checked. The flow is bound to
+  the browser by a cookie and used once. An account (`user_oidc_connections`) is its issuer and
+  subject, never an email address, and a user connects one on the page an invite or recovery link
+  leads to. No sign-in creates a user; an unconnected account is refused. The login and setup pages
+  list every enabled provider.
 
 ## 4. Components and traits
 

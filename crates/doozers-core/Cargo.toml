@@ -12,7 +12,7 @@ publish = false
 [features]
 default = ["channel-web", "provider-anthropic", "provider-openai"]
 # The built-in web channel (`channels::web`): chat pages, live output, login, admin pages.
-channel-web = ["dep:argon2", "dep:qrcode", "dep:unicode-normalization", "dep:webauthn-rs", "dep:webauthn-rs-proto"]
+channel-web = ["dep:argon2", "dep:chrono", "dep:openidconnect", "dep:qrcode", "dep:unicode-normalization", "dep:webauthn-rs", "dep:webauthn-rs-proto"]
 # The built-in Anthropic Messages API provider (`providers::anthropic`).
 provider-anthropic = []
 # The built-in OpenAI-compatible Chat Completions provider (`providers::openai`).
@@ -29,6 +29,9 @@ axum = { version = "0.8.9", features = ["multipart"] }
 # Media in provider requests and in MCP tool results.
 base64.workspace = true
 bytes.workspace = true
+# The clock of the OpenID Connect library's ID token checks (`channels::web::oidc`); it is built
+# anyway, by the library.
+chrono = { version = "0.4", default-features = false, optional = true }
 croner = { version = "4.0.2", default-features = false, features = ["jiff"] }
 # Reading the private keys users upload as SSH keys (`ssh`): the PEM formats `ssh-key` doesn't
 # read, converted into its key types. Versions follow what `ssh-key` pulls in, so each builds once.
@@ -47,6 +50,9 @@ hyper-util.workspace = true
 jiff = { workspace = true, features = ["tz-system", "tzdb-zoneinfo", "tzdb-bundle-always"] }
 # The key derivation of legacy OpenSSL-encrypted PEM keys (`ssh::formats`).
 md-5 = { version = "0.10", default-features = false }
+# OpenID Connect discovery and ID token verification (`channels::web::oidc`). No `reqwest` feature:
+# requests go through `net`'s client, by an adapter.
+openidconnect = { version = "4.1.0", default-features = false, optional = true }
 p256 = { version = "0.13", default-features = false, features = ["arithmetic", "pkcs8", "std"] }
 p384 = { version = "0.13", default-features = false, features = ["arithmetic", "pkcs8", "std"] }
 p521 = { version = "0.13.3", default-features = false, features = ["arithmetic", "pkcs8", "std"] }

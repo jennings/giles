@@ -100,11 +100,11 @@ pub(super) async fn render_login(
     error: Option<&str>,
     username: &str,
 ) -> Response {
-    let options = match app.login_options().await {
+    let nonce = nonce_for_form(headers);
+    let options = match app.login_options(&nonce).await {
         Ok(options) => options,
         Err(err) => return internal_error("cannot look up the sign-in methods", &err),
     };
-    let nonce = nonce_for_form(headers);
     let mut response = http::render(&LoginPage {
         options,
         password: PasswordForm {

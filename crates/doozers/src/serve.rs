@@ -214,6 +214,7 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
             );
             let builder = web.install_agents(web.install_admin(builder, admin.clone()), manager);
             let builder = web.install_routes(builder, runtime.routes.clone());
+            let builder = web.install_oidc(builder, runtime.secrets.clone());
             let builder = web.install_connections(builder, toolset_manager.clone());
             let builder = web.install_toolsets(
                 builder,

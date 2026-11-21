@@ -71,14 +71,19 @@ impl WebApp {
         }))
     }
 
-    /// The ways to sign in on the login page that are a link to another page. No method is one yet,
-    /// so there are none.
+    /// The ways to sign in on the login page that are a link to another page: one for each enabled
+    /// identity provider ([`oidc_pages`](super::oidc_pages)). `nonce` is the page's sign-in nonce
+    /// ([`nonce_for_form`](super::auth::nonce_for_form)), which a link that starts a sign-in
+    /// carries.
     ///
     /// # Errors
     ///
     /// The store's error, if it can't say.
-    pub(super) async fn login_options(&self) -> doozers_store::Result<Vec<LoginOption>> {
-        Ok(Vec::new())
+    pub(super) async fn login_options(
+        &self,
+        nonce: &str,
+    ) -> doozers_store::Result<Vec<LoginOption>> {
+        self.oidc_login_options(nonce).await
     }
 
     /// Whether the login page folds the password form away behind "Use a password instead", for
@@ -100,6 +105,7 @@ impl WebApp {
         let mut options = Vec::new();
         options.extend(self.passkey_setup_option(user).await?);
         options.extend(self.password_setup_option(user).await?);
+        options.extend(self.oidc_setup_options(user).await?);
         Ok(options)
     }
 }

@@ -1,5 +1,6 @@
 //! A table of things in flight that the server must remember between two requests of one
-//! browser, such as a passkey ceremony ([`passkey`](super::passkey)).
+//! browser: a passkey ceremony ([`passkey`](super::passkey)) or an OpenID Connect sign-in
+//! ([`oidc`](super::oidc)).
 //!
 //! An entry is kept in memory under a random id the page sends back, for a time to live, once:
 //! [`Pending::finish`] takes the entry out whether or not it matches. An entry is bound to what
