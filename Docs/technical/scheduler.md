@@ -37,13 +37,22 @@ an edited or re-enabled job never makes up the times before its change. The task
 at most `MAX_SLEEP` (60 s), reading the clock again, so a jumping wall clock delays a job by at most
 that. After each run the next time is the first match after the clock, so times that pass during a
 long run are skipped. A time outside `active_hours` is skipped (not recorded). A one-shot runtime
-job is deleted after its time, run or not.
+job is deleted after its time, run or not, unless its creator isn't an active user (below).
 
 A run is counted from the moment its time comes, per agent (`Scheduler::agent_busy`, which keeps an
 agent from being removed) and per creator (`Scheduler::user_busy`, which keeps a user from being
 forgotten, an isolated run's turn included). Once it is counted, a run of a runtime job whose
 creator is no longer an active user is skipped, so a user who is disabled for removal starts no new
-run, and one that began before is seen.
+run, and one that began before is seen. A recurring job misses that time and runs at its next one,
+so it resumes when the user is enabled again. If Doozers restarts before that next time, the job's
+last run is older than the times it missed, so the start-up rule above runs it once for them. A
+one-shot job's time doesn't come again, and deleting it would make disabling a user destroy their
+reminders, so its task cancels its own token and ends, and the job stays in the store. The next read
+of the runtime jobs starts a task for it, which runs it at once if its creator is active by then, as
+a job that was due while Doozers was down. Every change to the users starts that read
+(`UserList::subscribe`, which the scheduler watches next to `JobChanges`), so enabling a user, by
+any path, starts their waiting jobs, and a change that leaves the user disabled starts the task,
+which skips and ends again.
 
 Config jobs follow the running configuration ([Registry](registry.md#the-running-configuration)). At
 start, and whenever `LiveConfig` changes, `reconcile_config_jobs` compares each agent's `[[jobs]]`
@@ -55,14 +64,15 @@ run reads the agent's configuration again when its time comes (the time zone, th
 created later under the same id runs only the jobs its own `agent.toml` has. A task that started
 from `first_fire` follows the rule above, so a restarted one can run once for times it missed.
 
-Runtime jobs: a task reads `jobs` at start and on every `JobChanges::notify`, starting tasks for new
-rows and stopping the tasks of deleted ones. It keeps the spec each task started from: a row whose
-spec changed (an edit) has its task stopped and a new one started from the new spec, and a spec with
-`disabled = true` gets no task, so a disabled job keeps its row and never runs. Stopping a job's
-task (deleting, editing, or disabling the job, or shutdown) ends its run's waits before the turn
-(for an idle DM, for the DM's hold); a turn already started runs to its end and its reply is
-delivered, so a job that cancels itself in its last run still reports. Only `/stop` in the DM (a
-`dm` run) and shutdown cut a started turn off. A spec it can't parse is logged and skipped.
+Runtime jobs: a task reads `jobs` at start and on every `JobChanges::notify` and change of the
+users, starting tasks for new rows and stopping the tasks of deleted ones. It keeps the spec each
+task started from: a row whose spec changed (an edit) has its task stopped and a new one started
+from the new spec, and a spec with `disabled = true` gets no task, so a disabled job keeps its row
+and never runs. Stopping a job's task (deleting, editing, or disabling the job, or shutdown) ends
+its run's waits before the turn (for an idle DM, for the DM's hold); a turn already started runs to
+its end and its reply is delivered, so a job that cancels itself in its last run still reports. Only
+`/stop` in the DM (a `dm` run) and shutdown cut a started turn off. A spec it can't parse is logged
+and skipped.
 
 ## One run
 
@@ -152,5 +162,7 @@ both session kinds, delivery with DM append and excerpt, model override and prom
 run, `dm` jobs queued behind a running turn and falling back without a DM, `idle_only`, `ask_to`
 targets and prompt withdrawal, runtime jobs (creator as requester, cancel, one-shot deletion, a
 missed one-shot at startup, an edit moving a job, a disabled job not running and making up nothing
-when switched back on, `isolated` and `dm` runs in the conversation they were scheduled in, and the
-default identity when that conversation's instance is gone).
+when switched back on, the jobs of a disabled creator waiting (a one-shot kept, a recurring one
+skipping times, an unrelated change starting nothing) and running again when the users change back,
+`isolated` and `dm` runs in the conversation they were scheduled in, and the default identity when
+that conversation's instance is gone).

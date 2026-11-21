@@ -66,7 +66,7 @@ use doozers_store::{
 use doozers_types::{InboundMessage, NativeId, Timestamp, UserId};
 use jiff::tz::TimeZone;
 use serde::Deserialize;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 use tracing::{info, warn};
 
 use crate::config::{Config, Identity, parse_timezone};
@@ -239,10 +239,18 @@ fn identity_key(identity: &str) -> String {
 /// The users the router and the web login read. Cheap to clone; clones share the list.
 ///
 /// [`get`](Self::get) returns a snapshot, so a message is resolved against one set of users even if
-/// they change meanwhile.
-#[derive(Debug, Clone, Default)]
+/// they change meanwhile. [`subscribe`](Self::subscribe) says when the users changed, for what
+/// depends on them without reading them for every message, such as the scheduler.
+#[derive(Debug, Clone)]
 pub struct UserList {
     current: Arc<RwLock<Arc<UserDirectory>>>,
+    changes: Arc<watch::Sender<u64>>,
+}
+
+impl Default for UserList {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
 }
 
 impl UserList {
@@ -250,6 +258,7 @@ impl UserList {
     pub fn new(users: Vec<User>) -> Self {
         Self {
             current: Arc::new(RwLock::new(Arc::new(UserDirectory::new(users)))),
+            changes: Arc::new(watch::Sender::new(0)),
         }
     }
 
@@ -261,10 +270,19 @@ impl UserList {
             .clone()
     }
 
-    /// Replaces the users; messages resolved after this returns use them.
+    /// Replaces the users; messages resolved after this returns use them, and the receivers of
+    /// [`subscribe`](Self::subscribe) are woken.
     pub fn set(&self, users: Vec<User>) {
         *self.current.write().unwrap_or_else(PoisonError::into_inner) =
             Arc::new(UserDirectory::new(users));
+        self.changes
+            .send_modify(|version| *version = version.wrapping_add(1));
+    }
+
+    /// A receiver woken after a [`set`](Self::set): the users changed, whichever change it was.
+    /// Several changes close together may wake it once, so read the users again, not the change.
+    pub fn subscribe(&self) -> watch::Receiver<u64> {
+        self.changes.subscribe()
     }
 
     /// Whether `id` is an active admin now ([`User::is_admin`]).

@@ -300,7 +300,8 @@ pub(crate) struct Context {
 impl Scheduler {
     /// Starts a task per config job of every agent and per runtime job in the store, and keeps
     /// them in step with the running configuration (config jobs, as agents are edited and
-    /// removed) and [`JobChanges`] (runtime jobs). Start it after the session manager.
+    /// removed), and [`JobChanges`] and the users ([`UserList::subscribe`]) (runtime jobs). Start
+    /// it after the session manager.
     /// Everything stops when `shutdown` is cancelled; a running job turn is cancelled with it.
     pub fn start(options: SchedulerOptions, shutdown: CancellationToken) -> Self {
         let tasks = TaskTracker::new();
@@ -326,7 +327,8 @@ impl Scheduler {
             running,
         ));
         let changes = options.changes.subscribe();
-        tasks.spawn(runtime_jobs(context, changes, tasks.clone()));
+        let users = context.registry.users().subscribe();
+        tasks.spawn(runtime_jobs(context, changes, users, tasks.clone()));
         Self {
             tasks,
             running: in_progress,
@@ -430,18 +432,20 @@ async fn config_jobs(
 }
 
 /// Keeps a task running for each enabled runtime job in the store: reads them at startup and
-/// again at each change, starting tasks for new jobs, stopping the tasks of deleted and disabled
-/// ones, and restarting the task of a job whose spec changed (an edit), so it runs on its new
-/// schedule.
+/// again at each change of the jobs ([`JobChanges`]) and of the users ([`UserList::subscribe`]),
+/// starting tasks for new jobs, stopping the tasks of deleted and disabled ones, and restarting the
+/// task of a job whose spec changed (an edit), so it runs on its new schedule.
 async fn runtime_jobs(
     context: Arc<Context>,
     mut changes: watch::Receiver<u64>,
+    mut users: watch::Receiver<u64>,
     tasks: TaskTracker,
 ) {
     // Each task with the spec it was started from.
     let mut running: HashMap<RuntimeJobId, (serde_json::Value, CancellationToken)> = HashMap::new();
     loop {
         changes.borrow_and_update();
+        users.borrow_and_update();
         let retry = match context.store.jobs(None, None).await {
             Ok(jobs) => {
                 running.retain(|id, (spec, stop)| {
@@ -482,6 +486,11 @@ async fn runtime_jobs(
             biased;
             () = context.shutdown.cancelled() => return,
             changed = changes.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+            }
+            changed = users.changed() => {
                 if changed.is_err() {
                     return;
                 }
@@ -544,6 +553,7 @@ async fn job_task(context: Arc<Context>, job: JobDef, stop: CancellationToken) {
         let now = context.clock.now();
         // A job of a user who was disabled (or removed) doesn't run: checked once the run is
         // counted, so removing the user, which disables them and then looks for runs, sees it.
+        // A recurring job misses this time and resumes at its next one.
         let creator_active = job.creator.as_ref().is_none_or(|creator| {
             context
                 .registry
@@ -553,6 +563,17 @@ async fn job_task(context: Arc<Context>, job: JobDef, stop: CancellationToken) {
                 .is_some_and(crate::users::User::is_active)
         });
         if !creator_active {
+            if job.is_one_shot() {
+                // Its time won't come again, and deleting the job would make disabling a user
+                // destroy their reminders. It stays in the store and runs when its creator is
+                // active again, as a job that came due while Doozers was down does
+                // (`first_fire`): the task ends, and its cancelled token has the next read of
+                // the runtime jobs start it. A change to the users, which enabling one is, starts
+                // that read.
+                debug!(job = %label, "the job's creator isn't active; the job waits for them");
+                stop.cancel();
+                return;
+            }
             debug!(job = %label, "the job's creator isn't active; skipped");
         } else if in_active_hours(job.active_hours.as_ref(), &tz, now) {
             if !run::run(&context, &job, agent, &stop).await {

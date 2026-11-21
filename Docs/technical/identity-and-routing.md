@@ -129,7 +129,9 @@ reads:
   replaces as a whole, so the next message is resolved against the new users and nothing restarts.
   `classify` stays synchronous and off the database, including for messages it drops. One async lock
   spans read, validate, write, and replace, so concurrent changes serialize and the snapshot always
-  equals what is stored. Only this process changes the tables.
+  equals what is stored. Only this process changes the tables. `UserList::subscribe` wakes a
+  receiver after a replacement (several close together may wake it once, so it reads the users
+  again), which is how the scheduler learns that a user was enabled.
 - **Operations.** `create(user, identities, now)`, `set_state(id, state, now)`,
   `set_role(id, role, now)`, `set_profile(id, display_name, timezone, now)`,
   `set_details(id, username, display_name, timezone, now)`, `remove(id)`,

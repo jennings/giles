@@ -1496,3 +1496,80 @@ async fn a_job_whose_creator_is_no_longer_active_does_not_run() {
     h.assert_nothing_ran().await;
     h.stop().await;
 }
+
+#[tokio::test(start_paused = true)]
+async fn the_jobs_of_a_disabled_creator_wait_and_resume_when_they_are_active_again() {
+    let mut h = Harness::new("", &[]).await;
+    h.start().await;
+    let once = h
+        .store
+        .job_create(
+            AgentId::new(AGENT).unwrap(),
+            owner(),
+            json!({"at": "2026-10-22T15:00:00Z", "prompt": "Tea time."}),
+            h.now(),
+        )
+        .await
+        .unwrap();
+    h.store
+        .job_create(
+            AgentId::new(AGENT).unwrap(),
+            owner(),
+            json!({"cron": "0 * * * *", "prompt": "Hourly."}),
+            h.now(),
+        )
+        .await
+        .unwrap();
+    h.changes.notify();
+    h.settle().await;
+
+    // The creator is disabled: neither job runs at its time.
+    let active = h.registry.users().get().users().to_vec();
+    let mut disabled = active.clone();
+    for user in &mut disabled {
+        user.state = doozers_store::UserState::Disabled;
+    }
+    let disabled_users = disabled.clone();
+    h.registry.users().set(disabled);
+    h.advance_to(ts("2026-10-22T15:00:01Z")).await;
+    h.assert_nothing_ran().await;
+    h.advance_to(ts("2026-10-22T16:00:01Z")).await;
+    h.assert_nothing_ran().await;
+    // The one-shot job keeps its row, which is what lets it run later. The hourly job's other
+    // times are for after they are enabled.
+    let kept = h.store.jobs(None, None).await.unwrap();
+    assert!(kept.iter().any(|job| job.id == once.id), "{kept:?}");
+
+    // An unrelated change to the jobs, and to the users that leaves the creator disabled, start no
+    // run either, and the job is still there.
+    h.changes.notify();
+    h.settle().await;
+    h.registry.users().set(disabled_users);
+    h.settle().await;
+    h.assert_nothing_ran().await;
+    let kept = h.store.jobs(None, None).await.unwrap();
+    assert!(kept.iter().any(|job| job.id == once.id), "{kept:?}");
+
+    // Enabled again, through the users and without a word to the jobs: the one-shot job, whose
+    // time passed, runs at once, and the hourly job at its next time. The hours that passed while
+    // disabled aren't made up.
+    h.registry.users().set(active);
+    h.settle().await;
+    let first = h.ran().await;
+    assert!(first.at >= ts("2026-10-22T16:00:01Z"), "{:?}", first.at);
+    assert!(first.at < ts("2026-10-22T17:00:00Z"), "{:?}", first.at);
+    assert!(first.prompt.ends_with("Tea time."), "{}", first.prompt);
+    h.assert_nothing_ran().await;
+    assert!(
+        h.store
+            .jobs(None, None)
+            .await
+            .unwrap()
+            .iter()
+            .all(|job| job.id != once.id),
+        "the one-shot job is deleted once it has run"
+    );
+    h.advance_to(ts("2026-10-22T17:00:00Z")).await;
+    assert_eq!(h.ran().await.at, ts("2026-10-22T17:00:00Z"));
+    h.stop().await;
+}
