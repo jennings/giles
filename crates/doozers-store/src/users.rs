@@ -376,6 +376,52 @@ fn touch(conn: &Connection, user: &UserId, now: Timestamp) -> Result<()> {
     Ok(())
 }
 
+/// Adds `identity` to user `id` (inside a write transaction). A user with no default identity
+/// takes it as their default.
+fn add_identity(
+    conn: &Connection,
+    id: &UserId,
+    identity: &NewIdentity,
+    now: Timestamp,
+) -> Result<()> {
+    let user = find(conn, id)?.ok_or(Error::NoSuchUser)?;
+    insert_identity(conn, id, identity, now)?;
+    if user.default_identity.is_none() {
+        conn.prepare_cached("UPDATE users SET default_identity = ?2 WHERE id = ?1")?
+            .execute(params![
+                id.as_str(),
+                canonical_identity(&format!("{}:{}", identity.namespace, identity.native_id))
+            ])?;
+    }
+    touch(conn, id, now)
+}
+
+/// Removes `identity`, already in its canonical form, from user `id` (inside a write
+/// transaction). If it was the default identity, the oldest one left becomes the default.
+fn remove_identity(conn: &Connection, id: &UserId, identity: &str, now: Timestamp) -> Result<()> {
+    let user = find(conn, id)?.ok_or(Error::NoSuchUser)?;
+    let removed = conn
+        .prepare_cached("DELETE FROM user_identities WHERE user_id = ?1 AND identity = ?2")?
+        .execute(params![id.as_str(), identity])?;
+    if removed == 0 {
+        return Err(Error::not_found(format!(
+            "identity {identity} of user {id}"
+        )));
+    }
+    if user.default_identity.as_deref() == Some(identity) {
+        let next: Option<String> = conn
+            .prepare_cached(
+                "SELECT identity FROM user_identities WHERE user_id = ?1
+                 ORDER BY verified_at, rowid LIMIT 1",
+            )?
+            .query_row([id.as_str()], |row| row.get(0))
+            .optional()?;
+        conn.prepare_cached("UPDATE users SET default_identity = ?2 WHERE id = ?1")?
+            .execute(params![id.as_str(), next])?;
+    }
+    touch(conn, id, now)
+}
+
 impl Store {
     /// Every user with their identities, oldest first.
     pub async fn users(&self) -> Result<Vec<StoredUser>> {
@@ -497,19 +543,7 @@ impl Store {
     ) -> Result<StoredUser> {
         let id = id.clone();
         self.write(move |conn| {
-            let user = find(conn, &id)?.ok_or(Error::NoSuchUser)?;
-            insert_identity(conn, &id, &identity, now)?;
-            if user.default_identity.is_none() {
-                conn.prepare_cached("UPDATE users SET default_identity = ?2 WHERE id = ?1")?
-                    .execute(params![
-                        id.as_str(),
-                        canonical_identity(&format!(
-                            "{}:{}",
-                            identity.namespace, identity.native_id
-                        ))
-                    ])?;
-            }
-            touch(conn, &id, now)?;
+            add_identity(conn, &id, &identity, now)?;
             find(conn, &id)?.ok_or_else(|| Error::corrupt("the user just updated is missing"))
         })
         .await
@@ -530,27 +564,7 @@ impl Store {
         let id = id.clone();
         let identity = canonical_identity(identity);
         self.write(move |conn| {
-            let user = find(conn, &id)?.ok_or(Error::NoSuchUser)?;
-            let removed = conn
-                .prepare_cached("DELETE FROM user_identities WHERE user_id = ?1 AND identity = ?2")?
-                .execute(params![id.as_str(), identity])?;
-            if removed == 0 {
-                return Err(Error::not_found(format!(
-                    "identity {identity} of user {id}"
-                )));
-            }
-            if user.default_identity.as_deref() == Some(&identity) {
-                let next: Option<String> = conn
-                    .prepare_cached(
-                        "SELECT identity FROM user_identities WHERE user_id = ?1
-                         ORDER BY verified_at, rowid LIMIT 1",
-                    )?
-                    .query_row([id.as_str()], |row| row.get(0))
-                    .optional()?;
-                conn.prepare_cached("UPDATE users SET default_identity = ?2 WHERE id = ?1")?
-                    .execute(params![id.as_str(), next])?;
-            }
-            touch(conn, &id, now)?;
+            remove_identity(conn, &id, &identity, now)?;
             find(conn, &id)?.ok_or_else(|| Error::corrupt("the user just updated is missing"))
         })
         .await
