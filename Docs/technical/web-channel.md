@@ -1742,6 +1742,9 @@ JavaScript. `AccountPages` holds the `WebApp` and the `Users`, and converts to t
 | -------------------- | -------------------------------------------------------------------------- |
 | `GET /account`       | The profile form and a summary of the user's channel identities           |
 | `POST /account/profile` | Sets the display name and time zone, then 303                           |
+| `GET /account/sign-in/remove?method=` | Asks before removing a sign-in method; 404 for one the user doesn't have |
+| `POST /account/sign-in/remove` | Removes the method (CSRF-checked, and allowed like adding one), 303; 409 for the only one that can sign the user in |
+| `POST /account/sign-in/passkey/rename` | Renames one of the user's passkeys (CSRF-checked), 303; 404 for another user's |
 
 - **Profile.** The form has the username and role as read-only facts, and the display name and time
   zone as fields. The `POST` calls `Users::set_profile`, which checks the display name as creating a
@@ -1752,6 +1755,30 @@ JavaScript. `AccountPages` holds the `WebApp` and the `Users`, and converts to t
 - **The display name in the sidebar.** `WebUser::display_name` is read from the snapshot with the
   rest of the user when the request arrives (`login::authenticate`), so a change shows from the next
   request and a proxy login has it too. The footer shows it, and its badge is its first letter.
+- **Sign-in methods.** In `account_methods.rs`. The page lists what the user has: the password (when
+  it was set), each passkey (name, kind, added, last used, a rename form, and **Remove**), and each
+  enabled identity provider with whether and when the user connected an account, plus the
+  connections to providers an admin turned off. Adding and changing reuse the existing pages rather
+  than repeat their ceremonies: **Set a password** and **Change your password** open
+  `/setup/password`, **Add a passkey** opens `/setup/passkey`, and **Connect** opens
+  `/setup/oidc/<id>?csrf=`. Those pages lead back to the account page, not the setup page, unless
+  the login came from a link (`WebApp::setup_back`). A refused login sees one **Confirm it's you**
+  button where the changes would be, and a proxy login is told why it can't change anything. The
+  buttons depend on `WebApp::sign_in_change` ([Step-up re-verification](#step-up-re-verification));
+  the handlers check it again, so hiding a button is never the protection.
+- **Removing.** The confirmation page names the method (`password`, `passkey:<id>`, or
+  `oidc:<provider>`; anything else, and a method the user doesn't have, is a 404, as is another
+  user's passkey id). The `POST` calls
+  `Store::user_sign_in_method_remove(user, method, passkeys_work)`, where `passkeys_work` is whether
+  the relying party works on this install, and the store refuses, in the removal's transaction, to
+  remove the only method that can sign the user in
+  ([Removing a sign-in method](storage.md#removing-a-sign-in-method)): a 409 page. The password and
+  the passkeys count where passkeys work, and a connection counts while its provider is enabled with
+  the issuer it was made under. The proxy identity doesn't count: it is the admin's, and works only
+  behind a trusted proxy. A user with no method, such as one who was just invited, has nothing to
+  keep.
+- **Renaming a passkey** needs no confirmation: it adds no access. The name is cleaned as when it
+  was added (trimmed, no control characters, 64 characters), and an empty one is a 400.
 - **Channel identities.** The page lists the user's identities, marks the default, and links to the
   [Identities page](#identities-page), which stays where it was and does the adding and removing.
 
@@ -1923,6 +1950,15 @@ plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`, `i
   logging in, both ways. A passkey confirms only if it is the user's own, in the login that started
   the ceremony, once; an account at a provider only if it is connected to the user. A proxy login
   can't confirm.
+- Sign-in methods (also `tests/account.rs`): the page lists the user's own methods and offers
+  changes only to a login that may (a recovery link's, or one confirmed lately), with one
+  **Confirm it's you** button for another login; each kind is removed through its confirmation page
+  until the last one that works is refused with a 409; removal needs the same confirmation as adding
+  (a session that was only logged in with a password gets a 403 and nothing changes, until it
+  confirms, and again after 10 minutes), the CSRF token, and a login; another user's passkey id, an
+  id nobody has, and a malformed method are 404s; where passkeys can't be used the password stays as
+  the last way in; a connection to a provider that is off doesn't count; a passkey is renamed
+  without confirming and nobody else's is.
 - Account page (`tests/account.rs`, through the real login middleware with a session cookie, over
   stored users): the page needs a login and shows only the user's own profile and identities; the
   sidebar links it and the footer shows the display name; saving changes the name and time zone the

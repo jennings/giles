@@ -72,7 +72,7 @@ fn took_too_long() -> Response {
 }
 
 /// How a kind is said to a user.
-fn kind_label(kind: PasskeyKind) -> &'static str {
+pub(super) fn kind_label(kind: PasskeyKind) -> &'static str {
     match kind {
         PasskeyKind::Discoverable => "Passkey",
         PasskeyKind::NonResident => "Non-resident key",
@@ -88,6 +88,17 @@ fn default_name(kind: PasskeyKind, existing: usize) -> String {
 /// The name a user typed, trimmed, without control characters, and cut to [`MAX_NAME_CHARS`]; or
 /// the default when nothing is left.
 fn clean_name(typed: &str, kind: PasskeyKind, existing: usize) -> String {
+    let name = tidy_name(typed);
+    if name.is_empty() {
+        default_name(kind, existing)
+    } else {
+        name
+    }
+}
+
+/// The name a user typed, trimmed, without control characters, and cut to [`MAX_NAME_CHARS`]:
+/// empty if nothing is left.
+pub(super) fn tidy_name(typed: &str) -> String {
     let name: String = typed
         .chars()
         .filter(|c| !c.is_control())
@@ -96,12 +107,7 @@ fn clean_name(typed: &str, kind: PasskeyKind, existing: usize) -> String {
         .chars()
         .take(MAX_NAME_CHARS)
         .collect();
-    let name = name.trim().to_owned();
-    if name.is_empty() {
-        default_name(kind, existing)
-    } else {
-        name
-    }
+    name.trim().to_owned()
 }
 
 /// Makes the options of a registration ask for a discoverable credential, which
@@ -171,6 +177,8 @@ struct SetupPasskeyPage<'a> {
     csrf: &'a str,
     saved: bool,
     passkeys: Vec<PasskeyRow>,
+    back_href: &'static str,
+    back_label: &'static str,
 }
 
 #[derive(Debug, Deserialize)]
@@ -204,6 +212,10 @@ async fn setup_page(
             last_used: passkey.last_used_at.map_or("never".to_owned(), time),
         })
         .collect();
+    let (back_href, back_label) = match app.setup_back(&user).await {
+        Ok(back) => back,
+        Err(err) => return internal_error("cannot look up a web session", &err),
+    };
     let relying_party = app.inner.passkeys.relying_party();
     no_store(http::render(&SetupPasskeyPage {
         unavailable: relying_party.as_ref().err().map(|why| why.explain()),
@@ -211,6 +223,8 @@ async fn setup_page(
         csrf: &user.csrf,
         saved: query.saved.is_some(),
         passkeys,
+        back_href,
+        back_label,
     }))
 }
 

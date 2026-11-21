@@ -678,6 +678,7 @@ made-up ids from real ones, so the key is stored.
 | `user_passkeys(user)`                          | The user's passkeys, oldest first.                            |
 | `user_passkey_by_credential(credential_id)`    | The passkey with that credential id, whoever it belongs to.   |
 | `user_passkey_used(id, credential, now)`       | Stores the new serialized credential (its counter moved) and `last_used_at`; `false` if there is no such passkey. |
+| `user_passkey_rename(user, id, name)`          | Renames the user's passkey; `false` if the user has no such passkey (another user's id is none). `Error::InvalidRequest` for an empty name. |
 | `passkey_fake_key(candidate)`                  | The stored stand-in key; if none is stored, stores `candidate` and returns it. |
 
 ## OpenID Connect providers

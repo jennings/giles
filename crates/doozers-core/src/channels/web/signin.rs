@@ -161,6 +161,23 @@ impl WebApp {
         Ok(self.sign_in_change(user).await? != SignInChange::Refused)
     }
 
+    /// Where the pages that add a sign-in method lead back to: the setup page for a login that came
+    /// from a link, which lands there, else the account page, which is where everyone else came
+    /// from. The address, and what to call it.
+    ///
+    /// # Errors
+    ///
+    /// The store's error, if it can't look the session up.
+    pub(super) async fn setup_back(
+        &self,
+        user: &WebUser,
+    ) -> doozers_store::Result<(&'static str, &'static str)> {
+        Ok(match self.sign_in_change(user).await? {
+            SignInChange::Link => ("/setup", "Back to setup"),
+            _ => ("/account", "Back to your account"),
+        })
+    }
+
     /// The ways to sign in on the login page that are a link to another page: one for each enabled
     /// identity provider ([`oidc_pages`](super::oidc_pages)). `nonce` is the page's sign-in nonce
     /// ([`nonce_for_form`](super::auth::nonce_for_form)), which a link that starts a sign-in

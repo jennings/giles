@@ -264,6 +264,8 @@ struct SetupPasswordPage<'a> {
     error: Option<&'a str>,
     min: usize,
     max: usize,
+    back_href: &'static str,
+    back_label: &'static str,
 }
 
 #[derive(Debug, Deserialize)]
@@ -294,6 +296,10 @@ async fn render_setup(
         .user(&user.user)
         .map(|found| found.username.clone())
         .unwrap_or_default();
+    let (back_href, back_label) = match app.setup_back(user).await {
+        Ok(back) => back,
+        Err(err) => return internal_error("cannot look up a web session", &err),
+    };
     let mut response = http::render(&SetupPasswordPage {
         username: &username,
         csrf: &user.csrf,
@@ -303,6 +309,8 @@ async fn render_setup(
         error,
         min: MIN_CHARS,
         max: MAX_CHARS,
+        back_href,
+        back_label,
     });
     if response.status().is_success() {
         *response.status_mut() = status;

@@ -2098,6 +2098,8 @@ async fn confirming_with_a_connected_account_lets_that_session_change_methods() 
     // Now the session connects another account, as an invite's would.
     let response = site.connect(&mut mia, "mia-second").await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    // It leads back to the account page, which a link's login, landing on the setup page, doesn't.
+    assert_eq!(location(&response), "/account?notice=connected");
     assert_eq!(site.connection("mia-second").await, Some(id("mia")));
 }
 

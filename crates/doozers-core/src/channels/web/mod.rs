@@ -9,6 +9,7 @@
 //! the admin pages over the admin service (`admin.rs`).
 
 mod account;
+mod account_methods;
 mod admin;
 mod agents;
 mod auth;

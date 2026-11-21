@@ -57,8 +57,9 @@ Give only the scheme, host, and optional port. Doozers is always served at the r
 A password lets you log in at `/login` with your username and password, without a link.
 
 To set a password, open an invite or recovery link, then choose **Password** on the page that
-follows. To set or change it later, [confirm it's you](#confirming-its-you) first. A login that came
-from a password can't change it without that.
+follows, or use **Set a password** on your [account](#ways-to-sign-in). To set or change it later,
+[confirm it's you](#confirming-its-you) first. A login that came from a password can't change it
+without that.
 
 A password has 15 to 128 characters. Spaces and any other characters are fine, and nothing else is
 required, so a few random words make a good password. It can't be one character repeated, or contain
@@ -123,8 +124,8 @@ IP address, the page that adds a passkey says why you can't.
 **Changing the host of `public_url` breaks every passkey**, because a passkey belongs to that host.
 Users then log in with a [password](#passwords) or a recovery link and add their passkeys again.
 
-To add a passkey, open an invite or recovery link, choose **Passkey** on the page that follows, and
-use one of the two buttons:
+To add a passkey, open an invite or recovery link and choose **Passkey** on the page that follows,
+or use **Add a passkey** on your [account](#ways-to-sign-in). Then use one of the two buttons:
 
 - **Add a passkey** is for nearly everyone. Use it for the passkey on your phone, laptop, or
   password manager, or on a security key that has room for it.
@@ -191,9 +192,10 @@ Browsers that are already logged in through a provider stay logged in after you 
 it, for up to 30 days. To end a user's logins, disable the user.
 
 To connect an account, a user opens an invite or recovery link, then chooses the provider on the
-page that follows. The provider asks them to log in, and Doozers connects that account to them.
-Choosing the provider again connects a different account in place of the first. A login that came
-from a password, a passkey, or a provider [confirms it's you](#confirming-its-you) first.
+page that follows, or uses **Connect** on their [account](#ways-to-sign-in). The provider asks them
+to log in, and Doozers connects that account to them. Choosing the provider again connects a
+different account in place of the first. A login that came from a password, a passkey, or a provider
+[confirms it's you](#confirming-its-you) first.
 
 To log in later, the user chooses **Sign in with** the provider's name on the login page. Doozers
 matches the account the provider vouches for, never its email address or name. A user an admin
@@ -640,8 +642,8 @@ key to GitHub.
 
 ## Account
 
-**Account** in the sidebar is where you manage yourself. It has your profile and a summary of your
-channel identities.
+**Account** in the sidebar is where you manage yourself. It has your profile, the ways you sign in,
+and a summary of your channel identities.
 
 Your profile is your display name and time zone.
 
@@ -652,6 +654,32 @@ The time zone sets the times agents see in your messages and when your
 empty to use the agent's time zone, or else the server's.
 
 The page also shows your username, which you log in with, and your role. You can't change them here.
+
+### Ways to sign in
+
+**Ways to sign in** lists your [password](#passwords), your [passkeys](#passkeys), and the
+[identity providers](#identity-providers) you connected an account at.
+
+- **Set a password** or **Change your password** opens the page that sets it.
+- **Add a passkey** opens the page with the two buttons. Each passkey shows when you added it and
+  last used it, and **Rename** changes its name.
+- **Connect** sends you to the provider to log in, and **Connect another account** replaces the
+  account you connected.
+- **Remove** and **Disconnect** ask first, then remove that way to sign in.
+
+A connection says when an admin turned its provider off, or changed the provider so that the account
+no longer signs you in. Connect it again after the change.
+
+Doozers won't remove the last way you can sign in. Add another way first, then remove the one you
+don't want. A passkey counts only where [passkeys work](#passkeys), and a connection counts only
+while an admin has the provider turned on. A login through a
+[trusted proxy](#a-trusted-reverse-proxy) doesn't count as a way to sign in, because an admin sets
+it up.
+
+You can add or remove a way to sign in, or change your password, only after you
+[confirm it's you](#confirming-its-you), which the page asks for with **Confirm it's you**. A login
+that came from an invite or recovery link doesn't need to for its first 30 minutes. Renaming a
+passkey doesn't need it.
 
 **Manage identities** opens the **Identities** page.
 

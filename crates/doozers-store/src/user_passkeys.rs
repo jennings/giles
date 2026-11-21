@@ -212,6 +212,33 @@ impl Store {
         .await
     }
 
+    /// Renames `user`'s passkey `id` to `name`. `false` if `user` has no such passkey: another
+    /// user's passkey id is no passkey at all.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidRequest`] if `name` is empty.
+    pub async fn user_passkey_rename(
+        &self,
+        user: &UserId,
+        id: PasskeyId,
+        name: &str,
+    ) -> Result<bool> {
+        if name.is_empty() {
+            return Err(Error::invalid("a passkey's name can't be empty"));
+        }
+        let (user, name) = (user.clone(), name.to_owned());
+        self.write(move |conn| {
+            Ok(conn
+                .prepare_cached(
+                    "UPDATE user_passkeys SET name = ?3 WHERE id = ?1 AND user_id = ?2",
+                )?
+                .execute(params![id, user.as_str(), name])?
+                == 1)
+        })
+        .await
+    }
+
     /// The key stand-in credential ids are made with: `candidate` if none is stored yet (which it
     /// stores), else the one that was. Callers pass fresh random bytes every time, so the first
     /// call after a database is made decides, and every later one gets the same key back.
@@ -306,6 +333,37 @@ mod tests {
             store.user_passkey_by_credential(b"none").await.unwrap(),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn a_passkey_is_renamed_by_its_user_only() {
+        let (_dir, store) = with_users().await;
+        let key = store
+            .user_passkey_add(
+                new("ann", b"one", PasskeyKind::Discoverable, "Phone"),
+                at(1),
+            )
+            .await
+            .unwrap();
+        assert!(
+            store
+                .user_passkey_rename(&id("ann"), key.id, "Work laptop")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .user_passkey_rename(&id("bob"), key.id, "Mine now")
+                .await
+                .unwrap()
+        );
+        let err = store
+            .user_passkey_rename(&id("ann"), key.id, "")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidRequest(_)), "{err}");
+        let kept = &store.user_passkeys(&id("ann")).await.unwrap()[0];
+        assert_eq!(kept.name, "Work laptop");
     }
 
     #[tokio::test]

@@ -125,11 +125,14 @@ async fn a_session_that_did_not_come_from_a_link_cannot_change_sign_in_methods()
         "{setup}"
     );
 
-    // A recovery link's session still can, as before.
+    // A recovery link's session still can, as before, and its pages lead back to the setup page.
     let recovery = p.login("mia").await;
-    assert_eq!(
-        p.get(&recovery, "/setup/password").await.status,
-        StatusCode::OK
+    let page = p.get(&recovery, "/setup/password").await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(
+        page.body.contains(r#"<a href="/setup">Back to setup</a>"#),
+        "{}",
+        page.body
     );
     let answer = p.set_new_password(&recovery).await;
     assert_eq!(answer.status, StatusCode::SEE_OTHER);
@@ -193,9 +196,14 @@ async fn confirming_with_the_password_lets_that_session_and_no_other_change_meth
     assert_eq!(answer.location.as_deref(), Some("/setup/password"));
     let at = p.reverified_at(&session).await.expect("stored");
     assert!(Timestamp::now().duration_since(at).as_secs() < 60);
-    assert_eq!(
-        p.get(&session, "/setup/password").await.status,
-        StatusCode::OK
+    let page = p.get(&session, "/setup/password").await;
+    assert_eq!(page.status, StatusCode::OK);
+    // Its pages lead back to the account page it came from.
+    assert!(
+        page.body
+            .contains(r#"<a href="/account">Back to your account</a>"#),
+        "{}",
+        page.body
     );
     assert_eq!(
         p.set_new_password(&session).await.status,

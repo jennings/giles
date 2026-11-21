@@ -738,6 +738,11 @@ dialog.confirm {
   background: var(--surface);
 }
 
+/* A table that sits among forms is as wide as they are. */
+.table-wrap.table-form {
+  max-width: 680px;
+}
+
 .table {
   width: 100%;
   min-width: 600px;

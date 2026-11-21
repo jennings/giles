@@ -38,6 +38,86 @@
 </div>
 </form>
 
+<h2 id="sign-in">Ways to sign in</h2>
+{%- if methods.proxy %}
+<p class="banner banner-warn">You are logged in through the proxy in front of Doozers, so you can't change how you sign in here. Ask an admin for a recovery link, or run <code>doozers admin login-link</code> if you run Doozers.</p>
+{%- else %}
+{%- if methods.link %}
+<p class="banner banner-info">You signed in with a link, so you can change your ways to sign in without confirming it's you.</p>
+{%- else %}
+{%- if let Some(until) = methods.until %}
+<p class="banner banner-info" role="status">You confirmed it's you. You can add or remove a way to sign in, or change your password, until {{ until }}.</p>
+{%- else %}
+<p>To add or remove a way to sign in, or to change your password, first confirm it's you with a way you already use.</p>
+<p><a class="button button-primary" href="/account/reverify">Confirm it's you</a></p>
+{%- endif %}
+{%- endif %}
+{%- endif %}
+{%- if methods.only_one %}
+<p class="help">You have one way to sign in. Doozers won't remove your last one, so add another first to replace it.</p>
+{%- endif %}
+
+<h3>Password</h3>
+{%- if let Some(changed) = methods.password %}
+<p>You set your password {{ changed }}.</p>
+{%- else %}
+<p>You haven't set a password.</p>
+{%- endif %}
+{%- if methods.can_change %}
+<p class="actions"><a class="button" href="/setup/password">{% if methods.password.is_some() %}Change your password{% else %}Set a password{% endif %}</a>{% if methods.password.is_some() %} <a class="button button-danger" href="/account/sign-in/remove?method=password">Remove</a>{% endif %}</p>
+{%- endif %}
+
+<h3>Passkeys</h3>
+{%- if let Some(why) = methods.passkeys_unavailable %}
+<p class="banner banner-warn">{{ why }}</p>
+{%- endif %}
+{%- if methods.passkeys.is_empty() %}
+<p>You have no passkeys.</p>
+{%- else %}
+<div class="table-wrap table-form">
+<table class="table">
+<thead><tr><th>Passkey</th><th>Added</th><th>Last used</th><th><span class="sr-only">Actions</span></th></tr></thead>
+<tbody>
+{%- for passkey in methods.passkeys %}
+<tr>
+<td data-label="Passkey" class="m-title">{{ passkey.name }}<br><span class="meta">{{ passkey.kind }}</span></td>
+<td data-label="Added" class="secondary m-meta m-label">{{ passkey.added }}</td>
+<td data-label="Last used" class="secondary m-meta m-label">{{ passkey.last_used }}</td>
+<td class="row-actions">
+<form method="post" action="/account/sign-in/passkey/rename"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="id" value="{{ passkey.id }}"><input name="name" value="{{ passkey.name }}" maxlength="64" aria-label="Name of {{ passkey.name }}" autocomplete="off"> <button type="submit" class="button-small">Rename</button></form>
+{%- if methods.can_change %}
+<a class="button button-small button-danger" href="/account/sign-in/remove?method=passkey:{{ passkey.id }}" aria-label="Remove {{ passkey.name }}">Remove</a>
+{%- endif %}
+</td>
+</tr>
+{%- endfor %}
+</tbody>
+</table>
+</div>
+{%- endif %}
+{%- if methods.can_change && methods.passkeys_unavailable.is_none() %}
+<p class="actions"><a class="button" href="/setup/passkey">Add a passkey</a></p>
+{%- endif %}
+
+<h3>Identity providers</h3>
+{%- if methods.providers.is_empty() %}
+<p>No identity provider is set up. An admin adds them.</p>
+{%- else %}
+<ul>
+{%- for provider in methods.providers %}
+<li>{{ provider.name }}:
+{%- if let Some(connected) = provider.connected %} connected {{ connected }}{% if !provider.enabled %} (an admin turned this provider off){% else if !provider.works %} (the provider changed, so this account no longer signs you in: connect it again){% endif %}
+{%- else %} not connected
+{%- endif %}
+{%- if methods.can_change %}
+{%- if provider.enabled %} <a class="button button-small" href="{{ provider.connect_href }}">{% if provider.connected.is_some() %}Connect another account{% else %}Connect{% endif %}</a>{% endif %}
+{%- if provider.connected.is_some() %} <a class="button button-small button-danger" href="/account/sign-in/remove?method=oidc:{{ provider.id }}">Disconnect</a>{% endif %}
+{%- endif %}
+</li>
+{%- endfor %}
+</ul>
+{%- endif %}
+
 <h2 id="identities">Channel identities</h2>
 {%- if identities.is_empty() %}
 <p>You have no channel identities.</p>

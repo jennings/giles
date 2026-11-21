@@ -21,8 +21,9 @@ use doozers_store::Role;
 use serde::Deserialize;
 use tracing::error;
 
+use super::account_methods::MethodsView;
 use super::auth::{WebUser, check_csrf};
-use super::pages::{WebApp, error_page, no_store};
+use super::pages::{WebApp, error_page, internal_error, no_store};
 use super::shell::{Nav, Shell};
 use crate::http::{self, RouterBuilder};
 use crate::users::{MAX_DISPLAY_NAME_CHARS, User, UserError, Users};
@@ -30,8 +31,19 @@ use crate::users::{MAX_DISPLAY_NAME_CHARS, User, UserError, Users};
 /// What the account routes need: the web app and the users, whose profile a user edits.
 #[derive(Clone)]
 pub(super) struct AccountPages {
-    app: WebApp,
+    pub(super) app: WebApp,
     users: Arc<Users>,
+}
+
+impl AccountPages {
+    /// The page again with `error` above the forms (400), for a form that was refused.
+    pub(super) async fn render_error(&self, user: &WebUser, error: &str) -> Response {
+        let state = PageState {
+            error: Some(error.to_owned()),
+            ..PageState::default()
+        };
+        render(&self.app, user, StatusCode::BAD_REQUEST, state).await
+    }
 }
 
 impl FromRef<AccountPages> for WebApp {
@@ -49,6 +61,14 @@ impl WebApp {
             Router::new()
                 .route("/account", get(page))
                 .route("/account/profile", post(save_profile))
+                .route(
+                    "/account/sign-in/remove",
+                    get(super::account_methods::remove_page).post(super::account_methods::remove),
+                )
+                .route(
+                    "/account/sign-in/passkey/rename",
+                    post(super::account_methods::rename_passkey),
+                )
                 .with_state(AccountPages {
                     app: self.clone(),
                     users,
@@ -107,6 +127,7 @@ struct AccountPage<'a> {
     display_name: String,
     timezone: String,
     max_display_name: usize,
+    methods: MethodsView,
     identities: Vec<IdentityRow>,
 }
 
@@ -120,6 +141,9 @@ struct Notice {
 fn notice_text(notice: Option<&str>) -> Option<String> {
     let text = match notice? {
         "saved" => "Saved your profile.",
+        "removed" => "Removed the way to sign in.",
+        "renamed" => "Renamed the passkey.",
+        "connected" => "Connected your account.",
         "reverified" => {
             "You confirmed it's you. For the next 10 minutes you can add or remove a way to \
              sign in, or change your password."
@@ -138,7 +162,11 @@ fn unavailable() -> Response {
 }
 
 /// Renders the page for `user` with `state`, answering `status`.
-fn render(app: &WebApp, user: &WebUser, status: StatusCode, state: PageState) -> Response {
+async fn render(app: &WebApp, user: &WebUser, status: StatusCode, state: PageState) -> Response {
+    let methods = match app.methods_view(user).await {
+        Ok(methods) => methods,
+        Err(err) => return internal_error("cannot look up the sign-in methods", &err),
+    };
     let directory = app.inner.channel.users().get();
     let Some(account) = directory.user(&user.user) else {
         return unavailable();
@@ -157,6 +185,7 @@ fn render(app: &WebApp, user: &WebUser, status: StatusCode, state: PageState) ->
         display_name: typed.display_name,
         timezone: typed.timezone,
         max_display_name: MAX_DISPLAY_NAME_CHARS,
+        methods,
         identities: account
             .identities
             .iter()
@@ -178,7 +207,7 @@ async fn page(State(app): State<WebApp>, user: WebUser, Query(query): Query<Noti
         notice: notice_text(query.notice.as_deref()),
         ..PageState::default()
     };
-    render(&app, &user, StatusCode::OK, state)
+    render(&app, &user, StatusCode::OK, state).await
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -215,19 +244,22 @@ async fn save_profile(
     match result {
         Ok(_) => Redirect::to("/account?notice=saved").into_response(),
         Err(UserError::NoSuchUser(_)) => unavailable(),
-        Err(UserError::Invalid(why)) => render(
-            &pages.app,
-            &user,
-            StatusCode::BAD_REQUEST,
-            PageState {
-                error: Some(why),
-                typed: Some(ProfileForm {
-                    display_name: form.display_name,
-                    timezone: form.timezone,
-                }),
-                ..PageState::default()
-            },
-        ),
+        Err(UserError::Invalid(why)) => {
+            render(
+                &pages.app,
+                &user,
+                StatusCode::BAD_REQUEST,
+                PageState {
+                    error: Some(why),
+                    typed: Some(ProfileForm {
+                        display_name: form.display_name,
+                        timezone: form.timezone,
+                    }),
+                    ..PageState::default()
+                },
+            )
+            .await
+        }
         Err(err) => {
             error!(error = %err, "cannot save a profile");
             error_page(

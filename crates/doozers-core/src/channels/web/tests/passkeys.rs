@@ -32,7 +32,7 @@ use super::admin::{open_users, session_of, stored_users};
 use super::*;
 
 /// Where passkeys work in these tests.
-const ORIGIN: &str = "https://doozers.example.com";
+pub(super) const ORIGIN: &str = "https://doozers.example.com";
 
 /// The software authenticator's credentials, which a test can reach into.
 #[derive(Clone, Default)]
@@ -266,7 +266,7 @@ async fn json_of(response: Response) -> Value {
 
 /// An environment whose web channel has `public_url` (when given), with the users of
 /// [`stored_users`].
-async fn env_at(public_url: Option<&str>) -> Env {
+pub(super) async fn env_at(public_url: Option<&str>) -> Env {
     let config = match public_url {
         Some(url) => WebConfig::from_json(&json!({ "public_url": url })).unwrap(),
         None => WebConfig::default(),

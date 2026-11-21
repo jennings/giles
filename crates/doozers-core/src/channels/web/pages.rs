@@ -213,6 +213,35 @@ pub(super) fn error_page(status: StatusCode, title: &str, message: &str) -> Resp
     response
 }
 
+#[derive(Template)]
+#[template(path = "web/error_back.html")]
+struct ErrorBackPage<'a> {
+    title: &'a str,
+    message: &'a str,
+    back_href: &'a str,
+    back_label: &'a str,
+}
+
+/// [`error_page`] with a link back to `back_href`, called `back_label`, besides the one to the chats.
+pub(super) fn error_page_back(
+    status: StatusCode,
+    title: &str,
+    message: &str,
+    back_href: &str,
+    back_label: &str,
+) -> Response {
+    let mut response = http::render(&ErrorBackPage {
+        title,
+        message,
+        back_href,
+        back_label,
+    });
+    if response.status().is_success() {
+        *response.status_mut() = status;
+    }
+    response
+}
+
 /// `Cache-Control: no-store`, for answers no cache may keep: the login pages (they hold a token or
 /// set a cookie) and every admin page (live state).
 pub(super) fn no_store(mut response: Response) -> Response {

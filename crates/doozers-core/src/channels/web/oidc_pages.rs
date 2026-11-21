@@ -548,7 +548,16 @@ async fn callback(
     match purpose {
         Purpose::SignIn => sign_in_user(&pages, &provider, &identity, user.as_ref(), https).await,
         Purpose::Connect { user: owner, .. } => {
-            connect_user(&pages, &provider, &identity, &owner).await
+            // The login that began a connection is the one finishing it, checked above.
+            let Some(user) = user.as_ref() else {
+                return out_of_date();
+            };
+            let target = match app.setup_back(user).await {
+                Ok(("/account", _)) => "/account?notice=connected",
+                Ok((back, _)) => back,
+                Err(err) => return internal_error("cannot look up a web session", &err),
+            };
+            connect_user(&pages, &provider, &identity, &owner, target).await
         }
         Purpose::Reverify {
             user: owner, next, ..
@@ -628,12 +637,13 @@ async fn reverify_user(
     Redirect::to(&done_href(next)).into_response()
 }
 
-/// Connects `identity` to `owner`, then back to the setup page.
+/// Connects `identity` to `owner`, then to `target`, which says it did.
 async fn connect_user(
     pages: &OidcPages,
     provider: &OidcProvider,
     identity: &Identity,
     owner: &doozers_types::UserId,
+    target: &str,
 ) -> Response {
     let app = &pages.app;
     match app
@@ -650,7 +660,7 @@ async fn connect_user(
     {
         Ok(_) => {
             info!(user = %owner, provider = %provider.id, "connected an OpenID Connect account");
-            Redirect::to("/setup").into_response()
+            Redirect::to(target).into_response()
         }
         Err(doozers_store::Error::Conflict(_)) => no_store(error_page(
             StatusCode::CONFLICT,
