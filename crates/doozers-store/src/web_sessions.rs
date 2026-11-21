@@ -92,7 +92,9 @@ pub(crate) fn token_hash(token: &str) -> Vec<u8> {
 
 impl Store {
     /// Stores a session for the cookie `token`, which signed in with `method`, under a new random
-    /// id. [`Error::Conflict`] if a session with the same token exists; [`Error::InvalidRequest`]
+    /// id, and records `now` as the time the user last signed in
+    /// ([`StoredUser::last_sign_in_at`](crate::StoredUser::last_sign_in_at)).
+    /// [`Error::Conflict`] if a session with the same token exists; [`Error::InvalidRequest`]
     /// unless `expires_at` is after `now`.
     pub async fn web_session_create(
         &self,
@@ -123,7 +125,11 @@ impl Store {
                     to_millis(expires_at)
                 ]);
             match inserted {
-                Ok(_) => Ok(()),
+                Ok(_) => {
+                    conn.prepare_cached("UPDATE users SET last_sign_in_at = ?2 WHERE id = ?1")?
+                        .execute(params![user.as_str(), to_millis(now)])?;
+                    Ok(())
+                }
                 Err(rusqlite::Error::SqliteFailure(e, _))
                     if e.code == ErrorCode::ConstraintViolation =>
                 {

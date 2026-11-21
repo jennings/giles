@@ -137,7 +137,7 @@ rules apply, and `before_migrate` receives that file's plan.
 - Row ids are opaque newtypes (`SessionId`, ...) over SQLite rowids.
 - Agent, user, channel instance, and conversation ids are stored as their string forms.
 
-## Schema (version 23)
+## Schema (version 24)
 
 The files in `crates/doozers-store/src/migrations/` are the authority. `0001_initial.sql` has every
 table but `blobs`, `routes`, `toolsets`, `workspaces`, `secrets`, `secret_key`,
@@ -149,8 +149,9 @@ table but `blobs`, `routes`, `toolsets`, `workspaces`, `secrets`, `secret_key`,
 `0015_users.sql`, `0018_user_invites.sql`, `0019_user_passwords.sql`, `0020_user_passkeys.sql`,
 `0021_oidc.sql`, and `0022_user_link_codes.sql` add (`0013_workspace_key_user.sql` adds
 `workspaces.key_user`, `0016_workspace_user.sql` adds `workspaces.user_id`, `0018_user_invites.sql`
-adds `web_sessions.method`, and `0023_web_session_account.sql` adds `web_sessions.id`,
-`last_seen_at`, and `reverified_at`). This is their outline.
+adds `web_sessions.method`, `0023_web_session_account.sql` adds `web_sessions.id`, `last_seen_at`,
+and `reverified_at`, and `0024_user_last_sign_in.sql` adds `users.last_sign_in_at`). This is their
+outline.
 
 | Table          | Columns and rules                                                                    |
 | -------------- | ------------------------------------------------------------------------------------ |
@@ -174,7 +175,7 @@ adds `web_sessions.method`, and `0023_web_session_account.sql` adds `web_session
 | `archived_conversations` | The conversations their user archived: (`channel`, `conversation`) as the primary key, `archived_at`. No foreign key, since a conversation is a set of sessions. See [Conversations](#conversations). |
 | `ssh_keys`     | The metadata of users' SSH keys: `id` (`AUTOINCREMENT`, never reused), `user_id`, `label`, `algorithm`, `public_key`, `fingerprint`, `created_at`, `last_used_at`. `UNIQUE (user_id, fingerprint)`. The private keys are secrets. See [SSH keys](#ssh-keys). |
 | `ssh_known_hosts` | The SSH host keys workspaces trust, one set per environment instance: `id` (`AUTOINCREMENT`, never reused), `environment`, `host` (lowercased, no brackets or port), `port`, `key_type`, `public_key` (base64 blob), `fingerprint`, `first_seen_at`, `first_workspace`, `first_agent`, `first_user` (null for a pinned key), `added_by` (the admin who pinned it, else null), `last_used_at`. `UNIQUE (environment, host, port, public_key)`. See [Known SSH hosts](#known-ssh-hosts). |
-| `users`        | The users: `id` (opaque, never changes), `username` (unique, `NOCASE`), `display_name`, `role` (`admin`, `member`), `state` (`active`, `disabled`), `timezone` (an IANA name, or null), `default_identity` (one of the user's identities, or null), `created_at`, `updated_at`. See [Users](#users). |
+| `users`        | The users: `id` (opaque, never changes), `username` (unique, `NOCASE`), `display_name`, `role` (`admin`, `member`), `state` (`active`, `disabled`), `timezone` (an IANA name, or null), `default_identity` (one of the user's identities, or null), `created_at`, `updated_at`, `last_sign_in_at` (when a web session was last started for the user, or null). See [Users](#users). |
 | `user_identities` | The channel identities of users: (`namespace`, `native_id`) as the primary key, `user_id` (cascades), `verified_at`, `verification` (`link`, `admin`, `imported`), and `identity`, the generated joined `<namespace>:<native id>`, which is unique. |
 | `users_imported` | One row, once the `[owner]` of `doozers.toml` was imported: `at`.                  |
 | `user_invites` | The one-time invite and recovery links: `token_hash` (SHA-256 of the token), `user_id` (cascades), `kind` (`invite`, `recovery`), `created_by` (null for the operator, and set null when that admin is removed), `created_at`, `expires_at`, `used_at`. See [User invites](#user-invites). |
@@ -506,9 +507,13 @@ keeps only the hash, so a database copy can't be replayed as a login. The token 
 least 128 bits of entropy, so a plain hash suffices. `web_session_create` (`Conflict` on a token
 collision) takes the `SignInMethod` the session signed in with, which `web_session(token, now)`
 (only unexpired sessions) returns with it. Then `web_session_delete` (logout) and
-`web_sessions_expire(now)`. The 30-day lifetime is the caller's `expires_at`. Sessions that existed
-before the column was added are `recovery`, since the one-time login link they came from is what a
-recovery link replaced.
+`web_sessions_expire(now)`. The 30-day lifetime is the caller's `expires_at`. `web_session_create`
+also sets `users.last_sign_in_at` to the session's creation time, in the same transaction, because a
+session is deleted by logout, revocation, and expiry and so can't say when the user last signed in.
+The router's `UserList` snapshot doesn't carry the time: the admin pages read it from the store
+(`user`, `users`), because nothing replaces the snapshot when a session starts. Sessions that
+existed before the column was added are `recovery`, since the one-time login link they came from is
+what a recovery link replaced.
 
 Each session also has an opaque `id`, 32 random hex digits made by the database when the row is
 inserted. It has nothing to do with the token or its hash, so the account page can list and revoke
@@ -587,6 +592,7 @@ inside the write transaction of the change.
 | `user_set_state(id, state, now)`        | Sets `active` or `disabled`; `Error::NoSuchUser` if absent. `Error::LastAdmin` for disabling the last active admin. |
 | `user_set_role(id, role, now)`          | Sets `admin` or `member`; `Error::NoSuchUser` if absent. `Error::LastAdmin` for demoting the last active admin. |
 | `user_profile_set(id, display_name, timezone, now)` | Sets the display name and time zone (an IANA name, or none) a user edits on their account page. `Error::NoSuchUser` if absent, `Error::InvalidRequest` for an empty display name. |
+| `user_details_set(id, username, display_name, timezone, now)` | Sets the username, display name, and time zone together, which an admin edits on the user's page. `Error::UsernameTaken` if another user has the username in any case (the user's own can change case), `Error::InvalidRequest` for an empty username or display name, `Error::NoSuchUser` if absent. Nothing changes when it fails. |
 | `user_delete(id)`                       | Deletes the user and, by cascade, their identities, invite links, link codes, password, passkeys, and OpenID Connect connections, clears `created_by` on the links they made, and returns the user as it was; what else the user owns (web login sessions, conversations, memories, secrets, workspaces) stays, and [forgetting the user](#forgetting-a-user) deletes it first. `Error::NoSuchUser` if absent, `Error::LastAdmin` for the last active admin. |
 | `user_identity_add(id, identity, now)`  | Adds an identity; the user's first becomes their default. `Error::IdentityTaken` if any user has it. |
 | `user_identity_remove(id, identity, now)` | Removes an identity, named as `<namespace>:<native id>`. If it was the default, the oldest one left is, or there is none. |

@@ -141,6 +141,20 @@ impl User {
     pub fn is_admin(&self) -> bool {
         self.role == Role::Admin && self.is_active()
     }
+
+    /// The identity a trusted proxy logs the user in as ([`Users::set_proxy_identity`]): their
+    /// `web:` identity other than `web:<id>`, the one a link sign-in acts as. There is at most
+    /// one.
+    pub fn proxy_identity(&self) -> Option<&UserIdentity> {
+        let id = self.id.as_str();
+        self.identities.iter().find(|held| {
+            held.identity
+                .as_str()
+                .strip_prefix(web_namespace())
+                .and_then(|rest| rest.strip_prefix(':'))
+                .is_some_and(|native_id| native_id != id)
+        })
+    }
 }
 
 /// The directory of users one [`UserList`] snapshot holds.
@@ -742,6 +756,40 @@ impl Users {
         Ok(to_user(stored)?)
     }
 
+    /// Sets the username, display name, and time zone of user `id` in one change: what an admin
+    /// edits on the user's page. The username is checked as when a user is created and is unique
+    /// without regard to case (the user may change its case), the display name and `timezone` as
+    /// in [`set_profile`](Self::set_profile). A user's id never changes, so nothing else follows
+    /// the new username.
+    ///
+    /// # Errors
+    ///
+    /// [`UserError::Invalid`] for a username, display name, or time zone that isn't valid,
+    /// [`UserError::UsernameTaken`], and [`UserError::NoSuchUser`]. Nothing changes then.
+    pub async fn set_details(
+        &self,
+        id: &UserId,
+        username: &str,
+        display_name: &str,
+        timezone: Option<&str>,
+        now: Timestamp,
+    ) -> Result<User, UserError> {
+        let display_name = display_name.trim();
+        check_username(username)?;
+        check_display_name(display_name)?;
+        if let Some(name) = timezone {
+            parse_timezone(name).map_err(UserError::Invalid)?;
+        }
+        let _changing = self.changing.lock().await;
+        let stored = self
+            .store
+            .user_details_set(id, username, display_name, timezone, now)
+            .await
+            .map_err(|e| UserError::from_store(e, id))?;
+        self.publish().await?;
+        Ok(to_user(stored)?)
+    }
+
     /// Deletes the account of user `id`, with its identities, and returns the user as it was.
     /// Everything else the user owns stays: forgetting that data (PLAN section 11.4) is built on
     /// this and does it in the same operation.
@@ -930,7 +978,7 @@ impl Users {
         match redeemed {
             LinkRedeemed::Linked(stored) => {
                 self.publish().await?;
-                Ok(Some(to_user(stored)?))
+                Ok(Some(to_user(*stored)?))
             }
             LinkRedeemed::Refused => Ok(None),
         }
@@ -1142,6 +1190,7 @@ pub(crate) fn legacy_owner_users(config: &Config) -> Vec<User> {
             default_identity: user.default_identity,
             created_at: Timestamp::UNIX_EPOCH,
             updated_at: Timestamp::UNIX_EPOCH,
+            last_sign_in_at: None,
             identities,
         })
         .unwrap(),
@@ -1744,6 +1793,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_admin_edit_replaces_the_snapshot_and_changes_nothing_when_refused() {
+        let home = Home::new().await;
+        let (users, list) = home.open("").await.unwrap();
+        users.create(member("ann"), vec![], at(0)).await.unwrap();
+        users.create(member("bob"), vec![], at(0)).await.unwrap();
+
+        let ann = users
+            .set_details(&id("ann"), "ann.b", " Ann B ", Some("Europe/London"), at(1))
+            .await
+            .unwrap();
+        assert_eq!(
+            (ann.username.as_str(), ann.display_name.as_str()),
+            ("ann.b", "Ann B")
+        );
+        // The router's snapshot has it, found by the new username only, under the same id.
+        let directory = list.get();
+        assert!(directory.by_username("ann").is_none());
+        assert_eq!(directory.by_username("ANN.B").unwrap().id, id("ann"));
+        assert_eq!(
+            directory
+                .user(&id("ann"))
+                .unwrap()
+                .timezone
+                .as_ref()
+                .and_then(|zone| zone.iana_name()),
+            Some("Europe/London")
+        );
+
+        // Another user's username in any case, a username or time zone that isn't valid, and an
+        // unknown user are refused, and the name and zone typed with them aren't kept.
+        let cases = [
+            ("BOB", "Changed", None),
+            ("", "Changed", None),
+            ("a b", "Changed", None),
+            (
+                "x".repeat(MAX_USERNAME_CHARS + 1).leak() as &str,
+                "Changed",
+                None,
+            ),
+            ("ann.b", "", None),
+            ("ann.b", "Changed", Some("Mars/Olympus")),
+        ];
+        for (username, display_name, zone) in cases {
+            let err = users
+                .set_details(&id("ann"), username, display_name, zone, at(2))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, UserError::Invalid(_) | UserError::UsernameTaken),
+                "{username:?} {zone:?}: {err}"
+            );
+        }
+        let err = users
+            .set_details(&id("ann"), "bob", "Changed", None, at(2))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, UserError::UsernameTaken), "{err}");
+        let err = users
+            .set_details(&id("nobody"), "nobody", "Nobody", None, at(2))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, UserError::NoSuchUser(_)), "{err}");
+        let kept = list.get();
+        let ann = kept.user(&id("ann")).unwrap();
+        assert_eq!(
+            (ann.username.as_str(), ann.display_name.as_str()),
+            ("ann.b", "Ann B")
+        );
+    }
+
+    #[tokio::test]
     async fn changes_are_checked_before_they_are_made() {
         let home = Home::new().await;
         let (users, list) = home.open("").await.unwrap();
@@ -2222,6 +2342,17 @@ mod tests {
         assert!(!resolves(&list, "web", "ann@example.com"));
         assert!(resolves(&list, "web", "ann@corp.example"));
         assert!(resolves(&list, "web", "ann"));
+        // The user says which one is the proxy identity, and the login identity isn't.
+        let directory = list.get();
+        let proxy = directory.user(&id("ann")).unwrap().proxy_identity();
+        assert_eq!(proxy.unwrap().identity.as_str(), "web:ann@corp.example");
+        assert!(
+            directory
+                .user(&id("bob"))
+                .unwrap()
+                .proxy_identity()
+                .is_none()
+        );
 
         // Another user's identity is refused and ann keeps theirs.
         users
@@ -2255,6 +2386,13 @@ mod tests {
             .unwrap();
         assert!(!resolves(&list, "web", "ann@corp.example"));
         assert!(resolves(&list, "web", "ann"));
+        assert!(
+            list.get()
+                .user(&id("ann"))
+                .unwrap()
+                .proxy_identity()
+                .is_none()
+        );
     }
 
     #[tokio::test]

@@ -20,7 +20,7 @@ use doozers_types::{Timestamp, UserId};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::time::to_millis;
-use crate::{Error, Result, Store, get_time, parse_id, query_all, query_opt};
+use crate::{Error, Result, Store, get_opt_time, get_time, parse_id, query_all, query_opt};
 
 /// The form identities are stored and compared in: the joined `<namespace>:<native id>`, with the
 /// domain of an `email` identity (first segment `email`, domain after the last `@`) lowercased.
@@ -191,6 +191,9 @@ pub struct StoredUser {
     pub created_at: Timestamp,
     /// When the user last changed.
     pub updated_at: Timestamp,
+    /// When a web session was last started for the user ([`Store::web_session_create`]); `None`
+    /// if none ever was. A login through a trusted proxy starts no session.
+    pub last_sign_in_at: Option<Timestamp>,
     /// The user's identities, oldest first.
     pub identities: Vec<StoredIdentity>,
 }
@@ -207,7 +210,7 @@ pub struct ImportedUser {
 }
 
 const USER_COLUMNS: &str = "id, username, display_name, role, state, timezone, default_identity, \
-                            created_at, updated_at";
+                            created_at, updated_at, last_sign_in_at";
 
 fn user_from_row(row: &Row<'_>) -> Result<StoredUser> {
     Ok(StoredUser {
@@ -220,6 +223,7 @@ fn user_from_row(row: &Row<'_>) -> Result<StoredUser> {
         default_identity: row.get(6)?,
         created_at: get_time(row, 7)?,
         updated_at: get_time(row, 8)?,
+        last_sign_in_at: get_opt_time(row, 9)?,
         identities: Vec::new(),
     })
 }
@@ -538,6 +542,66 @@ impl Store {
                      WHERE id = ?1",
                 )?
                 .execute(params![id.as_str(), display_name, timezone, to_millis(now)])?;
+            if changed == 0 {
+                return Err(Error::NoSuchUser);
+            }
+            find(conn, &id)?.ok_or_else(|| Error::corrupt("the user just updated is missing"))
+        })
+        .await
+    }
+
+    /// Sets the username, display name, and time zone of user `id` in one change, which an admin
+    /// edits on the user's page, and returns the user. Nothing changes if any of them is refused.
+    /// `timezone` is an IANA name, or `None` to clear it; the store doesn't know which names exist,
+    /// or what a username may look like.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoSuchUser`]; [`Error::UsernameTaken`] if another user has the username, without
+    /// regard to ASCII case (the user's own, in another case, is theirs to change);
+    /// [`Error::InvalidRequest`] if the username or display name is empty.
+    pub async fn user_details_set(
+        &self,
+        id: &UserId,
+        username: &str,
+        display_name: &str,
+        timezone: Option<&str>,
+        now: Timestamp,
+    ) -> Result<StoredUser> {
+        if username.is_empty() {
+            return Err(Error::invalid("a username can't be empty"));
+        }
+        if display_name.is_empty() {
+            return Err(Error::invalid("a display name can't be empty"));
+        }
+        let (id, username, display_name, timezone) = (
+            id.clone(),
+            username.to_owned(),
+            display_name.to_owned(),
+            timezone.map(str::to_owned),
+        );
+        self.write(move |conn| {
+            let taken: bool = conn
+                .prepare_cached(
+                    "SELECT EXISTS (SELECT 1 FROM users WHERE username = ?1 AND id <> ?2)",
+                )?
+                .query_row(params![username, id.as_str()], |row| row.get(0))?;
+            if taken {
+                return Err(Error::UsernameTaken);
+            }
+            let changed = conn
+                .prepare_cached(
+                    "UPDATE users SET username = ?2, display_name = ?3, timezone = ?4,
+                                      updated_at = ?5
+                     WHERE id = ?1",
+                )?
+                .execute(params![
+                    id.as_str(),
+                    username,
+                    display_name,
+                    timezone,
+                    to_millis(now)
+                ])?;
             if changed == 0 {
                 return Err(Error::NoSuchUser);
             }
@@ -964,6 +1028,114 @@ mod tests {
             .user_profile_set(&id("nobody"), "N", None, at(7))
             .await;
         assert!(matches!(missing, Err(Error::NoSuchUser)), "{missing:?}");
+    }
+
+    #[tokio::test]
+    async fn an_admin_edit_sets_the_username_name_and_time_zone_together_or_not_at_all() {
+        let (_dir, store) = store().await;
+        for (user_id, name) in [("u1", "ann"), ("u2", "bob")] {
+            store
+                .user_create(user(user_id, name, Role::Member), vec![], at(0))
+                .await
+                .unwrap();
+        }
+        let changed = store
+            .user_details_set(&id("u1"), "ann.b", "Ann B", Some("Europe/London"), at(5))
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                changed.username.as_str(),
+                changed.display_name.as_str(),
+                changed.timezone.as_deref(),
+                changed.updated_at
+            ),
+            ("ann.b", "Ann B", Some("Europe/London"), at(5))
+        );
+        // The old username is free, and the user's own can change its case.
+        let recased = store
+            .user_details_set(&id("u1"), "ANN.B", "Ann B", None, at(6))
+            .await
+            .unwrap();
+        assert_eq!(
+            (recased.username.as_str(), recased.timezone),
+            ("ANN.B", None)
+        );
+        store
+            .user_details_set(&id("u2"), "ann", "Bob", None, at(7))
+            .await
+            .unwrap();
+
+        // Another user's username, in any case, is refused and nothing else is written.
+        let taken = store
+            .user_details_set(&id("u1"), "ANN", "Changed", Some("Asia/Tokyo"), at(8))
+            .await;
+        assert!(matches!(taken, Err(Error::UsernameTaken)), "{taken:?}");
+        let ann = store.user(&id("u1")).await.unwrap().unwrap();
+        assert_eq!(
+            (
+                ann.username.as_str(),
+                ann.display_name.as_str(),
+                ann.timezone
+            ),
+            ("ANN.B", "Ann B", None)
+        );
+        for (name, display) in [("", "x"), ("x", "")] {
+            let empty = store
+                .user_details_set(&id("u1"), name, display, None, at(9))
+                .await;
+            assert!(matches!(empty, Err(Error::InvalidRequest(_))), "{empty:?}");
+        }
+        let missing = store
+            .user_details_set(&id("nobody"), "n", "N", None, at(9))
+            .await;
+        assert!(matches!(missing, Err(Error::NoSuchUser)), "{missing:?}");
+    }
+
+    #[tokio::test]
+    async fn a_session_records_the_users_last_sign_in_and_the_time_outlives_it() {
+        let (_dir, store) = store().await;
+        store
+            .user_create(user("u1", "ann", Role::Member), vec![], at(0))
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .user(&id("u1"))
+                .await
+                .unwrap()
+                .unwrap()
+                .last_sign_in_at,
+            None
+        );
+        store
+            .web_session_create("a", id("u1"), crate::SignInMethod::Password, at(5), at(100))
+            .await
+            .unwrap();
+        store
+            .web_session_create("b", id("u1"), crate::SignInMethod::Passkey, at(9), at(100))
+            .await
+            .unwrap();
+        // The sessions are gone (logged out, revoked, expired): the time stays.
+        assert!(store.web_session_delete("a").await.unwrap());
+        assert!(store.web_session_delete("b").await.unwrap());
+        let ann = store.user(&id("u1")).await.unwrap().unwrap();
+        assert_eq!(ann.last_sign_in_at, Some(at(9)));
+        // Another user's sign-in is theirs.
+        store
+            .user_create(user("u2", "bob", Role::Member), vec![], at(0))
+            .await
+            .unwrap();
+        store
+            .web_session_create("c", id("u2"), crate::SignInMethod::Oidc, at(12), at(100))
+            .await
+            .unwrap();
+        let bob = store.user(&id("u2")).await.unwrap().unwrap();
+        let ann = store.user(&id("u1")).await.unwrap().unwrap();
+        assert_eq!(
+            (bob.last_sign_in_at, ann.last_sign_in_at),
+            (Some(at(12)), Some(at(9)))
+        );
     }
 
     #[tokio::test]

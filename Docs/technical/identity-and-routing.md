@@ -131,14 +131,19 @@ reads:
   spans read, validate, write, and replace, so concurrent changes serialize and the snapshot always
   equals what is stored. Only this process changes the tables.
 - **Operations.** `create(user, identities, now)`, `set_state(id, state, now)`,
-  `set_role(id, role, now)`, `set_profile(id, display_name, timezone, now)`, `remove(id)`,
+  `set_role(id, role, now)`, `set_profile(id, display_name, timezone, now)`,
+  `set_details(id, username, display_name, timezone, now)`, `remove(id)`,
   `add_identity(id, namespace, native_id, verification, now)`, `remove_identity(id, identity, now)`,
   `set_default_identity(id, identity, now)`, `set_proxy_identity(id, native_id, now)`,
   `redeem_link_code(namespace, native_id, code, now, max_attempts)`, and
   `login_user(requested, now)`. A username is 1 to 64 letters, digits, `.`, `_`, and `-`; the store
   compares it ignoring ASCII case. An identity belongs to one user (`IdentityTaken`). `set_profile`
   is how a user changes their own display name and time zone; it checks both as `create` does (a
-  time zone as one in `doozers.toml`) before it writes.
+  time zone as one in `doozers.toml`) before it writes. `set_details` is what an admin does on a
+  user's page: it changes the username, display name, and time zone together, checking the username
+  as `create` does. It refuses another user's username in any case and allows the user's own in
+  another case. The id never changes, so nothing else follows a new username. `User::proxy_identity`
+  reads the identity a trusted proxy logs the user in as from their identities.
 - **The last active admin.** `set_state` to `disabled`, `set_role` to `member`, and `remove` refuse
   (`LastAdmin`) when the user is the only active admin; a disabled admin doesn't count as one to
   keep. The store makes the check inside the write transaction of the change (`user_set_state`,

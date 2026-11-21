@@ -114,6 +114,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "0023_web_session_account",
         sql: include_str!("migrations/0023_web_session_account.sql"),
     },
+    Migration {
+        name: "0024_user_last_sign_in",
+        sql: include_str!("migrations/0024_user_last_sign_in.sql"),
+    },
 ];
 
 /// The schema version this binary writes.
@@ -415,6 +419,34 @@ mod tests {
             [],
         );
         assert!(duplicate.is_err(), "a session id is unique");
+    }
+
+    #[test]
+    fn the_last_sign_in_migration_starts_from_each_users_newest_session() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn, &MIGRATIONS[..23], None).unwrap();
+        conn.execute_batch(
+            "INSERT INTO users (id, username, display_name, role, state, created_at, updated_at)
+             VALUES ('ann', 'ann', 'Ann', 'member', 'active', 1, 1),
+                    ('bob', 'bob', 'Bob', 'member', 'active', 1, 1);
+             INSERT INTO web_sessions (token_hash, id, user_id, method, created_at, expires_at)
+             VALUES (zeroblob(32), lower(hex(randomblob(16))), 'ann', 'password', 5, 99),
+                    (x'0202020202020202020202020202020202020202020202020202020202020202',
+                     lower(hex(randomblob(16))), 'ann', 'passkey', 8, 99);",
+        )
+        .unwrap();
+        migrate(&mut conn, MIGRATIONS, None).unwrap();
+        let times: Vec<(String, Option<i64>)> = conn
+            .prepare("SELECT id, last_sign_in_at FROM users ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            times,
+            [("ann".to_owned(), Some(8)), ("bob".to_owned(), None)]
+        );
     }
 
     #[test]

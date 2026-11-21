@@ -47,7 +47,7 @@ pub struct LinkCodeRow {
 pub enum LinkRedeemed {
     /// The code was right: the identity now belongs to the user, who is returned as they are now.
     /// The code is gone.
-    Linked(StoredUser),
+    Linked(Box<StoredUser>),
     /// No pending code matched the code, the namespace, and an active user. The wrong code was
     /// counted against every pending code in the namespace.
     Refused,
@@ -199,7 +199,7 @@ impl Store {
             .execute(params![user.as_str(), namespace])?;
             let linked = find(conn, &user)?
                 .ok_or_else(|| Error::corrupt("the user just linked is missing"))?;
-            Ok(LinkRedeemed::Linked(linked))
+            Ok(LinkRedeemed::Linked(Box::new(linked)))
         })
         .await
     }
