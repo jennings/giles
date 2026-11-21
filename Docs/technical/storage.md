@@ -137,16 +137,17 @@ rules apply, and `before_migrate` receives that file's plan.
 - Row ids are opaque newtypes (`SessionId`, ...) over SQLite rowids.
 - Agent, user, channel instance, and conversation ids are stored as their string forms.
 
-## Schema (version 20)
+## Schema (version 21)
 
 The files in `crates/doozers-store/src/migrations/` are the authority. `0001_initial.sql` has every
 table but `blobs`, `routes`, `toolsets`, `workspaces`, `secrets`, `secret_key`,
 `archived_conversations`, `ssh_keys`, `ssh_known_hosts`, `users`, `user_identities`,
-`users_imported`, `user_invites`, `user_passwords`, `user_passkeys`, and `passkey_fake_key`, which
-`0002_blobs.sql`, `0003_routes.sql`, `0004_toolsets.sql`, `0005_workspaces.sql`, `0007_secrets.sql`,
-`0009_archived_conversations.sql`, `0012_ssh_keys.sql`, `0014_ssh_known_hosts.sql`,
-`0015_users.sql`, `0018_user_invites.sql`, `0019_user_passwords.sql`, and `0020_user_passkeys.sql`
-add (`0013_workspace_key_user.sql` adds `workspaces.key_user`, `0016_workspace_user.sql` adds
+`users_imported`, `user_invites`, `user_passwords`, `user_passkeys`, `passkey_fake_key`,
+`oidc_providers`, and `user_oidc_connections`, which `0002_blobs.sql`, `0003_routes.sql`,
+`0004_toolsets.sql`, `0005_workspaces.sql`, `0007_secrets.sql`, `0009_archived_conversations.sql`,
+`0012_ssh_keys.sql`, `0014_ssh_known_hosts.sql`, `0015_users.sql`, `0018_user_invites.sql`,
+`0019_user_passwords.sql`, `0020_user_passkeys.sql`, and `0021_oidc.sql` add
+(`0013_workspace_key_user.sql` adds `workspaces.key_user`, `0016_workspace_user.sql` adds
 `workspaces.user_id`, and `0018_user_invites.sql` adds `web_sessions.method`). This is their
 outline.
 
@@ -179,6 +180,8 @@ outline.
 | `user_passwords` | The passwords users sign in with: `user_id` (primary key, cascades), `hash` (an Argon2id PHC string), `changed_at`. See [User passwords](#user-passwords). |
 | `user_passkeys` | The passkeys users sign in with: `id` (`AUTOINCREMENT`, never reused), `user_id` (cascades), `credential_id` (unique across users), `credential` (the WebAuthn library's serialized credential, JSON), `kind` (`discoverable`, `non_resident`), `name`, `created_at`, `last_used_at`. See [User passkeys](#user-passkeys). |
 | `passkey_fake_key` | One row, once a sign-in page has needed it: the 32-byte key stand-in credential ids are made with. See [User passkeys](#user-passkeys). |
+| `oidc_providers` | The OpenID Connect identity providers admins configure: `id` (a slug, primary key), `display_name`, `issuer`, `client_id`, `client_secret` (the name of the secret in the secret store, or null), `scopes` (space-separated, `openid` among them), `enabled`, `created_at`, `updated_at`. See [OpenID Connect providers](#openid-connect-providers). |
+| `user_oidc_connections` | Which provider account signs in as which user: (`provider_id`, `issuer`, `subject`) as the primary key, `user_id`, `connected_at`. `UNIQUE (provider_id, user_id)`. Both foreign keys cascade. |
 
 `pairings` is deferred with multi-user support (PLAN 1.1, D49) and doesn't exist yet.
 
@@ -564,7 +567,7 @@ inside the write transaction of the change.
 | `user_create(user, identities, now)`    | Creates an active user with identities verified at `now`. `Error::UserIdTaken`, `Error::UsernameTaken`, or `Error::IdentityTaken` store nothing. The default identity must be one of the identities. |
 | `user_set_state(id, state, now)`        | Sets `active` or `disabled`; `Error::NoSuchUser` if absent. `Error::LastAdmin` for disabling the last active admin. |
 | `user_set_role(id, role, now)`          | Sets `admin` or `member`; `Error::NoSuchUser` if absent. `Error::LastAdmin` for demoting the last active admin. |
-| `user_delete(id)`                       | Deletes the user and, by cascade, their identities, invite links, password, and passkeys, clears `created_by` on the links they made, and returns the user as it was; what else the user owns (web login sessions, conversations, memories, secrets) stays. `Error::NoSuchUser` if absent, `Error::LastAdmin` for the last active admin. |
+| `user_delete(id)`                       | Deletes the user and, by cascade, their identities, invite links, password, passkeys, and OpenID Connect connections, clears `created_by` on the links they made, and returns the user as it was; what else the user owns (web login sessions, conversations, memories, secrets) stays. `Error::NoSuchUser` if absent, `Error::LastAdmin` for the last active admin. |
 | `user_identity_add(id, identity, now)`  | Adds an identity; the user's first becomes their default. `Error::IdentityTaken` if any user has it. |
 | `user_identity_remove(id, identity, now)` | Removes an identity, named as `<namespace>:<native id>`. If it was the default, the oldest one left is, or there is none. |
 | `users_imported`                        | Whether the import below has run.                                |
@@ -631,6 +634,34 @@ made-up ids from real ones, so the key is stored.
 | `user_passkey_by_credential(credential_id)`    | The passkey with that credential id, whoever it belongs to.   |
 | `user_passkey_used(id, credential, now)`       | Stores the new serialized credential (its counter moved) and `last_used_at`; `false` if there is no such passkey. |
 | `passkey_fake_key(candidate)`                  | The stored stand-in key; if none is stored, stores `candidate` and returns it. |
+
+## OpenID Connect providers
+
+`oidc_providers` holds the identity providers an admin configures, and `user_oidc_connections` says
+which account at a provider signs in as which user. The store keeps only what the admin typed. The
+provider's endpoints, keys, and signing algorithms come from its discovery document, which the core
+fetches, and the client secret is in the [secret store](#secrets) under the name in `client_secret`,
+never in this table.
+
+A connection is the account `subject` at the `issuer`, under the provider the sign-in came through.
+A sign-in is matched on exactly those three and never on an email address or a name, because the
+subject is the only stable id a provider promises. A provider's current issuer is the one looked up,
+so after an admin changes it the old connections stay in the table without matching anything, and
+match again if the issuer is changed back. A user has one account per provider: connecting another
+replaces it. Removing a provider removes its connections, and so does removing a user.
+
+| Method                                                        | Contract                                                  |
+| ------------------------------------------------------------- | --------------------------------------------------------- |
+| `oidc_provider_add(id, settings, now)`                        | Adds a provider and returns it. `Error::InvalidRequest` for an id that isn't a slug (`is_provider_id`) or settings that are blank, have control characters, or whose scopes lack `openid`; `Error::Conflict` if the id exists. |
+| `oidc_provider_update(id, settings, now)`                     | Replaces every setting; `None` if there is no such provider. |
+| `oidc_provider_set_enabled(id, enabled, now)`                 | Enables or disables; `false` if there is no such provider. |
+| `oidc_provider_remove(id)`                                    | Removes the provider and its connections; `false` if there is no such provider. |
+| `oidc_provider(id)`, `oidc_providers()`                       | One provider, or all of them by display name.             |
+| `user_oidc_connect(provider, issuer, subject, user, now)`     | Connects the account, replacing the user's connection to that provider. The same account again changes nothing. `Error::NoSuchUser`, `Error::NotFound` (the provider), `Error::Conflict` (the account is another user's), `Error::InvalidRequest` (an empty issuer or subject, or a subject over 255 characters). |
+| `user_oidc_user(provider, issuer, subject)`                   | The user the account is connected to, if any.             |
+| `user_oidc_connections(user)`                                 | The user's connections, oldest first.                     |
+| `user_oidc_disconnect(user, provider)`                        | Removes the user's connection to the provider; `false` if they had none. |
+| `oidc_connection_count(provider, issuer)`                     | How many accounts are connected with that issuer.         |
 
 ## Toolsets
 

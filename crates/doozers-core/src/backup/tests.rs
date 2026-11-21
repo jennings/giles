@@ -380,7 +380,7 @@ fn pruning_keeps_the_newest_pre_migration_snapshots_and_nothing_else_is_touched(
 fn downgrade_to_v1(path: &Path) {
     let conn = rusqlite::Connection::open(path).unwrap();
     conn.execute_batch(
-        "ALTER TABLE web_sessions DROP COLUMN method; DROP TABLE passkey_fake_key; DROP TABLE user_passkeys; DROP TABLE user_passwords; DROP TABLE user_invites; DROP INDEX inbox_user; DROP INDEX sessions_user; DROP TABLE users_imported; DROP TABLE user_identities; DROP TABLE users; DROP TABLE ssh_known_hosts; DROP TABLE ssh_keys; DROP TABLE archived_conversations; ALTER TABLE outbox DROP COLUMN target; DROP TABLE secret_key; DROP TABLE secrets; DROP TABLE workspaces; DROP TABLE toolsets; DROP TABLE routes_imported; DROP TABLE routes; DROP TABLE blobs;
+        "ALTER TABLE web_sessions DROP COLUMN method; DROP TABLE user_oidc_connections; DROP TABLE oidc_providers; DROP TABLE passkey_fake_key; DROP TABLE user_passkeys; DROP TABLE user_passwords; DROP TABLE user_invites; DROP INDEX inbox_user; DROP INDEX sessions_user; DROP TABLE users_imported; DROP TABLE user_identities; DROP TABLE users; DROP TABLE ssh_known_hosts; DROP TABLE ssh_keys; DROP TABLE archived_conversations; ALTER TABLE outbox DROP COLUMN target; DROP TABLE secret_key; DROP TABLE secrets; DROP TABLE workspaces; DROP TABLE toolsets; DROP TABLE routes_imported; DROP TABLE routes; DROP TABLE blobs;
          PRAGMA user_version = 1;",
     )
     .unwrap();

@@ -27,6 +27,7 @@ mod journal_mode;
 mod memory;
 mod messages;
 mod migrate;
+mod oidc;
 mod outbox;
 mod routes;
 mod search;
@@ -65,6 +66,10 @@ pub use messages::{
     Appended, Entry, History, Slot, StoredMessage, StoredMessageId, Summary, SummaryId,
 };
 pub use migrate::{MEMORY_SCHEMA_VERSION, MigrationPlan, SCHEMA_VERSION};
+pub use oidc::{
+    MAX_PROVIDER_ID_LEN, MAX_SUBJECT_LEN, OidcConnection, OidcProvider, OidcProviderSettings,
+    is_provider_id,
+};
 pub use outbox::{NewOutbox, OutboxEntry, OutboxId, OutboxTarget};
 pub use routes::{NewRoute, RouteId, StoredRoute};
 pub use search::{SNIPPET_ELLIPSIS, SNIPPET_END, SNIPPET_START, SearchHit, SearchScope};
