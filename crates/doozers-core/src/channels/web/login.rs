@@ -1,6 +1,7 @@
-//! The web login (PLAN section 3.4): the authentication middleware, starting a session, logout, and
-//! deleting expired sessions and invites. The invite and recovery links that sign a browser in are
-//! in [`invite`](super::invite).
+//! The web login (PLAN section 3.4): the authentication middleware, the login page, starting a
+//! session, logout, and deleting expired sessions and invites. The invite and recovery links that
+//! sign a browser in are in [`invite`](super::invite), and password sign-in in
+//! [`password_pages`](super::password_pages).
 //!
 //! - A request through the trusted-proxy listener (marked [`TrustedProxy`]) that carries the
 //!   proxy's identity header is the active user who has that `web` identity. Nothing else ever
@@ -16,7 +17,7 @@ use askama::Template;
 use axum::Extension;
 use axum::Router;
 use axum::extract::{Form, Request, State};
-use axum::http::header::SET_COOKIE;
+use axum::http::header::{HOST, SET_COOKIE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
@@ -28,7 +29,8 @@ use tracing::{debug, warn};
 
 use super::auth::{
     Login, SESSION_COOKIE, TrustedProxy, WEB_SESSION_TTL, WebUser, check_csrf,
-    clear_session_cookie, cookie, cookie_csrf, proxy_csrf, session_cookie,
+    clear_session_cookie, cookie, cookie_csrf, nonce_cookie, nonce_for_form, proxy_csrf,
+    session_cookie,
 };
 use super::pages::{WebApp, error_page, internal_error, no_store};
 use super::signin::LoginOption;
@@ -47,18 +49,63 @@ pub(super) fn routes() -> Router<WebApp> {
 
 #[derive(Template)]
 #[template(path = "web/login.html")]
-struct LoginPage {
+struct LoginPage<'a> {
     options: Vec<LoginOption>,
+    password: PasswordForm<'a>,
+    /// Whether the password form sits behind "Use a password instead".
+    collapse_password: bool,
+}
+
+/// What the password form on the login page shows.
+struct PasswordForm<'a> {
+    /// The sign-in nonce the form carries ([`nonce_for_form`]).
+    nonce: &'a str,
+    /// The username to put back in the form.
+    username: &'a str,
+    /// Whether to warn that the page isn't encrypted ([`WebApp::plain_http`]).
+    plain_http: bool,
+    /// Why the last attempt didn't sign in, if there was one.
+    error: Option<&'a str>,
 }
 
 /// `GET /login`: the ways to sign in. Someone who is signed in goes to the chat list.
-async fn login_page(State(app): State<WebApp>, user: Option<Extension<WebUser>>) -> Response {
+async fn login_page(
+    State(app): State<WebApp>,
+    user: Option<Extension<WebUser>>,
+    trusted: Option<Extension<TrustedProxy>>,
+    headers: HeaderMap,
+) -> Response {
     if user.is_some() {
         return Redirect::to("/").into_response();
     }
-    no_store(http::render(&LoginPage {
+    render_login(&app, &headers, trusted.is_some(), None, "")
+}
+
+/// The login page: the options, and the password form with `username` in it and `error` above it,
+/// if any. It carries the sign-in nonce, which the response also sets as a cookie.
+pub(super) fn render_login(
+    app: &WebApp,
+    headers: &HeaderMap,
+    trusted: bool,
+    error: Option<&str>,
+    username: &str,
+) -> Response {
+    let nonce = nonce_for_form(headers);
+    let mut response = http::render(&LoginPage {
         options: app.login_options(),
-    }))
+        password: PasswordForm {
+            nonce: &nonce,
+            username,
+            plain_http: app.plain_http(headers, trusted),
+            error,
+        },
+        collapse_password: app.password_collapsed(),
+    });
+    let https = is_https(&app.inner.channel, headers, trusted);
+    response
+        .headers_mut()
+        .append(SET_COOKIE, nonce_cookie(&nonce, https));
+    no_store(response)
 }
 
 /// Whether the response should mark cookies `Secure`: the public URL is `https`, or the trusted
@@ -69,6 +116,46 @@ pub(super) fn is_https(channel: &WebChannel, headers: &HeaderMap, trusted: bool)
             && headers
                 .get("x-forwarded-proto")
                 .is_some_and(|proto| proto.as_bytes().eq_ignore_ascii_case(b"https")))
+}
+
+/// Whether `host`, a `Host` header or the host of a URL, with or without a port, is this machine:
+/// `localhost` or a name under it, or a loopback IP address. A browser treats such a page as a
+/// secure context, whatever the scheme.
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim();
+    let name = match host.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next().unwrap_or_default(),
+        None => host.rsplit_once(':').map_or(host, |(name, _)| name),
+    };
+    let name = name.trim_end_matches('.').to_ascii_lowercase();
+    name == "localhost"
+        || name.ends_with(".localhost")
+        || name
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+impl WebApp {
+    /// Whether a page for this request should warn that it isn't encrypted: it is plain HTTP
+    /// ([`is_https`] says no) and its host isn't this machine ([`is_loopback_host`]). The host is
+    /// the request's `Host` header, or, when there is none, the address Doozers' links point to.
+    pub(super) fn plain_http(&self, headers: &HeaderMap, trusted: bool) -> bool {
+        let channel = &self.inner.channel;
+        if is_https(channel, headers, trusted) {
+            return false;
+        }
+        let host = match headers.get(HOST).and_then(|host| host.to_str().ok()) {
+            Some(host) => host.to_owned(),
+            None => {
+                let base = channel.link_base();
+                let authority = base
+                    .split_once("://")
+                    .map_or(base.as_str(), |(_, rest)| rest);
+                authority.split('/').next().unwrap_or_default().to_owned()
+            }
+        };
+        !is_loopback_host(&host)
+    }
 }
 
 /// Who a request is, if anyone ([`WebUser`]); see the module docs.
@@ -263,6 +350,81 @@ impl WebApp {
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_password_form_can_sit_behind_use_a_password_instead() {
+        let page = |collapse_password, error| {
+            LoginPage {
+                options: Vec::new(),
+                password: PasswordForm {
+                    nonce: "n",
+                    username: "",
+                    plain_http: false,
+                    error,
+                },
+                collapse_password,
+            }
+            .render()
+            .unwrap()
+        };
+        let shown = page(false, None);
+        assert!(!shown.contains("<details"), "{shown}");
+        assert!(shown.contains("<h2>Log in with a password</h2>"), "{shown}");
+        assert!(shown.contains(r#"action="/login/password""#), "{shown}");
+
+        // Folded away, the form is the same, and a failed attempt opens it again.
+        let folded = page(true, None);
+        assert!(
+            folded.contains(r#"<details class="password-signin">"#),
+            "{folded}"
+        );
+        assert!(
+            folded.contains("<summary>Use a password instead</summary>"),
+            "{folded}"
+        );
+        assert!(folded.contains(r#"action="/login/password""#), "{folded}");
+        assert!(!folded.contains("Log in with a password"), "{folded}");
+        let failed = page(true, Some("Wrong username or password."));
+        assert!(
+            failed.contains(r#"<details class="password-signin" open>"#),
+            "{failed}"
+        );
+    }
+
+    #[test]
+    fn a_host_is_this_machine_when_it_is_loopback() {
+        for host in [
+            "localhost",
+            "LOCALHOST:8080",
+            "localhost.:80",
+            "app.localhost",
+            "127.0.0.1",
+            "127.0.0.1:8080",
+            "127.9.9.9",
+            "[::1]",
+            "[::1]:8080",
+        ] {
+            assert!(is_loopback_host(host), "{host}");
+        }
+        for host in [
+            "",
+            "doozers.lan",
+            "doozers.lan:8080",
+            "192.168.0.2",
+            "10.0.0.1:80",
+            "[2001:db8::1]:80",
+            "notlocalhost",
+            "localhost.example.com",
+            "0.0.0.0",
+        ] {
+            assert!(!is_loopback_host(host), "{host}");
         }
     }
 }

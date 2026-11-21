@@ -187,12 +187,16 @@ Channels also drop messages that must never start a turn: echoes of the agent's 
 
 ### 3.4 Web login
 
-- One-time login code: the user enters their user name, Doozers sends a code to that user's default
-  channel, and entering it sets a session cookie (`HttpOnly`, `SameSite=Lax`, `Secure` when served
-  over HTTPS). Web sessions live in SQLite and expire after 30 days.
-  - The code is bound to a nonce cookie set in the browser that asked for it; it works nowhere else.
-  - Requests are rate-limited per user name and per client address, and the page answers the same
-    way whether or not the user name exists.
+- Web sessions: a session cookie (`HttpOnly`, `SameSite=Lax`, `Secure` when served over HTTPS).
+  Sessions live in SQLite, expire after 30 days, and record how they signed in. Every sign-in makes
+  a new session and ends the browser's old one. The login code a channel delivers is dropped.
+- Passwords: a user name and password, the only choice on an insecure origin. Passwords are Argon2id
+  hashes (OWASP parameters: 19 MiB, 2 iterations, 1 lane) in the `user_passwords` table, hashed on a
+  blocking thread with a cap on how many run at once. A new one has 15 to 128 characters and no
+  composition rules (NIST SP 800-63B-4). Wrong passwords are rate-limited per user name and per
+  client address, and the page answers the same way, with the same work, whether or not the user
+  name exists. Pages with a password form warn when they are plain HTTP on a non-loopback address. A
+  user sets a password on the page an invite or recovery link leads to.
 - Trusted proxy header (Tailscale, oauth2-proxy, Authelia): the header value is treated as a native
   identifier on the web channel instance and linked to a user like any other identity. The header is
   honored only on a dedicated listener the core creates for the proxy: a Unix socket

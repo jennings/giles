@@ -30,6 +30,8 @@ use tracing::error;
 use super::auth::{WebUser, check_csrf};
 use super::chat_actions::no_such_chat;
 use super::hub::{Event, Subscription};
+use super::limits::LoginLimits;
+use super::password::Passwords;
 use super::shell::{Nav, Shell};
 use super::{
     ApprovalAnswer, Busy, WebChannel, chat_agent, is_approval_code, is_chat_id, new_agent_chat_id,
@@ -69,6 +71,10 @@ pub(super) struct Inner {
     pub(super) clock: Arc<dyn Clock>,
     /// Tells the scheduler when the jobs page changes a runtime job.
     pub(super) jobs: JobChanges,
+    /// Hashes and checks passwords, a few at a time.
+    pub(super) passwords: Passwords,
+    /// Counts password attempts per username and per client address.
+    pub(super) logins: LoginLimits,
     pub(super) shutdown: CancellationToken,
 }
 
@@ -121,6 +127,8 @@ impl WebApp {
                 agents,
                 clock,
                 jobs,
+                passwords: Passwords::default(),
+                logins: LoginLimits::default(),
                 shutdown,
             }),
         }
@@ -169,6 +177,7 @@ impl WebApp {
             .merge(super::jobs::routes())
             .merge(super::login::routes())
             .merge(super::invite::routes())
+            .merge(super::password_pages::routes())
             .with_state(self.clone())
     }
 }

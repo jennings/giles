@@ -1,9 +1,12 @@
 //! The sign-in methods the login and setup pages offer: the seam each method plugs into.
 //!
-//! A method contributes an entry to [`WebApp::login_options`], the way to use it on the login page,
-//! and to [`WebApp::setup_options`], the way to add it on the setup page. Until one exists, the
-//! login page says to open an invite or recovery link, and the setup page that the link the user
-//! opened is the only way to sign in.
+//! A method that signs in through a link contributes an entry to [`WebApp::login_options`], the way
+//! to use it on the login page, and every method that a user can add contributes one to
+//! [`WebApp::setup_options`], the way to add it on the setup page. The password has no entry in the
+//! first, because its form is on the login page itself
+//! ([`password_collapsed`](WebApp::password_collapsed)); its setup page is in
+//! [`password_pages`](super::password_pages). The login page always says how to use an invite or
+//! recovery link.
 
 use super::auth::WebUser;
 use super::pages::WebApp;
@@ -29,14 +32,31 @@ pub(super) struct LoginOption {
 }
 
 impl WebApp {
-    /// The ways to sign in on the login page. No method exists yet, so there are none.
+    /// The ways to sign in on the login page that are a link to another page. No method is one yet,
+    /// so there are none.
     pub(super) fn login_options(&self) -> Vec<LoginOption> {
         Vec::new()
     }
 
-    /// The sign-in methods `user` can add to their account now. No method exists yet, so there are
-    /// none.
-    pub(super) fn setup_options(&self, _user: &WebUser) -> Vec<SetupOption> {
-        Vec::new()
+    /// Whether the login page folds the password form away behind "Use a password instead", for
+    /// a method that suits the browser better to take its place. Nothing does yet, so the form is
+    /// shown. A method that does must make this true where it works (passkeys: on a secure origin),
+    /// and put its own sign-in above the form.
+    pub(super) fn password_collapsed(&self) -> bool {
+        false
+    }
+
+    /// The sign-in methods `user` can add to their account now.
+    ///
+    /// # Errors
+    ///
+    /// The store's error, if it can't say.
+    pub(super) async fn setup_options(
+        &self,
+        user: &WebUser,
+    ) -> doozers_store::Result<Vec<SetupOption>> {
+        let mut options = Vec::new();
+        options.extend(self.password_setup_option(user).await?);
+        Ok(options)
     }
 }

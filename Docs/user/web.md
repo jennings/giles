@@ -14,8 +14,8 @@ can have only one web channel.
 
 ## Logging in
 
-Every page needs a login. You log in with a one-time link, or through a trusted reverse proxy. A
-page that needs a login points you to `/login`, which lists the ways to log in.
+Every page needs a login. You log in with a password, with a one-time link, or through a trusted
+reverse proxy. A page that needs a login points you to `/login`, which lists the ways to log in.
 
 ### Invite and recovery links
 
@@ -35,9 +35,9 @@ user, including one who has never signed in.
 
 Open the link and press the button on the page to log that browser in for 30 days. A chat app or
 mail client that fetches the link to show a preview doesn't use it up. The next page,
-**Set up how you sign in**, lists the ways you can add. Until there are others, the link is the only
-way to sign in, so ask for a new one when this login ends. **Log out** at the bottom of the sidebar
-ends the login. See [Command line](cli.md).
+**Set up how you sign in**, lists the ways you can add, such as a [password](#passwords). Until you
+add one, the link is the only way to sign in, so ask for a new one when this login ends. **Log out**
+at the bottom of the sidebar ends the login. See [Command line](cli.md).
 
 An admin can't make invite links in the web UI yet.
 
@@ -50,6 +50,40 @@ public_url = "https://doozers.example.com"
 ```
 
 Give only the scheme, host, and optional port. Doozers is always served at the root of that address.
+
+### Passwords
+
+A password lets you log in at `/login` with your username and password, without a link.
+
+To set a password, open an invite or recovery link, then choose **Password** on the page that
+follows. To change it later, ask for a recovery link and do the same. A login that came from a
+password can't change it.
+
+A password has 15 to 128 characters. Spaces and any other characters are fine, and nothing else is
+required, so a few random words make a good password. It can't be one character repeated, or contain
+your username or the word Doozers.
+
+Nobody can read a password back, including an admin. If you forget it, set a new one with a recovery
+link.
+
+**A password sent over plain HTTP can be read by anyone on the network.** When the address starts
+with `http://` and isn't `localhost` or another address on your own machine, the login page and the
+page that sets a password say so. Reach Doozers over HTTPS, and set
+[`public_url`](#invite-and-recovery-links) to the `https` address.
+
+Doozers allows 10 wrong passwords for a username and 30 from one address in 15 minutes. After that
+you wait for the rest of the 15 minutes. While a username is waiting, even its right password
+doesn't log in, so use a recovery link instead.
+
+Doozers forgets these counts when it restarts.
+
+A disabled user can't log in with a password.
+
+If a reverse proxy on the same machine reaches Doozers at `core.http_listen`, only the limit per
+username applies, because every visitor looks like the proxy. Use the
+[proxy listener](#a-trusted-reverse-proxy) to get the limit per address too, and have the proxy add
+the visitor's address to the `X-Forwarded-For` header. Without that header, Doozers counts every
+visitor through the proxy as one address.
 
 ### A trusted reverse proxy
 

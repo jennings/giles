@@ -599,7 +599,8 @@ Argon2id hash as a PHC string (`$argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash>`), 
 cost parameters travel with it, and `changed_at`. It is a table and not the [secret store](#secrets)
 because a secret is a value Doozers hands back out, and nothing can recover a password from its
 hash. The row goes when the user does. The store doesn't parse or check the string, and never sees a
-password: hashing and checking belong to the caller.
+password: hashing and checking belong to the caller. The web channel does them on a blocking thread
+([Passwords](web-channel.md#passwords)).
 
 | Method                                    | Contract                                                              |
 | ----------------------------------------- | --------------------------------------------------------------------- |

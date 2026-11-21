@@ -175,8 +175,7 @@ struct SetupPage {
     options: Vec<SetupOption>,
 }
 
-/// `GET /setup`: the sign-in methods the user can add, and, until there are any, what signing in
-/// with a link means.
+/// `GET /setup`: the sign-in methods the user can add, and, when there are none, what that means.
 async fn setup_page(State(app): State<WebApp>, user: WebUser) -> Response {
     let name = app
         .inner
@@ -186,6 +185,9 @@ async fn setup_page(State(app): State<WebApp>, user: WebUser) -> Response {
         .user(&user.user)
         .map(|found| found.display_name.clone())
         .unwrap_or_default();
-    let options = app.setup_options(&user);
+    let options = match app.setup_options(&user).await {
+        Ok(options) => options,
+        Err(err) => return internal_error("cannot look up the sign-in methods", &err),
+    };
     no_store(http::render(&SetupPage { name, options }))
 }

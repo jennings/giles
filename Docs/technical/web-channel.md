@@ -49,6 +49,9 @@ the live-output hook.
 | `GET /invite/<token>`          | An invite or recovery link: a page with a button that posts the token and the sign-in nonce ([Invite and recovery links](#invite-and-recovery-links)). |
 | `POST /invite`                 | Checks the nonce, spends the link (`token`), sets the session cookie, 303 to `/setup`. |
 | `GET /setup`                   | Where a user lands after a link: the sign-in methods they can add. |
+| `POST /login/password`         | Checks the nonce, the limits, and the password (`username`, `password`); sets the session cookie, 303 to `/`. The login page again with the reason otherwise: 401, 429, or 503 ([Passwords](#passwords)). |
+| `GET /setup/password`          | The form that sets or changes the user's password; 403 unless the login came from an invite or recovery link. |
+| `POST /setup/password`         | Sets the password (CSRF-checked), 303 to the page, which says it is saved; the form again with why (400) if it breaks a rule. |
 | `POST /logout`                 | Ends a cookie login (CSRF-checked), 303 to `/`.                  |
 | `GET /admin`                   | The status page ([Admin pages](#admin-pages)).                   |
 | `GET /admin/plugins`           | The plugins page.                                                |
@@ -82,11 +85,11 @@ the live-output hook.
 | `POST /admin/routes/<id>/remove` | Removes the route (CSRF-checked), 303 to the list.             |
 | `POST /admin/routes/<id>/move` | Moves it one place, `direction=up` or `down` (CSRF-checked), 303. |
 
-Every route except `GET /invite/<token>` and `POST /invite` needs a `WebUser` (below); without one
-it's a 401 page saying how to log in. A chat id is 128 random bits as 32 lowercase hex digits
-(`new_chat_id`), or `<agent>.<32 hex digits>` for a chat started with a chosen agent
-(`new_agent_chat_id`); either is the conversation id (PLAN section 10): web chats are created by the
-user. `is_chat_id` accepts both, and any other id in a path is a 404. A chat is
+Every route except `GET /invite/<token>`, `POST /invite`, and `POST /login/password` needs a
+`WebUser` (below); without one it's a 401 page saying how to log in. A chat id is 128 random bits as
+32 lowercase hex digits (`new_chat_id`), or `<agent>.<32 hex digits>` for a chat started with a
+chosen agent (`new_agent_chat_id`); either is the conversation id (PLAN section 10): web chats are
+created by the user. `is_chat_id` accepts both, and any other id in a path is a 404. A chat is
 `ConversationKind::Direct`, and belongs to the user who started it
 ([Whose data is whose](#whose-data-is-whose)). The chat id helpers are in `channels::chat_ids`,
 outside the feature, because the router reads them.
@@ -173,12 +176,13 @@ answered.
 
 ## Login
 
-PLAN section 3.4. A browser signs in with a one-time invite or recovery link, or the trusted-proxy
-header marks the user. Passwords, passkeys, and identity providers add more ways to sign in. The
-login *code* flow (a code sent to the user's default channel) is dropped. Code: `login.rs`
-(middleware, `start_session`, and logout), `invite.rs` (the link pages and the setup page),
-`signin.rs` (the sign-in methods the pages offer), `proxy.rs`, the cookie and nonce helpers in
-`auth.rs`, and the keys in `config.rs`.
+PLAN section 3.4. A browser signs in with a one-time invite or recovery link or with a username and
+password, or the trusted-proxy header marks the user. Passkeys and identity providers add more ways
+to sign in. The login *code* flow (a code sent to the user's default channel) is dropped. Code:
+`login.rs` (middleware, the login page, `start_session`, and logout), `invite.rs` (the link pages
+and the setup page), `signin.rs` (the sign-in methods the pages offer), `password.rs` (the rules and
+the hashing), `password_pages.rs` (the password routes), `limits.rs` (the limits on guessing),
+`proxy.rs`, the cookie and nonce helpers in `auth.rs`, and the keys in `config.rs`.
 
 ### Configuration
 
@@ -228,33 +232,41 @@ longer sign in (disabled, gone, or without `web:<id>`) it answers 403 and leaves
 they can. Otherwise `Store::user_invite_redeem` spends it in one statement, so of two concurrent
 posts one gets the link and the other the 410 page. The winner goes through `login::start_session`,
 which every way of signing in ends in: it creates a session token (256 random bits) with
-`Store::web_session_create(token, user, method, now, now + 30 days)`, where `method` is `invite` or
-`recovery` and is stored with the session, deletes the browser's previous cookie session if it had
-one, and answers 303 to the given page with
+`Store::web_session_create(token, user, method, now, now + 30 days)`, where `method` is `invite`,
+`recovery`, or `password` and is stored with the session, deletes the browser's previous cookie
+session if it had one, and answers 303 to the given page with
 `Set-Cookie: doozers_session=<token>; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax` (`; Secure`
 over HTTPS). `POST /invite` sends the browser to `/setup` and deletes the nonce cookie. All these
 answers are `Cache-Control: no-store`. The `Referrer-Policy: no-referrer` security header keeps the
 token out of `Referer`.
 
 `GET /setup` needs a login. It lists `WebApp::setup_options(user)`, the sign-in methods the user can
-add (`signin.rs`), each with a label, a sentence, and the page that adds it. Each method that exists
-contributes its entry there. With no entries it says the link was the only way to sign in so far, so
-the user needs a new link when the session ends.
+add (`signin.rs`), each with a label, a sentence, and the page that adds it. Each method contributes
+its entry there when the user may add it. Today that is the password, for a login that came from an
+invite or recovery link ([Passwords](#passwords)). With no entries the page says that this login
+can't add a way to sign in, and that a new link can.
 
 ### The login page
 
-`GET /login` (`login.rs`, template `login.html`) lists the ways to sign in, from
-`WebApp::login_options()` (`signin.rs`): each option is a label and a link to the page of its
-method. With no method yet it says to open an invite or recovery link, and how the operator makes
-one. A request that needs a login and has none gets the 401 login-required page, which only says so
-and links to `/login`. The page answers `Cache-Control: no-store`, and 303 to `/` for a browser that
-is logged in.
+`GET /login` (`login.rs`, template `login.html`) lists the ways to sign in.
+`WebApp::login_options()` (`signin.rs`) gives the methods that are a link to another page, each a
+label and the page of its method; with none, the page has no list. Below it is the password form,
+which is on the page itself ([Passwords](#passwords)), and always the paragraph that says to open an
+invite or recovery link and how the operator makes one. A request that needs a login and has none
+gets the 401 login-required page, which only says so and links to `/login`. The page answers
+`Cache-Control: no-store`, and 303 to `/` for a browser that is logged in.
 
-The page issues no [sign-in nonce](#sign-in-csrf), since a link has no form. A method that puts a
-form or the passkey autofill field on `/login` must give `LoginPage` a nonce
-(`auth::nonce_for_form`), put it in the form, and set the cookie on the response
-(`auth::nonce_cookie`), as `invite_page` does, and its POST handler must call `auth::check_nonce`
-first.
+The page issues the [sign-in nonce](#sign-in-csrf): `login::render_login` puts
+`auth::nonce_for_form` in the password form and sets the cookie (`auth::nonce_cookie`), as
+`invite_page` does, and `POST /login/password` calls `auth::check_nonce` first. Every response that
+holds the form does the same, the failed sign-in's page included.
+
+The password form is a partial, `password_form.html`, so that another method can put it behind "Use
+a password instead". `WebApp::password_collapsed()` (`signin.rs`) says whether the page does that,
+and is `false` until a method suits a browser better: with it, the form is inside
+`<details class="password-signin">` with that summary (open again after a failed sign-in), and needs
+no script. A method that does this makes `password_collapsed` true where it works, such as passkeys
+on a secure origin, and puts its own sign-in above the form.
 
 ### Sign-in CSRF
 
@@ -311,12 +323,111 @@ there.
   logged so the operator can see it). Without the header, the cookie applies as usual.
 - `X-Forwarded-Proto: https` marks the cookie `Secure` only with the mark.
 
+### Passwords
+
+PLAN section 3.4. A user with a password signs in at `/login` with their username and that password.
+Hashing and the rules are in `password.rs`, the pages in `password_pages.rs`, and the hash is in
+`user_passwords` ([User passwords](storage.md#user-passwords)), never in the secret store.
+
+**Rules.** `password::check_new` follows NIST SP 800-63B-4 for a memorized secret used alone: at
+least 15 and at most 128 characters, and no composition rules, hints, or expiry. A character is a
+Unicode scalar value of the password after NFKC normalization, which also applies when a password is
+checked, so one typed on another keyboard or operating system still matches; any character may be in
+it, spaces included. It is also refused if it is one character repeated, or contains the name
+Doozers or, from 4 characters on, the username: the guesses an attacker tries first. There is no
+list of leaked passwords. A password under 15 characters can't be on such a list in the first place,
+and the list would be a large file to ship.
+
+**Hashing.** Argon2id (the `argon2` crate) with the OWASP Password Storage Cheat Sheet's first
+choice, 19 MiB of memory, 2 iterations, and 1 lane, a random 16-byte salt, and a 32-byte output,
+stored as a PHC string (`$argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash>`). That costs about 20 ms and
+19 MiB, so `Passwords` runs every hash and check on a blocking thread, and a semaphore lets 4 run at
+once (76 MiB at most), because anyone can start a check by posting the login form. A request waits
+up to 5 seconds for a place and then gets a 503 page and `Retry-After`, and its attempt isn't
+counted against the limits. A check uses the parameters in the stored string, so changing them later
+leaves every existing hash working.
+
+**Signing in.** `POST /login/password` (`username`, `password`, `nonce`):
+
+1. `check_nonce`, as for every sign-in POST. A mismatch is a 403 before anything else is read.
+2. The limits ([Rate limits](#rate-limits)): over one, a 429 login page with the wait and
+   `Retry-After`, with nothing hashed.
+3. The user is found by username, compared without regard to ASCII case, and must be able to sign in
+   (active, with the `web:<id>` identity): a disabled user is no one here. The hash is read from the
+   store for every attempt, for a fixed id that no user has when nobody matched, and the result is
+   dropped, so the read doesn't tell a user from no user either.
+4. The password is checked against that user's hash, or, for no user, a user without a password, or
+   a user who can't sign in, against `DUMMY_HASH`: a constant with the same parameters, so the work
+   is the same, and the answer is `false` whatever the result. A password longer than 128 characters
+   is checked as an empty one for the same reason. The tests assert that the dummy path runs
+   (`Passwords` counts checks in tests) and that the dummy hash has the current parameters, not that
+   two requests take the same wall-clock time.
+5. Every failure is the same 401 login page with "Wrong username or password.", with the username
+   put back in the form (escaped) and never the password. Success goes through
+   `login::start_session` with the method `password`, which creates a new session token and deletes
+   the browser's old cookie session, so a session that existed before the login isn't the one after
+   it, and answers 303 to `/` and deletes the nonce cookie.
+
+**Setting a password.** The setup page lists "Password" (or "Change your password" for a user who
+has one) for a login that came from an invite or recovery link: a cookie session whose `method`
+([The session cookie](#the-session-cookie)) is `invite` or `recovery`. Those links are how a user
+proves who they are when they have nothing else to prove it with, and a 30-day session from any
+other source isn't enough to take over the way into the account, so `GET` and `POST /setup/password`
+answer 403 for any other login (a proxy login included) until the account page can ask for the
+current password. The form shows the username (read-only, so a password manager files the password
+under it), two new-password fields, and the rules. `POST` checks CSRF, then the two fields match,
+then `check_new`, hashes, and replaces the stored hash with `Store::user_password_set`; changing the
+password doesn't end other sessions.
+
+**Plain HTTP.** Passwords sent over plain HTTP can be read by anyone on the network. The login form,
+the failed sign-in's page, and the page that sets a password carry a warning when
+`WebApp::plain_http` says the request is plain HTTP (`is_https` says no: the public URL isn't
+`https`, and the trusted proxy didn't say `X-Forwarded-Proto: https`) and its host isn't this
+machine: the `Host` header, or the host of the link base when there is none, isn't `localhost`, a
+name under it, or a loopback IP address. Those are the pages a browser treats as secure anyway. The
+warning doesn't stop anyone from signing in: on an insecure origin a password is the only choice.
+
 ### Rate limits
 
-PLAN section 3.4 rate-limits the login *code* flow per user name and per client address, because an
-8-character code can be guessed. Link and session tokens carry 256 random bits, so guessing is
-hopeless at any rate, and a limit on redemption would only let a local process lock the owner out.
-So there's no limiter yet; it comes with the code flow.
+PLAN section 3.4 rate-limits sign-ins that can be guessed. Links and session tokens carry 256 random
+bits, so guessing is hopeless at any rate, and a limit on them would only let a local process lock
+the owner out, so only passwords are limited. `limits.rs` counts password attempts in memory (a
+restart forgets them, and each process counts for itself):
+
+| Limit | Attempts per 15 minutes | Counts |
+| ----- | ----------------------- | ------ |
+| Username | 10 | The username as typed, ASCII-lowercased and cut to 64 characters, whether or not the user exists. |
+| Client address | 30 | Every username from one address. An IPv6 address counts by its /64. A loopback peer of the main listener has none. |
+
+`LoginLimits::begin` counts an attempt before the password is checked, so attempts that arrive
+together can't all take the last place, and refuses it, without counting, when either limit is used
+up: the window starts at the first attempt after the last one ended and never moves, so refused
+attempts don't extend a lockout. The wait it reports is the longer of the two. A successful sign-in
+forgets the username's count and gives the address its attempt back; an attempt that never checked a
+password (the server was busy or failed) is given back to both. Each map holds at most 10,000 keys.
+At the cap, windows that ended go first, then the entry with the fewest attempts, and never one that
+is at its limit, so sending 10,000 fresh names can't push a locked username out. If every entry is
+at its limit, a new key is refused like any other limited attempt until a window ends. Memory is
+bounded however many names someone tries. The first refusal after a key reaches its limit is logged
+as a warning, and the rest as debug lines, so a flood can't fill the log.
+
+While a username is over its limit, not even its right password signs in. A limit that doesn't
+depend on guessing right has that cost: whoever knows a username can lock it for the rest of the
+window, although the address limit means that costs them more attempts than it costs the user, who
+can still use an invite or recovery link.
+
+The client is `limits::client_key`. On the main listener it is the IP address of the connection's
+peer (`ConnectInfo<PeerAddr>`, [HTTP server](http.md)), and an `X-Forwarded-For` header is never
+read there: any local process can connect, and a client could use the header to count as someone
+else. A loopback peer there (`ClientKey::Loopback`) is a reverse proxy on this machine, such as one
+in front of a loopback `core.http_listen`, and stands for every visitor, so it has no address limit:
+counting by it would let anyone lock everyone out. Only the username limit applies to it. The
+trusted-proxy listener is the way to get address limits behind a proxy. On the trusted-proxy
+listener the peer is the proxy, so, as with the identity header and `X-Forwarded-Proto`, the proxy
+is believed: the client is the last address in `X-Forwarded-For`, the one the proxy added (what
+comes before it is whatever the client sent). A proxy that doesn't send the header, or a request
+with no peer address, counts as one shared client, so a proxy has to forward addresses for the limit
+to tell its clients apart.
 
 ## Inbound: events and acks
 

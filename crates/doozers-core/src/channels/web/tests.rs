@@ -49,6 +49,7 @@ mod agents;
 mod chat_actions;
 mod jobs;
 mod memory;
+mod passwords;
 mod routes;
 mod ssh_hosts;
 mod ssh_keys;
@@ -1478,8 +1479,7 @@ async fn an_invite_sets_up_a_new_user_once() {
     let found = directory.resolve("web", &NativeId::new("newbie").unwrap());
     assert_eq!(found.map(|user| &user.id), Some(&newbie));
 
-    // The cookie logs in, and the setup page is where they land. It says that the link is the
-    // only way to sign in so far.
+    // The cookie logs in, and the setup page is where they land. It offers a password.
     let response = call(
         env.main_app(),
         Method::GET,
@@ -1492,7 +1492,10 @@ async fn an_invite_sets_up_a_new_user_once() {
     let html = body_text(response).await;
     assert!(html.contains("Set up how you sign in"), "{html}");
     assert!(html.contains("You're signed in as NEWBIE"), "{html}");
-    assert!(html.contains("is the only way to sign in so far"), "{html}");
+    assert!(
+        html.contains(r#"<a href="/setup/password">Password</a>"#),
+        "{html}"
+    );
 
     // Single use, however it is asked.
     let response = call(
@@ -1513,7 +1516,8 @@ async fn an_invite_sets_up_a_new_user_once() {
 }
 
 #[tokio::test]
-async fn the_login_page_says_how_to_get_a_link_and_sends_a_logged_in_browser_home() {
+async fn the_login_page_offers_a_password_and_says_how_to_get_a_link_and_sends_a_logged_in_browser_home()
+ {
     let env = env().await;
     let response = call(env.main_app(), Method::GET, "/login", &[], None).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -1522,8 +1526,10 @@ async fn the_login_page_says_how_to_get_a_link_and_sends_a_logged_in_browser_hom
     assert!(html.contains("<h1>Log in</h1>"), "{html}");
     assert!(html.contains("invite or recovery link"), "{html}");
     assert!(html.contains("doozers admin login-link"), "{html}");
-    // No sign-in method exists beyond the links, so the page offers none.
+    // The only method besides links, a password, has its form on the page, so no list of
+    // options precedes it.
     assert!(!html.contains("Choose how to log in"), "{html}");
+    assert!(html.contains("Log in with a password"), "{html}");
 
     let token = log_in(&env).await;
     let response = call(

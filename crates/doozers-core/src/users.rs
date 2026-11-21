@@ -170,6 +170,14 @@ impl UserDirectory {
         self.by_id.get(id).map(|&index| &self.users[index])
     }
 
+    /// The user whose username is `username`, compared without regard to ASCII case, as the
+    /// database keeps usernames unique.
+    pub fn by_username(&self, username: &str) -> Option<&User> {
+        self.users
+            .iter()
+            .find(|user| user.username.eq_ignore_ascii_case(username))
+    }
+
     /// The user who has the identity `<namespace>:<id>`.
     ///
     /// The comparison is exact (case-sensitive) except in the `email` namespace (first segment

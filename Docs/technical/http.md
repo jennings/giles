@@ -30,7 +30,9 @@ reverse proxy, never by Doozers.
 IPv4-mapped IPv6 address is reported as the IPv4 address), and `PeerAddr(None)` is a Unix socket's
 peer, which has none. Only `serve` adds it, so a client can't send one. A handler reads it with
 `Option<Extension<ConnectInfo<PeerAddr>>>`, which is `None` in a test that calls the router without
-a server. Behind a reverse proxy the peer is the proxy.
+a server. Behind a reverse proxy the peer is the proxy. The web channel believes the proxy's
+`X-Forwarded-For` only on the trusted-proxy listener, as it does the identity header, and its
+[rate limits](web-channel.md#rate-limits) count by it.
 
 Long-lived responses must end by themselves when the daemon stops: an SSE stream should finish on
 the shutdown token (`stream.take_until(token.cancelled_owned())`). The drain deadline is only a

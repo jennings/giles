@@ -12,7 +12,7 @@ publish = false
 [features]
 default = ["channel-web", "provider-anthropic", "provider-openai"]
 # The built-in web channel (`channels::web`): chat pages, live output, login, admin pages.
-channel-web = ["dep:qrcode"]
+channel-web = ["dep:argon2", "dep:qrcode", "dep:unicode-normalization"]
 # The built-in Anthropic Messages API provider (`providers::anthropic`).
 provider-anthropic = []
 # The built-in OpenAI-compatible Chat Completions provider (`providers::openai`).
@@ -20,6 +20,8 @@ provider-openai = []
 
 [dependencies]
 askama = "0.16.1"
+# Argon2id hashes of web passwords (`channels::web::password`).
+argon2 = { version = "0.6.0", optional = true }
 async-trait.workspace = true
 # AES-256-GCM for the local secret store (`secrets`); rustls already builds it.
 aws-lc-rs.workspace = true
@@ -78,6 +80,8 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "
 tokio-rustls.workspace = true
 tokio-util = { workspace = true, features = ["io", "rt"] }
 toml.workspace = true
+# NFKC normalization of web passwords, so one typed on another device still matches.
+unicode-normalization = { version = "0.1.26", optional = true }
 # Edits `doozers.toml` and `agent.toml` for `doozers <kind> rename`, keeping comments and
 # formatting.
 toml_edit = { version = "0.25.15", default-features = false, features = ["parse", "display"] }

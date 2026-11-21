@@ -4,17 +4,24 @@
 
 {% block content %}
 <h1>Log in</h1>
-{% if options.is_empty() %}
-<p>Open the invite or recovery link an admin sent you. If you run Doozers,
-<code>doozers admin login-link</code> makes a link that works once, for 72 hours, and keeps this
-browser logged in for 30 days.</p>
-{% else %}
+{%- if !options.is_empty() %}
 <p>Choose how to log in:</p>
 <ul>
 {%- for option in options %}
 <li><a href="{{ option.href }}">{{ option.label }}</a></li>
 {%- endfor %}
 </ul>
-<p>You can also open an invite or recovery link an admin sent you.</p>
-{% endif %}
+{%- endif %}
+{%- if collapse_password %}
+<details class="password-signin"{% if password.error.is_some() %} open{% endif %}>
+<summary>Use a password instead</summary>
+{% include "web/password_form.html" %}
+</details>
+{%- else %}
+<h2>Log in with a password</h2>
+{% include "web/password_form.html" %}
+{%- endif %}
+<p>You can also open an invite or recovery link an admin sent you. If you run Doozers,
+<code>doozers admin login-link</code> makes a link that works once, for 72 hours, and keeps this
+browser logged in for 30 days.</p>
 {% endblock %}
