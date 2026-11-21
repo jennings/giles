@@ -443,7 +443,7 @@ async fn every_page_needs_a_login() {
             "{method} {path}"
         );
         let html = body_text(response).await;
-        assert!(html.contains("doozers admin login-link"), "{html}");
+        assert!(html.contains(r#"<a href="/login">"#), "{html}");
     }
     assert!(env.pending_texts().await.is_empty());
 }
@@ -1510,6 +1510,32 @@ async fn an_invite_sets_up_a_new_user_once() {
     let html = body_text(response).await;
     assert!(html.contains("expired or was already used"), "{html}");
     assert!(html.contains("doozers admin login-link"), "{html}");
+}
+
+#[tokio::test]
+async fn the_login_page_says_how_to_get_a_link_and_sends_a_logged_in_browser_home() {
+    let env = env().await;
+    let response = call(env.main_app(), Method::GET, "/login", &[], None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
+    let html = body_text(response).await;
+    assert!(html.contains("<h1>Log in</h1>"), "{html}");
+    assert!(html.contains("invite or recovery link"), "{html}");
+    assert!(html.contains("doozers admin login-link"), "{html}");
+    // No sign-in method exists beyond the links, so the page offers none.
+    assert!(!html.contains("Choose how to log in"), "{html}");
+
+    let token = log_in(&env).await;
+    let response = call(
+        env.main_app(),
+        Method::GET,
+        "/login",
+        &[("cookie", &session(&token))],
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.headers()[LOCATION], "/");
 }
 
 #[tokio::test]

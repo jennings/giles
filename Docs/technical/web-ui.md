@@ -123,8 +123,8 @@ Every page for a signed-in user has two columns: the sidebar and the content.
 - Content doesn't center. It starts at the sidebar's edge, and long text and forms have a maximum
   width instead.
 
-The login-required, invite, setup, error, and not-found pages have no sidebar. They center one card
-on the page.
+The login, login-required, invite, setup, error, and not-found pages have no sidebar. They center
+one card on the page.
 
 ### Sidebar
 

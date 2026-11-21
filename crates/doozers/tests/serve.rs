@@ -1456,7 +1456,7 @@ fn the_web_channel_replaces_the_home_page_and_trusts_only_the_proxy_socket() {
     // The chat list needs a login, and the main listener ignores the identity header.
     let response = http_request(TcpStream::connect(addr).unwrap(), "/", "x-user: owner\r\n");
     assert!(response.starts_with("HTTP/1.1 401 "), "{response}");
-    assert!(response.contains("doozers admin login-link"), "{response}");
+    assert!(response.contains(r#"<a href="/login">"#), "{response}");
 
     // The proxy socket believes it.
     let response = http_request(

@@ -7,10 +7,12 @@
 //!   reads that header.
 //! - Otherwise the session cookie, if it names a live `web_sessions` row of an active user who
 //!   still has their `web` identity, is the user. A stale cookie is deleted in the response.
-//! - Otherwise the request has no [`WebUser`] and the pages answer with the login page.
+//! - Otherwise the request has no [`WebUser`] and the pages answer 401 with a pointer to the login
+//!   page, `GET /login`, which lists the ways to sign in.
 
 use std::time::Duration;
 
+use askama::Template;
 use axum::Extension;
 use axum::Router;
 use axum::extract::{Form, Request, State};
@@ -18,7 +20,7 @@ use axum::http::header::SET_COOKIE;
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use doozers_store::SignInMethod;
 use doozers_types::{NativeId, UserId};
 use serde::Deserialize;
@@ -29,14 +31,34 @@ use super::auth::{
     clear_session_cookie, cookie, cookie_csrf, proxy_csrf, session_cookie,
 };
 use super::pages::{WebApp, error_page, internal_error, no_store};
+use super::signin::LoginOption;
 use super::{COMPONENT, WebChannel, random_hex};
+use crate::http;
 
 /// How often expired web sessions are deleted.
 pub const SESSION_EXPIRY_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
-/// The login routes: `POST /logout`.
+/// The login routes: `GET /login` and `POST /logout`.
 pub(super) fn routes() -> Router<WebApp> {
-    Router::new().route("/logout", post(log_out))
+    Router::new()
+        .route("/login", get(login_page))
+        .route("/logout", post(log_out))
+}
+
+#[derive(Template)]
+#[template(path = "web/login.html")]
+struct LoginPage {
+    options: Vec<LoginOption>,
+}
+
+/// `GET /login`: the ways to sign in. Someone who is signed in goes to the chat list.
+async fn login_page(State(app): State<WebApp>, user: Option<Extension<WebUser>>) -> Response {
+    if user.is_some() {
+        return Redirect::to("/").into_response();
+    }
+    no_store(http::render(&LoginPage {
+        options: app.login_options(),
+    }))
 }
 
 /// Whether the response should mark cookies `Secure`: the public URL is `https`, or the trusted

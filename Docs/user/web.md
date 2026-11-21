@@ -14,7 +14,8 @@ can have only one web channel.
 
 ## Logging in
 
-Every page needs a login. You log in with a one-time link, or through a trusted reverse proxy.
+Every page needs a login. You log in with a one-time link, or through a trusted reverse proxy. A
+page that needs a login points you to `/login`, which lists the ways to log in.
 
 ### Invite and recovery links
 

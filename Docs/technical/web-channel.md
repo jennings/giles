@@ -45,6 +45,7 @@ the live-output hook.
 | `POST /jobs/<id>/disable`      | Switches the user's job off (CSRF-checked), 303 to the list.     |
 | `POST /jobs/<id>/enable`       | Switches it back on (CSRF-checked), 303; 409 for a one-shot whose time passed. |
 | `POST /jobs/<id>/delete`       | Deletes the user's job (CSRF-checked), 303 to the list.          |
+| `GET /login`                   | The login page: the ways to sign in ([The login page](#the-login-page)); 303 to `/` when already logged in. |
 | `GET /invite/<token>`          | An invite or recovery link: a page with a button that posts the token and the sign-in nonce ([Invite and recovery links](#invite-and-recovery-links)). |
 | `POST /invite`                 | Checks the nonce, spends the link (`token`), sets the session cookie, 303 to `/setup`. |
 | `GET /setup`                   | Where a user lands after a link: the sign-in methods they can add. |
@@ -239,6 +240,21 @@ token out of `Referer`.
 add (`signin.rs`), each with a label, a sentence, and the page that adds it. Each method that exists
 contributes its entry there. With no entries it says the link was the only way to sign in so far, so
 the user needs a new link when the session ends.
+
+### The login page
+
+`GET /login` (`login.rs`, template `login.html`) lists the ways to sign in, from
+`WebApp::login_options()` (`signin.rs`): each option is a label and a link to the page of its
+method. With no method yet it says to open an invite or recovery link, and how the operator makes
+one. A request that needs a login and has none gets the 401 login-required page, which only says so
+and links to `/login`. The page answers `Cache-Control: no-store`, and 303 to `/` for a browser that
+is logged in.
+
+The page issues no [sign-in nonce](#sign-in-csrf), since a link has no form. A method that puts a
+form or the passkey autofill field on `/login` must give `LoginPage` a nonce
+(`auth::nonce_for_form`), put it in the form, and set the cookie on the response
+(`auth::nonce_cookie`), as `invite_page` does, and its POST handler must call `auth::check_nonce`
+first.
 
 ### Sign-in CSRF
 
@@ -1201,8 +1217,9 @@ Templates are in `crates/doozers-core/templates/web/`, and the design they follo
 `layout.html` and adds the sidebar, the top bar of narrow screens, and the navigation `<dialog>`
 (opened by an invoker button, `command="show-modal"`, so it needs no script). `nav.html` is the
 navigation and the user footer, included in both the sidebar and the dialog. The pages that render
-without a login (`error.html`, `login_required.html`, `invite.html`) extend `layout.html` directly
-and are standalone cards, and so does `setup.html`, which a signed-in user sees right after a link.
+without a login (`error.html`, `login.html`, `login_required.html`, `invite.html`) extend
+`layout.html` directly and are standalone cards, and so does `setup.html`, which a signed-in user
+sees right after a link.
 
 `app.html` reads one field, `shell` (`shell::Shell`), that every page's struct has.
 `Shell::new(user, nav)` builds it from the `WebUser` and the sidebar link the page belongs to
@@ -1224,8 +1241,8 @@ temporary store; the chat tests inject a `WebUser`, the login tests go through t
 plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`, `invite.rs`,
 `proxy.rs`, `admin.rs`, `qr.rs`:
 
-- Every route without a user, but the invite routes, is a 401 login-required page; malformed chat
-  and blob ids are 404s.
+- Every route without a user, but the invite routes and `GET /login`, is a 401 login-required page;
+  malformed chat and blob ids are 404s.
 - The chat list: only this instance's chats, newest first, escaped titles. A chat page: transcript
   rendered and sanitized, cursor and CSRF token in place, nothing inline.
 - Posting: CSRF required (header or field), the event carries the chat, the sender, and
@@ -1282,7 +1299,8 @@ plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`, `i
   the matching nonce (no cookie, no field, another value, a cookie that isn't a nonce) is 403 and
   leaves the link unspent; a page reuses the browser's nonce; a disabled user's link is refused and
   left unspent; the setup page needs a login; expired, unknown, and orphaned sessions logged out
-  with the cookie deleted; the hourly cleanup; logout with CSRF; a cookie login's CSRF token;
+  with the cookie deleted; the login page says how to get a link, offers no method, and sends a
+  logged-in browser to `/`; the hourly cleanup; logout with CSRF; a cookie login's CSRF token;
   `public_url` and `X-Forwarded-Proto` making cookies `Secure` (the latter only through the proxy).
 - Proxy: the identity header ignored on the main listener and honored on the proxy app, unknown
   identities refused, posts carry the header's identity and need its CSRF token; a TCP listener
