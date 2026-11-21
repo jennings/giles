@@ -343,6 +343,9 @@ there.
   `UserDirectory::resolve("web", value)` finds an active user, a `WebUser` for that user with that
   `sender`; otherwise a 403 page, for a value no user has and for a disabled user (the value is
   logged so the operator can see it). Without the header, the cookie applies as usual.
+- The identity is one an admin sets (`Users::set_proxy_identity`), verified as `admin`, and not one
+  a user adds: the Identities page refuses the `web` namespace, so a user can't claim a header
+  value.
 - `X-Forwarded-Proto: https` marks the cookie `Secure` only with the mark.
 
 ### Passwords
@@ -1668,6 +1671,51 @@ store.
 
 Everything a provider's name, client id, or issuer says is escaped by the templates.
 
+## Identities page
+
+In `identities.rs`: `web.install_identities(builder, links)`, which `serve` calls with
+`Runtime::links`. The page is a thin layer over the `Links` service
+([Linking an identity](identity-and-routing.md#linking-an-identity)). It is for every logged-in
+user, who sees and changes only their own identities, and every route is under
+`/account/identities`, so the account page can absorb it or link to it. **Identities**, the last
+link of the sidebar's "You" group, is on every page. Every answer is `no-store`, every `POST` is
+`check_csrf`-checked, and every form works without JavaScript. No path or field names another user:
+the user is always the login's.
+
+| Route                                  | Does                                                           |
+| -------------------------------------- | -------------------------------------------------------------- |
+| `GET /account/identities`              | The user's identities, the form to add one, and the codes made |
+| `POST /account/identities/link`        | Makes a code for the chosen channel and shows it in the answer |
+| `POST /account/identities/default`     | Makes one of the user's identities the default, then 303       |
+| `GET /account/identities/remove?identity=` | Asks before removing an identity                           |
+| `POST /account/identities/remove`      | Removes the identity, then 303                                 |
+
+- **The list.** Each identity of the user as the router sees it (`Links::user`, the `UserList`
+  snapshot), with when it was verified and how: `link` is "Linked by you with a code", `imported` is
+  "Imported from doozers.toml", and `admin` is "Signs you in to the web chat" for `web:<id>`, "Set
+  by an admin for the trusted proxy" for another `web` identity, and "Set by an admin" for anything
+  else. The default is marked and the others have **Make default**. **Remove** is offered for every
+  identity but those in the `web` namespace (`is_web_identity`): `web:<id>` is how the user signs
+  in, and the proxy identity is the admin's to set. The remove page and the `POST` answer 404 for an
+  identity the user doesn't have, one that isn't a valid identity, and a `web` one, so the page
+  doesn't say which. Removing the default moves it to the oldest identity left, in the store.
+- **Adding.** The form lists the namespaces that running channels report except `web`
+  (`Links::namespaces`): the registry's channels at the time of the request, so a plugin that isn't
+  up is missing. The `POST` calls `Links::start`. On success the answer is the page, status 200,
+  with the code and the exact message to send (`/link ABCD2345`, in a read-only field with a copy
+  button when scripts run) and when it expires. The code is in no URL and no redirect, and the list
+  afterwards never has it: it is stored as a hash, so a reload says only that a code is pending.
+  Posting again makes a new code, which replaces the old. A namespace no channel reports is a 400
+  that shows the page again with the sentence of `LinkError::UnknownNamespace`, which lists the
+  namespaces that exist, and the form keeps what was selected.
+- **Codes.** One row per channel the user made a code for and didn't use: **Pending** with when it
+  works until, **Expired** with when it ran out, or **Cancelled** after too many wrong codes. A used
+  code is gone, and its identity is in the list. An expired code is kept a day so the row can say
+  so.
+
+Times are shown in UTC, as on the other pages. Everything an identity says is escaped by the
+templates.
+
 ## Templates and styles
 
 Templates are in `crates/doozers-core/templates/web/`, and the design they follow is in
@@ -1781,6 +1829,21 @@ plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`, `i
   password form behind "Use a password instead" and loads the script only when passkeys are
   available. `passkey.rs` has unit tests for the origin rules, user handles, and which binding a
   ceremony belongs to, and `pending.rs` for the table (single use, binding, expiry, the cap).
+- Identities page (`tests/identities.rs`, over stored users, a `Links` with a fixed set of
+  namespaces, and the real login middleware's test user): the page needs a login, lists only the
+  user's own identities (and offers no remove for the web sign-in), marks itself current in the
+  sidebar, and offers the running channels but not `web`; a post makes a code, which is shown once,
+  in the answer and in no redirect, with the exact `/link <code>`, and never again, so the list says
+  only that one is pending; sending the code through `Links` adds the identity as a `link`, which
+  the page then lists and the router's snapshot resolves, and the code is gone; a new code replaces
+  the old, which stops working; a namespace no channel reports (`discord:discord`, blank, another)
+  and `web` are 400s that show the page again with the namespaces that exist and make no code; an
+  expired code and one cancelled by wrong tries are listed as such; every post needs the CSRF token
+  and changes nothing without it; the default changes for the user, and another user's identity, one
+  nobody has, and nonsense are 404s; removing asks first, drops messages from the identity, moves
+  the default, and can't touch another user's identity, the web sign-in, or an identity nobody has;
+  what an identity says is escaped, each kind says how it was added, and a disabled user can't make
+  a code.
 - OpenID Connect (`tests/oidc.rs`, against `tests/fake_oidc.rs`, a provider in the test process on a
   loopback port with a discovery document, a key set, and a token endpoint that signs ES256 ID
   tokens and checks the client, the redirect URI, the single-use code, and PKCE): an invited user

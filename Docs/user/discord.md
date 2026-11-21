@@ -35,18 +35,6 @@ server, or use one you own, and invite the bot:
 Your privacy settings for that server must allow direct messages from server members. Otherwise
 Discord refuses the bot's messages to you.
 
-## Find your user ID
-
-Doozers recognizes you by your Discord user ID, a number, and not by your name.
-
-1. In the Discord app, open **User Settings**, then **Advanced**, and turn on **Developer Mode**.
-2. Right-click (or long-press) your own name or avatar and choose **Copy User ID**.
-
-Your Discord identity is `discord:` followed by the ID, such as `discord:82198898841029460`. Doozers
-learns your identities from [`[owner]`](configuration.md#owner) when it first starts, and an install
-that has started can't add one yet. Messages from an ID that no user has are dropped. The log line
-`dropped inbound message` shows the sender in exactly the form to use.
-
 ## Store the token
 
 Anyone who has the bot token can act as your bot. Put it in
@@ -83,6 +71,21 @@ that name.
 
 Start Doozers. `doozers status` should show the channel as `connected`, and the bot shows as online
 in Discord.
+
+## Add your identity
+
+Your Discord identity is `discord:` followed by your user ID, a number, such as
+`discord:82198898841029460`. You don't need to look it up: Doozers takes it from the message you
+send.
+
+Add it on the [**Identities** page](web.md#identities) of the web chat, once Doozers is running and
+the channel is `connected`. Choose `discord`, make a code, and send `/link` and the code to the bot
+in a direct message. Doozers replies when it has added the identity. An install upgraded from a
+version without users keeps the identities of [`[owner]`](configuration.md#owner), which Doozers
+imported once.
+
+Messages from an ID that no user has are dropped, except `/link` and a code. The log line
+`dropped inbound message` shows the sender in exactly the form to use.
 
 ## Settings
 

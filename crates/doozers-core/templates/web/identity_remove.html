@@ -1,0 +1,25 @@
+{% extends "web/app.html" %}
+
+{% block title %}Remove {{ identity }} - Identities - Doozers{% endblock %}
+
+{% block content %}
+<a class="back" href="/account/identities">Identities</a>
+<section class="card confirm">
+<h1>Remove {{ identity }}?</h1>
+<ul>
+<li>Doozers drops messages from this account from now on, and doesn't answer them.</li>
+{%- if is_default %}
+<li>It is your default identity, so your oldest remaining identity becomes the default.</li>
+{%- endif %}
+<li>Your chats, memories, and jobs stay. You can add the account again with a new code.</li>
+</ul>
+<div class="form-actions">
+<form method="post" action="/account/identities/remove">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="identity" value="{{ identity }}">
+<button type="submit" class="button-danger-solid">Remove identity</button>
+</form>
+<a class="button button-quiet" href="/account/identities">Cancel</a>
+</div>
+</section>
+{% endblock %}

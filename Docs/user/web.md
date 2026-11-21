@@ -203,7 +203,8 @@ The header's value is your identity in the `web` namespace, such as `web:alice@e
 logs you in as the user who has that identity. A header value that no user has, or one of a disabled
 user, gets a "Not allowed" page, and the log shows the value. Identities come from the
 [`[owner]` import](configuration.md#owner), so list the identity there before the first start. An
-install that has already started can't add one yet.
+admin can't set a user's proxy identity in the web UI yet, and a user can't add it on the
+**Identities** page, because the proxy is the admin's own.
 
 If the proxy can't use a Unix socket, give the listener a TCP address and a shared secret. The proxy
 must send the secret in a header with every request:
@@ -618,6 +619,54 @@ You can't rename a server that you configure in `doozers.toml` here. Stop Doozer
 button to copy each public key, and **Rename** and **Delete**. An admin also has **SSH keys** under
 **Admin**, which lists every user's keys. [SSH keys](ssh.md) covers the page and how to add a public
 key to GitHub.
+
+## Identities
+
+**Identities** in the sidebar lists your channel identities and adds new ones. An identity is your
+account on a channel, such as `whatsapp:+15551234567` or `irc:libera.chat:account:stephen`. Doozers
+answers messages from your identities as you, and drops messages from every other account.
+
+For each identity the page shows when you added it and how: **Linked by you** with a code,
+**Set by an admin**, or **Imported from doozers.toml**. It marks your default identity, which is
+where Doozers sends what you didn't start, such as a scheduled job's reply or an approval it needs.
+**Make default** changes it. **Remove** asks first, and then Doozers drops messages from that
+account. If you remove the default, your oldest identity becomes the default. You can't remove your
+web sign-in here.
+
+### Add an identity
+
+1. Choose the channel the account is on under **Add an identity**, such as `whatsapp`, `discord`,
+   `email`, or `irc:libera.chat`, and choose **Make a code**. The list has only the channels that
+   are running.
+2. The page shows a message such as `/link ABCD2345`. Send it to Doozers in a direct message, from
+   the account you want to add, within 10 minutes. Each channel's guide says where to send it:
+   [WhatsApp](whatsapp.md#identities), [Discord](discord.md#add-your-identity),
+   [email](email.md#adding-an-instance), or [IRC](irc.md#identities).
+3. Doozers replies on the channel, and the identity is on the page. Messages from it are yours from
+   then on.
+
+Doozers shows the code only once, and it works once. Making another code for the same channel
+replaces the first. If you lose it or it runs out of time, make a new one.
+
+Doozers takes the identity from the message you send, so you don't type it. A channel that is not in
+the list isn't running. An admin can see why on the [status page](#admin-pages).
+
+### When a code doesn't work
+
+The **Codes** list shows each code you made that wasn't used, as **Pending** until a time,
+**Expired**, or **Cancelled**. Make a new code for an expired or cancelled one.
+
+Doozers answers a wrong code the same way whether or not you have a code, and counts it:
+
+- After five wrong codes from one account, Doozers says it locked `/link` for that account and then
+  ignores the account's `/link` for an hour.
+- A code is cancelled after 20 wrong codes from anyone while it is pending.
+- A code works only for the channel you chose, and only for 10 minutes.
+
+An account that belongs to a user already can't be linked again, to the same user or another.
+Doozers says so. To move an account to another user, remove it from the first user's **Identities**
+page, then link it again with the other user's code. `/link` works only in direct conversations, not
+in a group, and only from a sender the channel has verified.
 
 ## Known SSH hosts
 

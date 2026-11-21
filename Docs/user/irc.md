@@ -104,9 +104,14 @@ Write account names and nicks the way the server case-folds them, or they never 
 - `ascii` folds only letters.
 - Networks that allow non-ASCII nicks use other mappings, which also lowercase those letters.
 
+Add yours on the [**Identities** page](web.md#identities) of the web chat. Choose the network, such
+as `irc:libera.chat`, make a code, and send `/link` and the code to Doozers' nick in a private
+message while you're logged in to services. Doozers replies when it has added the identity. An
+install upgraded from a version without users keeps the identities of
+[`[owner]`](configuration.md#owner), which Doozers imported once.
+
 A dropped message is logged (`dropped inbound message`) with the sender's identity in exactly the
-form to use. Doozers learns your identities from [`[owner]`](configuration.md#owner) when it first
-starts.
+form to use.
 
 ### Mask identities
 

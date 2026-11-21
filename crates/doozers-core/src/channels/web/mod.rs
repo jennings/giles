@@ -15,6 +15,7 @@ mod chat_actions;
 mod config;
 mod connections;
 mod hub;
+mod identities;
 mod invite;
 mod jobs;
 mod limits;

@@ -48,6 +48,7 @@ mod agent_remove;
 mod agents;
 mod chat_actions;
 mod fake_oidc;
+mod identities;
 mod jobs;
 mod memory;
 mod oidc;

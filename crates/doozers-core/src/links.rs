@@ -359,7 +359,7 @@ impl Links {
         self.channels
             .namespaces()
             .into_iter()
-            .filter(|ns| !is_web(ns))
+            .filter(|ns| !is_web_identity(ns))
             .collect()
     }
 
@@ -377,7 +377,7 @@ impl Links {
     /// reports `namespace`, [`LinkError::WebNamespace`], [`LinkError::UserUnavailable`] if the
     /// user doesn't exist or is disabled, or a database error.
     pub async fn start(&self, user: &UserId, namespace: &str) -> Result<NewLinkCode, LinkError> {
-        if is_web(namespace) {
+        if is_web_identity(namespace) {
             return Err(LinkError::WebNamespace);
         }
         let available = self.namespaces();
@@ -448,7 +448,7 @@ impl Links {
         user: &UserId,
         identity: &Identity,
     ) -> Result<User, LinkError> {
-        if is_web(identity.as_str()) {
+        if is_web_identity(identity.as_str()) {
             return Err(LinkError::WebNamespace);
         }
         Ok(self
@@ -493,7 +493,7 @@ impl Links {
 
 /// Whether `text` is in the web chat's namespace (`web`, or `web:...`). `text` may be an
 /// identity.
-fn is_web(text: &str) -> bool {
+pub fn is_web_identity(text: &str) -> bool {
     text.split(':').next() == Some(chat_ids::COMPONENT)
 }
 

@@ -13,6 +13,7 @@ pub(super) enum Nav {
     Jobs,
     Connections,
     SshKeys,
+    Identities,
     Status,
     Plugins,
     Agents,
@@ -25,11 +26,12 @@ pub(super) enum Nav {
 }
 
 /// The links of the "You" group, then of the "Admin" group: (page, label, href).
-const YOU: [(Nav, &str, &str); 4] = [
+const YOU: [(Nav, &str, &str); 5] = [
     (Nav::Chats, "Chats", "/"),
     (Nav::Jobs, "Scheduled jobs", "/jobs"),
     (Nav::Connections, "Connections", "/connections"),
     (Nav::SshKeys, "SSH keys", "/ssh-keys"),
+    (Nav::Identities, "Identities", "/account/identities"),
 ];
 const ADMIN: [(Nav, &str, &str); 9] = [
     (Nav::Status, "Status", "/admin"),
@@ -147,7 +149,13 @@ mod tests {
             [
                 (
                     "You",
-                    vec!["Chats", "Scheduled jobs", "Connections", "SSH keys"]
+                    vec![
+                        "Chats",
+                        "Scheduled jobs",
+                        "Connections",
+                        "SSH keys",
+                        "Identities"
+                    ]
                 ),
                 (
                     "Admin",
@@ -187,7 +195,13 @@ mod tests {
             labels(&shell),
             [(
                 "You",
-                vec!["Chats", "Scheduled jobs", "Connections", "SSH keys"]
+                vec![
+                    "Chats",
+                    "Scheduled jobs",
+                    "Connections",
+                    "SSH keys",
+                    "Identities"
+                ]
             )]
         );
         assert_eq!(

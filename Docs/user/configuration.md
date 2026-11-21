@@ -138,11 +138,10 @@ Remove it once Doozers has started. An `[owner]` added after the first start is 
 `[owner]` is invalid, the first start fails and nothing is imported.
 
 On a fresh install, you can leave `[owner]` out. Run `doozers admin login-link` to create the first
-admin and log in to the [web chat](web.md#invite-and-recovery-links). To also talk to Doozers on
-other channels, list your identities in `[owner]` before the first start.
-
-**An install that has already started can't add an identity yet.** Users will link their own
-identities from the web UI in a later release.
+admin and log in to the [web chat](web.md#invite-and-recovery-links). Then add your identities on
+other channels on the [**Identities** page](web.md#identities): choose a channel, make a code, and
+send `/link` and the code from your account. Use `[owner]` only to carry the identities of an
+install that had them before it had users, so they are in place at its first start.
 
 | Key          | Default                  | Meaning                                                     |
 | ------------ | ------------------------ | ----------------------------------------------------------- |
@@ -152,7 +151,7 @@ identities from the web UI in a later release.
 
 Doozers drops and logs these messages:
 
-- messages from an identity that no user has
+- messages from an identity that no user has, except `/link` and a code
 - messages from a disabled user
 - messages whose sender the channel couldn't verify
 - messages in group conversations, which v1 doesn't support
