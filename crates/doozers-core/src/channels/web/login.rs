@@ -52,8 +52,18 @@ pub(super) fn routes() -> Router<WebApp> {
 struct LoginPage<'a> {
     options: Vec<LoginOption>,
     password: PasswordForm<'a>,
+    /// The passkey sign-in, where passkeys are offered.
+    passkeys: Option<PasskeyLogin<'a>>,
     /// Whether the password form sits behind "Use a password instead".
     collapse_password: bool,
+}
+
+/// What the passkey section of the login page needs.
+struct PasskeyLogin<'a> {
+    /// The sign-in nonce its requests carry.
+    nonce: &'a str,
+    /// The origin passkeys work at, which the script compares the page's with.
+    origin: &'a str,
 }
 
 /// What the password form on the login page shows.
@@ -99,6 +109,15 @@ pub(super) fn render_login(
             plain_http: app.plain_http(headers, trusted),
             error,
         },
+        passkeys: app
+            .inner
+            .passkeys
+            .relying_party()
+            .ok()
+            .map(|rp| PasskeyLogin {
+                nonce: &nonce,
+                origin: rp.origin(),
+            }),
         collapse_password: app.password_collapsed(),
     });
     let https = is_https(&app.inner.channel, headers, trusted);
@@ -384,6 +403,7 @@ mod tests {
                     plain_http: false,
                     error,
                 },
+                passkeys: None,
                 collapse_password,
             }
             .render()

@@ -181,14 +181,14 @@ Why each part:
 - `script-src 'self'` and `style-src 'self'`, no `'unsafe-inline'` or `'unsafe-eval'`: the only
   scripts are the two vendored files, `agent-form.js` (only the new-agent form loads it),
   `mcp-server-form.js` (only the MCP server form loads it), `copy-button.js` (only the SSH keys page
-  loads it), and `passkey.js` (only the pages that add a passkey load it), each through the layout's
-  `head` block, and the only stylesheet is `doozers.css`. Passkeys needed no change to the policy:
-  `script-src 'self'` serves `passkey.js`, `connect-src 'self'` allows its requests, and WebAuthn
-  itself is outside the policy. Any injected `<script>`, `on*=` handler, or `javascript:` URL is
-  inert even if it got past the renderer. This also blocks inline `style="..."` attributes, so pages
-  style with classes. Note for 2.22: `pulldown-cmark` writes table column alignment as
-  `style="text-align: ..."`, which browsers drop (and log as a violation) under this policy; tables
-  still render, unaligned.
+  loads it), and `passkey.js` (only the login page, when passkeys are offered, and the passkey setup
+  page load it), each through the layout's `head` block, and the only stylesheet is `doozers.css`.
+  Passkeys needed no change to the policy: `script-src 'self'` serves `passkey.js`,
+  `connect-src 'self'` allows its requests, and WebAuthn itself is outside the policy. Any injected
+  `<script>`, `on*=` handler, or `javascript:` URL is inert even if it got past the renderer. This
+  also blocks inline `style="..."` attributes, so pages style with classes. Note for 2.22:
+  `pulldown-cmark` writes table column alignment as `style="text-align: ..."`, which browsers drop
+  (and log as a violation) under this policy; tables still render, unaligned.
 - `connect-src 'self'`: `htmx` requests and the SSE `EventSource` go to this origin only. Already
   implied by `default-src`, but stated because the SSE extension depends on it.
 - `default-src 'self'`: everything not named (fonts, media for audio attachments, manifests,

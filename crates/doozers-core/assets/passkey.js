@@ -1,7 +1,14 @@
-// Adding a passkey on the setup page (`#passkey-setup`): "Add a passkey" and "Add a non-resident
-// key" each ask the server for registration options, call the browser, and post the result.
-// WebAuthn can only be called from script, so this is the one first-party script a page needs to
-// work, not a convenience; Docs/technical/web-ui.md says why. Without it the buttons stay hidden.
+// Passkeys on two pages. WebAuthn can only be called from script, so this is the one first-party
+// script a page needs to work, not a convenience; Docs/technical/web-ui.md says why. Without it the
+// passkey parts of the pages stay hidden and the password form is the way in.
+//
+// - The login page (`#passkey-signin`): a conditional request starts on load, so the browser can
+//   offer a discoverable passkey in the username field's autofill. "Sign in with a passkey" sends
+//   the same request without `mediation`, so the browser opens its own dialog. A username asks the
+//   server for that user's passkeys instead (a non-resident key needs it). A browser allows one
+//   WebAuthn request at a time, so each of the others aborts the conditional one first.
+// - The setup page (`#passkey-setup`): "Add a passkey" and "Add a non-resident key" each ask the
+//   server for registration options, call the browser, and post the result.
 //
 // All data goes to the server as JSON. The server's options use base64url strings for the byte
 // fields; the browser wants buffers.
@@ -46,6 +53,13 @@
     return copy;
   }
 
+  function requestOptions(options) {
+    var copy = Object.assign({}, options);
+    copy.challenge = decode(options.challenge);
+    copy.allowCredentials = (options.allowCredentials || []).map(descriptor);
+    return copy;
+  }
+
   // What the server reads: the fields it checks, and only those.
   function created(credential) {
     var response = credential.response;
@@ -65,6 +79,21 @@
       result.clientExtensionResults.credProps = extensions.credProps;
     }
     return result;
+  }
+
+  function asserted(credential) {
+    var response = credential.response;
+    return {
+      id: credential.id,
+      rawId: encode(credential.rawId),
+      type: credential.type,
+      response: {
+        authenticatorData: encode(response.authenticatorData),
+        clientDataJSON: encode(response.clientDataJSON),
+        signature: encode(response.signature),
+        userHandle: response.userHandle ? encode(response.userHandle) : null
+      }
+    };
   }
 
   function post(url, body, headers) {
@@ -116,6 +145,161 @@
   function show(box, message) {
     box.textContent = message;
     box.hidden = false;
+  }
+
+  // The password form is behind "Use a password instead" where passkeys are offered. Open it when
+  // they can't be used here.
+  function openPassword() {
+    var details = document.querySelector('details.password-signin');
+    if (details) {
+      details.open = true;
+    }
+  }
+
+  function initSignin(root) {
+    var error = root.querySelector('[data-passkey-error]');
+    var elsewhere = root.querySelector('[data-passkey-elsewhere]');
+    var section = root.querySelector('[data-passkey-controls]');
+    var form = root.querySelector('form');
+    var username = form.elements.username;
+    var discover = root.querySelector('[data-passkey-discover]');
+    var nonce = root.getAttribute('data-nonce');
+    var origin = root.getAttribute('data-origin');
+    var urls = {
+      discover: root.getAttribute('data-discover-url'),
+      username: root.getAttribute('data-username-url'),
+      finish: root.getAttribute('data-finish-url')
+    };
+
+    if (window.location.origin !== origin) {
+      // A passkey belongs to one address, so it can't be used at this one, whatever the browser
+      // can do. Say where to go.
+      root.hidden = false;
+      section.hidden = true;
+      elsewhere.hidden = false;
+      openPassword();
+      return;
+    }
+    if (!supported) {
+      openPassword();
+      return;
+    }
+    root.hidden = false;
+
+    // The server keeps a ceremony for six minutes, and a conditional request stays open as long
+    // as the page does, so it is replaced before its ceremony runs out.
+    var RESTART = 5 * 60 * 1000;
+    // After a conditional request the server refused: the first wait, its cap, and how many
+    // refusals in a row before the page stops retrying by itself.
+    var BACKOFF = 3000;
+    var BACKOFF_CAP = 30000;
+    var MAX_FAILURES = 3;
+    var failures = 0;
+    var conditional = null;
+    var timer = null;
+    var busy = false;
+
+    function abortConditional() {
+      clearTimeout(timer);
+      if (conditional) {
+        conditional.abort();
+        conditional = null;
+      }
+    }
+
+    // Asks the server to start (`url`, with `extra` in the body), calls the browser, and posts the
+    // assertion. `signal` and `mediation` are for the conditional request only.
+    function run(url, extra, signal) {
+      var started;
+      return post(url, Object.assign({ nonce: nonce }, extra)).then(reply).then(function (json) {
+        started = json;
+        var options = { publicKey: requestOptions(json.options.publicKey) };
+        if (signal) {
+          options.mediation = 'conditional';
+          options.signal = signal;
+        }
+        return navigator.credentials.get(options);
+      }).then(function (credential) {
+        return post(urls.finish, {
+          nonce: nonce,
+          ceremony: started.ceremony,
+          credential: asserted(credential)
+        }).then(reply).catch(function (failure) {
+          // The browser answered, and the server didn't take it.
+          failure.afterAnswer = true;
+          throw failure;
+        });
+      }).then(function (json) {
+        window.location.assign(json.redirect);
+      });
+    }
+
+    function startConditional() {
+      abortConditional();
+      if (!window.PublicKeyCredential.isConditionalMediationAvailable) {
+        return;
+      }
+      window.PublicKeyCredential.isConditionalMediationAvailable().then(function (available) {
+        if (!available || busy || conditional) {
+          return;
+        }
+        var controller = new AbortController();
+        conditional = controller;
+        timer = setTimeout(startConditional, RESTART);
+        run(urls.discover, {}, controller.signal).catch(function (failure) {
+          if (conditional !== controller) {
+            // Aborted on purpose, for another request.
+            return;
+          }
+          conditional = null;
+          clearTimeout(timer);
+          if (failure && failure.afterAnswer) {
+            // The ceremony is spent, so the autofill needs a new one. A passkey the server keeps
+            // refusing would otherwise be offered and refused again at once, over and over, so
+            // the new one waits, longer each time, and after a few failures in a row the page
+            // stops until the user acts.
+            show(error, problem(failure));
+            failures++;
+            if (failures < MAX_FAILURES) {
+              timer = setTimeout(startConditional, Math.min(BACKOFF * Math.pow(2, failures - 1), BACKOFF_CAP));
+            }
+          } else if (!(failure && failure.name === 'NotAllowedError')) {
+            show(error, problem(failure));
+          }
+        });
+      });
+    }
+
+    // The explicit requests: abort the conditional one, run this one, and start the conditional
+    // one again if it didn't sign in (after one that did, the page is going away).
+    function explicit(url, extra) {
+      if (busy) {
+        return;
+      }
+      busy = true;
+      failures = 0;
+      error.hidden = true;
+      abortConditional();
+      run(url, extra, null).catch(function (failure) {
+        show(error, problem(failure));
+        busy = false;
+        startConditional();
+      });
+    }
+
+    discover.addEventListener('click', function () {
+      explicit(urls.discover, {});
+    });
+    form.addEventListener('submit', function (event) {
+      event.preventDefault();
+      var name = username.value.trim();
+      if (name) {
+        explicit(urls.username, { username: name });
+      } else {
+        explicit(urls.discover, {});
+      }
+    });
+    startConditional();
   }
 
   function initSetup(root) {
@@ -173,6 +357,10 @@
     });
   }
 
+  var signin = document.getElementById('passkey-signin');
+  if (signin) {
+    initSignin(signin);
+  }
   var setup = document.getElementById('passkey-setup');
   if (setup) {
     initSetup(setup);

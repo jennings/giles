@@ -78,11 +78,10 @@ impl WebApp {
     }
 
     /// Whether the login page folds the password form away behind "Use a password instead", for
-    /// a method that suits the browser better to take its place. Nothing does yet, so the form is
-    /// shown. A method that does must make this true where it works (passkeys: on a secure origin),
-    /// and put its own sign-in above the form.
+    /// a method that suits the browser better to take its place: true where passkeys are offered,
+    /// which put their own sign-in above the form.
     pub(super) fn password_collapsed(&self) -> bool {
-        false
+        self.inner.passkeys.relying_party().is_ok()
     }
 
     /// The sign-in methods `user` can add to their account now.

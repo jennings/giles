@@ -1154,6 +1154,12 @@ input.mono {
   max-width: 760px;
 }
 
+/* A form with no padding of its own, for one that sits in a card already, such as the login forms on
+   the standalone card, so that it lines up with the heading above it. */
+.form-flush {
+  padding: 0;
+}
+
 /* A long form: a stack of cards and fieldsets. */
 .form-sections {
   display: flex;

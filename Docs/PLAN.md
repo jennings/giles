@@ -219,7 +219,11 @@ Channels also drop messages that must never start a turn: echoes of the agent's 
   `localhost`) and the web channel has a `public_url`, whose host is the relying party id. A user
   adds one on the page an invite or recovery link leads to, with "Add a passkey" (discoverable, so
   no username is needed to sign in) or "Add a non-resident key" (for a hardware key with few slots).
-  User verification is required for both. They live in the `user_passkeys` table.
+  User verification is required for both. They live in the `user_passkeys` table. The login page
+  starts a conditional request on load, so a browser can offer a discoverable passkey in the
+  username field, and has a "Sign in with a passkey" button; a username asks the server for that
+  user's passkeys, and a name that has none gets made-up credential ids, so the answer doesn't say
+  who exists. Passwords fold behind "Use a password instead" where passkeys are offered.
 
 ## 4. Components and traits
 

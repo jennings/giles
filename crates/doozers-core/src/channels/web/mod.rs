@@ -23,6 +23,7 @@ mod memory;
 mod pages;
 mod passkey;
 mod passkey_pages;
+mod passkey_signin;
 mod password;
 mod password_pages;
 mod proxy;

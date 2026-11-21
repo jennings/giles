@@ -33,9 +33,9 @@ The implementation differs from the boards on purpose in four ways:
   `popover`. Don't add fallbacks for old browsers.
 - **Script is the last resort.** A page must work with no script except where it streams (the chat
   page) and where the browser offers nothing else: WebAuthn can be called only from script, so
-  `passkey.js` is the one stated exception, and the pages that add a passkey need it. Where it
-  doesn't run, the passkey buttons stay hidden and a password is the way in. The small per-form
-  scripts only add conveniences, such as filling an id from a name.
+  `passkey.js` is the one stated exception, and the pages that add a passkey or sign in with one
+  need it. Where it doesn't run, the passkey buttons stay hidden and a password is the way in. The
+  small per-form scripts only add conveniences, such as filling an id from a name.
 - **Quiet and dense.** Dark surfaces a step apart, thin borders, one accent color, and text that
   tells the owner what each control does.
 
@@ -372,6 +372,7 @@ view, except the chat page's approvals. Inside a table, every action is a `butto
 ### Fields
 
 - `.form` is a form card (24 px padding, at most 680 px wide). `.form-wide` widens it to 760 px.
+  `.form-flush` removes the padding, for a form inside a card, such as the login forms.
   `.form-sections` is a long form's stack of cards and fieldsets, at most 820 px wide.
 - `.field` is a column: the `<label>` (13 px, 600, secondary), the control, then `.help` (13 px,
   muted). A value that can't be edited here uses `<span class="field-label">` and

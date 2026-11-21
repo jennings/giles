@@ -14,8 +14,9 @@ can have only one web channel.
 
 ## Logging in
 
-Every page needs a login. You log in with a password, with a one-time link, or through a trusted
-reverse proxy. A page that needs a login points you to `/login`, which lists the ways to log in.
+Every page needs a login. You log in with a passkey, a password, a one-time link, or through a
+trusted reverse proxy. A page that needs a login points you to `/login`, which lists the ways to log
+in.
 
 ### Invite and recovery links
 
@@ -87,9 +88,9 @@ visitor through the proxy as one address.
 
 ### Passkeys
 
-A passkey is kept by your phone, laptop, password manager, or a security key, and unlocked with your
-fingerprint, face, PIN, or screen lock. Nobody can read it back, and it only works at your Doozers'
-address.
+A passkey lets you log in with your fingerprint, face, PIN, or screen lock, using your phone,
+laptop, password manager, or a security key. Nobody can read it back, and it only works at your
+Doozers' address.
 
 Passkeys need an address that browsers trust, so set `public_url` to the `https` address you open
 Doozers at, or to `localhost` when you run it on your own machine:
@@ -116,6 +117,20 @@ use one of the two buttons:
 Name each one, so you can tell them apart. You can add as many as you like, such as one per device.
 
 A login that came from a password can't add a passkey. Ask for a recovery link.
+
+To log in with a passkey, open the login page at your `public_url`. Choose the username field, and
+your browser offers your passkeys. You can also press **Sign in with a passkey**. If you added a
+non-resident key, type your username and press **Continue with my username** first. Everything else
+you can do on the login page, such as a password, is under **Use a password instead**.
+
+Doozers asks for your fingerprint, face, PIN, or screen lock every time, because a passkey alone
+isn't enough. A disabled user can't log in with a passkey.
+
+When someone types a username that has no passkeys, Doozers answers with made-up credential ids, so
+that a stranger can't tell a real username from the answer alone. That makes guessing usernames
+harder, but it doesn't hide which usernames exist from someone who is determined: the made-up ids
+don't fully match real ones. If a key's counter goes backwards, which can mean it was copied,
+Doozers refuses it and records a warning in the log.
 
 ### A trusted reverse proxy
 

@@ -207,7 +207,7 @@ async fn a_user_sets_a_password_through_an_invite_and_signs_in_with_it() {
     let nonce = nonce_of(set_cookie(&response));
     let html = body_text(response).await;
     assert!(
-        html.contains(r#"<form class="form" method="post" action="/login/password">"#),
+        html.contains(r#"<form class="form form-flush" method="post" action="/login/password">"#),
         "{html}"
     );
     assert!(

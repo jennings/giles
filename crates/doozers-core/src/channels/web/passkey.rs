@@ -1,7 +1,7 @@
 //! Passkeys, the parts that need no request: whether they can be offered, the WebAuthn relying
 //! party, the ceremonies in flight, and the ids that identify a user to an authenticator. The
-//! setup pages are in [`passkey_pages`](super::passkey_pages). Design:
-//! `Docs/technical/web-channel.md`.
+//! setup pages are in [`passkey_pages`](super::passkey_pages) and the sign-in routes in
+//! [`passkey_signin`](super::passkey_signin). Design: `Docs/technical/web-channel.md`.
 //!
 //! # Availability
 //!
@@ -14,12 +14,12 @@
 //!
 //! # Ceremonies
 //!
-//! A registration is a ceremony of two requests, with state between them that must stay on the
-//! server (the library's serialized form is behind a `danger-` feature, so there is none).
+//! A registration or sign-in is a ceremony of two requests, with state between them that must stay on
+//! the server (the library's serialized form is behind a `danger-` feature, so there is none).
 //! [`Ceremonies`] keeps it in memory under a random id the page sends back, for [`TTL`], once:
 //! [`Ceremonies::finish`] takes the entry out whether or not it matches. An entry is bound to what
-//! started it, a string the finishing request must repeat: for a registration, the user and their
-//! CSRF token. The table holds at most [`MAX`]
+//! started it, a string the finishing request must repeat: the browser's sign-in nonce for a sign-in,
+//! the user and their CSRF token for a registration. The table holds at most [`MAX`]
 //! entries; past that the oldest go, so memory is bounded however many ceremonies are started. A
 //! restart forgets them, and the page says to try again.
 //!
@@ -39,7 +39,11 @@ use doozers_store::PasskeyKind;
 use doozers_types::{Timestamp, UserId};
 use sha2::{Digest, Sha256};
 use url::{Host, Url};
-use webauthn_rs::prelude::{PasskeyRegistration, Uuid, Webauthn, WebauthnBuilder};
+use webauthn_rs::fake::{FakePasskeyDistribution, WebauthnFakeCredentialGenerator};
+use webauthn_rs::prelude::{
+    DiscoverableAuthentication, PasskeyAuthentication, PasskeyRegistration, Uuid, Webauthn,
+    WebauthnBuilder,
+};
 
 use super::login::is_loopback_host;
 use super::random_hex;
@@ -144,6 +148,16 @@ pub(super) enum Ceremony {
         kind: PasskeyKind,
         state: PasskeyRegistration,
     },
+    /// A sign-in that names no user: the browser picks a discoverable passkey.
+    Discover(DiscoverableAuthentication),
+    /// A sign-in of one user, who typed their username.
+    ByUsername {
+        user: UserId,
+        state: PasskeyAuthentication,
+    },
+    /// A sign-in that was offered made-up credential ids, because the username has no passkeys to
+    /// offer (or isn't a user): nothing finishes it.
+    Fake,
 }
 
 struct Entry {
@@ -241,6 +255,11 @@ pub(super) fn registration_binding(user: &UserId, csrf: &str) -> String {
     format!("register\0{user}\0{csrf}")
 }
 
+/// What a sign-in is bound to: the browser's sign-in nonce.
+pub(super) fn sign_in_binding(nonce: &str) -> String {
+    format!("sign-in\0{nonce}")
+}
+
 /// The user handle of `user`: the 16 bytes of a UUID made from their id, the same for all their
 /// passkeys.
 pub(super) fn user_handle(user: &UserId) -> Uuid {
@@ -256,6 +275,10 @@ pub(super) fn user_handle(user: &UserId) -> Uuid {
 pub(super) struct Passkeys {
     relying_party: Result<RelyingParty, Unavailable>,
     pub(super) ceremonies: Ceremonies,
+    /// Makes up the credential ids of usernames that have none, from a key stored in the database
+    /// (made at first use).
+    pub(super) fake:
+        tokio::sync::OnceCell<WebauthnFakeCredentialGenerator<FakePasskeyDistribution>>,
 }
 
 impl fmt::Debug for Passkeys {
@@ -272,6 +295,7 @@ impl Passkeys {
         Self {
             relying_party: RelyingParty::new(public_url),
             ceremonies: Ceremonies::default(),
+            fake: tokio::sync::OnceCell::new(),
         }
     }
 
@@ -363,6 +387,24 @@ mod tests {
 
     fn bound(user: &str, csrf: &str) -> String {
         registration_binding(&UserId::new(user).unwrap(), csrf)
+    }
+
+    #[test]
+    fn a_sign_in_binding_is_not_a_registrations() {
+        let ceremonies = Ceremonies::default();
+        let id = ceremonies.begin(&sign_in_binding("n"), Ceremony::Fake, at(0));
+        assert!(ceremonies.finish(&id, &bound("ann", "n"), at(1)).is_none());
+        let id = ceremonies.begin(&sign_in_binding("n"), Ceremony::Fake, at(0));
+        assert!(
+            ceremonies
+                .finish(&id, &sign_in_binding("other"), at(1))
+                .is_none()
+        );
+        let id = ceremonies.begin(&sign_in_binding("n"), Ceremony::Fake, at(0));
+        assert!(matches!(
+            ceremonies.finish(&id, &sign_in_binding("n"), at(1)),
+            Some(Ceremony::Fake)
+        ));
     }
 
     #[test]

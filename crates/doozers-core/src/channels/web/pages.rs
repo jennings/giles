@@ -76,6 +76,8 @@ pub(super) struct Inner {
     pub(super) passwords: Passwords,
     /// Counts password attempts per username and per client address.
     pub(super) logins: LoginLimits,
+    /// Counts the sign-ins a client address starts with a passkey.
+    pub(super) passkey_starts: LoginLimits,
     /// The relying party, if passkeys can be offered, and the ceremonies in flight.
     pub(super) passkeys: Passkeys,
     pub(super) shutdown: CancellationToken,
@@ -133,6 +135,11 @@ impl WebApp {
                 jobs,
                 passwords: Passwords::default(),
                 logins: LoginLimits::default(),
+                passkey_starts: LoginLimits::new(
+                    u32::MAX,
+                    super::passkey_signin::START_ATTEMPTS,
+                    super::limits::WINDOW,
+                ),
                 passkeys,
                 shutdown,
             }),
@@ -184,6 +191,7 @@ impl WebApp {
             .merge(super::invite::routes())
             .merge(super::password_pages::routes())
             .merge(super::passkey_pages::routes())
+            .merge(super::passkey_signin::routes())
             .with_state(self.clone())
     }
 }

@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use axum::http::header::CACHE_CONTROL;
 use base64::Engine;
-use doozers_store::PasskeyKind;
+use doozers_store::{PasskeyKind, UserState};
 use passkey_authenticator::{
     Authenticator, CredentialStore, DiscoverabilitySupport, StoreInfo, UiHint, UserCheck,
     UserValidationMethod,
@@ -22,11 +22,13 @@ use passkey_types::ctap2::make_credential::{
     Options, PublicKeyCredentialRpEntity, PublicKeyCredentialUserEntity,
 };
 use passkey_types::ctap2::{Aaguid, Ctap2Error, StatusCode as CtapStatus};
-use passkey_types::webauthn::{CredentialCreationOptions, PublicKeyCredentialDescriptor};
+use passkey_types::webauthn::{
+    CredentialCreationOptions, CredentialRequestOptions, PublicKeyCredentialDescriptor,
+};
 use serde_json::{Value, json};
 use url::Url;
 
-use super::admin::{open_users, stored_users};
+use super::admin::{open_users, session_of, stored_users};
 use super::*;
 
 /// Where passkeys work in these tests.
@@ -197,6 +199,18 @@ impl Browser {
         Ok(sent)
     }
 
+    /// `navigator.credentials.get`, with `mediation` removed as the script does for its button.
+    async fn get(&mut self, options: &Value) -> Result<Value, passkey_client::WebauthnError> {
+        let mut options = options.clone();
+        options.as_object_mut().unwrap().remove("mediation");
+        let options: CredentialRequestOptions = serde_json::from_value(options).unwrap();
+        let asserted = self
+            .client
+            .authenticate(&self.origin, options, DefaultClientData)
+            .await?;
+        Ok(serde_json::to_value(asserted).unwrap())
+    }
+
     /// The authenticator's credentials, as `(discoverable, counter)`.
     fn credentials(&self) -> Vec<(bool, Option<u32>)> {
         self.store
@@ -206,6 +220,22 @@ impl Browser {
             .iter()
             .map(|passkey| (passkey.user_handle.is_some(), passkey.counter))
             .collect()
+    }
+
+    /// Sets the signature counter of every credential.
+    fn set_counter(&self, counter: u32) {
+        for passkey in self.store.0.lock().unwrap().iter_mut() {
+            passkey.counter = Some(counter);
+        }
+    }
+
+    /// Changes the user handle of every discoverable credential, as another account's would be.
+    fn set_user_handle(&self, handle: &[u8]) {
+        for passkey in self.store.0.lock().unwrap().iter_mut() {
+            if passkey.user_handle.is_some() {
+                passkey.user_handle = Some(handle.to_vec().into());
+            }
+        }
     }
 }
 
@@ -785,4 +815,667 @@ async fn the_script_is_served_under_the_policy_that_allows_no_inline_script() {
     );
     assert!(!html.contains(" onclick="), "{html}");
     assert!(!html.contains(" style="), "{html}");
+}
+
+// --- Signing in --------------------------------------------------------------------------------
+
+/// A browser on the login page: the nonce its forms carry, as cookie and body field.
+struct Page {
+    cookie: String,
+}
+
+impl Page {
+    fn new() -> Self {
+        Self {
+            cookie: format!("{NONCE_COOKIE}={NONCE}"),
+        }
+    }
+
+    /// `POST /login/passkey/<step>` with the nonce, as the script sends it.
+    async fn start(&self, env: &Env, step: &str, extra: Value) -> Response {
+        let mut body = json!({ "nonce": NONCE });
+        for (key, value) in extra.as_object().unwrap() {
+            body[key] = value.clone();
+        }
+        post_json(
+            env.main_app(),
+            &format!("/login/passkey/{step}"),
+            &[("cookie", &self.cookie)],
+            &body,
+        )
+        .await
+    }
+
+    /// `POST /login/passkey/finish`.
+    async fn finish(&self, env: &Env, ceremony: &Value, credential: &Value) -> Response {
+        self.finish_with(
+            env,
+            &[("cookie", &self.cookie)],
+            NONCE,
+            ceremony,
+            credential,
+        )
+        .await
+    }
+
+    async fn finish_with(
+        &self,
+        env: &Env,
+        headers: &[(&str, &str)],
+        nonce: &str,
+        ceremony: &Value,
+        credential: &Value,
+    ) -> Response {
+        post_json(
+            env.main_app(),
+            "/login/passkey/finish",
+            headers,
+            &json!({ "nonce": nonce, "ceremony": ceremony, "credential": credential }),
+        )
+        .await
+    }
+}
+
+/// What the script sends of an assertion: the fields the server reads, bytes as base64url.
+fn asserted(asserted: &Value) -> Value {
+    let response = &asserted["response"];
+    json!({
+        "id": asserted["id"],
+        "rawId": base64url(&asserted["rawId"]),
+        "type": asserted["type"],
+        "response": {
+            "authenticatorData": base64url(&response["authenticatorData"]),
+            "clientDataJSON": base64url(&response["clientDataJSON"]),
+            "signature": base64url(&response["signature"]),
+            "userHandle": if response["userHandle"].is_null() {
+                Value::Null
+            } else {
+                Value::String(base64url(&response["userHandle"]))
+            },
+        },
+    })
+}
+
+/// A sign-in through `step` (`discover`, or `username` with `extra`): start, let `browser` answer,
+/// finish. The answers of the start and of the finish.
+async fn sign_in(env: &Env, browser: &mut Browser, step: &str, extra: Value) -> (Value, Response) {
+    let page = Page::new();
+    let response = page.start(env, step, extra).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let started = json_of(response).await;
+    let answered = browser
+        .get(&started["options"])
+        .await
+        .unwrap_or_else(|err| panic!("{err:?}"));
+    let response = page
+        .finish(env, &started["ceremony"], &asserted(&answered))
+        .await;
+    (started, response)
+}
+
+/// A user `newbie` with a discoverable passkey on `phone` and a non-resident one on `key`, and
+/// the environment.
+async fn with_both_kinds() -> (Env, UserId, Browser, Browser) {
+    let env = env_at(Some(ORIGIN)).await;
+    let users = open_users(&env).await;
+    let newbie = add_user(&users, "newbie", doozers_store::Role::Member).await;
+    let invite = invite_token(&env, &newbie, InviteKind::Invite).await;
+    let response = redeem(env.main_app(), &invite, &[]).await;
+    let login = Login::new(cookie_token(set_cookie(&response)));
+    let mut phone = Browser::new(false);
+    let mut key = Browser::new(true);
+    let (_, response) = register(&env, &login, &mut phone, "discoverable", "Phone").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let (_, response) = register(&env, &login, &mut key, "non_resident", "Key").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    (env, newbie, phone, key)
+}
+
+/// The session a successful finish set, if it did: its token.
+fn signed_in_token(response: &Response) -> String {
+    let cookies = set_cookies(response);
+    assert_eq!(cookies.len(), 2, "{cookies:?}");
+    assert!(
+        cookies[0].ends_with("; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax; Secure"),
+        "{cookies:?}"
+    );
+    assert_eq!(
+        cookies[1],
+        format!("{NONCE_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict; Secure")
+    );
+    cookie_token(cookies[0])
+}
+
+/// Asserts that `response` signs nobody in, and says why in the one way it says anything.
+async fn assert_didnt_work(response: Response, what: &str) {
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{what}");
+    assert!(
+        set_cookies(&response)
+            .iter()
+            .all(|cookie| !cookie.starts_with(SESSION_COOKIE)),
+        "{what}"
+    );
+    let body = json_of(response).await;
+    assert_eq!(
+        body,
+        json!({ "error": "That passkey didn't log you in. Try again, or use another way to log in." }),
+        "{what}"
+    );
+}
+
+#[tokio::test]
+async fn both_kinds_of_passkey_sign_in_one_through_each_step() {
+    let (env, newbie, mut phone, mut key) = with_both_kinds().await;
+
+    // A discoverable passkey signs in with no username.
+    let (started, response) = sign_in(&env, &mut phone, "discover", json!({})).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
+    let options = &started["options"];
+    assert_eq!(options["mediation"], "conditional");
+    assert_eq!(options["publicKey"]["rpId"], "doozers.example.com");
+    assert_eq!(options["publicKey"]["userVerification"], "required");
+    assert_eq!(options["publicKey"]["allowCredentials"], json!([]));
+    let token = signed_in_token(&response);
+    assert_eq!(json_of(response).await, json!({ "redirect": "/" }));
+    let session = env
+        .store
+        .web_session(&token, Timestamp::now())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.user, newbie);
+    assert_eq!(session.method, SignInMethod::Passkey);
+    // The session works.
+    let response = call(
+        env.main_app(),
+        Method::GET,
+        "/",
+        &[("cookie", &session_cookie_header(&token))],
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // A key that keeps no passkey can't be found without a username.
+    let page = Page::new();
+    let started = json_of(page.start(&env, "discover", json!({})).await).await;
+    assert!(key.get(&started["options"]).await.is_err());
+
+    // With the username, the server names the user's credentials, and the key answers.
+    let (started, response) =
+        sign_in(&env, &mut key, "username", json!({ "username": "NewBie" })).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let token = signed_in_token(&response);
+    let options = &started["options"];
+    assert!(options.get("mediation").is_none());
+    assert_eq!(
+        options["publicKey"]["allowCredentials"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let session = env
+        .store
+        .web_session(&token, Timestamp::now())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (session.user, session.method),
+        (newbie.clone(), SignInMethod::Passkey)
+    );
+
+    // Both passkeys were used, and the key's counter moved.
+    let stored = env.store.user_passkeys(&newbie).await.unwrap();
+    assert!(
+        stored.iter().all(|passkey| passkey.last_used_at.is_some()),
+        "{stored:?}"
+    );
+    let credential: Value = serde_json::from_str(&stored[1].credential).unwrap();
+    assert_eq!(credential["cred"]["counter"], 1);
+}
+
+fn session_cookie_header(token: &str) -> String {
+    session(token)
+}
+
+#[tokio::test]
+async fn a_sign_in_makes_a_new_session_and_ends_the_browsers_old_one() {
+    let (env, newbie, mut phone, _) = with_both_kinds().await;
+    let old = session_of(&env, "newbie").await;
+    let page = Page::new();
+    let started = json_of(page.start(&env, "discover", json!({})).await).await;
+    let answered = phone.get(&started["options"]).await.unwrap();
+    let cookie = format!("{NONCE_COOKIE}={NONCE}; {}", session(&old));
+    let response = page
+        .finish_with(
+            &env,
+            &[("cookie", &cookie)],
+            NONCE,
+            &started["ceremony"],
+            &asserted(&answered),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let token = signed_in_token(&response);
+    assert_ne!(token, old);
+    let now = Timestamp::now();
+    assert!(env.store.web_session(&old, now).await.unwrap().is_none());
+    assert!(env.store.web_session(&token, now).await.unwrap().is_some());
+    let _ = newbie;
+}
+
+#[tokio::test]
+async fn the_username_step_answers_alike_for_a_real_user_and_for_names_that_have_nothing() {
+    let (env, _, _, _) = with_both_kinds().await;
+    stored_users(&env).await;
+    // `mia` is a user with no passkeys, `off` a user who can't sign in, and `ghost` isn't one.
+    let users = open_users(&env).await;
+    let off = add_user(&users, "off", doozers_store::Role::Member).await;
+    users
+        .set_state(&off, UserState::Disabled, Timestamp::now())
+        .await
+        .unwrap();
+
+    let page = Page::new();
+    let mut answers = Vec::new();
+    for name in ["newbie", "mia", "ghost", "off"] {
+        let response = page
+            .start(&env, "username", json!({ "username": name }))
+            .await;
+        assert_eq!(response.status(), StatusCode::OK, "{name}");
+        assert_eq!(response.headers()[CACHE_CONTROL], "no-store", "{name}");
+        answers.push((name, json_of(response).await));
+    }
+    for (name, answer) in &answers {
+        let object = answer.as_object().unwrap();
+        assert_eq!(
+            object.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["ceremony", "options"],
+            "{name}"
+        );
+        assert_eq!(answer["ceremony"].as_str().unwrap().len(), 32, "{name}");
+        let public_key = answer["options"]["publicKey"].as_object().unwrap();
+        let mut keys: Vec<_> = public_key.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "allowCredentials",
+                "challenge",
+                "rpId",
+                "timeout",
+                "userVerification"
+            ],
+            "{name}"
+        );
+        assert!(answer["options"].get("mediation").is_none(), "{name}");
+        assert_eq!(public_key["rpId"], "doozers.example.com", "{name}");
+        assert_eq!(
+            public_key["timeout"],
+            answers[0].1["options"]["publicKey"]["timeout"]
+        );
+        // Every listed credential is only a type and an id: no transports, which a made-up id
+        // couldn't have.
+        for credential in public_key["allowCredentials"].as_array().unwrap() {
+            let mut keys: Vec<_> = credential
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(keys, ["id", "type"], "{name}");
+            assert_eq!(credential["type"], "public-key", "{name}");
+            assert!(credential["id"].as_str().unwrap().len() >= 20, "{name}");
+        }
+    }
+    // The real user's answer lists their two credentials.
+    let listed = |name: &str| {
+        answers.iter().find(|(n, _)| *n == name).unwrap().1["options"]["publicKey"]["allowCredentials"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(listed("newbie").len(), 2);
+
+    // A made-up answer is the same every time for a name, whatever its case, differs between
+    // names, and is the same after a restart (the key is stored).
+    let ids = |value: &Value| -> Vec<String> {
+        value["options"]["publicKey"]["allowCredentials"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|credential| credential["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let again = json_of(
+        page.start(&env, "username", json!({ "username": "GHOST" }))
+            .await,
+    )
+    .await;
+    let ghost = &answers.iter().find(|(n, _)| *n == "ghost").unwrap().1;
+    assert_eq!(ids(&again), ids(ghost));
+    let restarted = WebApp::new(
+        env.channel.clone(),
+        env.store.clone(),
+        env.blobs.clone(),
+        env.registry.live_config().clone(),
+        env.jobs.clone(),
+        env.shutdown.clone(),
+    );
+    let response = post_json(
+        restarted.install(RouterBuilder::new()).build(),
+        "/login/passkey/username",
+        &[("cookie", &page.cookie)],
+        &json!({ "nonce": NONCE, "username": "ghost" }),
+    )
+    .await;
+    assert_eq!(ids(&json_of(response).await), ids(ghost));
+    let mut distinct = std::collections::HashSet::new();
+    for n in 0..40 {
+        let name = format!("nobody-{n}");
+        let answer = json_of(
+            page.start(&env, "username", json!({ "username": name }))
+                .await,
+        )
+        .await;
+        distinct.insert(ids(&answer));
+    }
+    assert!(distinct.len() > 20, "{} different answers", distinct.len());
+
+    // Finishing a made-up ceremony fails as a wrong passkey does for a real user.
+    let junk = json!({
+        "id": "AAAA", "rawId": "AAAA", "type": "public-key",
+        "response": { "authenticatorData": "AAAA", "clientDataJSON": "AAAA", "signature": "AAAA", "userHandle": null },
+    });
+    for name in ["ghost", "mia", "newbie"] {
+        let started = json_of(
+            page.start(&env, "username", json!({ "username": name }))
+                .await,
+        )
+        .await;
+        let response = page.finish(&env, &started["ceremony"], &junk).await;
+        assert_didnt_work(response, name).await;
+    }
+}
+
+#[tokio::test]
+async fn a_disabled_users_passkey_is_refused_like_any_other_failure() {
+    let (env, newbie, mut phone, mut key) = with_both_kinds().await;
+    let users = open_users(&env).await;
+    users
+        .set_state(&newbie, UserState::Disabled, Timestamp::now())
+        .await
+        .unwrap();
+    let (_, response) = sign_in(&env, &mut phone, "discover", json!({})).await;
+    assert_didnt_work(response, "discoverable").await;
+    // Through the username step the disabled user's answer is made up, so the key's credential
+    // isn't on the list, and it can't answer.
+    let page = Page::new();
+    let started = json_of(
+        page.start(&env, "username", json!({ "username": "newbie" }))
+            .await,
+    )
+    .await;
+    assert!(key.get(&started["options"]).await.is_err());
+    let stored = env.store.user_passkeys(&newbie).await.unwrap();
+    assert!(stored.iter().all(|passkey| passkey.last_used_at.is_none()));
+}
+
+#[tokio::test]
+async fn a_passkey_that_names_another_user_is_refused() {
+    let (env, newbie, mut phone, _) = with_both_kinds().await;
+    stored_users(&env).await;
+    // The phone's passkey is newbie's, but the authenticator reports the handle of another user
+    // (a well-formed one, which the library accepts). The server's own record of the owner
+    // decides, so neither step signs anyone in.
+    let mia = UserId::new("mia").unwrap();
+    phone.set_user_handle(super::super::passkey::user_handle(&mia).as_bytes());
+    let before = env.store.user_passkeys(&newbie).await.unwrap();
+    let (_, response) = sign_in(&env, &mut phone, "discover", json!({})).await;
+    assert_didnt_work(response, "discoverable").await;
+    // The same through the username step, for the real owner: the answer names the other user.
+    let (_, response) = sign_in(
+        &env,
+        &mut phone,
+        "username",
+        json!({ "username": "newbie" }),
+    )
+    .await;
+    assert_didnt_work(response, "by username").await;
+    // Nothing was recorded as used.
+    assert_eq!(env.store.user_passkeys(&newbie).await.unwrap(), before);
+    assert!(before.iter().all(|passkey| passkey.last_used_at.is_none()));
+}
+
+#[tokio::test]
+async fn a_signature_counter_that_does_not_advance_is_refused_and_leaves_the_passkey() {
+    let (env, newbie, _, mut key) = with_both_kinds().await;
+    for _ in 0..2 {
+        let (_, response) =
+            sign_in(&env, &mut key, "username", json!({ "username": "newbie" })).await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let before = env.store.user_passkeys(&newbie).await.unwrap()[1].clone();
+    let counter: Value = serde_json::from_str(&before.credential).unwrap();
+    assert_eq!(counter["cred"]["counter"], 2);
+
+    // The authenticator's counter goes back: a clone of it has been used. Not a sign-in.
+    key.set_counter(0);
+    let (_, response) = sign_in(&env, &mut key, "username", json!({ "username": "newbie" })).await;
+    assert_didnt_work(response, "a counter that went back").await;
+    let after = env.store.user_passkeys(&newbie).await.unwrap()[1].clone();
+    assert_eq!(after.credential, before.credential);
+    assert_eq!(after.last_used_at, before.last_used_at);
+
+    // Past the stored one, it signs in again.
+    key.set_counter(9);
+    let (_, response) = sign_in(&env, &mut key, "username", json!({ "username": "newbie" })).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let after = env.store.user_passkeys(&newbie).await.unwrap()[1].clone();
+    let counter: Value = serde_json::from_str(&after.credential).unwrap();
+    assert_eq!(counter["cred"]["counter"], 10);
+}
+
+#[tokio::test]
+async fn every_sign_in_post_needs_its_browsers_nonce() {
+    let (env, _, mut phone, _) = with_both_kinds().await;
+    let page = Page::new();
+    let body = json!({ "nonce": NONCE });
+    // A start without the cookie, with another cookie, with another nonce, and with none.
+    let other = format!("{NONCE_COOKIE}=ffffffffffffffffffffffffffffffff");
+    for (headers, body) in [
+        (vec![], body.clone()),
+        (vec![("cookie", other.as_str())], body.clone()),
+        (
+            vec![("cookie", page.cookie.as_str())],
+            json!({ "nonce": "wrong" }),
+        ),
+        (vec![("cookie", page.cookie.as_str())], json!({})),
+    ] {
+        for step in ["discover", "username"] {
+            let response = post_json(
+                env.main_app(),
+                &format!("/login/passkey/{step}"),
+                &headers,
+                &body,
+            )
+            .await;
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "{step} {headers:?} {body}"
+            );
+            assert!(
+                json_of(response).await["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("out of date")
+            );
+        }
+    }
+
+    // A ceremony belongs to the browser that started it: another nonce can't finish it, even
+    // with a good answer, and the attempt ends it.
+    let started = json_of(page.start(&env, "discover", json!({})).await).await;
+    let answered = asserted(&phone.get(&started["options"]).await.unwrap());
+    let theirs = "0123456789abcdef0123456789abcde0";
+    let cookie = format!("{NONCE_COOKIE}={theirs}");
+    let response = page
+        .finish_with(
+            &env,
+            &[("cookie", &cookie)],
+            theirs,
+            &started["ceremony"],
+            &answered,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let response = page.finish(&env, &started["ceremony"], &answered).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // And the finish itself needs a nonce.
+    let started = json_of(page.start(&env, "discover", json!({})).await).await;
+    let answered = asserted(&phone.get(&started["options"]).await.unwrap());
+    let response = page
+        .finish_with(&env, &[], NONCE, &started["ceremony"], &answered)
+        .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    // No session was made by any of it.
+    let response = page.finish(&env, &started["ceremony"], &answered).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "the ceremony outlived a refused post"
+    );
+}
+
+#[tokio::test]
+async fn a_ceremony_signs_in_once() {
+    let (env, _, mut phone, _) = with_both_kinds().await;
+    let page = Page::new();
+    let started = json_of(page.start(&env, "discover", json!({})).await).await;
+    let answered = asserted(&phone.get(&started["options"]).await.unwrap());
+    let first = page.finish(&env, &started["ceremony"], &answered).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let again = page.finish(&env, &started["ceremony"], &answered).await;
+    assert_eq!(again.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        json_of(again).await["error"]
+            .as_str()
+            .unwrap()
+            .contains("took too long")
+    );
+    // A registration's ceremony isn't a sign-in's.
+    let login = login(&env, "newbie").await;
+    let registration = json_of(
+        post_json(
+            env.main_app(),
+            "/setup/passkey/start",
+            &login.headers(),
+            &json!({ "kind": "discoverable" }),
+        )
+        .await,
+    )
+    .await;
+    let response = page
+        .finish(&env, &registration["ceremony"], &answered)
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn starting_is_limited_per_client_address() {
+    let env = env_at(Some(ORIGIN)).await;
+    let page = Page::new();
+    let from = |peer: &'static str| {
+        let (env, page) = (&env, &page);
+        async move {
+            let mut request = Request::builder()
+                .method(Method::POST)
+                .uri("/login/passkey/discover")
+                .header(CONTENT_TYPE, "application/json")
+                .header("cookie", &page.cookie)
+                .body(Body::from(json!({ "nonce": NONCE }).to_string()))
+                .unwrap();
+            request
+                .extensions_mut()
+                .insert(axum::extract::ConnectInfo(crate::http::PeerAddr(Some(
+                    peer.parse().unwrap(),
+                ))));
+            env.main_app().oneshot(request).await.unwrap()
+        }
+    };
+    for _ in 0..crate::channels::web::passkey_signin::START_ATTEMPTS {
+        assert_eq!(from("192.0.2.1").await.status(), StatusCode::OK);
+    }
+    let response = from("192.0.2.1").await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(response.headers().contains_key("retry-after"));
+    // Another address is another count.
+    assert_eq!(from("192.0.2.2").await.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn the_login_page_offers_passkeys_above_a_folded_password_form() {
+    let env = env_at(Some(ORIGIN)).await;
+    let response = call(env.main_app(), Method::GET, "/login", &[], None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let nonce = nonce_of(set_cookie(&response));
+    let policy = response.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        policy.contains("script-src 'self';") && !policy.contains("unsafe"),
+        "{policy}"
+    );
+    let html = body_text(response).await;
+    for expected in [
+        r#"<section id="passkey-signin" hidden"#.to_owned(),
+        format!(r#"data-nonce="{nonce}""#),
+        format!(r#"data-origin="{ORIGIN}""#),
+        r#"data-discover-url="/login/passkey/discover""#.to_owned(),
+        r#"data-username-url="/login/passkey/username""#.to_owned(),
+        r#"data-finish-url="/login/passkey/finish""#.to_owned(),
+        r#"autocomplete="username webauthn""#.to_owned(),
+        "Sign in with a passkey</button>".to_owned(),
+        r#"<details class="password-signin">"#.to_owned(),
+        "<summary>Use a password instead</summary>".to_owned(),
+        format!(
+            r#"<script src="{}" defer></script>"#,
+            crate::http::assets::passkey_script_path()
+        ),
+    ] {
+        assert!(html.contains(&expected), "{expected}: {html}");
+    }
+    assert!(
+        html.find("passkey-signin").unwrap() < html.find("password-signin").unwrap(),
+        "{html}"
+    );
+    assert_eq!(
+        html.matches("<script").count(),
+        html.matches("<script src=").count(),
+        "{html}"
+    );
+
+    // Without passkeys the password form is shown, with no script of ours.
+    for public_url in [None, Some("http://doozers.example.com")] {
+        let env = env_at(public_url).await;
+        let response = call(env.main_app(), Method::GET, "/login", &[], None).await;
+        let html = body_text(response).await;
+        assert!(!html.contains("passkey"), "{public_url:?}: {html}");
+        assert!(!html.contains("<details"), "{public_url:?}: {html}");
+        assert!(
+            html.contains("<h2>Log in with a password</h2>"),
+            "{public_url:?}: {html}"
+        );
+        let response = Page::new().start(&env, "discover", json!({})).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{public_url:?}");
+        let response = Page::new().finish(&env, &json!("x"), &json!({})).await;
+        assert!(response.status().is_client_error(), "{public_url:?}");
+    }
 }
