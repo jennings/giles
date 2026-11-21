@@ -26,6 +26,7 @@ mod passkey_pages;
 mod passkey_signin;
 mod password;
 mod password_pages;
+mod pending;
 mod proxy;
 mod qr;
 mod render;

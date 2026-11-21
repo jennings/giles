@@ -188,9 +188,9 @@ to sign in. The login *code* flow (a code sent to the user's default channel) is
 `login.rs` (middleware, the login page, `start_session`, and logout), `invite.rs` (the link pages
 and the setup page), `signin.rs` (the sign-in methods the pages offer), `password.rs` (the rules and
 the hashing), `password_pages.rs` (the password routes), `passkey.rs` (the relying party and the
-ceremonies), `passkey_pages.rs` (the passkey setup routes), `passkey_signin.rs` (the passkey sign-in
-routes), `limits.rs` (the limits on guessing), `proxy.rs`, the cookie and nonce helpers in
-`auth.rs`, and the keys in `config.rs`.
+ceremonies), `pending.rs` (the table the ceremonies are kept in), `passkey_pages.rs` (the passkey
+setup routes), `passkey_signin.rs` (the passkey sign-in routes), `limits.rs` (the limits on
+guessing), `proxy.rs`, the cookie and nonce helpers in `auth.rs`, and the keys in `config.rs`.
 
 ### Configuration
 
@@ -451,13 +451,14 @@ makes itself is the browser's own report: a registration that asked for a discov
 and whose `credProps.rk` says `false` is refused with a pointer to the other button, and nothing is
 stored.
 
-**Ceremonies.** The state between the two requests stays in memory (`Ceremonies`): the library's
-serialized form is behind a `danger-` feature. Each ceremony has a random id (128 bits), is kept for
-6 minutes (the browser is told 5), and finishes once: `finish` removes the entry whether or not the
-caller matches it. An entry is bound to a string the finishing request must repeat, and for a
-registration that is the user and the CSRF token of their login, so no other login can finish it. At
-most 10,000 are kept; at the cap the expired go first, then the oldest. A restart forgets them, and
-the page says to try again.
+**Ceremonies.** The state between the two requests stays in memory (`Ceremonies`, a `Pending` table
+from `pending.rs` that any state of this kind can share): the library's serialized form is behind a
+`danger-` feature. Each ceremony has a random id (128 bits), is kept for 6 minutes (the browser is
+told 5), and finishes once: `finish` removes the entry whether or not the caller matches it. An
+entry is bound to a string the finishing request must repeat, and for a registration that is the
+user and the CSRF token of their login, so no other login can finish it. At most 10,000 are kept; at
+the cap the expired go first, then the oldest. A restart forgets them, and the page says to try
+again.
 
 **User handles.** A discoverable passkey tells the server who it is for by a user handle.
 `passkey::user_handle` is 16 bytes of a SHA-256 of the user's id, as a UUID: the same for every
@@ -1601,8 +1602,8 @@ plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`, `i
   unchanged; every sign-in POST needs its browser's nonce and a ceremony belongs to the nonce that
   started it and signs in once; starts are limited per client address; the login page folds the
   password form behind "Use a password instead" and loads the script only when passkeys are
-  available. `passkey.rs` has unit tests for the origin rules, user handles, and the ceremony table
-  (single use, binding, expiry, the cap).
+  available. `passkey.rs` has unit tests for the origin rules, user handles, and which binding a
+  ceremony belongs to, and `pending.rs` for the table (single use, binding, expiry, the cap).
 - Proxy: the identity header ignored on the main listener and honored on the proxy app, unknown
   identities refused, posts carry the header's identity and need its CSRF token; a TCP listener
   needs the exact secret; binding (socket mode 0600, `InUse`, stale socket replaced, non-socket left

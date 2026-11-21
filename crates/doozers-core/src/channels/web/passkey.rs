@@ -16,12 +16,9 @@
 //!
 //! A registration or sign-in is a ceremony of two requests, with state between them that must stay on
 //! the server (the library's serialized form is behind a `danger-` feature, so there is none).
-//! [`Ceremonies`] keeps it in memory under a random id the page sends back, for [`TTL`], once:
-//! [`Ceremonies::finish`] takes the entry out whether or not it matches. An entry is bound to what
-//! started it, a string the finishing request must repeat: the browser's sign-in nonce for a sign-in,
-//! the user and their CSRF token for a registration. The table holds at most [`MAX`]
-//! entries; past that the oldest go, so memory is bounded however many ceremonies are started. A
-//! restart forgets them, and the page says to try again.
+//! [`Ceremonies`], a [`Pending`] table, keeps it in memory for [`TTL`], at most [`MAX`] at a time.
+//! An entry is bound to what started it, a string the finishing request must repeat: the browser's
+//! sign-in nonce for a sign-in, the user and their CSRF token for a registration.
 //!
 //! # Identifying a user
 //!
@@ -30,13 +27,11 @@
 //! needs no column. Sign-in looks the passkey up by credential id, and refuses one whose handle
 //! isn't its owner's.
 
-use std::collections::HashMap;
 use std::fmt;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use doozers_store::PasskeyKind;
-use doozers_types::{Timestamp, UserId};
+use doozers_types::UserId;
 use sha2::{Digest, Sha256};
 use url::{Host, Url};
 use webauthn_rs::fake::{FakePasskeyDistribution, WebauthnFakeCredentialGenerator};
@@ -46,7 +41,7 @@ use webauthn_rs::prelude::{
 };
 
 use super::login::is_loopback_host;
-use super::random_hex;
+use super::pending::Pending;
 
 /// How long a ceremony may take: what the browser is told to allow (the library's default, 5
 /// minutes), and the server keeps the state a little longer.
@@ -160,95 +155,8 @@ pub(super) enum Ceremony {
     Fake,
 }
 
-struct Entry {
-    /// When it stops being valid, in Unix milliseconds.
-    expires_at: i64,
-    bound: String,
-    ceremony: Ceremony,
-}
-
 /// The ceremonies in flight ([module docs](self)).
-pub(super) struct Ceremonies {
-    entries: Mutex<HashMap<String, Entry>>,
-    ttl_ms: i64,
-    max: usize,
-}
-
-impl Default for Ceremonies {
-    fn default() -> Self {
-        Self::new(TTL, MAX)
-    }
-}
-
-impl Ceremonies {
-    pub(super) fn new(ttl: Duration, max: usize) -> Self {
-        Self {
-            entries: Mutex::new(HashMap::new()),
-            ttl_ms: i64::try_from(ttl.as_millis()).unwrap_or(i64::MAX),
-            max,
-        }
-    }
-
-    /// Keeps `ceremony`, bound to `bound`, and returns the id to finish it with: 128 random bits as
-    /// hex. Expired ceremonies go first, then, at the cap, the oldest.
-    pub(super) fn begin(&self, bound: &str, ceremony: Ceremony, now: Timestamp) -> String {
-        let now = now.as_millisecond();
-        let id = random_hex(16);
-        let mut entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if entries.len() >= self.max {
-            entries.retain(|_, entry| entry.expires_at > now);
-        }
-        while entries.len() >= self.max {
-            let Some(oldest) = entries
-                .iter()
-                .min_by_key(|(_, entry)| entry.expires_at)
-                .map(|(id, _)| id.clone())
-            else {
-                break;
-            };
-            entries.remove(&oldest);
-        }
-        entries.insert(
-            id.clone(),
-            Entry {
-                expires_at: now.saturating_add(self.ttl_ms),
-                bound: bound.to_owned(),
-                ceremony,
-            },
-        );
-        id
-    }
-
-    /// Takes the ceremony `id` out, if it is there, hasn't expired, and was bound to `bound`. The
-    /// entry is gone either way, so a guess at an id costs the one it guessed.
-    pub(super) fn finish(&self, id: &str, bound: &str, now: Timestamp) -> Option<Ceremony> {
-        let now = now.as_millisecond();
-        let entry = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(id)?;
-        (entry.expires_at > now && same(&entry.bound, bound)).then_some(entry.ceremony)
-    }
-
-    /// How many ceremonies are kept.
-    #[cfg(test)]
-    pub(super) fn len(&self) -> usize {
-        self.entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len()
-    }
-}
-
-/// Whether two bindings are equal, compared as digests so the time taken says nothing about how
-/// much of one matched.
-fn same(a: &str, b: &str) -> bool {
-    Sha256::digest(a.as_bytes()) == Sha256::digest(b.as_bytes())
-}
+pub(super) type Ceremonies = Pending<Ceremony>;
 
 /// What a registration is bound to: the user and the CSRF token of their login.
 pub(super) fn registration_binding(user: &UserId, csrf: &str) -> String {
@@ -294,7 +202,7 @@ impl Passkeys {
     pub(super) fn new(public_url: Option<&str>) -> Self {
         Self {
             relying_party: RelyingParty::new(public_url),
-            ceremonies: Ceremonies::default(),
+            ceremonies: Ceremonies::new(TTL, MAX),
             fake: tokio::sync::OnceCell::new(),
         }
     }
@@ -307,6 +215,8 @@ impl Passkeys {
 
 #[cfg(test)]
 mod tests {
+    use doozers_types::Timestamp;
+
     use super::*;
 
     fn at(seconds: i64) -> Timestamp {
@@ -371,27 +281,13 @@ mod tests {
         assert_eq!(user_handle(&ann).as_bytes().len(), 16);
     }
 
-    /// A registration ceremony, for the tests of the table that holds them.
-    fn ceremony() -> Ceremony {
-        let rp = RelyingParty::new(Some("https://doozers.example.com")).unwrap();
-        let user = UserId::new("ann").unwrap();
-        let (_, state) = rp
-            .webauthn()
-            .start_passkey_registration(user_handle(&user), "ann", "Ann", None)
-            .unwrap();
-        Ceremony::Register {
-            kind: PasskeyKind::Discoverable,
-            state,
-        }
-    }
-
     fn bound(user: &str, csrf: &str) -> String {
         registration_binding(&UserId::new(user).unwrap(), csrf)
     }
 
     #[test]
     fn a_sign_in_binding_is_not_a_registrations() {
-        let ceremonies = Ceremonies::default();
+        let ceremonies = Ceremonies::new(TTL, MAX);
         let id = ceremonies.begin(&sign_in_binding("n"), Ceremony::Fake, at(0));
         assert!(ceremonies.finish(&id, &bound("ann", "n"), at(1)).is_none());
         let id = ceremonies.begin(&sign_in_binding("n"), Ceremony::Fake, at(0));
@@ -405,78 +301,5 @@ mod tests {
             ceremonies.finish(&id, &sign_in_binding("n"), at(1)),
             Some(Ceremony::Fake)
         ));
-    }
-
-    #[test]
-    fn a_ceremony_finishes_once_for_what_started_it() {
-        let ceremonies = Ceremonies::default();
-        let id = ceremonies.begin(&bound("ann", "csrf"), ceremony(), at(0));
-        assert_eq!(id.len(), 32);
-        assert!(matches!(
-            ceremonies.finish(&id, &bound("ann", "csrf"), at(1)),
-            Some(Ceremony::Register { .. })
-        ));
-        assert!(
-            ceremonies
-                .finish(&id, &bound("ann", "csrf"), at(2))
-                .is_none(),
-            "used once"
-        );
-        assert_eq!(ceremonies.len(), 0);
-    }
-
-    #[test]
-    fn a_ceremony_finished_by_someone_else_or_late_is_gone() {
-        let ceremonies = Ceremonies::default();
-        // Another login's CSRF token and another user don't match, and the entry doesn't survive
-        // the attempt.
-        for (user, csrf) in [("ann", "other"), ("bob", "csrf")] {
-            let id = ceremonies.begin(&bound("ann", "csrf"), ceremony(), at(0));
-            assert!(ceremonies.finish(&id, &bound(user, csrf), at(1)).is_none());
-            assert!(
-                ceremonies
-                    .finish(&id, &bound("ann", "csrf"), at(2))
-                    .is_none()
-            );
-        }
-        let id = ceremonies.begin(&bound("ann", "csrf"), ceremony(), at(0));
-        let late = at(TTL.as_secs() as i64);
-        assert!(
-            ceremonies
-                .finish(&id, &bound("ann", "csrf"), late)
-                .is_none()
-        );
-        assert!(
-            ceremonies
-                .finish("nope", &bound("ann", "csrf"), at(1))
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn the_table_stays_at_its_cap_dropping_what_expired_and_then_the_oldest() {
-        let ceremonies = Ceremonies::new(Duration::from_secs(60), 3);
-        let bound = bound("ann", "csrf");
-        let first = ceremonies.begin(&bound, ceremony(), at(0));
-        let second = ceremonies.begin(&bound, ceremony(), at(10));
-        let third = ceremonies.begin(&bound, ceremony(), at(20));
-        // Full, with none expired: the oldest goes.
-        let fourth = ceremonies.begin(&bound, ceremony(), at(30));
-        assert_eq!(ceremonies.len(), 3);
-        assert!(ceremonies.finish(&first, &bound, at(31)).is_none());
-        assert!(ceremonies.finish(&second, &bound, at(31)).is_some());
-        // Two are left and one fits. Everything old enough has expired: only live ones count.
-        let fifth = ceremonies.begin(&bound, ceremony(), at(32));
-        assert_eq!(ceremonies.len(), 3);
-        let sixth = ceremonies.begin(&bound, ceremony(), at(91));
-        assert_eq!(
-            ceremonies.len(),
-            2,
-            "third and fourth expired and were dropped"
-        );
-        assert!(ceremonies.finish(&third, &bound, at(91)).is_none());
-        assert!(ceremonies.finish(&fourth, &bound, at(91)).is_none());
-        assert!(ceremonies.finish(&fifth, &bound, at(91)).is_some());
-        assert!(ceremonies.finish(&sixth, &bound, at(91)).is_some());
     }
 }
