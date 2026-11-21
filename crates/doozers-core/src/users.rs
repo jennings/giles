@@ -32,6 +32,15 @@
 //! replayed. Making one gives the user the `web:<id>` identity a web sign-in acts as. A recovery
 //! link takes nothing away from the user.
 //!
+//! # Identities
+//!
+//! A user's identities are added by [`Users::redeem_link_code`] (a `/link` code sent from the
+//! identity, verified as `link`, see [`links`](crate::links)), by [`Users::add_identity`] (an
+//! admin or the operator), by [`Users::set_proxy_identity`] (an admin, for the trusted proxy's
+//! login, as `admin` with no code), by an invite (the `web:<id>` a link signs in as), and by the
+//! `[owner]` import. [`Users::remove_identity`] and [`Users::set_default_identity`] are the
+//! user's own changes. Each replaces the snapshot.
+//!
 //! # Import
 //!
 //! `doozers.toml`'s `[owner]` is imported once, by [`Users::open`], when the import has never run
@@ -51,8 +60,8 @@ use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
 use doozers_store::{
-    ImportedUser, InviteKind, NewIdentity, NewUser, Role, Store, StoredUser, UserState,
-    Verification, canonical_identity,
+    ImportedUser, InviteKind, LinkRedeemed, NewIdentity, NewUser, Role, Store, StoredUser,
+    UserState, Verification, canonical_identity,
 };
 use doozers_types::{InboundMessage, NativeId, Timestamp, UserId};
 use jiff::tz::TimeZone;
@@ -795,6 +804,106 @@ impl Users {
             })?;
         self.publish().await?;
         Ok(to_user(stored)?)
+    }
+
+    /// Makes `identity` the default identity of user `id`: where jobs and proactive messages go.
+    ///
+    /// # Errors
+    ///
+    /// [`UserError::NoSuchUser`], or [`UserError::Invalid`] if the user doesn't have it.
+    pub async fn set_default_identity(
+        &self,
+        id: &UserId,
+        identity: &Identity,
+        now: Timestamp,
+    ) -> Result<User, UserError> {
+        let _changing = self.changing.lock().await;
+        let stored = self
+            .store
+            .user_default_identity_set(id, identity.as_str(), now)
+            .await
+            .map_err(|e| match e {
+                doozers_store::Error::NotFound(_) => {
+                    UserError::Invalid(format!("user {id} doesn't have the identity {identity}"))
+                }
+                other => UserError::from_store(other, id),
+            })?;
+        self.publish().await?;
+        Ok(to_user(stored)?)
+    }
+
+    /// Sets the identity a trusted proxy logs user `id` in as (PLAN section 3.4): `web:<native_id>`,
+    /// verified as `admin`, or none if `native_id` is `None`. It replaces the user's other web
+    /// identities, except `web:<id>`, the one a link sign-in acts as, so a user has one proxy
+    /// identity. An admin sets it on the user's page; the user can't, and no `/link` is involved,
+    /// because the proxy is the admin's own infrastructure.
+    ///
+    /// # Errors
+    ///
+    /// [`UserError::NoSuchUser`]; [`UserError::Invalid`] if `native_id` isn't a valid identity
+    /// or is `web:<id>` itself; [`UserError::IdentityTaken`] if another user has it. Nothing
+    /// changes then, so the user keeps the identity they had.
+    pub async fn set_proxy_identity(
+        &self,
+        id: &UserId,
+        native_id: Option<&str>,
+        now: Timestamp,
+    ) -> Result<User, UserError> {
+        if let Some(native_id) = native_id {
+            check_identity(web_namespace(), native_id)?;
+            if native_id == id.as_str() {
+                return Err(UserError::Invalid(format!(
+                    "`web:{id}` is the identity a link sign-in acts as, not a proxy identity"
+                )));
+            }
+        }
+        let _changing = self.changing.lock().await;
+        let stored = self
+            .store
+            .user_proxy_identity_set(id, web_namespace(), id.as_str(), native_id, now)
+            .await
+            .map_err(|e| UserError::from_store(e, id))?;
+        self.publish().await?;
+        Ok(to_user(stored)?)
+    }
+
+    /// Handles a `/link <code>` message from the identity `native_id` in `namespace`: if `code` is
+    /// a pending code for that namespace, links the identity to the code's user, verified as
+    /// `link`, and returns the user; otherwise counts a wrong guess against the pending codes
+    /// (at most `max_attempts` wrong codes kill a code) and returns `None`. The snapshot has the
+    /// identity before this returns, so the next message from it is the user's.
+    ///
+    /// # Errors
+    ///
+    /// [`UserError::Invalid`] if the sender isn't a valid identity, [`UserError::IdentityTaken`]
+    /// if a user has it already (the code stays), or a database error.
+    pub async fn redeem_link_code(
+        &self,
+        namespace: &str,
+        native_id: &str,
+        code: &str,
+        now: Timestamp,
+        max_attempts: u32,
+    ) -> Result<Option<User>, UserError> {
+        check_identity(namespace, native_id)?;
+        let _changing = self.changing.lock().await;
+        let redeemed = self
+            .store
+            .user_link_code_redeem(namespace, native_id, code, now, max_attempts)
+            .await
+            .map_err(|e| match e {
+                doozers_store::Error::IdentityTaken { identity } => {
+                    UserError::IdentityTaken(identity)
+                }
+                other => UserError::Store(other),
+            })?;
+        match redeemed {
+            LinkRedeemed::Linked(stored) => {
+                self.publish().await?;
+                Ok(Some(to_user(stored)?))
+            }
+            LinkRedeemed::Refused => Ok(None),
+        }
     }
 
     /// The user `doozers admin login-link` makes a recovery link for, and the first admin if there
@@ -1973,5 +2082,149 @@ mod tests {
         );
         assert!(!is_invite_token("ABC") && !is_invite_token(&"A".repeat(64)));
         assert!(!is_invite_token(&"a".repeat(63)));
+    }
+
+    #[tokio::test]
+    async fn an_admin_sets_a_users_proxy_identity_without_a_link_code() {
+        let home = Home::new().await;
+        let (users, list) = home.open("").await.unwrap();
+        let ann = NewUser {
+            default_identity: Some("web:ann".to_owned()),
+            ..member("ann")
+        };
+        let web = NewIdentity {
+            namespace: "web".to_owned(),
+            native_id: "ann".to_owned(),
+            verification: Verification::Admin,
+        };
+        users.create(ann, vec![web], at(0)).await.unwrap();
+        users.create(member("bob"), vec![], at(0)).await.unwrap();
+
+        let set = users
+            .set_proxy_identity(&id("ann"), Some("ann@example.com"), at(1))
+            .await
+            .unwrap();
+        let texts: Vec<_> = set.identities.iter().map(|i| i.identity.as_str()).collect();
+        assert_eq!(texts, ["web:ann", "web:ann@example.com"]);
+        assert_eq!(set.identities[1].verification, Verification::Admin);
+        // The router resolves the header value to ann at once.
+        assert_eq!(
+            list.get()
+                .resolve("web", &native("ann@example.com"))
+                .unwrap()
+                .id,
+            id("ann")
+        );
+        // A second value replaces the first, and the login identity stays.
+        users
+            .set_proxy_identity(&id("ann"), Some("ann@corp.example"), at(2))
+            .await
+            .unwrap();
+        assert!(!resolves(&list, "web", "ann@example.com"));
+        assert!(resolves(&list, "web", "ann@corp.example"));
+        assert!(resolves(&list, "web", "ann"));
+
+        // Another user's identity is refused and ann keeps theirs.
+        users
+            .set_proxy_identity(&id("bob"), Some("bob@example.com"), at(3))
+            .await
+            .unwrap();
+        let err = users
+            .set_proxy_identity(&id("ann"), Some("bob@example.com"), at(4))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, UserError::IdentityTaken(_)), "{err}");
+        assert!(resolves(&list, "web", "ann@corp.example"));
+        // The login identity isn't a proxy identity, a blank or spaced value isn't an identity,
+        // and the user must exist.
+        for bad in ["ann", "", "a b"] {
+            let err = users
+                .set_proxy_identity(&id("ann"), Some(bad), at(5))
+                .await
+                .unwrap_err();
+            assert!(matches!(err, UserError::Invalid(_)), "{bad:?}: {err}");
+        }
+        let err = users
+            .set_proxy_identity(&id("nobody"), Some("x"), at(5))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, UserError::NoSuchUser(_)), "{err}");
+        // None clears it.
+        users
+            .set_proxy_identity(&id("ann"), None, at(6))
+            .await
+            .unwrap();
+        assert!(!resolves(&list, "web", "ann@corp.example"));
+        assert!(resolves(&list, "web", "ann"));
+    }
+
+    #[tokio::test]
+    async fn the_default_identity_is_set_to_one_the_user_has() {
+        let home = Home::new().await;
+        let (users, list) = home.open("").await.unwrap();
+        users.create(member("ann"), vec![], at(0)).await.unwrap();
+        users
+            .add_identity(&id("ann"), "whatsapp", "+1", Verification::Link, at(1))
+            .await
+            .unwrap();
+        users
+            .add_identity(&id("ann"), "discord", "7", Verification::Link, at(2))
+            .await
+            .unwrap();
+        let discord = Identity::new("discord:7").unwrap();
+        users
+            .set_default_identity(&id("ann"), &discord, at(3))
+            .await
+            .unwrap();
+        let directory = list.get();
+        let ann = directory.user(&id("ann")).unwrap();
+        assert_eq!(ann.default_identity.as_ref(), Some(&discord));
+        let err = users
+            .set_default_identity(&id("ann"), &Identity::new("discord:8").unwrap(), at(4))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, UserError::Invalid(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn redeeming_a_code_replaces_the_snapshot_and_checks_the_sender() {
+        let home = Home::new().await;
+        let (users, list) = home.open("").await.unwrap();
+        users.create(member("ann"), vec![], at(0)).await.unwrap();
+        home.store
+            .user_link_code_create(&id("ann"), "whatsapp", "ABCD2345", [1; 16], at(0), at(600))
+            .await
+            .unwrap();
+        // A wrong code links nothing; the right one links and the snapshot has it.
+        assert!(
+            users
+                .redeem_link_code("whatsapp", "+15551234567", "WRONG222", at(1), 20)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(!resolves(&list, "whatsapp", "+15551234567"));
+        let ann = users
+            .redeem_link_code("whatsapp", "+15551234567", "ABCD2345", at(2), 20)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ann.id, id("ann"));
+        assert!(resolves(&list, "whatsapp", "+15551234567"));
+        // A sender that isn't an identity is invalid, and a taken one is refused.
+        let err = users
+            .redeem_link_code("whatsapp", "a b", "ABCD2345", at(3), 20)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, UserError::Invalid(_)), "{err}");
+        home.store
+            .user_link_code_create(&id("ann"), "whatsapp", "EFGH6789", [1; 16], at(3), at(600))
+            .await
+            .unwrap();
+        let err = users
+            .redeem_link_code("whatsapp", "+15551234567", "EFGH6789", at(4), 20)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, UserError::IdentityTaken(_)), "{err}");
     }
 }

@@ -6,7 +6,10 @@ use std::fmt;
 use std::sync::Arc;
 
 use doozers_store::SessionKey;
-use doozers_types::{AgentId, ConversationKind, ConversationRef, EventId, InboundMessage, UserId};
+use doozers_types::{
+    AgentId, ConversationId, ConversationKind, ConversationRef, EventId, InboundMessage, NativeId,
+    UserId,
+};
 
 use crate::channels::chat_ids;
 use crate::commands::{self, CoreCommand, PendingApprovals};
@@ -36,6 +39,35 @@ pub struct Routed {
     pub user: UserId,
 }
 
+/// A `/link` message: someone asks to prove that the identity they write from is a user's, by the
+/// code the web page showed (PLAN section 3.2). It reaches no session and no agent.
+#[derive(Clone, PartialEq, Eq)]
+pub struct LinkRequest {
+    /// The identity namespace of the channel it came from.
+    pub namespace: String,
+    /// The sender's id in that namespace: the identity that would be linked.
+    pub sender: NativeId,
+    /// The conversation the answer goes to.
+    pub conversation: ConversationId,
+    /// The code as typed; `None` for `/link` alone.
+    pub code: Option<String>,
+    /// Whether the sender (or an alias) is the identity of a user already.
+    pub linked: bool,
+}
+
+/// Never shows the code: nothing that logs a request may keep a code that works.
+impl fmt::Debug for LinkRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LinkRequest")
+            .field("namespace", &self.namespace)
+            .field("sender", &self.sender)
+            .field("conversation", &self.conversation)
+            .field("code", &self.code.as_ref().map(|_| "<code>"))
+            .field("linked", &self.linked)
+            .finish()
+    }
+}
+
 /// What to do with an inbound message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -51,6 +83,9 @@ pub enum Inbound {
     },
     /// An ordinary message for the session `to`.
     Message(Routed),
+    /// `/link`, from a sender who may have no user: the core answers it on the channel. It is
+    /// never stored and never reaches an agent, and no session is made for the sender.
+    Link(LinkRequest),
 }
 
 /// Why an inbound message was dropped, in the order the checks run.
@@ -135,8 +170,10 @@ impl Router {
     }
 
     /// Decides what to do with `message`, event `event` from `source`. Checks, in order: the
-    /// channel's identity namespace, the conversation kind, sender authentication, the users'
-    /// identities, that the user isn't disabled, then the agent: a web chat started with a chosen agent
+    /// channel's identity namespace, the conversation kind, sender authentication, then, for a
+    /// message with no attachments that is `/link` from a channel other than the web chat, the
+    /// answer [`Inbound::Link`] whether or not the sender has a user (a disabled user's is
+    /// dropped), and the users' identities, that the user isn't disabled, then the agent: a web chat started with a chosen agent
     /// ([`chat_ids::chat_agent`]) goes to that agent if it exists, ahead of every route; any
     /// other conversation goes to its [route](Self::route). A routed message is then a core
     /// command if it has no attachments and parses as one ([`commands::parse`]), with `pending`
@@ -152,7 +189,8 @@ impl Router {
         pending: &dyn PendingApprovals,
     ) -> Inbound {
         let reason = match self.check(source, message) {
-            Ok(to) => {
+            Ok(Checked::Link(request)) => return Inbound::Link(request),
+            Ok(Checked::Routed(to)) => {
                 let command = if message.attachments.is_empty() {
                     commands::parse(&message.text, |code| pending.is_pending(&to, code))
                 } else {
@@ -173,7 +211,7 @@ impl Router {
         &self,
         source: &ChannelSource<'_>,
         message: &InboundMessage,
-    ) -> Result<Routed, DropReason> {
+    ) -> Result<Checked, DropReason> {
         identity::validate_namespace(source.component, source.identity_namespace)
             .map_err(DropReason::InvalidNamespace)?;
         if message.conversation.kind != ConversationKind::Direct {
@@ -183,7 +221,28 @@ impl Router {
             return Err(DropReason::Unauthenticated);
         }
         let directory = self.users.get();
-        let Some(user) = directory.resolve_sender(source.identity_namespace, message) else {
+        let user = directory.resolve_sender(source.identity_namespace, message);
+        // `/link` is how a sender with no user proves an identity, so it passes before the user
+        // is required, and only here: after authentication, in a direct conversation. The web chat
+        // is left out: its senders are logged in already, and its identities aren't linked.
+        if source.component != chat_ids::COMPONENT
+            && message.attachments.is_empty()
+            && let Some(code) = commands::parse_link(&message.text)
+        {
+            if let Some(user) = user
+                && !user.is_active()
+            {
+                return Err(DropReason::DisabledUser(user.id.clone()));
+            }
+            return Ok(Checked::Link(LinkRequest {
+                namespace: source.identity_namespace.to_owned(),
+                sender: message.sender.clone(),
+                conversation: message.conversation.id.clone(),
+                code: code.map(str::to_owned),
+                linked: user.is_some(),
+            }));
+        }
+        let Some(user) = user else {
             return Err(DropReason::UnknownSender);
         };
         if !user.is_active() {
@@ -199,15 +258,21 @@ impl Router {
                 .route(source.instance, &message.conversation)
                 .ok_or(DropReason::NoRoute)?,
         };
-        Ok(Routed {
+        Ok(Checked::Routed(Routed {
             session: SessionKey {
                 agent,
                 channel: source.instance.to_string(),
                 conversation: message.conversation.id.clone(),
             },
             user: user.id.clone(),
-        })
+        }))
     }
+}
+
+/// What the checks found: a message for a session, or a `/link`.
+enum Checked {
+    Routed(Routed),
+    Link(LinkRequest),
 }
 
 fn log_drop(
@@ -809,6 +874,157 @@ mod tests {
             classify(&router(), WHATSAPP, &m, &pending),
             Inbound::Message(routed("jeeves", "whatsapp", OWNER_PHONE))
         );
+    }
+
+    fn link_request(sender: &str, code: Option<&str>, linked: bool) -> Inbound {
+        Inbound::Link(LinkRequest {
+            namespace: "whatsapp".to_owned(),
+            sender: NativeId::new(sender).unwrap(),
+            conversation: ConversationId::new(sender).unwrap(),
+            code: code.map(str::to_owned),
+            linked,
+        })
+    }
+
+    #[test]
+    fn link_passes_for_an_unknown_sender_after_authentication_and_nowhere_else() {
+        const STRANGER: &str = "+15559998888";
+        // No route matches and no agent exists: `/link` is for no session.
+        let router = with_routes(owner_config(&["whatsapp:+15551234567"]), &[], no_agents());
+        let from_stranger = |text: &str| {
+            classify(
+                &router,
+                WHATSAPP,
+                &message(STRANGER, text),
+                &NoPendingApprovals,
+            )
+        };
+        assert_eq!(
+            from_stranger("/link ABCD2345"),
+            link_request(STRANGER, Some("ABCD2345"), false)
+        );
+        // The code goes on as typed, and case and spaces around the command don't matter.
+        assert_eq!(
+            from_stranger("  /LINK abcd2345 \n"),
+            link_request(STRANGER, Some("abcd2345"), false)
+        );
+        assert_eq!(from_stranger("/link"), link_request(STRANGER, None, false));
+
+        // Nothing else gets through the same door.
+        let unknown = Inbound::Drop(DropReason::UnknownSender);
+        for text in [
+            "/new",
+            "/stop",
+            "hi",
+            "/link A B",
+            "/linked ABCD2345",
+            "yes",
+        ] {
+            assert_eq!(from_stranger(text), unknown, "{text:?}");
+        }
+        let mut with_attachment = message(STRANGER, "/link ABCD2345");
+        with_attachment.attachments.push(MediaRef {
+            id: MediaId::from_digest([7; 32]),
+            media_type: "image/png".into(),
+            size: 1,
+            name: None,
+        });
+        assert_eq!(
+            classify(&router, WHATSAPP, &with_attachment, &NoPendingApprovals),
+            unknown
+        );
+
+        // Unauthenticated senders, groups, and channels that lie about their namespace are
+        // dropped first, as for any message.
+        let mut forged = message(STRANGER, "/link ABCD2345");
+        forged.sender_authenticated = false;
+        assert_eq!(
+            classify(&router, WHATSAPP, &forged, &NoPendingApprovals),
+            Inbound::Drop(DropReason::Unauthenticated)
+        );
+        let mut group = message(STRANGER, "/link ABCD2345");
+        group.conversation.kind = ConversationKind::Group;
+        assert_eq!(
+            classify(&router, WHATSAPP, &group, &NoPendingApprovals),
+            Inbound::Drop(DropReason::GroupConversation)
+        );
+        let lying: Source = ("whatsapp", "whatsapp", "irc:libera.chat");
+        assert_eq!(
+            classify(
+                &router,
+                lying,
+                &message(STRANGER, "/link ABCD2345"),
+                &NoPendingApprovals
+            ),
+            Inbound::Drop(invalid_ns())
+        );
+    }
+
+    #[test]
+    fn link_from_a_known_sender_is_marked_and_a_disabled_users_is_dropped() {
+        let users = UserList::new(vec![
+            User::member("owner", &["whatsapp:+15551234567", "whatsapp:100@lid"]),
+            User::member("ann", &["whatsapp:+15557654321"]),
+        ]);
+        let router = with_routes(
+            users.clone(),
+            &[route(None, None, None, "jeeves")],
+            no_agents(),
+        );
+        assert_eq!(
+            classify(
+                &router,
+                WHATSAPP,
+                &message(OWNER_PHONE, "/link ABCD2345"),
+                &NoPendingApprovals
+            ),
+            link_request(OWNER_PHONE, Some("ABCD2345"), true)
+        );
+        // An alias is the sender's identity too.
+        let mut by_lid = message("+15550000000", "/link ABCD2345");
+        by_lid.sender_aliases = vec![NativeId::new("100@lid").unwrap()];
+        assert_eq!(
+            classify(&router, WHATSAPP, &by_lid, &NoPendingApprovals),
+            link_request("+15550000000", Some("ABCD2345"), true)
+        );
+        let mut all = users.get().users().to_vec();
+        all[1].state = UserState::Disabled;
+        users.set(all);
+        assert_eq!(
+            classify(
+                &router,
+                WHATSAPP,
+                &message("+15557654321", "/link ABCD2345"),
+                &NoPendingApprovals
+            ),
+            Inbound::Drop(DropReason::DisabledUser(UserId::new("ann").unwrap()))
+        );
+    }
+
+    #[test]
+    fn link_in_the_web_chat_is_an_ordinary_message() {
+        let router = with_routes(
+            owner_config(&["web:owner"]),
+            &[route(None, None, None, "jeeves")],
+            no_agents(),
+        );
+        let web: Source = ("chat", chat_ids::COMPONENT, "web");
+        let mut m = message("owner", "/link ABCD2345");
+        m.conversation.id = ConversationId::new("0123456789abcdef0123456789abcdef").unwrap();
+        assert!(matches!(
+            classify(&router, web, &m, &NoPendingApprovals),
+            Inbound::Message(_)
+        ));
+    }
+
+    #[test]
+    fn a_link_request_never_shows_its_code() {
+        let Inbound::Link(request) = link_request("+15551234567", Some("ABCD2345"), false) else {
+            unreachable!()
+        };
+        let shown = format!("{request:?}");
+        assert!(!shown.contains("ABCD2345"), "{shown}");
+        assert!(shown.contains("+15551234567"));
     }
 
     #[test]

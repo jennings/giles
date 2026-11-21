@@ -1218,6 +1218,7 @@ async fn a_posted_message_reaches_the_agent_and_the_reply_reaches_the_page() {
             }),
             approvals: Arc::new(NoPendingApprovals),
             env_resets: Arc::new(crate::sessions::NoEnvResets),
+            links: Arc::new(crate::sessions::NoLinks),
             clock: Arc::new(SystemClock),
         },
         env.shutdown.clone(),

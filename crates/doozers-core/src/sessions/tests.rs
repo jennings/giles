@@ -367,6 +367,7 @@ impl Setup {
                 runner: Arc::new(FakeRunner { turns: turns_tx }),
                 approvals: self.approvals.clone(),
                 env_resets: self.env_resets.clone(),
+                links: Arc::new(NoLinks),
                 clock: self.clock.clone(),
             },
             shutdown.clone(),

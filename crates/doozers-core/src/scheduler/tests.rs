@@ -311,6 +311,7 @@ impl Harness {
                 runner: runner.clone(),
                 approvals: Arc::new(NoPendingApprovals),
                 env_resets: Arc::new(crate::sessions::NoEnvResets),
+                links: Arc::new(crate::sessions::NoLinks),
                 clock: clock.clone(),
             },
             shutdown.clone(),

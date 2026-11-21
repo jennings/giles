@@ -1,6 +1,6 @@
-//! Core commands: `/new`, `/stop`, `/env reset`, and approval replies, which the core handles itself and never
-//! passes to an agent (PLAN sections 3.2, 6.2, 6.3, 6.4). This module only parses; the sessions,
-//! turn-control, and approval code acts on the result. Design:
+//! Core commands: `/new`, `/stop`, `/env reset`, approval replies, and `/link`, which the core
+//! handles itself and never passes to an agent (PLAN sections 3.2, 6.2, 6.3, 6.4). This module only
+//! parses; the sessions, turn-control, and approval code acts on the result. Design:
 //! `Docs/technical/identity-and-routing.md`.
 
 use crate::router::Routed;
@@ -73,7 +73,8 @@ impl PendingApprovals for NoPendingApprovals {
 /// capitalize the first letter). Recognized forms, each the whole message:
 ///
 /// - `/new` and `/stop`, with nothing after them, and `/env reset`. `/new@bot`, `/new please`,
-///   `/env`, `/env reset now`, `/link`, and any other `/word` are ordinary text.
+///   `/env`, `/env reset now`, and any other `/word` are ordinary text. `/link` is no command of a
+///   session: the router recognizes it before routing ([`parse_link`]).
 /// - `yes`, `yes!`, or `no`, optionally followed by whitespace and a short code of ASCII letters
 ///   and digits. It's an approval reply only if `is_pending(code)` says an approval matching it
 ///   is pending; otherwise (`no` answering a question from the agent) it's ordinary text.
@@ -116,6 +117,27 @@ pub fn parse(text: &str, is_pending: impl FnOnce(Option<&str>) -> bool) -> Optio
             code: second.map(str::to_owned),
         })
     })
+}
+
+/// Parses `text` as `/link`, the command that proves a channel identity is a user's: `/link` and
+/// one more word, the code, which is `Some`; `/link` alone is `Some(None)`. Leading and trailing
+/// whitespace is ignored and `/link` is ASCII case-insensitive, like the other commands. Anything
+/// else, including `/link` with two words after it and `/linking`, is not `/link`.
+///
+/// Unlike [`parse`], this isn't about a session: the sender may have no user yet, so the router
+/// asks it before the sender is resolved ([`Router::classify`](crate::router::Router::classify)).
+/// The code is returned as typed, whatever it is; whether it is one is for the link code store to
+/// say.
+pub fn parse_link(text: &str) -> Option<Option<&str>> {
+    let mut words = text.split_whitespace();
+    if !words.next()?.eq_ignore_ascii_case("/link") {
+        return None;
+    }
+    let code = words.next();
+    if words.next().is_some() {
+        return None;
+    }
+    Some(code)
 }
 
 #[cfg(test)]
@@ -242,5 +264,28 @@ mod tests {
             true
         });
         assert_eq!(asked, [Some("AbC9".to_owned()), None]);
+    }
+
+    #[test]
+    fn link_is_the_word_and_at_most_one_code() {
+        let cases: &[(&str, Option<Option<&str>>)] = &[
+            ("/link", Some(None)),
+            ("/link ABCD2345", Some(Some("ABCD2345"))),
+            ("  /Link\tabcd2345\n", Some(Some("abcd2345"))),
+            ("/LINK ABCD-2345", Some(Some("ABCD-2345"))),
+            ("/link ABCD 2345", None),
+            ("/linking", None),
+            ("/link@doozers ABCD2345", None),
+            ("link ABCD2345", None),
+            ("please /link ABCD2345", None),
+            ("//link ABCD2345", None),
+            ("/ link ABCD2345", None),
+            ("/new", None),
+            ("", None),
+            ("   ", None),
+        ];
+        for (text, want) in cases {
+            assert_eq!(&parse_link(text), want, "{text:?}");
+        }
     }
 }

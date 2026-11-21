@@ -43,10 +43,10 @@ several users and group chats are the design for later; v1 builds this subset of
   `[owner] identities = ["whatsapp:+15551234567", "email:me@example.com"]`, with optional `default`
   and `timezone`, has it imported once, at the first start, as an `admin` whose id stays `owner`;
   after that `[owner]` is ignored, with a warning at every start (section 11.2). A fresh install has
-  no `[owner]`: `doozers admin login-link` creates the first admin. There is no pairing,
-  self-linking, or way to add another user yet (section 3). Messages from an identity no user has,
-  and from a disabled user, are dropped and logged. Sender authenticity (section 3.3) still applies
-  to every identity.
+  no `[owner]`: `doozers admin login-link` creates the first admin. There is no pairing yet, and a
+  user adds an identity by sending a link code from it (section 3.2). Messages from an identity no
+  user has, and from a disabled user, are dropped and logged. Sender authenticity (section 3.3)
+  still applies to every identity.
 - Group chats: not supported. Channels report the conversation kind, and the core ignores group
   conversations: no turn, no reply, nothing stored.
 - Web login: only the `doozers admin login-link` one-time URL and the trusted-proxy header.
@@ -133,7 +133,7 @@ The router resolves the sender, or an alias, to a user through a snapshot of the
 that every change replaces, so a change applies to the next message with no restart. The turn's
 requester is that user, and a message from a disabled user is dropped. Identities are compared as
 the joined `<namespace>:<native id>` string, exactly except for the domain of an `email` identity.
-(Pairing and self-linking below are still design: D49.)
+(Pairing below is still design: D49.)
 
 Messages from identities with no link never reach an agent. What happens instead is a per-instance
 `unknown_senders` policy:
@@ -149,20 +149,26 @@ admin pages, linking the identity to an existing user. `--new-user <user> [--rol
 creates the user (default role `member`) and links to it. `doozers pair deny <code>` rejects it.
 Further messages from the same identity while a code is valid don't produce new codes.
 
-Self-linking: a known user sends `/link` on a channel where they're linked and gets a code. Sending
-`/link <code>` from the new identity within 10 minutes links it. This works under `pairing` and
-`open`, not `disabled`.
+Linking: a signed-in user asks for a code for a channel namespace on a web page, and sends
+`/link <code>` from the identity within 10 minutes. The router lets that one message through from a
+sender with no user, after the sender-authenticity check and in a direct conversation only. The core
+answers it on the channel, and it never reaches an agent or makes a session. The namespace must be
+one a running channel reports. An identity that is a user's already can't be linked again: it moves
+only after its user removes it.
 
-Codes (pairing, `/link`, and web login):
+Codes (pairing and `/link`):
 
 - 8 characters from the base32 alphabet (40 bits), stored only as salted hashes.
 - At most 3 pending pairing codes per channel instance; at most one new code per sender every 10
   minutes.
-- 5 wrong attempts from a sender, or against a code, invalidate the code and lock the sender out for
-  an hour.
+- A sender gets 5 wrong attempts and is then locked out for an hour. A `/link` code survives 20
+  wrong attempts from anyone, since a wrong code can't be told apart from a guess at any pending
+  code of its channel, and 5 would let a stranger cancel everyone's codes. The limit of a pairing
+  code is still design.
 
 Core commands (`/new`, `/stop`, `/link`, approval replies) are handled by the core and never reach
-an agent. They're recognized after routing, before the agent, since they act on the routed session.
+an agent. They're recognized after routing, before the agent, since they act on the routed session,
+except `/link`, which acts on no session and is recognized before the sender is resolved.
 
 ### 3.3 Sender authenticity
 

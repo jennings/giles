@@ -209,6 +209,20 @@ async fn handle(
                 None => debug!(instance = %source.instance, event = %id, "duplicate event"),
             }
         }
+        Inbound::Link(request) => {
+            // Not stored: the event would keep the code, which works until it is used. A
+            // redelivery after the link went through finds a sender that has a user, and is
+            // answered as one; one after a wrong code counts again, which only costs a try.
+            let reply = inner.links.link(&request, now).await?;
+            ack(source, channel, id).await;
+            if let Some(text) = reply {
+                // The reply can take a while, so it doesn't hold up the channel's other events.
+                let (task, instance) = (inner.clone(), source.instance.to_string());
+                inner.tasks.spawn(async move {
+                    say(&task, &instance, &request.conversation, &text, "/link").await;
+                });
+            }
+        }
         Inbound::Command { to, command } => {
             // Commands never wait in the inbox, but their event ids are dedupe keys like any
             // other: recorded before acting, so a redelivered `/new` or `yes` acts once.

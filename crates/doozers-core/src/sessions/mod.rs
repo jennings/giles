@@ -32,7 +32,7 @@ use tokio_util::task::TaskTracker;
 use crate::commands::{ApprovalReply, NoPendingApprovals};
 use crate::config::{AgentConfig, BusyMode, InstanceName, LiveConfig};
 use crate::registry::Registry;
-use crate::router::{Routed, Router};
+use crate::router::{LinkRequest, Routed, Router};
 use crate::workspaces::{DeleteReason, Recreation, WorkspaceOwner, Workspaces};
 
 pub use inbound::ChannelStatusRecord;
@@ -168,6 +168,36 @@ impl EnvResets for NoEnvResets {
     }
 }
 
+/// The identity links, as the inbound pipeline sees them: what to do with a `/link` message. The
+/// daemon's is [`Links`](crate::links::Links); [`NoLinks`] links nothing.
+#[async_trait]
+pub trait Linker: Send + Sync {
+    /// Handles `request`, which arrived at `now`: links the sender's identity if its code is right
+    /// and counts a wrong one. Returns the answer to send to the sender, or `None` to send
+    /// nothing (a sender that is locked out). Called once per event, and before the event is acked,
+    /// so an `Err` (the database failed) leaves it for the channel to resend.
+    async fn link(
+        &self,
+        request: &LinkRequest,
+        now: Timestamp,
+    ) -> Result<Option<String>, doozers_store::Error>;
+}
+
+/// [`Linker`] for a core with no users to link to: every `/link` is refused.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoLinks;
+
+#[async_trait]
+impl Linker for NoLinks {
+    async fn link(
+        &self,
+        _: &LinkRequest,
+        _: Timestamp,
+    ) -> Result<Option<String>, doozers_store::Error> {
+        Ok(Some("Linking an identity isn't available.".to_owned()))
+    }
+}
+
 /// The per-agent settings the session code uses.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AgentPolicy {
@@ -225,6 +255,8 @@ pub struct SessionsOptions {
     pub approvals: Arc<dyn Approvals>,
     /// What `/env reset` does.
     pub env_resets: Arc<dyn EnvResets>,
+    /// What `/link` does.
+    pub links: Arc<dyn Linker>,
     /// The time source.
     pub clock: Arc<dyn Clock>,
 }
@@ -279,6 +311,7 @@ impl Sessions {
             runner: options.runner,
             approvals: options.approvals,
             env_resets: options.env_resets,
+            links: options.links,
             clock: options.clock,
             shutdown,
             live: Mutex::default(),
@@ -491,6 +524,7 @@ struct Inner {
     runner: Arc<dyn TurnRunner>,
     approvals: Arc<dyn Approvals>,
     env_resets: Arc<dyn EnvResets>,
+    links: Arc<dyn Linker>,
     clock: Arc<dyn Clock>,
     shutdown: CancellationToken,
     /// Sessions with a driver task: one is running a turn or about to look for queued rows.

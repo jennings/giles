@@ -13,6 +13,7 @@ pub mod core_tools;
 mod front_matter;
 pub mod http;
 pub mod identity;
+pub mod links;
 pub mod mcp;
 pub mod media;
 pub mod memory;

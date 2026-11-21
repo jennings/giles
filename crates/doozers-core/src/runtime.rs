@@ -10,6 +10,7 @@ use crate::backup;
 use crate::blobs::{BlobMedia, BlobSweep, SweepSchedule};
 use crate::config::Config;
 use crate::core_tools;
+use crate::links::Links;
 use crate::memory_dbs::MemoryDbs;
 use crate::outbox::Outbox;
 use crate::paths::DataRoot;
@@ -118,6 +119,9 @@ pub struct Runtime {
     /// The users and their identities, stored in the database. The router and the web login read
     /// them ([`Users::list`], the registry's [`users`](Registry::users)).
     pub users: Arc<Users>,
+    /// Linking channel identities to users: the codes the web page makes and `/link` messages
+    /// that use them ([`Links`]).
+    pub links: Arc<Links>,
     /// Proactive sends to identities (PLAN section 6.11): job replies, approval prompts of job
     /// turns, login codes. Its sender starts with [`start_outbox`](Self::start_outbox).
     pub outbox: Outbox,
@@ -178,6 +182,12 @@ impl Runtime {
             .await?,
         );
         let routes = Arc::new(Routes::open(store.clone(), registry.live_config().clone()).await?);
+        let links = Arc::new(Links::new(
+            store.clone(),
+            users.clone(),
+            registry.clone(),
+            clock.clone(),
+        ));
         let secrets: Arc<dyn SecretProvider> = Arc::new(secrets);
         let ssh_keys = SshKeys::new(
             store.clone(),
@@ -203,6 +213,7 @@ impl Runtime {
             registry,
             routes,
             users,
+            links,
             jobs: JobChanges::default(),
             workspaces,
         };
@@ -249,6 +260,7 @@ impl Runtime {
             runner,
             approvals,
             env_resets: Arc::new(self.workspaces.clone()),
+            links: self.links.clone(),
             clock: Arc::new(SystemClock),
         };
         let sessions = Sessions::start(options, shutdown)

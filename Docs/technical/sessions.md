@@ -51,6 +51,7 @@ One pump task per attached channel consumes `Channel::events()` and handles even
 | Message, `Inbound::Drop`                  | No (§1.1: groups store nothing)         | Ack                          |
 | Message, `Inbound::Message(to)`           | `queued` row in the session's queue     | Ack, then wake the session   |
 | Message, `Inbound::Command { to, .. }`    | `done` row, only as a dedupe key        | Ack, then act on the command |
+| Message, `Inbound::Link(request)`         | No                                      | `Linker::link`, ack, then reply |
 
 - **Store, then ack.** `inbox_insert` deduplicates on (instance, event id) in the same statement;
   the ack goes out only after it returns. A duplicate (`None`) is acked and otherwise ignored, so a
@@ -64,6 +65,13 @@ One pump task per attached channel consumes `Channel::events()` and handles even
 - **Shutdown** stops a pump between events, never inside one.
 - **Payload.** The row holds the whole `ChannelEvent` as JSON; the turn reads its message back from
   it.
+- **`/link` is stored nowhere.** Its payload holds a code that works until it is used, so no inbox
+  row is made, and no session is made for its sender, who may have no user. The pump calls
+  `Linker::link` first and acks after, so a database error leaves the event for the channel to
+  resend instead of losing a try; the answer is sent from a task of its own, after the ack. A
+  redelivered `/link` is therefore handled again: after a link it finds a sender that has a user,
+  and after a wrong code it counts again
+  ([Linking an identity](identity-and-routing.md#linking-an-identity)).
 
 Commands act after their ack, so a crash between the two loses the command but never repeats it:
 
