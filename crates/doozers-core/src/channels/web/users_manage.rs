@@ -1,8 +1,8 @@
 //! Managing a user, from the Users pages: **Invite a user**, a user's own page with forms for
-//! their details, role, and proxy identity, and a recovery link. Next to the list and **Remove**
-//! of [`users`](super::users) and like them: behind the login, admins only, every answer
-//! `no-store`, every change a CSRF-checked form post that works without JavaScript. Design:
-//! `Docs/technical/web-channel.md#user-pages`.
+//! their details, role, and proxy identity, disabling and enabling them, and a recovery link. Next
+//! to the list and **Remove** of [`users`](super::users) and like them: behind the login, admins
+//! only, every answer `no-store`, every change a CSRF-checked form post that works without
+//! JavaScript. Design: `Docs/technical/web-channel.md#user-pages`.
 //!
 //! Every handler checks the admin role first, then the CSRF token, then reads the id in the path
 //! (an id that isn't a user is a 404). A form that is refused shows the user's page again with why
@@ -123,6 +123,8 @@ fn notice_text(notice: Option<&str>) -> Option<String> {
         "role" => "Saved the role.",
         "proxy" => "Saved the proxy identity.",
         "proxy-cleared" => "Removed the proxy identity.",
+        "disabled" => "Disabled the user. Their logins ended.",
+        "enabled" => "Enabled the user. They can sign in again.",
         _ => return None,
     };
     Some(text.to_owned())
@@ -486,6 +488,123 @@ pub(super) async fn save_proxy_identity(
     }
 }
 
+/// `POST /admin/users/<id>/disable` (CSRF-checked): disables the user and ends every login they
+/// have, their sessions and unspent links, then 303 to the page. Their open streams end with them
+/// (`WebApp::login_ended`), their messages are dropped by the router, queued ones by the session
+/// driver, and their scheduled jobs wait. An admin can't disable themselves, and the last active
+/// admin can't be disabled: the page again with why (409).
+pub(super) async fn disable(
+    State(pages): State<UserPages>,
+    user: WebUser,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Form(form): Form<CsrfForm>,
+) -> Response {
+    let id = match gate(&user, Some((&headers, form.csrf.as_deref())), &id) {
+        Ok(id) => id,
+        Err(response) => return *response,
+    };
+    let target = match pages.find(&id) {
+        Ok(target) => target,
+        Err(response) => return *response,
+    };
+    if id == user.user {
+        let why = "You can't disable yourself. Ask another admin to disable your account.";
+        return pages
+            .refuse(
+                &user,
+                &target,
+                StatusCode::CONFLICT,
+                why.to_owned(),
+                Fields::of(&target),
+            )
+            .await;
+    }
+    match pages
+        .users
+        .set_state(&id, UserState::Disabled, pages.app.inner.clock.now())
+        .await
+    {
+        Ok(_) => {}
+        Err(UserError::NoSuchUser(_)) => return no_such_user(),
+        Err(UserError::LastAdmin) => {
+            return pages
+                .refuse(
+                    &user,
+                    &target,
+                    StatusCode::CONFLICT,
+                    LAST_ADMIN.to_owned(),
+                    Fields::of(&target),
+                )
+                .await;
+        }
+        Err(err) => return failed(&err, "disable the user"),
+    }
+    // The user is disabled, which already closes every login of theirs on its next request and
+    // refuses a new session (`Store::web_session_create`), so a failure here leaves them locked
+    // out. Enabling them deletes what is left first.
+    match pages.app.inner.store.user_logins_revoke(&id).await {
+        Ok((logins, links)) => {
+            info!(admin = %user.user, user = %id, logins, links, "disabled a user");
+            Redirect::to(&format!("/admin/users/{id}?notice=disabled")).into_response()
+        }
+        Err(err) => {
+            error!(%err, user = %id, "cannot delete the logins of a disabled user");
+            error_page(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "User disabled, logins not ended",
+                "Doozers disabled the user, who can't sign in or use a login now, but couldn't \
+                 delete their logins and links. Enabling the user deletes what is left first. \
+                 The error is in the log.",
+            )
+        }
+    }
+}
+
+/// `POST /admin/users/<id>/enable` (CSRF-checked): enables a disabled user, then 303 to the page.
+/// Before it does, it deletes any login or link a failed disable left, so enabling brings none
+/// back: the user signs in again. The change to the users wakes the scheduler, which starts the
+/// jobs that waited.
+pub(super) async fn enable(
+    State(pages): State<UserPages>,
+    user: WebUser,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Form(form): Form<CsrfForm>,
+) -> Response {
+    let id = match gate(&user, Some((&headers, form.csrf.as_deref())), &id) {
+        Ok(id) => id,
+        Err(response) => return *response,
+    };
+    let target = match pages.find(&id) {
+        Ok(target) => target,
+        Err(response) => return *response,
+    };
+    if !target.is_active()
+        && let Err(err) = pages.app.inner.store.user_logins_revoke(&id).await
+    {
+        error!(%err, user = %id, "cannot delete the logins left on a user being enabled");
+        return error_page(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "User not enabled",
+            "Doozers couldn't delete the logins the user had, which would work again if it \
+             enabled them. The user is still disabled. The error is in the log.",
+        );
+    }
+    match pages
+        .users
+        .set_state(&id, UserState::Active, pages.app.inner.clock.now())
+        .await
+    {
+        Ok(_) => {
+            info!(admin = %user.user, user = %id, "enabled a user");
+            Redirect::to(&format!("/admin/users/{id}?notice=enabled")).into_response()
+        }
+        Err(UserError::NoSuchUser(_)) => no_such_user(),
+        Err(err) => failed(&err, "enable the user"),
+    }
+}
+
 #[derive(Template)]
 #[template(path = "web/admin_user_link.html")]
 struct LinkPage<'a> {
@@ -528,7 +647,7 @@ fn link_page(
 fn link_refusal(error: &LoginUserError, target: &User) -> Option<String> {
     match error {
         LoginUserError::Disabled(_) => Some(format!(
-            "{} is disabled, and a disabled user can't sign in.",
+            "{} is disabled, and a disabled user can't sign in. Enable them first.",
             target.username
         )),
         LoginUserError::WebIdentityTaken { user, owner } => Some(format!(

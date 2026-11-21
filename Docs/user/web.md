@@ -389,13 +389,35 @@ each thing you can change:
   such as `alice@example.com` for `web:alice@example.com`. The page shows the one they have. Save an
   empty field to remove it. Enter what the proxy sends, without `web:`. A user has at most one, and
   no two users can have the same one.
+- **Access**: **Disable** or **Enable**, as [Disabling a user](#disabling-a-user) describes.
 - **Recovery link**: **Make a recovery link** shows a link like the one `doozers admin login-link`
   makes. It signs in whoever opens it first, once, within 72 hours, and keeps every way the user can
-  already sign in.
+  already sign in. A disabled user can't have one.
 - **Remove**: opens the [page that removes the user](#removing-a-user).
 
 A form that Doozers refuses, such as a username another user has, shows the page again with the
 reason and what you typed.
+
+### Disabling a user
+
+**Disable** keeps a user out until you press **Enable**. It does this:
+
+- Ends every login they have, so their open chats stop updating, and cancels the invite and recovery
+  links they haven't used.
+- Blocks sign-in with every method, and a login through a trusted proxy.
+- Drops the messages that arrive from their channel identities, and the ones of theirs that were
+  waiting for a turn. Only a turn that is already running finishes.
+- Pauses their scheduled jobs. A job that repeats skips the times that pass while they are disabled,
+  and runs at its next time after you enable them. A job that runs once waits, and runs as soon as
+  you enable them.
+
+Everything they own stays. **Enable** lets them sign in again with a password, a passkey, an
+identity provider, or a new link that you make on their page, and starts their jobs again. Their
+ended logins and cancelled links don't come back. Jobs that repeat skip the times that passed, and
+reminders that run once, which waited, run as soon as you enable them.
+
+Doozers refuses to disable the last active admin. It also refuses to disable your own account. Ask
+another admin to do it.
 
 ### Removing a user
 

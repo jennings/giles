@@ -214,6 +214,13 @@ impl Store {
             .await
     }
 
+    /// Marks `queued` rows `done` without a turn: the core drops them, such as the messages of a
+    /// user who was disabled. All must be `queued`, as for [`inbox_start`](Self::inbox_start).
+    pub async fn inbox_discard(&self, ids: Vec<InboxId>) -> Result<()> {
+        self.write(move |conn| transition(conn, &ids, InboxState::Queued, InboxState::Done))
+            .await
+    }
+
     /// Marks rows `done`: their turn ended. All must be `started`, as for
     /// [`inbox_start`](Self::inbox_start).
     pub async fn inbox_finish(&self, ids: Vec<InboxId>) -> Result<()> {
@@ -384,6 +391,18 @@ mod tests {
             store.inbox_entry(ids[2]).await.unwrap().unwrap().state,
             InboxState::Done
         );
+
+        // A queued row can be dropped without a turn, and only a queued one: ids[1] is done.
+        let err = store.inbox_discard(vec![ids[0], ids[1]]).await.unwrap_err();
+        assert!(matches!(err, Error::Conflict(_)), "{err}");
+        store.inbox_discard(vec![ids[0], ids[3]]).await.unwrap();
+        for id in [ids[0], ids[3]] {
+            assert_eq!(
+                store.inbox_entry(id).await.unwrap().unwrap().state,
+                InboxState::Done
+            );
+        }
+        assert!(store.inbox_sessions_with_queued().await.unwrap().is_empty());
     }
 
     #[tokio::test]

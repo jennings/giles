@@ -358,6 +358,15 @@ pub(super) async fn begin_session(
         .web_session_create(&token, user, method, now, expires_at)
         .await
     {
+        // A user who was disabled after the sign-in began, as the store refuses to start a session
+        // for them.
+        if matches!(err, doozers_store::Error::UserDisabled) {
+            return Err(Box::new(no_store(error_page(
+                StatusCode::FORBIDDEN,
+                "Not allowed",
+                "Your account is disabled. Ask an admin.",
+            ))));
+        }
         return Err(Box::new(internal_error("cannot store a web session", &err)));
     }
     if let Some(WebUser {

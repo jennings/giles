@@ -255,7 +255,7 @@ impl Pages {
 }
 
 /// An admin who the stored users say isn't one any more: the role a request carried.
-fn stale_admin(name: &str) -> WebUser {
+pub(super) fn stale_admin(name: &str) -> WebUser {
     WebUser {
         user: UserId::new(name).unwrap(),
         role: UserRole::Admin,

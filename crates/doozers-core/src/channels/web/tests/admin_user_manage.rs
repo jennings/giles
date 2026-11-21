@@ -3,7 +3,7 @@
 //! the one asking is read from the stored users, and a link is spent the way its user would.
 
 use super::admin::session_of;
-use super::admin_users::Pages;
+use super::admin_users::{Pages, stale_admin};
 use super::agents::guest;
 use super::ssh_keys::url_encode;
 use super::*;
@@ -103,6 +103,8 @@ async fn only_an_admin_manages_users_and_every_post_needs_the_csrf_token() {
         (Method::POST, "/admin/users/mia/details"),
         (Method::POST, "/admin/users/mia/role"),
         (Method::POST, "/admin/users/mia/proxy-identity"),
+        (Method::POST, "/admin/users/mia/disable"),
+        (Method::POST, "/admin/users/mia/enable"),
         (Method::POST, "/admin/users/mia/recovery-link"),
     ];
     for (method, path) in &routes {
@@ -136,7 +138,14 @@ async fn only_an_admin_manages_users_and_every_post_needs_the_csrf_token() {
     for id in ["nobody", "a%20b"] {
         let reply = p.page(&owner, &format!("/admin/users/{id}")).await;
         assert_eq!(reply.status, StatusCode::NOT_FOUND, "{id}");
-        for action in ["details", "role", "proxy-identity", "recovery-link"] {
+        for action in [
+            "details",
+            "role",
+            "proxy-identity",
+            "disable",
+            "enable",
+            "recovery-link",
+        ] {
             let reply = p
                 .submit(
                     &owner,
@@ -758,4 +767,312 @@ async fn a_disabled_user_gets_no_recovery_link() {
         "{}",
         page.body
     );
+}
+
+/// A message from `sender` on WhatsApp.
+fn whatsapp_message(sender: &str) -> doozers_types::InboundMessage {
+    use doozers_types::{ConversationKind, ConversationRef};
+    doozers_types::InboundMessage {
+        conversation: ConversationRef {
+            id: ConversationId::new(sender).unwrap(),
+            kind: ConversationKind::Direct,
+            title: None,
+        },
+        sender: NativeId::new(sender).unwrap(),
+        sender_aliases: Vec::new(),
+        sender_authenticated: true,
+        sender_display_name: None,
+        text: "hello".to_owned(),
+        attachments: Vec::new(),
+        message_id: None,
+        reply_to: None,
+        sent_at: None,
+    }
+}
+
+#[tokio::test]
+async fn disabling_ends_a_users_logins_and_streams_and_enabling_lets_them_sign_in_again() {
+    use crate::commands::NoPendingApprovals;
+    use crate::router::{ChannelSource, DropReason, Inbound, Router};
+    use crate::routes::{Route, RouteList};
+    use crate::sessions::AgentPolicy;
+    use std::time::Duration;
+
+    let p = Pages::new().await;
+    let owner = session_of(&p.env, "owner").await;
+    let mia = session_of(&p.env, "mia").await;
+    let other_browser = session_of(&p.env, "mia").await;
+    let mia_id = UserId::new("mia").unwrap();
+    let now = Timestamp::now();
+    let live = async || {
+        p.env
+            .store
+            .web_sessions_of(&mia_id, now)
+            .await
+            .unwrap()
+            .len()
+    };
+    assert_eq!(live().await, 2);
+
+    // A link made before, her chat stream, a channel identity, and a job of hers.
+    let link = p
+        .submit(&owner, "/admin/users/mia/recovery-link", &[])
+        .await;
+    assert_eq!(link.status, StatusCode::OK, "{}", link.body);
+    let chat = "0123456789abcdef0123456789abcdef";
+    let cookie = session(&mia);
+    let stream = call(
+        p.router(None),
+        Method::GET,
+        &format!("/chats/{chat}/events"),
+        &[("cookie", &cookie)],
+        None,
+    )
+    .await;
+    assert_eq!(stream.status(), StatusCode::OK);
+    let mut stream = stream.into_body().into_data_stream();
+    p.users
+        .add_identity(
+            &mia_id,
+            "whatsapp",
+            "+15557654321",
+            doozers_store::Verification::Link,
+            now,
+        )
+        .await
+        .unwrap();
+    let job = p
+        .env
+        .store
+        .job_create(
+            AgentId::new("jeeves").unwrap(),
+            mia_id.clone(),
+            serde_json::json!({"at": "2099-01-01T00:00:00Z", "prompt": "x"}),
+            now,
+        )
+        .await
+        .unwrap();
+    let router = Router::new(
+        p.env.channel.users().clone(),
+        RouteList::new(vec![Route {
+            channel: None,
+            kind: None,
+            conversation: None,
+            agent: AgentId::new("jeeves").unwrap(),
+        }]),
+        Arc::new(std::collections::HashMap::<AgentId, AgentPolicy>::new()),
+    );
+    let classify = || {
+        let instance = InstanceName::new("whatsapp").unwrap();
+        let source = ChannelSource {
+            instance: &instance,
+            component: "whatsapp",
+            identity_namespace: "whatsapp",
+        };
+        router.classify(
+            &source,
+            &EventId::new("e1").unwrap(),
+            &whatsapp_message("+15557654321"),
+            &NoPendingApprovals,
+        )
+    };
+    assert!(matches!(classify(), Inbound::Message(_)));
+
+    // Disabling: every login of hers is gone, the streams end, her messages are dropped, and the
+    // job is kept.
+    let disabled = p.submit(&owner, "/admin/users/mia/disable", &[]).await;
+    assert_eq!(disabled.status, StatusCode::SEE_OTHER, "{}", disabled.body);
+    assert_eq!(
+        disabled.location.as_deref(),
+        Some("/admin/users/mia?notice=disabled")
+    );
+    assert_eq!(live().await, 0);
+    for token in [&mia, &other_browser] {
+        assert_eq!(
+            p.page(token, "/admin/users").await.status,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    let ended = tokio::time::timeout(Duration::from_secs(5), async {
+        while stream.next().await.is_some() {}
+    })
+    .await;
+    assert!(ended.is_ok(), "the stream ends");
+    assert!(matches!(classify(), Inbound::Drop(DropReason::DisabledUser(user)) if user == mia_id));
+    assert!(
+        p.env
+            .store
+            .jobs(None, None)
+            .await
+            .unwrap()
+            .iter()
+            .any(|j| j.id == job.id)
+    );
+    let html = p
+        .page(&owner, "/admin/users/mia?notice=disabled")
+        .await
+        .body;
+    assert!(html.contains("Disabled the user."), "{html}");
+    assert!(
+        html.contains(r#"action="/admin/users/mia/enable""#),
+        "{html}"
+    );
+    assert!(
+        !html.contains(r#"action="/admin/users/mia/disable""#),
+        "{html}"
+    );
+    assert!(
+        html.contains(r#"<span class="pill pill-warn">Disabled</span>"#),
+        "{html}"
+    );
+    assert!(
+        !html.contains(r#"action="/admin/users/mia/recovery-link""#),
+        "{html}"
+    );
+    // The last sign-in stays what it was. The link made before is gone, and none can be made.
+    assert!(!html.contains("<dd>Never</dd>"), "{html}");
+    let gone = redeem(p.router(None), &link_token(&link.body), &[]).await;
+    assert_eq!(gone.status(), StatusCode::GONE);
+    let none = p
+        .submit(&owner, "/admin/users/mia/recovery-link", &[])
+        .await;
+    assert_eq!(none.status, StatusCode::CONFLICT, "{}", none.body);
+    assert!(none.body.contains("Enable them first"), "{}", none.body);
+
+    // Enabling restores sign-in, routes her messages again, and brings no old login back. She
+    // signs in again with a new link.
+    let enabled = p.submit(&owner, "/admin/users/mia/enable", &[]).await;
+    assert_eq!(enabled.status, StatusCode::SEE_OTHER, "{}", enabled.body);
+    assert_eq!(
+        enabled.location.as_deref(),
+        Some("/admin/users/mia?notice=enabled")
+    );
+    assert!(matches!(classify(), Inbound::Message(_)));
+    assert_eq!(
+        p.page(&mia, "/admin/users").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(live().await, 0);
+    let fresh = p
+        .submit(&owner, "/admin/users/mia/recovery-link", &[])
+        .await;
+    assert_eq!(fresh.status, StatusCode::OK, "{}", fresh.body);
+    let back = p.spend(&fresh.body).await;
+    assert_eq!(p.page(&back, "/setup").await.status, StatusCode::OK);
+    assert_eq!(live().await, 1);
+    let html = p.page(&owner, "/admin/users/mia?notice=enabled").await.body;
+    assert!(html.contains("Enabled the user."), "{html}");
+    assert!(
+        html.contains(r#"action="/admin/users/mia/disable""#),
+        "{html}"
+    );
+}
+
+#[tokio::test]
+async fn an_admin_cant_disable_themselves_or_the_last_active_admin() {
+    let p = Pages::new().await;
+    let owner = session_of(&p.env, "owner").await;
+    let own = p.submit(&owner, "/admin/users/owner/disable", &[]).await;
+    assert_eq!(own.status, StatusCode::CONFLICT, "{}", own.body);
+    assert!(own.body.contains("disable yourself"), "{}", own.body);
+    assert!(p.user("owner").unwrap().is_active());
+    assert_eq!(p.page(&owner, "/admin/users").await.status, StatusCode::OK);
+
+    // The store refuses the last active admin even when a request that carried a stale role asks:
+    // root was an admin when the request began and isn't now.
+    let demoted = p
+        .submit(&owner, "/admin/users/root/role", &[("role", "member")])
+        .await;
+    assert_eq!(demoted.status, StatusCode::SEE_OTHER, "{}", demoted.body);
+    let (status, body, _) = p
+        .send(
+            Some(stale_admin("root")),
+            Method::POST,
+            "/admin/users/owner/disable",
+            true,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.contains("last active admin"), "{body}");
+    assert!(p.user("owner").unwrap().is_active());
+    assert_eq!(p.page(&owner, "/admin/users").await.status, StatusCode::OK);
+
+    // With a second active admin, either can be disabled by the other.
+    p.submit(&owner, "/admin/users/root/role", &[("role", "admin")])
+        .await;
+    let root = session_of(&p.env, "root").await;
+    let disabled = p.submit(&root, "/admin/users/owner/disable", &[]).await;
+    assert_eq!(disabled.status, StatusCode::SEE_OTHER, "{}", disabled.body);
+    assert!(!p.user("owner").unwrap().is_active());
+    assert_eq!(
+        p.page(&owner, "/admin/users").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn the_users_page_leads_to_the_removal_that_forgets_them() {
+    let p = Pages::new().await;
+    let owner = session_of(&p.env, "owner").await;
+    let page = p.page(&owner, "/admin/users/mia").await;
+    assert!(
+        page.body.contains(r#"href="/admin/users/mia/remove""#),
+        "{}",
+        page.body
+    );
+    let confirm = p.page(&owner, "/admin/users/mia/remove").await;
+    assert_eq!(confirm.status, StatusCode::OK, "{}", confirm.body);
+    let removed = p.submit(&owner, "/admin/users/mia/remove", &[]).await;
+    assert_eq!(removed.status, StatusCode::SEE_OTHER, "{}", removed.body);
+    assert_eq!(
+        removed.location.as_deref(),
+        Some("/admin/users?removed=mia")
+    );
+    assert!(p.user("mia").is_none());
+    assert_eq!(
+        p.page(&owner, "/admin/users/mia").await.status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn enabling_deletes_the_logins_and_links_a_disable_left() {
+    let p = Pages::new().await;
+    let owner = session_of(&p.env, "owner").await;
+    let mia = session_of(&p.env, "mia").await;
+    let mia_id = UserId::new("mia").unwrap();
+    let link = p
+        .submit(&owner, "/admin/users/mia/recovery-link", &[])
+        .await;
+    assert_eq!(link.status, StatusCode::OK, "{}", link.body);
+    // A disable that failed after the change: the user is disabled and nothing was deleted.
+    p.users
+        .set_state(
+            &mia_id,
+            doozers_store::UserState::Disabled,
+            Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        p.env.store.user_data(&mia_id).await.unwrap().web_sessions,
+        1
+    );
+    let enabled = p.submit(&owner, "/admin/users/mia/enable", &[]).await;
+    assert_eq!(enabled.status, StatusCode::SEE_OTHER, "{}", enabled.body);
+    // Neither the old login nor the old link works.
+    assert_eq!(
+        p.page(&mia, "/admin/users").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let gone = redeem(p.router(None), &link_token(&link.body), &[]).await;
+    assert_eq!(gone.status(), StatusCode::GONE);
+    let data = p.env.store.user_data(&mia_id).await.unwrap();
+    assert_eq!((data.web_sessions, data.invites), (0, 0));
+
+    // Enabling a user who is active signs nobody out.
+    let again = session_of(&p.env, "mia").await;
+    let enabled = p.submit(&owner, "/admin/users/mia/enable", &[]).await;
+    assert_eq!(enabled.status, StatusCode::SEE_OTHER, "{}", enabled.body);
+    assert_eq!(p.page(&again, "/setup").await.status, StatusCode::OK);
 }

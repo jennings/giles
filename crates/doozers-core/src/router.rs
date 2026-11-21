@@ -155,6 +155,15 @@ impl Router {
         }
     }
 
+    /// Whether `user` is a user who is disabled now. A user who isn't in the list (removed) isn't:
+    /// what removing deletes is gone with them.
+    pub fn is_disabled(&self, user: &UserId) -> bool {
+        self.users
+            .get()
+            .user(user)
+            .is_some_and(|known| !known.is_active())
+    }
+
     /// The agent for a conversation on `instance`: the first route whose every set key (`channel`,
     /// `kind`, `conversation`) matches. Conversation ids compare exactly.
     pub fn route(

@@ -1593,3 +1593,50 @@ async fn a_conversation_id_passes_to_the_next_user_once_the_session_holding_it_e
     assert_ne!(back.session, mias);
     assert_ne!(back.session, owners);
 }
+
+#[tokio::test(start_paused = true)]
+async fn queued_messages_of_a_disabled_user_are_dropped_and_never_run() {
+    let mut setup = Setup::new(queue()).await;
+    let mut users = two_users().get().users().to_vec();
+    users[1].state = doozers_store::UserState::Disabled;
+    setup.users = UserList::new(users);
+    let now = setup.now();
+    let (session, _) = setup
+        .store
+        .open_session(key(), SessionKind::Direct, Some(identity::owner()), now)
+        .await
+        .unwrap();
+    // Messages that were queued before mia was disabled, either side of the owner's.
+    let mut rows = Vec::new();
+    for (id, sender, text) in [
+        ("e1", "mia", "hi"),
+        ("e2", OWNER, "owner here"),
+        ("e3", "mia", "hi again"),
+    ] {
+        let row = setup
+            .store
+            .inbox_insert(NewInboxEvent {
+                instance: INSTANCE.to_owned(),
+                event_id: EventId::new(id).unwrap(),
+                session: Some(session.id),
+                user: Some(doozers_types::UserId::new(sender).unwrap()),
+                payload: serde_json::to_value(message(id, text)).unwrap(),
+                state: InboxState::Queued,
+                received_at: now,
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        rows.push(row);
+    }
+
+    // The restart resumes the session: only the owner's message starts a turn.
+    let mut h = setup.start().await;
+    let turn = h.turn().await;
+    assert_eq!(turn.texts, ["owner here"]);
+    turn.complete();
+    h.assert_no_turn().await;
+    for row in &rows {
+        assert_eq!(h.state(*row).await, InboxState::Done);
+    }
+}

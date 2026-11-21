@@ -413,6 +413,7 @@ insert(done)                                     (dedupe key only: status events
 | `inbox_queued`               | A session's queued rows, oldest first: the next turn's messages. |
 | `inbox_sessions_with_queued` | Sessions with queued rows, by oldest row: the turns to run after a restart. |
 | `inbox_start`, `inbox_finish` | Queued to started, started to done; all rows in the batch or none (`Conflict`, `NotFound`). |
+| `inbox_discard` | Queued to done with no turn: the core drops the rows of a disabled user. |
 | `inbox_interrupt`            | Startup: every started row becomes `unknown` and is returned, so the requester can be told. |
 | `inbox_prune(before)`        | Deletes `done` and `unknown` rows received strictly before `before` (now minus 30 days). Queued and started rows are never pruned. |
 
@@ -511,9 +512,13 @@ collision) takes the `SignInMethod` the session signed in with, which `web_sessi
 also sets `users.last_sign_in_at` to the session's creation time, in the same transaction, because a
 session is deleted by logout, revocation, and expiry and so can't say when the user last signed in.
 The router's `UserList` snapshot doesn't carry the time: the admin pages read it from the store
-(`user`, `users`), because nothing replaces the snapshot when a session starts. Sessions that
-existed before the column was added are `recovery`, since the one-time login link they came from is
-what a recovery link replaced.
+(`user`, `users`), because nothing replaces the snapshot when a session starts.
+`user_logins_revoke(user)` deletes every session and every unspent invite or recovery link of a user
+in one transaction, which is what disabling one does (and enabling one again, for what a failed
+disable left). `web_session_create` refuses a disabled user (`Error::UserDisabled`) in the same
+transaction as the insert, so a sign-in that was under way when the user was disabled can't leave a
+session that is valid again once they are enabled. Sessions that existed before the column was added
+are `recovery`, since the one-time login link they came from is what a recovery link replaced.
 
 Each session also has an opaque `id`, 32 random hex digits made by the database when the row is
 inserted. It has nothing to do with the token or its hash, so the account page can list and revoke

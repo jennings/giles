@@ -126,8 +126,11 @@ table, which the agent loop writes.
 
 At most one turn runs per session. Waking a session that isn't live spawns a driver task that loops:
 
-1. Read the session's `queued` rows. If there are none, retire, unless a wake arrived since the read
-   (the `dirty` flag), in which case read again. No wake is lost.
+1. Read the session's `queued` rows. Rows whose user is disabled (`Router::is_disabled`) were queued
+   before the user was disabled, since the router drops what arrives later: the driver marks them
+   `done` without a turn (`Store::inbox_discard`), logs it, and reads again. If there are none,
+   retire, unless a wake arrived since the read (the `dirty` flag), in which case read again. No
+   wake is lost.
 2. Pick the batch: the sender of the oldest queued row is the requester, and the batch is every
    queued row from that sender, in order. Others' rows never join it; they start a later turn
    (§6.3).

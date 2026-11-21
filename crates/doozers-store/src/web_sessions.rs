@@ -95,7 +95,7 @@ impl Store {
     /// id, and records `now` as the time the user last signed in
     /// ([`StoredUser::last_sign_in_at`](crate::StoredUser::last_sign_in_at)).
     /// [`Error::Conflict`] if a session with the same token exists; [`Error::InvalidRequest`]
-    /// unless `expires_at` is after `now`.
+    /// unless `expires_at` is after `now`; [`Error::UserDisabled`] if the user is disabled.
     pub async fn web_session_create(
         &self,
         token: &str,
@@ -111,6 +111,17 @@ impl Store {
         }
         let hash = token_hash(token);
         self.write(move |conn| {
+            // A user who is disabled, which deletes their sessions, gets no new one: a sign-in that
+            // was under way when they were disabled would otherwise be valid once they are enabled.
+            // A user the table doesn't have is the caller's to refuse.
+            let disabled: bool = conn
+                .prepare_cached(
+                    "SELECT EXISTS (SELECT 1 FROM users WHERE id = ?1 AND state = 'disabled')",
+                )?
+                .query_row([user.as_str()], |row| row.get(0))?;
+            if disabled {
+                return Err(Error::UserDisabled);
+            }
             let inserted = conn
                 .prepare_cached(
                     "INSERT INTO web_sessions
@@ -176,6 +187,23 @@ impl Store {
                 .prepare_cached("DELETE FROM web_sessions WHERE user_id = ?1 AND id = ?2")?
                 .execute(params![user.as_str(), id])?
                 == 1)
+        })
+        .await
+    }
+
+    /// Ends every login of `user` in one transaction: deletes their sessions and their unspent
+    /// invite and recovery links, which is what disabling a user does, so no login lasts and
+    /// enabling them brings none back. Returns how many sessions and links there were.
+    pub async fn user_logins_revoke(&self, user: &UserId) -> Result<(u64, u64)> {
+        let user = user.clone();
+        self.write(move |conn| {
+            let sessions = conn
+                .prepare_cached("DELETE FROM web_sessions WHERE user_id = ?1")?
+                .execute([user.as_str()])?;
+            let links = conn
+                .prepare_cached("DELETE FROM user_invites WHERE user_id = ?1")?
+                .execute([user.as_str()])?;
+            Ok((sessions as u64, links as u64))
         })
         .await
     }

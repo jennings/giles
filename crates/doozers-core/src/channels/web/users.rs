@@ -31,8 +31,8 @@ use super::auth::{WebUser, check_csrf};
 use super::pages::{WebApp, error_page, internal_error, no_store};
 use super::shell::{Nav, Shell};
 use super::users_manage::{
-    invite, invite_page, recovery_link, save_details, save_proxy_identity, save_role, sign_in_text,
-    user_page,
+    disable, enable, invite, invite_page, recovery_link, save_details, save_proxy_identity,
+    save_role, sign_in_text, user_page,
 };
 use crate::forget::{ForgetError, ForgetPreview, Forgetter};
 use crate::http::{self, RouterBuilder};
@@ -67,6 +67,8 @@ impl WebApp {
                     "/admin/users/{id}/proxy-identity",
                     post(save_proxy_identity),
                 )
+                .route("/admin/users/{id}/disable", post(disable))
+                .route("/admin/users/{id}/enable", post(enable))
                 .route("/admin/users/{id}/recovery-link", post(recovery_link))
                 .route("/admin/users/{id}/remove", get(remove_page).post(remove))
                 .with_state(UserPages {

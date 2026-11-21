@@ -1119,6 +1119,7 @@ mod tests {
         // The sessions are gone (logged out, revoked, expired): the time stays.
         assert!(store.web_session_delete("a").await.unwrap());
         assert!(store.web_session_delete("b").await.unwrap());
+        assert_eq!(store.user_logins_revoke(&id("u1")).await.unwrap(), (0, 0));
         let ann = store.user(&id("u1")).await.unwrap().unwrap();
         assert_eq!(ann.last_sign_in_at, Some(at(9)));
         // Another user's sign-in is theirs.
@@ -1136,6 +1137,92 @@ mod tests {
             (bob.last_sign_in_at, ann.last_sign_in_at),
             (Some(at(12)), Some(at(9)))
         );
+        // Revoking a user's logins deletes their sessions and unspent links, and no one else's, and
+        // leaves the sign-in times.
+        store
+            .web_session_create(
+                "d",
+                id("u1"),
+                crate::SignInMethod::Password,
+                at(14),
+                at(100),
+            )
+            .await
+            .unwrap();
+        store
+            .web_session_create("e", id("u1"), crate::SignInMethod::Passkey, at(15), at(100))
+            .await
+            .unwrap();
+        for (token, user) in [("l1", "u1"), ("l2", "u2")] {
+            store
+                .user_invite_create(
+                    token,
+                    &id(user),
+                    crate::InviteKind::Recovery,
+                    None,
+                    at(1),
+                    at(99),
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(store.user_logins_revoke(&id("u1")).await.unwrap(), (2, 1));
+        assert!(store.web_session("d", at(16)).await.unwrap().is_none());
+        assert!(store.web_session("c", at(16)).await.unwrap().is_some());
+        assert!(store.user_invite("l1", at(16)).await.unwrap().is_none());
+        assert!(store.user_invite("l2", at(16)).await.unwrap().is_some());
+        let ann = store.user(&id("u1")).await.unwrap().unwrap();
+        assert_eq!(ann.last_sign_in_at, Some(at(15)));
+
+        // A disabled user gets no session, and one the table doesn't have is not refused here.
+        store
+            .user_set_state(&id("u1"), UserState::Disabled, at(17))
+            .await
+            .unwrap();
+        let refused = store
+            .web_session_create(
+                "f",
+                id("u1"),
+                crate::SignInMethod::Password,
+                at(18),
+                at(100),
+            )
+            .await;
+        assert!(matches!(refused, Err(Error::UserDisabled)), "{refused:?}");
+        assert!(store.web_session("f", at(19)).await.unwrap().is_none());
+        assert_eq!(
+            store
+                .user(&id("u1"))
+                .await
+                .unwrap()
+                .unwrap()
+                .last_sign_in_at,
+            Some(at(15))
+        );
+        store
+            .user_set_state(&id("u1"), UserState::Active, at(20))
+            .await
+            .unwrap();
+        store
+            .web_session_create(
+                "f",
+                id("u1"),
+                crate::SignInMethod::Password,
+                at(21),
+                at(100),
+            )
+            .await
+            .unwrap();
+        store
+            .web_session_create(
+                "g",
+                id("ghost"),
+                crate::SignInMethod::Password,
+                at(21),
+                at(100),
+            )
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

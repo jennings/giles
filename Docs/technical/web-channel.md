@@ -1753,6 +1753,8 @@ admin role first, then the CSRF token, then reads the id in the path: an id that
 | `POST /admin/users/<id>/details` | Sets the username, display name, and time zone together, 303; the page again with why (400, 409) |
 | `POST /admin/users/<id>/role` | Sets the role, 303 (to `/` for an admin who demoted themselves); 409 for the last active admin |
 | `POST /admin/users/<id>/proxy-identity` | Sets or, empty, clears the proxy identity, 303; the page again with why (400, 409) |
+| `POST /admin/users/<id>/disable` | Disables the user and deletes their logins, 303; 409 for the admin's own account and for the last active admin |
+| `POST /admin/users/<id>/enable` | Enables the user, 303 |
 | `POST /admin/users/<id>/recovery-link` | Makes a recovery link and shows it (200); 409 for a user who can't sign in |
 | `GET /admin/users/<id>/remove` | What removing the user deletes, and the button |
 | `POST /admin/users/<id>/remove` | Forgets the user (CSRF-checked), 303 to the list |
@@ -1790,6 +1792,25 @@ user id can hide behind a fixed segment.
   The last-active-admin rule is `Users`' and the store's, so the page only reports it: the role
   form's 409 says the last admin can't be demoted. An admin who demotes themselves while another
   admin remains is sent to `/`, since the admin pages are closed to them.
+- **Disabling and enabling.** `POST /admin/users/<id>/disable` refuses the signed-in admin's own id
+  with a 409 that says to ask another admin, the conservative choice, since the admin who disabled
+  themselves couldn't enable themselves again. Then it calls `Users::set_state(Disabled)`, which
+  refuses the last active admin (`UserError::LastAdmin`, a 409 with the last-admin reason, reachable
+  by a request whose admin was demoted a moment ago). Then `Store::user_logins_revoke` deletes every
+  session and every unspent invite or recovery link of the user. Disabling comes first, so the user
+  is locked out at once (`WebChannel::cookie_user` and the proxy path refuse a disabled user, and
+  `Store::web_session_create` refuses to start a session for one, which `begin_session` answers with
+  a 403 for a sign-in that was under way). A failure to delete the rows is a logged 500 that says
+  the user is disabled and that enabling deletes what is left. `POST /admin/users/<id>/enable` does
+  that first, for a user who is disabled (a 500 and no enabling if it fails), then
+  `Users::set_state(Active)`, so enabling never brings an old login or link back. The user's open
+  event streams end by themselves (`WebApp::login_ended` sees the session gone or the user
+  disabled). The router already drops a disabled user's messages, the session driver drops the ones
+  queued before ([Sessions](sessions.md)), and the scheduler skips runtime jobs whose creator isn't
+  active ([Scheduler](scheduler.md)): the change to the users that `set_state` makes wakes it, so
+  enabling needs no call of its own to start the jobs that waited. Only a turn already running isn't
+  stopped. The page shows **Disable** for an active user and **Enable** for a disabled one, and
+  offers no recovery link to a disabled user.
 - **The recovery link.** `POST /admin/users/<id>/recovery-link` calls
   `Users::create_invite(id, Recovery, Some(admin), now)` and shows the link once, as the invite
   does. A disabled user can't have one (`LoginUserError::Disabled`, a 409 on the user's page).
