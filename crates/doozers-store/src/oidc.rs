@@ -437,20 +437,6 @@ impl Store {
         .await
     }
 
-    /// Removes `user`'s connection to provider `provider`. `false` if they had none.
-    pub async fn user_oidc_disconnect(&self, user: &UserId, provider: &str) -> Result<bool> {
-        let (user, provider) = (user.clone(), provider.to_owned());
-        self.write(move |conn| {
-            Ok(conn
-                .prepare_cached(
-                    "DELETE FROM user_oidc_connections WHERE user_id = ?1 AND provider_id = ?2",
-                )?
-                .execute(params![user.as_str(), provider])?
-                > 0)
-        })
-        .await
-    }
-
     /// How many accounts are connected to provider `provider`, whatever issuer each was
     /// connected under: what removing the provider forgets.
     pub async fn oidc_provider_connection_count(&self, provider: &str) -> Result<u64> {
@@ -812,30 +798,6 @@ mod tests {
             )
             .await
             .unwrap();
-    }
-
-    #[tokio::test]
-    async fn disconnecting_forgets_only_that_connection() {
-        let (_dir, store) = with_provider().await;
-        let issuer = "https://idp.example.com";
-        store
-            .user_oidc_connect("idp", issuer, "sub-1", &id("bob"), at(1))
-            .await
-            .unwrap();
-        store
-            .user_oidc_connect("idp", issuer, "sub-2", &id("ann"), at(1))
-            .await
-            .unwrap();
-        assert!(store.user_oidc_disconnect(&id("bob"), "idp").await.unwrap());
-        assert!(!store.user_oidc_disconnect(&id("bob"), "idp").await.unwrap());
-        assert_eq!(
-            store.user_oidc_user("idp", issuer, "sub-1").await.unwrap(),
-            None
-        );
-        assert_eq!(
-            store.user_oidc_user("idp", issuer, "sub-2").await.unwrap(),
-            Some(id("ann"))
-        );
     }
 
     #[tokio::test]

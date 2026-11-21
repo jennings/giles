@@ -705,9 +705,28 @@ replaces it. Removing a provider removes its connections, and so does removing a
 | `user_oidc_connect(provider, issuer, subject, user, now)`     | Connects the account, replacing the user's connection to that provider. The same account again changes nothing. `Error::NoSuchUser`, `Error::NotFound` (the provider), `Error::Conflict` (the account is another user's), `Error::InvalidRequest` (an empty issuer or subject, or a subject over 255 characters). |
 | `user_oidc_user(provider, issuer, subject)`                   | The user the account is connected to, if any.             |
 | `user_oidc_connections(user)`                                 | The user's connections, oldest first.                     |
-| `user_oidc_disconnect(user, provider)`                        | Removes the user's connection to the provider; `false` if they had none. |
 | `oidc_connection_count(provider, issuer)`                     | How many accounts are connected with that issuer.         |
 | `oidc_provider_connection_count(provider)`                    | How many accounts are connected, whatever their issuer: what removing the provider forgets. |
+
+## Removing a sign-in method
+
+A user's sign-in methods are the password (`user_passwords`), their passkeys (`user_passkeys`), and
+their connections to identity providers (`user_oidc_connections`). Removing one is
+`user_sign_in_method_remove(user, method, passkeys_work)`, with a `SignInMethodRef` (`Password`,
+`Passkey(id)`, or `Oidc { provider }`). It returns `false` when the user doesn't have the method,
+and another user's passkey id is no passkey of theirs. It refuses with `Error::LastSignInMethod` to
+remove the only method that can sign the user in, and the check runs in the removal's own
+transaction, so two removals at once can't take both of the last two.
+
+A method counts when it can sign the user in now: the password always, and a connection while its
+provider is enabled and still has the issuer the connection was made under. Passkeys count only when
+the caller passes `passkeys_work`, because whether they can sign anyone in depends on the install
+(the web channel needs a `public_url` that is a domain name on a secure origin), which the store
+can't know. `user_sign_in_methods_usable(user, passkeys_work)` returns that count, so a page can say
+that a user has one way left without counting again. Removing a method that doesn't count is always
+allowed. A user with no method at all, such as one who was just invited and signs in with a link, is
+never asked to keep one. The proxy login isn't a method of the user's: an admin sets it, and it
+works only where a trusted proxy is set up, so it doesn't keep the last method from being refused.
 
 ## Toolsets
 

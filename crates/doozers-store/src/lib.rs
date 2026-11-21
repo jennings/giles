@@ -42,6 +42,7 @@ mod user_invites;
 mod user_link_codes;
 mod user_passkeys;
 mod user_passwords;
+mod user_sign_in_methods;
 mod users;
 mod web_sessions;
 mod workspaces;
@@ -84,6 +85,7 @@ pub use user_invites::{InviteKind, UserInvite};
 pub use user_link_codes::{LINK_CODE_SALT_LEN, LinkCodeRow, LinkRedeemed};
 pub use user_passkeys::{NewPasskey, PasskeyId, PasskeyKind, StoredPasskey};
 pub use user_passwords::StoredPassword;
+pub use user_sign_in_methods::SignInMethodRef;
 pub use users::{
     ImportedUser, NewIdentity, NewUser, Role, StoredIdentity, StoredUser, UserState, Verification,
     canonical_identity,

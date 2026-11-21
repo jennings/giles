@@ -123,6 +123,10 @@ pub enum Error {
     /// Nothing changed.
     #[error("the last active admin can't be removed, disabled, or demoted")]
     LastAdmin,
+    /// The removal would leave the user with no way to sign in: it removes the only password,
+    /// passkey, or identity provider connection that can sign them in. Nothing changed.
+    #[error("that is the user's only way to sign in")]
+    LastSignInMethod,
     /// A memory's content is longer than the limit.
     #[error("memory content is {chars} characters; the limit is {max}")]
     MemoryTooLong {
