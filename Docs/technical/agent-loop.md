@@ -353,6 +353,17 @@ refuses it and the turn fails with its error (above), and the next turn tries co
 `/stop` during a summary request cancels the turn as usual. A database error fails the turn like any
 other.
 
+**Outside a turn.** `AgentLoop::recompact_session(session)` writes a session's summaries again after
+they were deleted, which forgetting a user does to the group sessions where the user's messages
+became tombstones ([Storage](storage.md#forgetting-a-user)). Summaries are cumulative, so the
+deleted ones held the session's whole compacted history. It makes the same requests as a check, with
+a turn built from nothing (no requester, no reply, never cancelled), until the history is under the
+threshold or a request fails, at most `MAX_RECOMPACT_PASSES` (50) of them. It sizes the history from
+its messages and never from the usage they recorded, which was measured against summaries that are
+gone (forgetting a user also removes that usage from those sessions). The prompt prefix isn't
+counted. It returns whether the history fits, logs why it doesn't, and leaves the rest to the
+session's next turn. Its requests are recorded as usage without a user.
+
 ## Tool dispatch
 
 `ToolDispatcher::dispatch(ToolBatch { calls, tools, context, media, turn, skip, approvals })`

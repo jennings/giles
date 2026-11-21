@@ -39,6 +39,12 @@ that. After each run the next time is the first match after the clock, so times 
 long run are skipped. A time outside `active_hours` is skipped (not recorded). A one-shot runtime
 job is deleted after its time, run or not.
 
+A run is counted from the moment its time comes, per agent (`Scheduler::agent_busy`, which keeps an
+agent from being removed) and per creator (`Scheduler::user_busy`, which keeps a user from being
+forgotten, an isolated run's turn included). Once it is counted, a run of a runtime job whose
+creator is no longer an active user is skipped, so a user who is disabled for removal starts no new
+run, and one that began before is seen.
+
 Config jobs follow the running configuration ([Registry](registry.md#the-running-configuration)). At
 start, and whenever `LiveConfig` changes, `reconcile_config_jobs` compares each agent's `[[jobs]]`
 with the ones its tasks were started for: an agent that is gone, or whose jobs differ, has its tasks

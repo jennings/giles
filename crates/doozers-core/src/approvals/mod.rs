@@ -352,6 +352,52 @@ impl ApprovalBoard {
             .is_some_and(|tools| tools.contains(tool))
     }
 
+    /// How many pending approvals `user` is the one to answer.
+    pub fn pending_for(&self, user: &UserId) -> usize {
+        lock(&self.state)
+            .pending
+            .values()
+            .filter(|pending| &pending.target.user == user)
+            .count()
+    }
+
+    /// Forgets `user` (the web UI's forget): denies every approval pending for them as a
+    /// cancelled one, drops the remembered codes of those that closed (so a late reply is an
+    /// ordinary message), and forgets the tools `yes!` allowed in `sessions`, the sessions that
+    /// are being deleted. Returns how many pending approvals it denied.
+    pub fn forget_user(&self, user: &UserId, sessions: &[SessionId]) -> usize {
+        let mut resolved = Vec::new();
+        {
+            let mut state = lock(&self.state);
+            let codes: Vec<String> = state
+                .pending
+                .iter()
+                .filter(|(_, pending)| &pending.target.user == user)
+                .map(|(code, _)| code.clone())
+                .collect();
+            for code in codes {
+                if let Some(pending) = state.close(&code, Closing::Cancelled) {
+                    info!(
+                        code,
+                        tool = pending.tool,
+                        "approval denied: its user was removed"
+                    );
+                    let _ = pending.decide.send(Decision::Deny);
+                    resolved.push((pending.target, code));
+                }
+            }
+            state.closed.retain(|_, closed| &closed.target.user != user);
+            for session in sessions {
+                state.allowed.remove(session);
+            }
+        }
+        let denied = resolved.len();
+        for (target, code) in resolved {
+            self.resolved(&target, &code, ApprovalOutcome::Denied);
+        }
+        denied
+    }
+
     /// Denies every approval pending in `turn` with `said`.
     fn supersede(&self, turn: u64, said: &str) {
         let mut resolved = Vec::new();

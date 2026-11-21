@@ -786,6 +786,45 @@ merges them. SQLite also keeps what a delete frees in the file until the pages a
 database is copied with `VACUUM INTO`, which `doozers backup` does, so a backup doesn't hold the
 freed pages.
 
+`doozers_core::forget::Forgetter::forget(acting, user)` runs the whole operation around those
+methods. It is made to be run again after a failure, since a removal that stops halfway leaves the
+user disabled:
+
+1. It refuses (`Busy`, nothing changed) while the user is being worked for: a turn is running that
+   they asked for or in a session of theirs, a holder (a job's turn or reply), or messages queued
+   (`DaemonUserActivity`: `Sessions::user_busy`, and `Scheduler::user_busy` for a run of a job they
+   made, an isolated run's turn included, which the session manager doesn't know; and
+   `user_data_forget`'s own check). It doesn't stop the turn: the admin has the user send `/stop`,
+   or waits. It refuses the admin's own removal (`Yourself`).
+2. It disables the user. The last-active-admin guard is this step (`LastAdmin`, nothing changed). A
+   disabled user can't sign in and their messages are dropped, so no new work starts. It looks for
+   work again; if it finds some, it makes a user who was active active again, and refuses.
+3. It calls `user_data_forget`, then denies the user's pending approvals
+   (`ApprovalBoard::forget_user`) and tells the scheduler their jobs are gone, which stops them.
+4. It deletes their workspaces through the plugins (`Workspaces::delete`, with the reason
+   `chat_deleted` for a conversation's and `job_run_ended` for a job run's), then calls
+   `workspaces_forget_user`. A plugin that can't be reached leaves the workspace `deleting`, which
+   the sweep finishes.
+5. It deletes every secret under `users/<user>/` in the secret store, SSH keys included.
+6. It deletes the user's private memories in every `agents/<agent>/memory.db`.
+7. It removes `users/<user>/`.
+8. It deletes the user (`Users::remove`), which cascades to their identities.
+9. It writes the summaries of the group sessions `user_data_forget` returned again
+   (`AgentLoop::recompact_session`). It starts right after step 3, since only that call knows which
+   sessions lost summaries, and runs in the background, so the admin doesn't wait for the model and
+   the removal's lock is released. It compacts as a turn does, outside a turn: summary requests to
+   the agent's compaction model, each rolling the previous summary and the next messages into one,
+   until the history is under the compaction threshold. The size is estimated from the messages,
+   never from recorded usage. It is best effort: a provider that can't be reached is logged, and the
+   session's next turn compacts what is left.
+
+Every step finds its work again from what is stored, so a retry skips what is done: the user row,
+which names the user until step 8, is how a retry finds them. A disabled user that is forgotten
+again is handled as any other. `trash/agents/` holds the `memory.db` of agents removed earlier,
+which Doozers doesn't read, so it isn't touched. Blobs that only deleted messages referenced are
+left to the [blob sweep](#sweep), which finds references by scanning the tables, so a message that
+is gone keeps none.
+
 ## Toolsets
 
 `toolsets` holds the MCP toolsets that the web UI creates and edits: one row per toolset, `spec`

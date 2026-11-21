@@ -57,6 +57,11 @@ A denial is the call's error result:
 A restart forgets every pending approval: nothing is stored, and startup recovery fills the call's
 slot with `interrupted`.
 
+Removing a user denies the approvals that wait for them (`ApprovalBoard::forget_user`: the call gets
+`denied`, and the presenter is told the outcome is denied), forgets the codes of theirs that closed,
+and forgets the tools `yes!` allowed in their sessions ([Storage](storage.md#forgetting-a-user)).
+`pending_for` counts them for the confirmation page.
+
 Jobs (§6.11): a job run (`Turn::job`) is answered only by the target the scheduler puts in its
 `JobTurn::approvals`, in a job session or a DM alike; without one every `ask` is
 `denied (unattended)`. With `ask_to = "deliver_to"` the target is the delivery user in their DM

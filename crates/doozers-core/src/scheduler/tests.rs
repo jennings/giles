@@ -1433,3 +1433,66 @@ async fn an_agent_is_busy_for_as_long_as_one_of_its_job_runs_is() {
     assert!(!crate::agents::AgentActivity::is_busy(&activity, &agent).await);
     h.stop().await;
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_user_is_busy_for_as_long_as_a_run_of_a_job_they_made_is() {
+    let mut h = Harness::new("", &[]).await;
+    let gate = Arc::new(tokio::sync::Notify::new());
+    *h.replies.gate.lock().unwrap() = Some(gate.clone());
+    h.start().await;
+    let scheduler = h.scheduler.clone().unwrap();
+    h.store
+        .job_create(
+            AgentId::new(AGENT).unwrap(),
+            owner(),
+            json!({"at": "2026-10-22T15:00:00Z", "prompt": "Tea time."}),
+            h.now(),
+        )
+        .await
+        .unwrap();
+    h.changes.notify();
+    h.settle().await;
+    assert!(!scheduler.user_busy(&owner()));
+
+    // The isolated run's turn waits at the gate. The session manager knows nothing of it, so only
+    // the scheduler says the user is busy, and the daemon's check asks both.
+    h.advance_to(ts("2026-10-22T15:00:01Z")).await;
+    assert!(scheduler.user_busy(&owner()));
+    assert!(!scheduler.user_busy(&UserId::new("someone").unwrap()));
+    assert!(!h.sessions.user_busy(&owner()).await);
+    let activity = crate::forget::DaemonUserActivity {
+        sessions: h.sessions.clone(),
+        scheduler: scheduler.clone(),
+    };
+    assert!(crate::forget::UserActivity::is_busy(&activity, &owner()).await);
+
+    gate.notify_one();
+    h.ran().await;
+    h.delivered(1).await;
+    h.settle().await;
+    assert!(!scheduler.user_busy(&owner()));
+    assert!(!crate::forget::UserActivity::is_busy(&activity, &owner()).await);
+    h.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_job_whose_creator_is_no_longer_active_does_not_run() {
+    let mut h = Harness::new("", &[]).await;
+    h.start().await;
+    h.store
+        .job_create(
+            AgentId::new(AGENT).unwrap(),
+            owner(),
+            json!({"at": "2026-10-22T15:00:00Z", "prompt": "Tea time."}),
+            h.now(),
+        )
+        .await
+        .unwrap();
+    h.changes.notify();
+    h.settle().await;
+    // The creator is removed (or disabled) before the time comes.
+    h.registry.users().set(Vec::new());
+    h.advance_to(ts("2026-10-22T15:00:01Z")).await;
+    h.assert_nothing_ran().await;
+    h.stop().await;
+}

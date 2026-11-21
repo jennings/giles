@@ -1640,13 +1640,22 @@ Per-user operations:
 - `doozers user export <user>`: an archive of the user's DM sessions, their messages in group
   sessions, the blobs those reference, their private memories in each agent's `memory.db`,
   `USER.md`, identity links, and runtime jobs.
-- `doozers user forget <user>`, every table and file that holds the user's data:
-  - Deleted: DM sessions and their summaries, their private memories, `USER.md`, identity links,
-    pairings, web sessions, runtime jobs, pending approvals, and their `inbox` and `outbox` rows.
+- Forgetting a user is an admin's **Remove** on the user pages of the web UI, not a CLI command. It
+  lists what it will delete and asks first, is refused for the admin's own account and for the last
+  active admin, and is refused while the user has a turn running. It disables the user first and
+  deletes the user's row last, and each step does nothing when its work is done, so a removal that
+  stops halfway is finished by removing the user again. It covers every table and file that holds
+  the user's data:
+  - Deleted: DM sessions and their summaries, their private memories in each agent's `memory.db`,
+    `users/<user>/` (`USER.md`), identity links, link codes, web sessions, runtime jobs, pending
+    approvals, their `inbox` and `outbox` rows, their password, passkeys, OpenID Connect
+    connections, and invites, their SSH keys and everything else under `users/<user>/` in the secret
+    store, and their direct conversations' workspaces.
   - In group sessions: the content of their messages is replaced with a tombstone, and summaries
     covering those messages are deleted and regenerated.
   - The `search` index is maintained by triggers, so their rows leave it with the messages.
   - Usage rows keep their token counts with the user cleared.
+  - Blobs that only deleted messages referenced are left to the blob sweep (section 11.5).
 
 Backups: copying a live SQLite file can capture a broken state (in WAL mode the main file is behind
 the WAL), so `doozers backup <dir>` is the supported way: `VACUUM INTO` for the database and for

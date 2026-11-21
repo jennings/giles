@@ -613,6 +613,24 @@ async fn a_conversation_is_busy_while_a_turn_runs_in_it() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_user_is_busy_while_a_turn_runs_in_a_session_of_theirs() {
+    let (mut h, events) = Harness::new(queue()).await;
+    let owner = UserId::new(OWNER).unwrap();
+    let someone = UserId::new("someone").unwrap();
+    assert!(!h.sessions.user_busy(&owner).await);
+
+    send(&events, message("e1", "one"));
+    h.ack().await;
+    let turn = h.turn().await;
+    assert!(h.sessions.user_busy(&owner).await);
+    assert!(!h.sessions.user_busy(&someone).await);
+
+    turn.complete();
+    h.settle().await;
+    assert!(!h.sessions.user_busy(&owner).await);
+}
+
+#[tokio::test(start_paused = true)]
 async fn one_turn_at_a_time_and_the_queue_runs_next_as_one_batch() {
     let (mut h, events) = Harness::new(queue()).await;
     send(&events, message("e1", "one"));

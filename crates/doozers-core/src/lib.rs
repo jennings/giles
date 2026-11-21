@@ -10,6 +10,7 @@ pub mod channels;
 pub mod commands;
 pub mod config;
 pub mod core_tools;
+pub mod forget;
 mod front_matter;
 pub mod http;
 pub mod identity;

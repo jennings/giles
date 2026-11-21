@@ -11,22 +11,24 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use doozers_store::{Entry, History, StoredMessage};
+use doozers_store::{Entry, History, SessionId, StoredMessage};
 use doozers_types::{
     Block, CacheRetention, CompletionRequest, GenerationParams, Message, MessageMeta, ModelInfo,
     Role, StopReason, Timestamp,
 };
 use tracing::{debug, info, warn};
 
+use tokio_util::sync::CancellationToken;
+
 use super::AgentLoop;
 use super::history::SUMMARY_INTRO;
 use super::output::Discard;
 use super::prompt::SessionPrompt;
 use super::run::{Received, TurnError, or_cancel, receive, shorten};
-use crate::config::{AgentConfig, Config};
+use crate::config::{AgentConfig, BusyMode, Config};
 use crate::providers;
 use crate::registry::ResolvedModel;
-use crate::sessions::{INTERRUPTED_RESULT, Turn};
+use crate::sessions::{INTERRUPTED_RESULT, Steering, Turn};
 
 /// A request whose estimate exceeds this percentage of the model's context window is compacted
 /// first. The rest is room for the response and for the estimate's error.
@@ -166,6 +168,84 @@ impl Compaction {
             self.prefix = prefix_tokens(prompt);
         }
         Ok(Some(history))
+    }
+}
+
+/// The most summary requests [`AgentLoop::recompact_session`] makes for one session.
+pub const MAX_RECOMPACT_PASSES: usize = 50;
+
+impl AgentLoop {
+    /// Writes the summaries of `session` again after they were deleted (a user was forgotten and
+    /// the summaries that covered their messages went with them: the history is the raw messages,
+    /// the first of them tombstones). It compacts as a turn would, outside any turn: summary
+    /// requests to the agent's compaction model, each rolling the previous summary and the next
+    /// messages into one, until a request carrying the history would be under the compaction
+    /// threshold ([`COMPACT_AT_PERCENT`] of the window). The size is estimated from the messages
+    /// themselves, never from the usage they recorded, which was measured against summaries that
+    /// are gone. The prompt prefix isn't counted, so the next turn may compact once more. The
+    /// requests are recorded as usage without a user.
+    ///
+    /// Returns whether the history fits now. A session that can't be loaded, an agent that is no
+    /// longer configured, a database error, and a failed summary request are logged and return
+    /// `false`: the next turn's compaction check does what is left, as it would after any failed
+    /// one.
+    pub async fn recompact_session(&self, id: SessionId) -> bool {
+        match self.recompact(id).await {
+            Ok(fits) => fits,
+            Err(error) => {
+                warn!(session = %id, %error, "cannot write the session's summaries again");
+                false
+            }
+        }
+    }
+
+    async fn recompact(&self, id: SessionId) -> Result<bool, TurnError> {
+        let Some(session) = self.store.session(id).await? else {
+            warn!(session = %id, "cannot compact a session that is gone");
+            return Ok(false);
+        };
+        let config = self.registry.config();
+        let Some(agent) = config.agents.get(&session.agent) else {
+            warn!(session = %id, agent = %session.agent, "cannot compact the session of an agent that isn't configured");
+            return Ok(false);
+        };
+        let model = match self.registry.agent_model(agent) {
+            Ok(model) => model,
+            Err(error) => {
+                warn!(session = %id, %error, "cannot compact: no model");
+                return Ok(false);
+            }
+        };
+        let turn = Turn {
+            session,
+            requester: None,
+            messages: Vec::new(),
+            busy_mode: BusyMode::default(),
+            cancel: CancellationToken::new(),
+            steering: Steering::detached(),
+            reply: None,
+            job: None,
+        };
+        let info = self.models.get(&model, &config).await;
+        let window = context_window(info.as_deref(), &model, &config);
+        let threshold = window * COMPACT_AT_PERCENT / 100;
+        for _ in 0..MAX_RECOMPACT_PASSES {
+            let history = self.store.load_history(id).await?;
+            if estimate_from_messages(0, &history) <= threshold {
+                return Ok(true);
+            }
+            let cut = cut(&history.messages, window * KEEP_PERCENT / 100);
+            if cut == 0 {
+                warn!(session = %id, "the history is near the context window but there is nothing older to summarize");
+                return Ok(false);
+            }
+            match summarize(self, &turn, agent, &history, cut).await? {
+                Pass::Done => {}
+                Pass::Failed | Pass::Cancelled => return Ok(false),
+            }
+        }
+        warn!(session = %id, "the history still doesn't fit after {MAX_RECOMPACT_PASSES} summaries");
+        Ok(false)
     }
 }
 
@@ -349,13 +429,24 @@ pub(super) fn estimate(prefix: u64, history: &History) -> u64 {
         });
     match anchor {
         Some((i, tokens)) => tokens + after(i + 1),
-        None => {
-            let summary = history.summary.as_ref().map_or(0, |summary| {
-                MESSAGE_TOKENS + bytes_tokens(SUMMARY_INTRO.len() + 2 + summary.content.len())
-            });
-            prefix + summary + after(0)
-        }
+        None => estimate_from_messages(prefix, history),
     }
+}
+
+/// The estimated tokens of a request carrying `history` after a prompt prefix of `prefix` tokens,
+/// from the summary and the messages alone: what [`estimate`] does without an anchor. For a history
+/// whose recorded usage can't be trusted.
+fn estimate_from_messages(prefix: u64, history: &History) -> u64 {
+    let summary = history.summary.as_ref().map_or(0, |summary| {
+        MESSAGE_TOKENS + bytes_tokens(SUMMARY_INTRO.len() + 2 + summary.content.len())
+    });
+    prefix
+        + summary
+        + history
+            .messages
+            .iter()
+            .map(|m| entry_tokens(&m.entry))
+            .sum::<u64>()
 }
 
 /// Whether a kept part may start at `message`: anything but a tool-result slot, which stays

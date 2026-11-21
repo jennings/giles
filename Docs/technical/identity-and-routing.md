@@ -144,7 +144,8 @@ reads:
   keep. The store makes the check inside the write transaction of the change (`user_set_state`,
   `user_set_role`, `user_delete`), so the check and the change can't be split by another one, and
   the users lock above serializes the callers besides. `remove` deletes the account and its
-  identities and nothing else; the operation that forgets a user's data is built on it.
+  identities and nothing else; [forgetting a user](storage.md#forgetting-a-user) deletes the rest of
+  their data first and calls it last.
 - **Import.** `doozers.toml`'s `[owner]` stays in `Config::legacy_owner`, as written. `Users::open`
   runs at `Runtime::start`: if the database hasn't recorded the import (`users_imported`), it
   validates `[owner]` as `doozers.toml` always did (at least one identity, no identity written

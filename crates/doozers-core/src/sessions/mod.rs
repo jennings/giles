@@ -449,6 +449,35 @@ impl Sessions {
         false
     }
 
+    /// Whether `user` is being worked for: a turn they asked for is running, or a session of
+    /// theirs has a turn running, a holder (a job's turn or reply), or messages queued for it. A
+    /// session whose driver hasn't loaded it yet is looked up in the database. For the web UI,
+    /// which won't forget a user in the middle of their work.
+    pub async fn user_busy(&self, user: &UserId) -> bool {
+        let live: Vec<(SessionId, bool)> = lock(&self.inner.live)
+            .iter()
+            .map(|(id, live)| {
+                let asked = live
+                    .turn
+                    .as_ref()
+                    .is_some_and(|turn| turn.requester.as_ref() == Some(user));
+                (*id, asked)
+            })
+            .collect();
+        for (id, asked) in live {
+            if asked {
+                return true;
+            }
+            // A session that can't be read can't be worked on either.
+            if let Ok(Some(session)) = self.inner.store.session(id).await
+                && session.user.as_ref() == Some(user)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Waits until `session` has no running turn, no hold, and nothing queued (a job's
     /// `idle_only`, PLAN section 6.11), or until shutdown.
     pub async fn wait_idle(&self, session: SessionId) {

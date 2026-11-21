@@ -207,30 +207,49 @@ pub struct Scheduler {
     running: JobsRunning,
 }
 
-/// The job runs in progress, per agent: from the moment a job's time comes until its run is over
-/// (waiting for a busy DM and the turn included). The web UI won't remove an agent that has one
-/// ([`Scheduler::agent_busy`]).
+/// The job runs in progress, per agent and per creator: from the moment a job's time comes until
+/// its run is over (waiting for a busy DM and the turn included). The web UI won't remove an
+/// agent that has one ([`Scheduler::agent_busy`]), or a user whose job has ([`Scheduler::user_busy`]).
 #[derive(Debug, Clone, Default)]
-pub(crate) struct JobsRunning(Arc<Mutex<HashMap<AgentId, usize>>>);
+pub(crate) struct JobsRunning(Arc<Mutex<Counts>>);
+
+#[derive(Debug, Default)]
+struct Counts {
+    agents: HashMap<AgentId, usize>,
+    creators: HashMap<UserId, usize>,
+}
 
 /// One job run in progress; dropping it ends the count.
 pub(crate) struct RunningJob {
     running: JobsRunning,
     agent: AgentId,
+    creator: Option<UserId>,
+}
+
+fn decrement<K: std::hash::Hash + Eq>(counts: &mut HashMap<K, usize>, key: &K) {
+    if let Some(count) = counts.get_mut(key) {
+        *count -= 1;
+        if *count == 0 {
+            counts.remove(key);
+        }
+    }
 }
 
 impl JobsRunning {
-    /// Counts a run of a job of `agent` until the result is dropped.
-    pub(crate) fn begin(&self, agent: &AgentId) -> RunningJob {
-        *self
-            .0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .entry(agent.clone())
-            .or_default() += 1;
+    /// Counts a run of a job of `agent`, made by `creator` if a runtime job, until the result is
+    /// dropped.
+    pub(crate) fn begin(&self, agent: &AgentId, creator: Option<&UserId>) -> RunningJob {
+        {
+            let mut counts = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            *counts.agents.entry(agent.clone()).or_default() += 1;
+            if let Some(creator) = creator {
+                *counts.creators.entry(creator.clone()).or_default() += 1;
+            }
+        }
         RunningJob {
             running: self.clone(),
             agent: agent.clone(),
+            creator: creator.cloned(),
         }
     }
 
@@ -238,7 +257,16 @@ impl JobsRunning {
         self.0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .agents
             .contains_key(agent)
+    }
+
+    fn is_running_for(&self, user: &UserId) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .creators
+            .contains_key(user)
     }
 }
 
@@ -249,11 +277,9 @@ impl Drop for RunningJob {
             .0
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some(count) = counts.get_mut(&self.agent) {
-            *count -= 1;
-            if *count == 0 {
-                counts.remove(&self.agent);
-            }
+        decrement(&mut counts.agents, &self.agent);
+        if let Some(creator) = &self.creator {
+            decrement(&mut counts.creators, creator);
         }
     }
 }
@@ -313,6 +339,14 @@ impl Scheduler {
     /// configuration, so a run that read it before the agent was taken out is counted.
     pub fn agent_busy(&self, agent: &AgentId) -> bool {
         self.running.is_running(agent)
+    }
+
+    /// Whether a run of a runtime job `user` made is in progress now, an isolated run's turn
+    /// included, which the session manager doesn't know. The count starts before the run checks
+    /// that its creator is still active, so a run that began before the user was disabled is
+    /// counted.
+    pub fn user_busy(&self, user: &UserId) -> bool {
+        self.running.is_running_for(user)
     }
 
     /// Waits until every task has stopped. Call it after cancelling the shutdown token.
@@ -500,7 +534,7 @@ async fn job_task(context: Arc<Context>, job: JobDef, stop: CancellationToken) {
         }
         // Before the agent is read, so that removing the agent (which takes it out of the
         // configuration and then looks here) sees every run that read it.
-        let _running = context.running.begin(&job.agent);
+        let _running = context.running.begin(&job.agent, job.creator.as_ref());
         let config = context.registry.config();
         let Some(agent) = config.agents.get(&job.agent) else {
             info!(job = %label, agent = %job.agent, "the job's agent was removed; the job stops");
@@ -508,7 +542,19 @@ async fn job_task(context: Arc<Context>, job: JobDef, stop: CancellationToken) {
         };
         tz = message_timezone(&context.registry.users(), job.creator.as_ref(), agent);
         let now = context.clock.now();
-        if in_active_hours(job.active_hours.as_ref(), &tz, now) {
+        // A job of a user who was disabled (or removed) doesn't run: checked once the run is
+        // counted, so removing the user, which disables them and then looks for runs, sees it.
+        let creator_active = job.creator.as_ref().is_none_or(|creator| {
+            context
+                .registry
+                .users()
+                .get()
+                .user(creator)
+                .is_some_and(crate::users::User::is_active)
+        });
+        if !creator_active {
+            debug!(job = %label, "the job's creator isn't active; skipped");
+        } else if in_active_hours(job.active_hours.as_ref(), &tz, now) {
             if !run::run(&context, &job, agent, &stop).await {
                 return;
             }
