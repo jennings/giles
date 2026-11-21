@@ -21,6 +21,7 @@ mod limits;
 mod login;
 mod memory;
 mod oidc;
+mod oidc_admin;
 mod oidc_pages;
 mod pages;
 mod passkey;

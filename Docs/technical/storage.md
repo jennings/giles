@@ -652,6 +652,7 @@ replaces it. Removing a provider removes its connections, and so does removing a
 
 | Method                                                        | Contract                                                  |
 | ------------------------------------------------------------- | --------------------------------------------------------- |
+| `OidcProviderSettings::validate()`                            | The check `add` and `update` make, for a caller that must know before it changes anything else. |
 | `oidc_provider_add(id, settings, now)`                        | Adds a provider and returns it. `Error::InvalidRequest` for an id that isn't a slug (`is_provider_id`) or settings that are blank, have control characters, or whose scopes lack `openid`; `Error::Conflict` if the id exists. |
 | `oidc_provider_update(id, settings, now)`                     | Replaces every setting; `None` if there is no such provider. |
 | `oidc_provider_set_enabled(id, enabled, now)`                 | Enables or disables; `false` if there is no such provider. |
@@ -662,6 +663,7 @@ replaces it. Removing a provider removes its connections, and so does removing a
 | `user_oidc_connections(user)`                                 | The user's connections, oldest first.                     |
 | `user_oidc_disconnect(user, provider)`                        | Removes the user's connection to the provider; `false` if they had none. |
 | `oidc_connection_count(provider, issuer)`                     | How many accounts are connected with that issuer.         |
+| `oidc_provider_connection_count(provider)`                    | How many accounts are connected, whatever their issuer: what removing the provider forgets. |
 
 ## Toolsets
 

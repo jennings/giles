@@ -369,7 +369,11 @@ impl Oidc {
     /// [`Error::Provider`], saying why the provider can't be used: the issuer isn't a usable URL,
     /// the provider can't be reached, or its document is wrong (another issuer, no code flow, no
     /// PKCE with S256, no signing algorithm Doozers accepts, an endpoint that isn't `https`).
-    async fn fetch(&self, issuer: &str, now: Timestamp) -> Result<Arc<Discovered>, Error> {
+    pub(super) async fn fetch(
+        &self,
+        issuer: &str,
+        now: Timestamp,
+    ) -> Result<Arc<Discovered>, Error> {
         let url = Url::parse(issuer)
             .map_err(|err| Error::Provider(format!("the issuer isn't a URL: {err}")))?;
         let https_only = match (url.scheme(), url.host_str()) {

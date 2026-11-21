@@ -1,0 +1,42 @@
+{% extends "web/app.html" %}
+
+{% block title %}Identity providers - Doozers{% endblock %}
+
+{% block content %}
+<div class="page-head">
+<h1>Identity providers</h1>
+<a class="button button-primary" href="/admin/identity-providers/new">New identity provider</a>
+</div>
+<p class="lede">An identity provider is an OpenID Connect service, such as Google, Authentik, or Keycloak, that your users can sign in with. Every enabled provider is on the login page, and on the page an invite or recovery link leads to, where a user connects their account at it. Signing in with an account nobody connected is refused, so a provider never creates users.</p>
+{%- if let Some(notice) = notice %}
+<p class="banner banner-info" role="status">{{ notice }}</p>
+{%- endif %}
+{%- if !has_public_url %}
+<p class="banner banner-warn"><span>Doozers doesn't know its own address, so the redirect URIs below use the address it listens on, <code>{{ base }}</code>. Set <code>public_url</code> in <code>[channel.web.config]</code> of doozers.toml to the address your users open, and register the redirect URIs it gives.</span></p>
+{%- endif %}
+{%- if providers.is_empty() %}
+<p>No identity providers yet. Add one with <a href="/admin/identity-providers/new">New identity provider</a>.</p>
+{%- else %}
+<div class="table-wrap">
+<table class="table table-wide">
+<thead><tr><th>Name</th><th>Issuer</th><th>Redirect URI</th><th>State</th><th>Connected</th><th><span class="sr-only">Actions</span></th></tr></thead>
+<tbody>
+{%- for provider in providers %}
+<tr id="provider-{{ provider.id }}">
+<td data-label="Name" class="m-title"><strong>{{ provider.display_name }}</strong><br><span class="meta"><code>{{ provider.id }}</code>, client <code>{{ provider.client_id }}</code>{% if provider.secret_stored %}, secret stored{% else %}, no secret{% endif %}</span></td>
+<td data-label="Issuer" class="m-body"><code>{{ provider.issuer }}</code></td>
+<td data-label="Redirect URI" class="m-body"><code>{{ provider.redirect_uri }}</code></td>
+<td data-label="State" class="m-aside">{% if provider.enabled %}<span class="pill pill-ok">enabled</span>{% else %}<span class="pill pill-neutral">disabled</span>{% endif %}</td>
+<td data-label="Connected" class="secondary m-meta m-label">{{ provider.connected }}</td>
+<td class="row-actions">
+<a class="button button-small" href="/admin/identity-providers/{{ provider.id }}/edit">Edit</a>
+<form method="post" action="/admin/identity-providers/{{ provider.id }}/enabled"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="enabled" value="{% if provider.enabled %}false{% else %}true{% endif %}"><button type="submit" class="button-small" aria-label="{% if provider.enabled %}Disable{% else %}Enable{% endif %} {{ provider.display_name }}">{% if provider.enabled %}Disable{% else %}Enable{% endif %}</button></form>
+<a class="button button-small button-danger" href="/admin/identity-providers/{{ provider.id }}/remove">Remove</a>
+</td>
+</tr>
+{%- endfor %}
+</tbody>
+</table>
+</div>
+{%- endif %}
+{% endblock %}

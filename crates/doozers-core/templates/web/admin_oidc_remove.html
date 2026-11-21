@@ -1,0 +1,31 @@
+{% extends "web/app.html" %}
+
+{% block title %}Remove {{ provider.display_name }} - Identity providers - Doozers{% endblock %}
+
+{% block content %}
+<a class="back" href="/admin/identity-providers#provider-{{ provider.id }}">Identity providers</a>
+<section class="card confirm">
+<h1>Remove {{ provider.display_name }}?</h1>
+<dl class="facts">
+<dt>Id</dt>
+<dd><code>{{ provider.id }}</code></dd>
+<dt>Issuer</dt>
+<dd><code>{{ provider.issuer }}</code></dd>
+<dt>Connected accounts</dt>
+<dd>{{ connected }}</dd>
+</dl>
+<ul>
+<li>Users can no longer sign in with it, and its button leaves the login and setup pages.</li>
+<li>Every connection to it is forgotten. A user who signed in only with it needs a recovery link, which an admin or <code>doozers admin login-link</code> makes, to add another way to sign in.</li>
+<li>Browsers already logged in with it stay logged in, for up to 30 days. To end someone's logins, disable the user.</li>
+<li>The client secret is deleted from the secret store. Delete the client at the provider too, if you don't need it.</li>
+</ul>
+<div class="form-actions">
+<form method="post" action="/admin/identity-providers/{{ provider.id }}/remove">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button type="submit" class="button-danger-solid">Remove provider</button>
+</form>
+<a class="button button-quiet" href="/admin/identity-providers#provider-{{ provider.id }}">Cancel</a>
+</div>
+</section>
+{% endblock %}

@@ -1237,7 +1237,7 @@ async fn a_token_that_expired_is_judged_by_the_time_of_the_sign_in() {
 }
 
 #[tokio::test]
-async fn the_discovery_document_is_kept_for_an_hour() {
+async fn the_discovery_document_is_kept_for_an_hour_unless_a_fresh_one_is_fetched() {
     let site = site().await;
     let oidc = Oidc::default();
     let t0 = Timestamp::now();
@@ -1246,10 +1246,17 @@ async fn the_discovery_document_is_kept_for_an_hour() {
         .await
         .unwrap();
     assert_eq!(site.idp.requests().discovery, 1);
-    oidc.discover(&site.idp.issuer, after(t0, 7000))
+    // A fetch asks again whatever is kept, and what it got is kept from then on.
+    oidc.fetch(&site.idp.issuer, after(t0, 3000)).await.unwrap();
+    assert_eq!(site.idp.requests().discovery, 2);
+    oidc.discover(&site.idp.issuer, after(t0, 6500))
         .await
         .unwrap();
     assert_eq!(site.idp.requests().discovery, 2);
+    oidc.discover(&site.idp.issuer, after(t0, 7000))
+        .await
+        .unwrap();
+    assert_eq!(site.idp.requests().discovery, 3);
 }
 
 #[tokio::test]
@@ -1331,4 +1338,680 @@ async fn an_issuer_that_is_not_https_or_not_a_url_is_refused_before_any_request(
         assert!(matches!(err, oidc::Error::Provider(_)), "{issuer}: {err}");
     }
     assert_eq!(site.idp.requests().discovery, 0);
+}
+
+// The admin pages.
+
+/// The form of a provider, as the browser posts it.
+fn provider_form(csrf: &str, issuer: &str, extra: &[(&str, &str)]) -> String {
+    let mut pairs = vec![
+        ("csrf", csrf),
+        ("id", "idp"),
+        ("display_name", "Idp"),
+        ("issuer", issuer),
+        ("client_id", CLIENT_ID),
+        ("client_secret", CLIENT_SECRET),
+        ("scopes", "profile"),
+        ("enabled", "on"),
+    ];
+    for (name, value) in extra {
+        pairs.retain(|(have, _)| have != name);
+        pairs.push((name, value));
+    }
+    url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(pairs)
+        .finish()
+}
+
+impl Site {
+    /// A browser logged in as `user` with a recovery link.
+    async fn recovered(&self, user: &str) -> Browser {
+        let token = invite_token(&self.env, &id(user), InviteKind::Recovery).await;
+        let response = redeem(self.router.clone(), &token, &[]).await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER, "{user}");
+        let mut browser = Browser::default();
+        browser.absorb(&response);
+        browser
+    }
+
+    async fn post(&self, browser: &mut Browser, path: &str, form: &str) -> Response {
+        browser
+            .send(&self.router, Method::POST, path, Some(form))
+            .await
+    }
+
+    async fn stored_secret(&self, name: &str) -> Option<String> {
+        self.secrets
+            .get(&SecretPath::new(name).unwrap())
+            .await
+            .unwrap()
+            .map(|secret| secret.expose().to_owned())
+    }
+}
+
+/// A site with no provider yet.
+async fn bare_site() -> Site {
+    let site = site().await;
+    assert!(site.env.store.oidc_provider_remove("idp").await.unwrap());
+    site.secrets
+        .delete(&SecretPath::new(SECRET_PATH).unwrap())
+        .await
+        .unwrap();
+    site
+}
+
+#[tokio::test]
+async fn an_admin_adds_a_provider_and_an_invited_user_signs_up_with_it_and_signs_in_later() {
+    let site = bare_site().await;
+    let mut admin = site.recovered("root").await;
+
+    // The form says what to register at the provider.
+    let page = body_text(
+        admin
+            .get(&site.router, "/admin/identity-providers/new")
+            .await,
+    )
+    .await;
+    assert!(page.contains("<h1>New identity provider</h1>"), "{page}");
+    assert!(page.contains("/auth/oidc/&#60;id&#62;/callback"), "{page}");
+    let page = body_text(admin.get(&site.router, "/admin/identity-providers").await).await;
+    assert!(page.contains("No identity providers yet"), "{page}");
+
+    // Adding one reads the provider's document and keeps the secret in the secret store.
+    let form = provider_form(&admin.csrf(), &site.idp.issuer, &[]);
+    let response = site
+        .post(&mut admin, "/admin/identity-providers", &form)
+        .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        location(&response),
+        "/admin/identity-providers?added=Idp#provider-idp"
+    );
+    assert_eq!(site.idp.requests().discovery, 1);
+    let stored = site.env.store.oidc_provider("idp").await.unwrap().unwrap();
+    assert_eq!(stored.issuer, site.idp.issuer);
+    assert_eq!(stored.client_id, CLIENT_ID);
+    assert_eq!(stored.scopes, ["openid", "profile"]);
+    assert!(stored.enabled);
+    assert_eq!(stored.client_secret.as_deref(), Some(SECRET_PATH));
+    assert_eq!(
+        site.stored_secret(SECRET_PATH).await.as_deref(),
+        Some(CLIENT_SECRET)
+    );
+
+    // The list shows it with the redirect URI to register, and never the secret.
+    let page = body_text(
+        admin
+            .get(&site.router, "/admin/identity-providers?added=Idp")
+            .await,
+    )
+    .await;
+    assert!(page.contains("Added Idp."), "{page}");
+    assert!(page.contains(&site.idp.issuer), "{page}");
+    assert!(
+        page.contains(&format!("{BASE}/auth/oidc/idp/callback")),
+        "{page}"
+    );
+    assert!(page.contains("secret stored"), "{page}");
+    assert!(page.contains("enabled"), "{page}");
+    assert!(!page.contains(CLIENT_SECRET), "{page}");
+    let edit = body_text(
+        admin
+            .get(&site.router, "/admin/identity-providers/idp/edit")
+            .await,
+    )
+    .await;
+    assert!(!edit.contains(CLIENT_SECRET), "{edit}");
+    assert!(edit.contains("stored; leave blank to keep it"), "{edit}");
+
+    // An invited user connects an account at it, and signs in with it later.
+    let mut newbie = site.invited("newbie").await;
+    let response = site.connect(&mut newbie, "newbie-sub").await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(location(&response), "/setup");
+    let mut later = Browser::default();
+    let response = site.sign_in(&mut later, "newbie-sub").await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let session = site
+        .env
+        .store
+        .web_session(later.session().unwrap(), Timestamp::now())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (session.user, session.method),
+        (id("newbie"), SignInMethod::Oidc)
+    );
+
+    // An account nobody connected is refused.
+    let mut stranger = Browser::default();
+    let response = site.sign_in(&mut stranger, "stranger").await;
+    assert_refused(response, &stranger, "an unconnected account").await;
+
+    // The list counts the connected account.
+    let page = body_text(admin.get(&site.router, "/admin/identity-providers").await).await;
+    assert!(page.contains("1 account"), "{page}");
+}
+
+#[tokio::test]
+async fn only_an_admin_gets_the_provider_pages_and_every_change_needs_the_csrf_token() {
+    let site = site().await;
+    let mut member = site.recovered("mia").await;
+    let csrf = member.csrf();
+    for path in [
+        "/admin/identity-providers",
+        "/admin/identity-providers/new",
+        "/admin/identity-providers/idp/edit",
+        "/admin/identity-providers/idp/remove",
+    ] {
+        let response = member.get(&site.router, path).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+    }
+    let form = provider_form(&csrf, &site.idp.issuer, &[("id", "second")]);
+    for (path, body) in [
+        ("/admin/identity-providers", form.clone()),
+        ("/admin/identity-providers/idp", form.clone()),
+        (
+            "/admin/identity-providers/idp/enabled",
+            format!("csrf={csrf}&enabled=false"),
+        ),
+        (
+            "/admin/identity-providers/idp/remove",
+            format!("csrf={csrf}"),
+        ),
+    ] {
+        let response = site.post(&mut member, path, &body).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+    }
+    let mut nobody = Browser::default();
+    let response = nobody.get(&site.router, "/admin/identity-providers").await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let nav = body_text(site.recovered("mia").await.get(&site.router, "/").await).await;
+    assert!(!nav.contains("Identity providers"), "{nav}");
+
+    // An admin's post without the token, or with another's, changes nothing.
+    let mut admin = site.recovered("root").await;
+    let nav = body_text(admin.get(&site.router, "/").await).await;
+    assert!(
+        nav.contains(r#"<a href="/admin/identity-providers">Identity providers</a>"#),
+        "{nav}"
+    );
+    let stolen = member.csrf();
+    for (path, body) in [
+        (
+            "/admin/identity-providers",
+            provider_form("", &site.idp.issuer, &[("id", "second")]),
+        ),
+        (
+            "/admin/identity-providers/idp",
+            provider_form(&stolen, &site.idp.issuer, &[("display_name", "Hacked")]),
+        ),
+        (
+            "/admin/identity-providers/idp/enabled",
+            "enabled=false".to_owned(),
+        ),
+        ("/admin/identity-providers/idp/remove", String::new()),
+    ] {
+        let response = site.post(&mut admin, path, &body).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+    }
+    let stored = site.env.store.oidc_providers().await.unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].display_name, "Idp");
+    assert!(stored[0].enabled);
+}
+
+#[tokio::test]
+async fn a_provider_that_cannot_be_used_is_refused_with_the_reason_and_nothing_is_stored() {
+    let site = bare_site().await;
+    let mut admin = site.recovered("root").await;
+    let csrf = admin.csrf();
+    /// The form fields to change, the status, and what the page says.
+    type Attempt<'a> = (&'a [(&'a str, &'a str)], StatusCode, &'a str);
+    let attempts: [Attempt; 7] = [
+        (
+            &[("id", "Not An Id")],
+            StatusCode::BAD_REQUEST,
+            "lowercase letters",
+        ),
+        (&[("id", "")], StatusCode::BAD_REQUEST, "lowercase letters"),
+        (&[("display_name", "  ")], StatusCode::BAD_REQUEST, "name"),
+        (&[("issuer", "")], StatusCode::BAD_REQUEST, "issuer"),
+        (&[("client_id", "")], StatusCode::BAD_REQUEST, "client id"),
+        (
+            &[("issuer", "http://idp.example.com")],
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "must be an https URL",
+        ),
+        (
+            &[("issuer", "http://127.0.0.1:9")],
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Doozers can&#39;t use this provider",
+        ),
+    ];
+    for (extra, status, reason) in attempts {
+        let body = provider_form(&csrf, &site.idp.issuer, extra);
+        let response = site
+            .post(&mut admin, "/admin/identity-providers", &body)
+            .await;
+        assert_eq!(response.status(), status, "{extra:?}");
+        let page = body_text(response).await;
+        assert!(page.contains(reason), "{extra:?}: {page}");
+        assert!(page.contains(r#"role="alert""#), "{page}");
+        // The secret doesn't come back.
+        assert!(!page.contains(CLIENT_SECRET), "{page}");
+    }
+    // A document that names another issuer.
+    site.idp
+        .edit_discovery(|doc| doc["issuer"] = "https://another.example.com".into());
+    let body = provider_form(&csrf, &site.idp.issuer, &[]);
+    let response = site
+        .post(&mut admin, "/admin/identity-providers", &body)
+        .await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body_text(response).await.contains("unexpected issuer"));
+    assert!(site.env.store.oidc_providers().await.unwrap().is_empty());
+    assert_eq!(site.stored_secret("oidc/idp/client-secret").await, None);
+}
+
+#[tokio::test]
+async fn a_provider_id_is_taken_once_and_scopes_are_made_tidy() {
+    let site = bare_site().await;
+    let mut admin = site.recovered("root").await;
+    let csrf = admin.csrf();
+    let form = provider_form(
+        &csrf,
+        &site.idp.issuer,
+        &[
+            ("scopes", "email  profile openid email"),
+            ("client_secret", ""),
+        ],
+    );
+    let response = site
+        .post(&mut admin, "/admin/identity-providers", &form)
+        .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let stored = site.env.store.oidc_provider("idp").await.unwrap().unwrap();
+    assert_eq!(stored.scopes, ["openid", "email", "profile"]);
+    assert_eq!(stored.client_secret, None, "no secret typed, none stored");
+
+    let again = provider_form(&csrf, &site.idp.issuer, &[("display_name", "Other")]);
+    let response = site
+        .post(&mut admin, "/admin/identity-providers", &again)
+        .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert!(body_text(response).await.contains("exists already"));
+    let stored = site.env.store.oidc_provider("idp").await.unwrap().unwrap();
+    assert_eq!(stored.display_name, "Idp");
+    assert_eq!(site.stored_secret("oidc/idp/client-secret").await, None);
+}
+
+#[tokio::test]
+async fn editing_keeps_the_secret_unless_a_new_one_is_typed_or_removal_is_ticked() {
+    let site = site().await;
+    let mut admin = site.recovered("root").await;
+    let csrf = admin.csrf();
+    let edit = |extra: &[(&str, &str)]| provider_form(&csrf, &site.idp.issuer, extra);
+
+    // A blank secret keeps the one stored; the id in the form is ignored, the path's is used.
+    let body = edit(&[
+        ("client_secret", ""),
+        ("display_name", "Renamed"),
+        ("client_id", "new-client"),
+        ("scopes", "email"),
+        ("id", "other"),
+    ]);
+    let response = site
+        .post(&mut admin, "/admin/identity-providers/idp", &body)
+        .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        location(&response),
+        "/admin/identity-providers?saved=Renamed#provider-idp"
+    );
+    let stored = site.env.store.oidc_provider("idp").await.unwrap().unwrap();
+    assert_eq!(stored.display_name, "Renamed");
+    assert_eq!(stored.client_id, "new-client");
+    assert_eq!(stored.scopes, ["openid", "email"]);
+    assert_eq!(stored.client_secret.as_deref(), Some(SECRET_PATH));
+    assert_eq!(
+        site.stored_secret(SECRET_PATH).await.as_deref(),
+        Some(CLIENT_SECRET)
+    );
+    assert!(
+        site.env
+            .store
+            .oidc_provider("other")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(stored.updated_at >= stored.created_at);
+
+    // A typed one replaces it.
+    let body = edit(&[("client_secret", "rotated-secret")]);
+    let response = site
+        .post(&mut admin, "/admin/identity-providers/idp", &body)
+        .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        site.stored_secret(SECRET_PATH).await.as_deref(),
+        Some("rotated-secret")
+    );
+
+    // A tick removes it, and its name from the provider.
+    let body = edit(&[("client_secret", ""), ("clear_secret", "on")]);
+    let response = site
+        .post(&mut admin, "/admin/identity-providers/idp", &body)
+        .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let stored = site.env.store.oidc_provider("idp").await.unwrap().unwrap();
+    assert_eq!(stored.client_secret, None);
+    assert_eq!(site.stored_secret(SECRET_PATH).await, None);
+    let page = body_text(
+        admin
+            .get(&site.router, "/admin/identity-providers/idp/edit")
+            .await,
+    )
+    .await;
+    assert!(page.contains(r#"placeholder="none""#), "{page}");
+    assert!(!page.contains("Remove the stored secret"), "{page}");
+
+    // A change the provider can't take leaves the stored provider as it was, and the page shows
+    // what was typed, except the secret.
+    let body = edit(&[
+        ("client_secret", "typed-secret"),
+        ("issuer", "http://idp.example.com"),
+        ("display_name", "Typed"),
+    ]);
+    let response = site
+        .post(&mut admin, "/admin/identity-providers/idp", &body)
+        .await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let page = body_text(response).await;
+    assert!(page.contains("http://idp.example.com"), "{page}");
+    assert!(page.contains(r#"value="Typed""#), "{page}");
+    assert!(!page.contains("typed-secret"), "{page}");
+    let stored = site.env.store.oidc_provider("idp").await.unwrap().unwrap();
+    assert_eq!(
+        (stored.display_name.as_str(), stored.issuer.as_str()),
+        ("Idp", site.idp.issuer.as_str())
+    );
+    assert_eq!(site.stored_secret(SECRET_PATH).await, None);
+
+    // No such provider.
+    for path in [
+        "/admin/identity-providers/nope",
+        "/admin/identity-providers/Not%20An%20Id",
+    ] {
+        let response = site.post(&mut admin, path, &edit(&[])).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+    }
+    let response = admin
+        .get(&site.router, "/admin/identity-providers/nope/edit")
+        .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn changing_the_issuer_disconnects_the_accounts_of_the_old_one() {
+    let site = site().await;
+    site.connected("mia", "mia-sub").await;
+    let mut admin = site.recovered("root").await;
+    let other = FakeIdp::start(CLIENT_ID, Some(CLIENT_SECRET)).await;
+    let body = provider_form(&admin.csrf(), &other.issuer, &[("client_secret", "")]);
+    let response = site
+        .post(&mut admin, "/admin/identity-providers/idp", &body)
+        .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    // The account belongs to the old issuer, which the provider no longer has.
+    let mut browser = Browser::default();
+    let start = browser.get(&site.router, &login_path("idp")).await;
+    let back = path_of(&other.approve(&location(&start), "mia-sub").unwrap());
+    let response = browser.get(&site.router, &back).await;
+    assert_refused(response, &browser, "an account of the old issuer").await;
+}
+
+#[tokio::test]
+async fn disabling_takes_a_provider_off_the_pages_and_enabling_puts_it_back() {
+    let site = site().await;
+    let mut admin = site.recovered("root").await;
+    let csrf = admin.csrf();
+    let toggle = |value: &str| format!("csrf={csrf}&enabled={value}");
+
+    let response = site
+        .post(
+            &mut admin,
+            "/admin/identity-providers/idp/enabled",
+            &toggle("false"),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        location(&response),
+        "/admin/identity-providers#provider-idp"
+    );
+    let page = body_text(admin.get(&site.router, "/admin/identity-providers").await).await;
+    assert!(page.contains("disabled"), "{page}");
+    assert!(page.contains(r#"name="enabled" value="true""#), "{page}");
+    let login = body_text(Browser::default().get(&site.router, "/login").await).await;
+    assert!(!login.contains("/login/oidc/idp"), "{login}");
+    // The discovery document isn't asked for: a provider that is down can be turned off.
+    assert_eq!(site.idp.requests().discovery, 0);
+
+    let response = site
+        .post(
+            &mut admin,
+            "/admin/identity-providers/idp/enabled",
+            &toggle("true"),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let login = body_text(Browser::default().get(&site.router, "/login").await).await;
+    assert!(login.contains("/login/oidc/idp"), "{login}");
+
+    for (path, body) in [
+        ("/admin/identity-providers/idp/enabled", toggle("maybe")),
+        ("/admin/identity-providers/nope/enabled", toggle("true")),
+    ] {
+        let response = site.post(&mut admin, path, &body).await;
+        assert!(response.status().is_client_error(), "{path}");
+    }
+}
+
+#[tokio::test]
+async fn removing_a_provider_asks_first_then_forgets_its_connections_and_its_secret() {
+    let site = site().await;
+    site.connected("mia", "mia-sub").await;
+    site.connected("root", "root-sub").await;
+    let mut admin = site.recovered("root").await;
+
+    let page = body_text(
+        admin
+            .get(&site.router, "/admin/identity-providers/idp/remove")
+            .await,
+    )
+    .await;
+    assert!(page.contains("Remove Idp?"), "{page}");
+    assert!(page.contains("2 accounts"), "{page}");
+    // Asking changed nothing.
+    assert!(site.env.store.oidc_provider("idp").await.unwrap().is_some());
+    assert!(site.stored_secret(SECRET_PATH).await.is_some());
+
+    let body = format!("csrf={}", admin.csrf());
+    let response = site
+        .post(&mut admin, "/admin/identity-providers/idp/remove", &body)
+        .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(location(&response), "/admin/identity-providers?removed=Idp");
+    assert!(site.env.store.oidc_provider("idp").await.unwrap().is_none());
+    assert_eq!(site.connection("mia-sub").await, None);
+    assert!(
+        site.env
+            .store
+            .user_oidc_connections(&id("mia"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(site.stored_secret(SECRET_PATH).await, None);
+    let page = body_text(
+        admin
+            .get(&site.router, "/admin/identity-providers?removed=Idp")
+            .await,
+    )
+    .await;
+    assert!(page.contains("Removed Idp."), "{page}");
+    let login = body_text(Browser::default().get(&site.router, "/login").await).await;
+    assert!(!login.contains("/login/oidc/"), "{login}");
+
+    let response = site
+        .post(&mut admin, "/admin/identity-providers/idp/remove", &body)
+        .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn what_an_admin_or_a_provider_wrote_is_escaped() {
+    let site = site().await;
+    let mut admin = site.recovered("root").await;
+    let xss = "<script>alert(1)</script>";
+    let body = provider_form(
+        &admin.csrf(),
+        &site.idp.issuer,
+        &[
+            ("display_name", xss),
+            ("client_secret", ""),
+            ("client_id", "<b>x</b>"),
+        ],
+    );
+    let response = site
+        .post(&mut admin, "/admin/identity-providers/idp", &body)
+        .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    for path in [
+        "/admin/identity-providers",
+        "/admin/identity-providers/idp/edit",
+        "/admin/identity-providers/idp/remove",
+        "/",
+    ] {
+        let page = body_text(admin.get(&site.router, path).await).await;
+        assert!(!page.contains(xss), "{path}: {page}");
+        assert!(!page.contains("<b>x</b>"), "{path}: {page}");
+    }
+    // The name is on the login page and the setup page, escaped too.
+    let login = body_text(Browser::default().get(&site.router, "/login").await).await;
+    assert!(!login.contains(xss), "{login}");
+    assert!(login.contains("&#60;script&#62;alert(1)"), "{login}");
+    let mut newbie = site.invited("newbie").await;
+    let setup = body_text(newbie.get(&site.router, "/setup").await).await;
+    assert!(!setup.contains(xss), "{setup}");
+}
+
+#[tokio::test]
+async fn an_edit_the_store_would_refuse_changes_nothing_not_even_the_secret() {
+    let site = site().await;
+    let mut admin = site.recovered("root").await;
+    let csrf = admin.csrf();
+    // A scope with a character a scope can't have: only printable ASCII, which the form check
+    // shares with the store, so the refusal comes before anything is written.
+    for scopes in ["openid é", "openid \u{7f}x", "openid a\"b", "openid a\\b"] {
+        let body = provider_form(
+            &csrf,
+            &site.idp.issuer,
+            &[("client_secret", "typed-secret"), ("scopes", scopes)],
+        );
+        let response = site
+            .post(&mut admin, "/admin/identity-providers/idp", &body)
+            .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{scopes:?}");
+        let page = body_text(response).await;
+        assert!(
+            page.contains("A provider&#39;s scopes must be valid scope tokens."),
+            "{page}"
+        );
+        assert!(!page.contains("typed-secret"), "{page}");
+        assert_eq!(
+            site.stored_secret(SECRET_PATH).await.as_deref(),
+            Some(CLIENT_SECRET),
+            "{scopes:?}"
+        );
+        let stored = site.env.store.oidc_provider("idp").await.unwrap().unwrap();
+        assert_eq!(stored.scopes, ["openid", "profile"], "{scopes:?}");
+    }
+    // The same for a new provider: no row and no secret.
+    let body = provider_form(
+        &csrf,
+        &site.idp.issuer,
+        &[("id", "second"), ("scopes", "openid é")],
+    );
+    let response = site
+        .post(&mut admin, "/admin/identity-providers", &body)
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        site.env
+            .store
+            .oidc_provider("second")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(site.stored_secret("oidc/second/client-secret").await, None);
+}
+
+#[tokio::test]
+async fn an_edit_of_a_provider_removed_meanwhile_stores_no_secret() {
+    let site = site().await;
+    let mut admin = site.recovered("root").await;
+    // The form was shown, then the provider (and its secret) went.
+    let path = SecretPath::new(SECRET_PATH).unwrap();
+    assert!(site.env.store.oidc_provider_remove("idp").await.unwrap());
+    site.secrets.delete(&path).await.unwrap();
+    let body = provider_form(
+        &admin.csrf(),
+        &site.idp.issuer,
+        &[("client_secret", "typed")],
+    );
+    let response = site
+        .post(&mut admin, "/admin/identity-providers/idp", &body)
+        .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(site.stored_secret(SECRET_PATH).await, None);
+}
+
+#[tokio::test]
+async fn the_removal_page_counts_every_connection_the_removal_forgets() {
+    let site = site().await;
+    site.connected("mia", "mia-sub").await;
+    // A connection under an issuer the provider no longer has goes with the provider too.
+    site.env
+        .store
+        .user_oidc_connect(
+            "idp",
+            "https://old.example.com",
+            "old-sub",
+            &id("root"),
+            Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    let mut admin = site.recovered("root").await;
+    let list = body_text(admin.get(&site.router, "/admin/identity-providers").await).await;
+    assert!(
+        list.contains("1 account"),
+        "only the one that can sign in: {list}"
+    );
+    let page = body_text(
+        admin
+            .get(&site.router, "/admin/identity-providers/idp/remove")
+            .await,
+    )
+    .await;
+    assert!(page.contains("2 accounts"), "{page}");
+    assert!(
+        page.contains("stay logged in") && page.contains("disable the user"),
+        "says that logins made with the provider last: {page}"
+    );
 }

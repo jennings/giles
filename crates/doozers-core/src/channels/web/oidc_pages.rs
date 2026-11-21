@@ -1,4 +1,5 @@
-//! Signing in with OpenID Connect: the three routes a sign-in or a connection goes through.
+//! Signing in with OpenID Connect: the three routes a sign-in or a connection goes through. The
+//! pages where an admin adds the providers are in [`oidc_admin`](super::oidc_admin).
 //! Design: `Docs/technical/web-channel.md`; the protocol is in [`oidc`](super::oidc).
 //!
 //! - `GET /login/oidc/<id>?nonce=` starts a sign-in from the login page. The link carries the
@@ -66,9 +67,9 @@ pub(super) struct OidcPages {
 }
 
 impl WebApp {
-    /// Adds the OpenID Connect sign-in routes to `builder`, reading client secrets from
-    /// `secrets`, behind the same authentication middleware as the chat pages. Every answer is
-    /// `no-store`.
+    /// Adds the OpenID Connect sign-in routes and the identity provider pages to `builder`, with
+    /// client secrets in `secrets`, behind the same authentication middleware as the chat pages.
+    /// Every answer is `no-store`.
     pub fn install_oidc(
         &self,
         builder: RouterBuilder,
@@ -85,6 +86,7 @@ impl WebApp {
                 .route("/login/oidc/{id}", get(sign_in))
                 .route("/setup/oidc/{id}", get(connect))
                 .route("/auth/oidc/{id}/callback", get(callback))
+                .merge(super::oidc_admin::routes())
                 .with_state(pages)
                 .route_layer(auth)
                 .route_layer(map_response(async |response: Response| no_store(response))),

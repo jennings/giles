@@ -14,9 +14,9 @@ can have only one web channel.
 
 ## Logging in
 
-Every page needs a login. You log in with a passkey, a password, a one-time link, or through a
-trusted reverse proxy. A page that needs a login points you to `/login`, which lists the ways to log
-in.
+Every page needs a login. You log in with a passkey, a password, an identity provider, a one-time
+link, or through a trusted reverse proxy. A page that needs a login points you to `/login`, which
+lists the ways to log in.
 
 ### Invite and recovery links
 
@@ -131,6 +131,55 @@ that a stranger can't tell a real username from the answer alone. That makes gue
 harder, but it doesn't hide which usernames exist from someone who is determined: the made-up ids
 don't fully match real ones. If a key's counter goes backwards, which can mean it was copied,
 Doozers refuses it and records a warning in the log.
+
+### Identity providers
+
+An identity provider lets your users log in with an account they already have, such as Google,
+Authentik, or Keycloak, using OpenID Connect. An admin adds each provider, and each user connects
+one account at it. Doozers refuses an account nobody connected, because a provider never creates
+users.
+
+Doozers needs the provider's **issuer**, a **client id**, and usually a **client secret**. You get
+the client id and secret by registering Doozers at the provider as an application, which the steps
+below cover.
+
+To add a provider:
+
+1. Open **Identity providers** in the admin part of the sidebar, then **New identity provider**.
+2. Choose an **Id**, such as `google`. It is part of the redirect URI and can't change.
+3. Register Doozers at the provider as an application, with this redirect URI and your id in place
+   of `<id>`: `https://doozers.example.com/auth/oidc/<id>/callback`. It starts with your
+   `public_url`. The page shows the exact address for each provider. The provider gives you a client
+   id and usually a client secret.
+4. Fill in the name users see, the issuer URL, the client id, and the client secret. Leave the
+   secret empty for a client that has none. The default scopes are all Doozers needs.
+5. Press **Add**.
+
+Doozers reads the provider's settings from `<issuer>/.well-known/openid-configuration` when you
+save, and tells you what is wrong if it can't use the provider. The issuer must be an `https`
+address. A provider on your own machine can use `http://localhost`. Doozers keeps the secret in its
+secret store and never shows it again. To change it, type a new one when you edit the provider.
+Leave the field empty to keep the one stored.
+
+A provider works if it supports PKCE and signs its ID tokens with RSA, ECDSA (P-256 or P-384), or
+EdDSA. Microsoft's `common` endpoint doesn't work, because its issuer differs for each tenant. Use
+your tenant's issuer instead.
+
+**Disable** hides a provider from the login page and stops sign-ins through it, and **Enable** turns
+it back on. **Remove** deletes the provider, every account connected to it, and its secret. Changing
+a provider's issuer disconnects its accounts, because an account belongs to an issuer.
+
+Browsers that are already logged in through a provider stay logged in after you disable or remove
+it, for up to 30 days. To end a user's logins, disable the user.
+
+To connect an account, a user opens an invite or recovery link, then chooses the provider on the
+page that follows. The provider asks them to log in, and Doozers connects that account to them.
+Choosing the provider again connects a different account in place of the first. A login that came
+from a password, a passkey, or a provider can't connect an account. Ask for a recovery link.
+
+To log in later, the user chooses **Sign in with** the provider's name on the login page. Doozers
+matches the account the provider vouches for, never its email address or name. A user an admin
+disabled can't log in, and the page says nothing about whether the account was connected.
 
 ### A trusted reverse proxy
 

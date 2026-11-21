@@ -83,6 +83,17 @@ the live-output hook.
 | `POST /admin/ssh-hosts/add`    | Pins the key of a pasted `known_hosts` line (CSRF-checked), 303 to the list; the page again with the reason (400, 409) if it can't. |
 | `GET /admin/ssh-hosts/<id>/delete` | What deleting the key does, and the button.                  |
 | `POST /admin/ssh-hosts/<id>/delete` | Deletes the key (CSRF-checked), 303 to the list.            |
+| `GET /admin/identity-providers` | The OpenID Connect providers with their redirect URIs ([Identity provider pages](#identity-provider-pages)). |
+| `GET /admin/identity-providers/new` | The form that adds a provider. |
+| `POST /admin/identity-providers` | Adds the provider (CSRF-checked), 303 to the list; the form again with the reason if it can't be used. |
+| `GET /admin/identity-providers/<id>/edit` | The form, filled in with the provider; it never has the client secret. |
+| `POST /admin/identity-providers/<id>` | Replaces the provider's settings (CSRF-checked), 303 to the list. |
+| `POST /admin/identity-providers/<id>/enabled` | Enables or disables the provider (CSRF-checked), 303 to the list. |
+| `GET /admin/identity-providers/<id>/remove` | What removing the provider does, and the button. |
+| `POST /admin/identity-providers/<id>/remove` | Removes the provider, its connections, and its secret (CSRF-checked), 303 to the list. |
+| `GET /login/oidc/<id>` | Starts a sign-in: 303 to the provider ([OpenID Connect](#openid-connect)). |
+| `GET /setup/oidc/<id>?csrf=` | Starts connecting an account to the logged-in user: 303 to the provider. |
+| `GET /auth/oidc/<id>/callback` | Where the provider sends the browser back; finishes the sign-in or connection. |
 | `GET /admin/routes`            | Every route in order ([Route pages](#route-pages)).              |
 | `GET /admin/routes/new`        | The form that adds a route.                                      |
 | `POST /admin/routes`           | Adds the route (CSRF-checked), 303 to the list.                  |
@@ -190,8 +201,8 @@ page), `signin.rs` (the sign-in methods the pages offer), `password.rs` (the rul
 `password_pages.rs` (the password routes), `passkey.rs` (the relying party and the ceremonies),
 `pending.rs` (the table the ceremonies are kept in), `passkey_pages.rs` (the passkey setup routes),
 `passkey_signin.rs` (the passkey sign-in routes), `oidc.rs` (the OpenID Connect protocol),
-`oidc_pages.rs` (its routes), `limits.rs` (the limits on guessing), `proxy.rs`, the cookie and nonce
-helpers in `auth.rs`, and the keys in `config.rs`.
+`oidc_pages.rs` (its sign-in routes), `oidc_admin.rs` (the provider pages), `limits.rs` (the limits
+on guessing), `proxy.rs`, the cookie and nonce helpers in `auth.rs`, and the keys in `config.rs`.
 
 ### Configuration
 
@@ -561,11 +572,12 @@ the fields the server reads (`id`, `rawId`, `type`, the response's fields, the t
 
 ### OpenID Connect
 
-Identity providers are rows of `oidc_providers`
-([OpenID Connect providers](storage.md#openid-connect-providers) holds what is stored), and each
-user connects one account at a provider to their Doozers user. A sign-in is the authorization code
-flow with PKCE (S256), `state`, and `nonce`. Code: `oidc.rs` is the protocol and `oidc_pages.rs` the
-routes and the entries on the login and setup pages; `pending.rs` holds the sign-ins in flight.
+An admin adds identity providers on the [admin pages](#identity-provider-pages) (they are rows of
+`oidc_providers`: [OpenID Connect providers](storage.md#openid-connect-providers) holds what is
+stored), and each user connects one account at a provider to their Doozers user. A sign-in is the
+authorization code flow with PKCE (S256), `state`, and `nonce`. Code: `oidc.rs` is the protocol and
+`oidc_pages.rs` the routes and the entries on the login and setup pages; `pending.rs` holds the
+sign-ins in flight.
 
 **The library.** The protocol is the [`openidconnect`](https://docs.rs/openidconnect) crate: it
 reads the discovery document and compares its issuer, builds the authorization request, exchanges
@@ -591,8 +603,10 @@ setup, and the admin who adds it is the one who trusts it.
 `issuer` must equal the configured one exactly, so a document served for another issuer is refused,
 and the provider must have a token endpoint, support the `code` response type and (when it lists
 methods at all) PKCE with S256, and list a signing algorithm Doozers accepts. The result and the
-provider's keys are kept in memory for an hour, by issuer. The token endpoint's authentication is
-HTTP Basic, the specification's default, unless the document lists only `client_secret_post`.
+provider's keys are kept in memory for an hour, by issuer. The admin pages fetch a fresh one each
+time they save a provider (`Oidc::fetch`), so a provider that can't be used is refused with the
+reason before it is stored. The token endpoint's authentication is HTTP Basic, the specification's
+default, unless the document lists only `client_secret_post`.
 
 **ID token.** `Oidc::complete` exchanges the code with the PKCE verifier and the client secret, and
 verifies the ID token with the library's public-client verifier:
@@ -1605,6 +1619,55 @@ JavaScript.
   ids from the store to name what was pinned (`Pinned the ssh-ed25519 key for git.example in box.`),
   so a hand-written URL can't put text on the page.
 
+## Identity provider pages
+
+In `oidc_admin.rs`, on the state of the sign-in routes (`OidcPages`), so
+`web.install_oidc(builder, secrets)` adds both. Admins only: every route answers 403 to anyone else,
+and the sidebar's **Identity providers** link, under **Admin** after **Known SSH hosts**, is shown
+to admins only. Every answer is `no-store`, every `POST` is `check_csrf`-checked, and every form
+works without JavaScript. Doozers has no state of its own here: the pages read and write
+`oidc_providers` ([OpenID Connect providers](storage.md#openid-connect-providers)) and the secret
+store.
+
+- **The list.** Each provider with its id, client id, whether a secret is stored (never its value),
+  its issuer, the redirect URI to register (`<link base>/auth/oidc/<id>/callback`), enabled or
+  disabled, and how many accounts are connected with its current issuer. A banner says when the
+  channel has no `public_url`, so the redirect URIs use the address Doozers listens on.
+- **Adding and editing.** The form has the id (not editable once added: it is in the redirect URI),
+  name, issuer, client id, client secret, scopes, and enabled. Saving first checks the settings as
+  the store does (`OidcProviderSettings::validate`, the same check, so that nothing else is changed
+  that the store would then refuse), and then fetches the issuer's discovery document fresh
+  (`Oidc::fetch`), so a provider that can't be used is refused with the reason, as a 422, and
+  nothing is stored: no connection to the issuer, a document for another issuer, no code flow or no
+  PKCE with S256, no signing algorithm Doozers accepts, an issuer that isn't `https` (or `http` on
+  `localhost`). A bad id, a blank field, or characters a scope can't have are a 400, and an id that
+  exists is a 409. The scopes are made tidy: `openid` first, and each other scope once.
+- **The client secret.** It is typed into a `password` field and never rendered back; the pages say
+  only whether one is stored. A new provider's secret goes to the secret store as
+  `oidc/<id>/client-secret` and its path into the row; if the store fails, the new row is taken
+  back, since a provider without its secret would fail every sign-in. Editing with the field empty
+  keeps the stored secret, typing one replaces it, and the box "Remove the stored secret" deletes it
+  and clears the name. The row is updated before the secret is written, so a refused edit, or one of
+  a provider that was removed meanwhile, writes no secret, and if the secret can't be written the
+  row goes back to what it was. An edit that fails validation shows the form again with what was
+  typed, except the secret. The reasons are sentences: the store's messages are capitalized and end
+  with a full stop.
+- **Issuer changes.** Changing a provider's issuer disconnects its accounts: connections are found
+  under the provider's current issuer, so the old ones stay in the table but match nothing. The form
+  says so.
+- **Enable and disable.** One button on the row, a form post of `enabled=true` or `false`. It
+  fetches nothing, so a provider that is down can be turned off. A disabled provider isn't on the
+  login or setup page, its start routes answer 404, and a sign-in begun before it was disabled is
+  refused at the callback.
+- **Remove.** The confirmation says how many accounts will be forgotten, all of the provider's,
+  whatever issuer each was connected under (`Store::oidc_provider_connection_count`, where the list
+  counts only those that can sign in now), and that browsers logged in through the provider stay
+  logged in until their sessions end: removing or disabling a provider ends no session, and
+  disabling the user does. The `POST` deletes the provider and, by the foreign key, its connections,
+  then its secret (a failure to delete the secret is logged and doesn't undo the removal).
+
+Everything a provider's name, client id, or issuer says is escaped by the templates.
+
 ## Templates and styles
 
 Templates are in `crates/doozers-core/templates/web/`, and the design they follow is in
@@ -1740,6 +1803,15 @@ plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`, `i
   has unit tests of the HTTP adapter's rules (an `https` issuer's requests must be `https`, a
   redirect isn't followed, a body over 1 MiB is refused) and of the endpoint schemes a document may
   name.
+- Identity provider pages (also `tests/oidc.rs`): an admin adds a provider in the form, the invited
+  user connects an account and signs in with it, and an account nobody connected is refused; members
+  and anonymous requests get 403 and 401 and every change needs the CSRF token; a provider that
+  can't be used (a bad id, blank fields, an `http` issuer, one that can't be reached, another issuer
+  in its document) is refused with the reason and nothing, not even the secret, is stored; an id is
+  taken once and scopes are made tidy; editing keeps, replaces, or removes the secret and never
+  renders it, even after an error; changing the issuer disconnects the old accounts; disabling and
+  enabling change the pages; removing asks first, then forgets the connections and the secret; and
+  everything a provider's name says is escaped.
 - Proxy: the identity header ignored on the main listener and honored on the proxy app, unknown
   identities refused, posts carry the header's identity and need its CSRF token; a TCP listener
   needs the exact secret; binding (socket mode 0600, `InUse`, stale socket replaced, non-socket left

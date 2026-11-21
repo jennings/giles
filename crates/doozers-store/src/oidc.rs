@@ -124,8 +124,20 @@ fn connection_from_row(row: &Row<'_>) -> Result<OidcConnection> {
     })
 }
 
-/// Checks what an admin typed: every text is set and has no control characters, the scopes are
-/// valid scope tokens and include `openid`, and a secret name isn't empty.
+impl OidcProviderSettings {
+    /// Checks what an admin typed, as [`Store::oidc_provider_add`] and
+    /// [`Store::oidc_provider_update`] do: every text is set and has no control characters, the
+    /// scopes are valid scope tokens and include `openid`, and a secret name isn't empty. Callers
+    /// that change something else first (a secret in the secret store) check before they do.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidRequest`], saying what is wrong.
+    pub fn validate(&self) -> Result<()> {
+        check(self)
+    }
+}
+
 fn check(settings: &OidcProviderSettings) -> Result<()> {
     let text = |what: &str, value: &str| {
         if value.trim().is_empty() || value.chars().any(char::is_control) {
@@ -439,6 +451,21 @@ impl Store {
         .await
     }
 
+    /// How many accounts are connected to provider `provider`, whatever issuer each was
+    /// connected under: what removing the provider forgets.
+    pub async fn oidc_provider_connection_count(&self, provider: &str) -> Result<u64> {
+        let provider = provider.to_owned();
+        self.read(move |conn| {
+            let count: i64 = conn
+                .prepare_cached(
+                    "SELECT count(*) FROM user_oidc_connections WHERE provider_id = ?1",
+                )?
+                .query_row([provider], |row| row.get(0))?;
+            Ok(u64::try_from(count).unwrap_or_default())
+        })
+        .await
+    }
+
     /// How many accounts are connected to provider `provider` with its issuer `issuer`: the
     /// connections that can sign in now.
     pub async fn oidc_connection_count(&self, provider: &str, issuer: &str) -> Result<u64> {
@@ -695,6 +722,15 @@ mod tests {
                 .oidc_connection_count("idp", "https://moved.example.com")
                 .await
                 .unwrap(),
+            0
+        );
+        // Whatever the issuer, the provider's connections are counted for its removal.
+        assert_eq!(
+            store.oidc_provider_connection_count("idp").await.unwrap(),
+            1
+        );
+        assert_eq!(
+            store.oidc_provider_connection_count("nope").await.unwrap(),
             0
         );
     }
