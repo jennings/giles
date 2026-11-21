@@ -227,6 +227,7 @@ pub(super) async fn authenticate(
         request.extensions_mut().insert(WebUser {
             user: known.id.clone(),
             role: known.role,
+            display_name: known.display_name.clone(),
             csrf: proxy_csrf(&channel.proxy_key, &sender),
             sender,
             login: Login::Proxy,
@@ -271,6 +272,7 @@ impl WebChannel {
         Some(WebUser {
             user: user.clone(),
             role: known.role,
+            display_name: known.display_name.clone(),
             sender: NativeId::new(user.as_str()).ok()?,
             csrf: cookie_csrf(token),
             login: Login::Cookie(token.to_owned()),

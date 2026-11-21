@@ -41,6 +41,7 @@ use crate::sessions::{
 };
 use crate::users::{INVITE_TTL, User, UserList, Users};
 
+mod account;
 mod admin;
 mod agent_edit;
 mod agent_environments;
@@ -202,6 +203,7 @@ fn owner() -> WebUser {
         role: doozers_store::Role::Admin,
         sender: NativeId::new("owner").unwrap(),
         csrf: CSRF.into(),
+        display_name: "Test user".into(),
         login: auth::Login::Test,
     }
 }
@@ -2776,6 +2778,7 @@ async fn a_chat_can_be_started_with_any_agent_and_keeps_it() {
         role: doozers_store::Role::Member,
         sender: NativeId::new("guest").unwrap(),
         csrf: CSRF.into(),
+        display_name: "Test user".into(),
         login: auth::Login::Test,
     };
     let list = body_text(

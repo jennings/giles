@@ -620,11 +620,29 @@ button to copy each public key, and **Rename** and **Delete**. An admin also has
 **Admin**, which lists every user's keys. [SSH keys](ssh.md) covers the page and how to add a public
 key to GitHub.
 
+## Account
+
+**Account** in the sidebar is where you manage yourself. It has your profile and a summary of your
+channel identities.
+
+Your profile is your display name and time zone.
+
+The display name is what Doozers shows for you, such as at the bottom of the sidebar.
+
+The time zone sets the times agents see in your messages and when your
+[scheduled jobs](#scheduled-jobs) run. Use an IANA name, such as `America/Los_Angeles`. Leave it
+empty to use the agent's time zone, or else the server's.
+
+The page also shows your username, which you log in with, and your role. You can't change them here.
+
+**Manage identities** opens the **Identities** page.
+
 ## Identities
 
-**Identities** in the sidebar lists your channel identities and adds new ones. An identity is your
-account on a channel, such as `whatsapp:+15551234567` or `irc:libera.chat:account:stephen`. Doozers
-answers messages from your identities as you, and drops messages from every other account.
+The **Identities** page, from **Account** in the sidebar, lists your channel identities and adds new
+ones. An identity is your account on a channel, such as `whatsapp:+15551234567` or
+`irc:libera.chat:account:stephen`. Doozers answers messages from your identities as you, and drops
+messages from every other account.
 
 For each identity the page shows when you added it and how: **Linked by you** with a code,
 **Set by an admin**, or **Imported from doozers.toml**. It marks your default identity, which is

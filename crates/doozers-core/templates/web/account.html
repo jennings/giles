@@ -1,0 +1,52 @@
+{% extends "web/app.html" %}
+
+{% block title %}Account - Doozers{% endblock %}
+
+{% block content %}
+<h1>Account</h1>
+{%- if let Some(notice) = notice %}
+<p class="banner banner-info" role="status">{{ notice }}</p>
+{%- endif %}
+{%- if let Some(error) = error %}
+<p class="banner banner-error" role="alert">{{ error }}</p>
+{%- endif %}
+<p class="lede">Your profile, how you sign in, the accounts you use to message Doozers, and your logins.</p>
+
+<h2 id="profile">Profile</h2>
+<form class="card form" method="post" action="/account/profile">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<dl class="facts">
+<dt>Username</dt>
+<dd><code>{{ username }}</code></dd>
+<dt>Role</dt>
+<dd>{{ role }}</dd>
+</dl>
+<div class="field-row">
+<div class="field">
+<label for="display-name">Display name</label>
+<input id="display-name" name="display_name" value="{{ display_name }}" maxlength="{{ max_display_name }}" autocomplete="name" required>
+<p class="help">The name Doozers shows for you, such as in the sidebar.</p>
+</div>
+<div class="field">
+<label for="timezone">Time zone</label>
+<input id="timezone" name="timezone" value="{{ timezone }}" placeholder="Europe/London" autocomplete="off" spellcheck="false">
+<p class="help">An IANA name, such as <code>America/Los_Angeles</code>. It sets the times agents see in your messages and when your jobs run. Leave it empty to use the agent's time zone, or else the server's.</p>
+</div>
+</div>
+<div class="form-actions">
+<button type="submit" class="button-primary">Save profile</button>
+</div>
+</form>
+
+<h2 id="identities">Channel identities</h2>
+{%- if identities.is_empty() %}
+<p>You have no channel identities.</p>
+{%- else %}
+<ul>
+{%- for identity in identities %}
+<li><code>{{ identity.text }}</code>{% if identity.is_default %} <span class="pill pill-ok">default</span>{% endif %}</li>
+{%- endfor %}
+</ul>
+{%- endif %}
+<p><a class="button" href="/account/identities">Manage identities</a></p>
+{% endblock %}

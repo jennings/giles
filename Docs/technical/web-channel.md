@@ -1671,16 +1671,42 @@ store.
 
 Everything a provider's name, client id, or issuer says is escaped by the templates.
 
+## Account page
+
+In `account.rs`: `web.install_account(builder, users)`, which `serve` calls with `Runtime::users`.
+**Account**, the last link of the sidebar's "You" group, is on every page. The page is for every
+logged-in user, who sees and changes only their own account: no path or field names another user.
+Every answer is `no-store`, every `POST` is `check_csrf`-checked, and every form works without
+JavaScript. `AccountPages` holds the `WebApp` and the `Users`, and converts to the `WebApp` with
+`FromRef`, so a handler that needs only the app extracts that.
+
+| Route                | Does                                                                       |
+| -------------------- | -------------------------------------------------------------------------- |
+| `GET /account`       | The profile form and a summary of the user's channel identities           |
+| `POST /account/profile` | Sets the display name and time zone, then 303                           |
+
+- **Profile.** The form has the username and role as read-only facts, and the display name and time
+  zone as fields. The `POST` calls `Users::set_profile`, which checks the display name as creating a
+  user does and the time zone as a time zone in `doozers.toml` is (`parse_timezone`), writes, and
+  replaces the `UserList` snapshot, so the next request has the new values. An empty time zone
+  clears it. A value that isn't valid is the page again with why (400) and what was typed, and
+  changes nothing.
+- **The display name in the sidebar.** `WebUser::display_name` is read from the snapshot with the
+  rest of the user when the request arrives (`login::authenticate`), so a change shows from the next
+  request and a proxy login has it too. The footer shows it, and its badge is its first letter.
+- **Channel identities.** The page lists the user's identities, marks the default, and links to the
+  [Identities page](#identities-page), which stays where it was and does the adding and removing.
+
 ## Identities page
 
 In `identities.rs`: `web.install_identities(builder, links)`, which `serve` calls with
 `Runtime::links`. The page is a thin layer over the `Links` service
 ([Linking an identity](identity-and-routing.md#linking-an-identity)). It is for every logged-in
 user, who sees and changes only their own identities, and every route is under
-`/account/identities`, so the account page can absorb it or link to it. **Identities**, the last
-link of the sidebar's "You" group, is on every page. Every answer is `no-store`, every `POST` is
-`check_csrf`-checked, and every form works without JavaScript. No path or field names another user:
-the user is always the login's.
+`/account/identities`, so it stays a page of the [account area](#account-page): the Account page
+summarizes the identities and links to it, and the page links back with **Account**. Every answer is
+`no-store`, every `POST` is `check_csrf`-checked, and every form works without JavaScript. No path
+or field names another user: the user is always the login's.
 
 | Route                                  | Does                                                           |
 | -------------------------------------- | -------------------------------------------------------------- |
@@ -1829,9 +1855,14 @@ plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`, `i
   password form behind "Use a password instead" and loads the script only when passkeys are
   available. `passkey.rs` has unit tests for the origin rules, user handles, and which binding a
   ceremony belongs to, and `pending.rs` for the table (single use, binding, expiry, the cap).
+- Account page (`tests/account.rs`, through the real login middleware with a session cookie, over
+  stored users): the page needs a login and shows only the user's own profile and identities; the
+  sidebar links it and the footer shows the display name; saving changes the name and time zone the
+  next request shows and leaves other users alone; an invalid name or time zone is refused with why
+  and what was typed; a post needs the CSRF token; what a user wrote is escaped.
 - Identities page (`tests/identities.rs`, over stored users, a `Links` with a fixed set of
   namespaces, and the real login middleware's test user): the page needs a login, lists only the
-  user's own identities (and offers no remove for the web sign-in), marks itself current in the
+  user's own identities (and offers no remove for the web sign-in), marks Account current in the
   sidebar, and offers the running channels but not `web`; a post makes a code, which is shown once,
   in the answer and in no redirect, with the exact `/link <code>`, and never again, so the list says
   only that one is pending; sending the code through `Links` adds the identity as a `link`, which

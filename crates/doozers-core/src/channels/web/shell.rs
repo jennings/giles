@@ -13,7 +13,7 @@ pub(super) enum Nav {
     Jobs,
     Connections,
     SshKeys,
-    Identities,
+    Account,
     Status,
     Plugins,
     Agents,
@@ -31,7 +31,7 @@ const YOU: [(Nav, &str, &str); 5] = [
     (Nav::Jobs, "Scheduled jobs", "/jobs"),
     (Nav::Connections, "Connections", "/connections"),
     (Nav::SshKeys, "SSH keys", "/ssh-keys"),
-    (Nav::Identities, "Identities", "/account/identities"),
+    (Nav::Account, "Account", "/account"),
 ];
 const ADMIN: [(Nav, &str, &str); 9] = [
     (Nav::Status, "Status", "/admin"),
@@ -51,9 +51,9 @@ const ADMIN: [(Nav, &str, &str); 9] = [
 
 /// What `app.html` needs: every page that extends it has a `shell` field.
 pub(super) struct Shell {
-    /// The signed-in user's id, shown in the sidebar's footer.
-    pub(super) user: String,
-    /// The first letter of [`Self::user`], capitalized: the footer's badge.
+    /// The signed-in user's display name, shown in the sidebar's footer.
+    pub(super) name: String,
+    /// The first letter of [`Self::name`], capitalized: the footer's badge.
     pub(super) initial: String,
     /// The navigation groups, the admin one only for a user who may administer.
     pub(super) groups: Vec<NavGroup>,
@@ -97,9 +97,9 @@ impl Shell {
             .chain(&ADMIN)
             .find(|(nav, _, _)| *nav == current)
             .map_or("Doozers", |(_, label, _)| label);
-        let name = user.user.as_str();
+        let name = user.display_name.as_str();
         Self {
-            user: name.to_owned(),
+            name: name.to_owned(),
             initial: name
                 .chars()
                 .next()
@@ -129,6 +129,7 @@ mod tests {
             },
             sender: NativeId::new(id).unwrap(),
             csrf: "token".into(),
+            display_name: format!("{id} (display)"),
             login: Login::Test,
         }
     }
@@ -154,7 +155,7 @@ mod tests {
                         "Scheduled jobs",
                         "Connections",
                         "SSH keys",
-                        "Identities"
+                        "Account"
                     ]
                 ),
                 (
@@ -183,8 +184,8 @@ mod tests {
         assert_eq!(current, ["/admin/agents"]);
         assert_eq!(shell.section, "Agents");
         assert_eq!(
-            (shell.user.as_str(), shell.initial.as_str()),
-            ("owner", "O")
+            (shell.name.as_str(), shell.initial.as_str()),
+            ("owner (display)", "O")
         );
     }
 
@@ -200,13 +201,25 @@ mod tests {
                     "Scheduled jobs",
                     "Connections",
                     "SSH keys",
-                    "Identities"
+                    "Account"
                 ]
             )]
         );
         assert_eq!(
-            (shell.user.as_str(), shell.initial.as_str()),
-            ("guest", "G")
+            (shell.name.as_str(), shell.initial.as_str()),
+            ("guest (display)", "G")
         );
+    }
+
+    #[test]
+    fn the_footer_shows_the_display_name_not_the_id() {
+        let mut ann = user("u-4f9c");
+        ann.display_name = "ann example".to_owned();
+        let shell = Shell::new(&ann, Nav::Account);
+        assert_eq!(
+            (shell.name.as_str(), shell.initial.as_str()),
+            ("ann example", "A")
+        );
+        assert_eq!(shell.section, "Account");
     }
 }

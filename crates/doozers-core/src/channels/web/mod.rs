@@ -8,6 +8,7 @@
 //! `/blobs/<sha256>`, the login and the invite and recovery links, the trusted-proxy listener, and
 //! the admin pages over the admin service (`admin.rs`).
 
+mod account;
 mod admin;
 mod agents;
 mod auth;

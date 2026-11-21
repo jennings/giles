@@ -10,7 +10,7 @@
 //! in the answer to the post that made it, so it is never in a URL or a redirect, and the list
 //! afterwards says only whether a code is pending.
 //!
-//! The path is under `/account` so the account page can absorb it or link to it.
+//! The path is under `/account`, and the [account page](super::account) links to it.
 
 use std::sync::Arc;
 
@@ -234,7 +234,7 @@ async fn render(
         namespaces.first().cloned().unwrap_or_default()
     };
     let mut response = http::render(&ListPage {
-        shell: Shell::new(user, Nav::Identities),
+        shell: Shell::new(user, Nav::Account),
         csrf: &user.csrf,
         identities: account
             .identities
@@ -380,7 +380,7 @@ async fn remove_page(
         return no_such_identity();
     }
     http::render(&RemovePage {
-        shell: Shell::new(&user, Nav::Identities),
+        shell: Shell::new(&user, Nav::Account),
         csrf: &user.csrf,
         identity: identity.as_str(),
         is_default: account.default_identity.as_ref() == Some(&identity),

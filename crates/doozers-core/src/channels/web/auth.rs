@@ -64,6 +64,8 @@ pub struct WebUser {
     /// The user's role when the request arrived. A change of role applies to the next request.
     /// [`may_administer`](super::admin::may_administer) reads it.
     pub role: Role,
+    /// The user's display name when the request arrived: what the sidebar's footer shows.
+    pub display_name: String,
     /// The native identifier in the `web` namespace: what messages from this user carry as
     /// `InboundMessage::sender`, matched against the users' identities as `web:<sender>`. A login
     /// link's user id for a cookie login; the proxy's header value for a proxy login.
@@ -292,6 +294,7 @@ mod tests {
             role: Role::Admin,
             sender: NativeId::new("owner").unwrap(),
             csrf: "token".into(),
+            display_name: "Test user".into(),
             login: Login::Test,
         }
     }

@@ -46,6 +46,7 @@ fn member(id: &str) -> WebUser {
         role: doozers_store::Role::Member,
         sender: NativeId::new(id).unwrap(),
         csrf: format!("csrf-of-{id}"),
+        display_name: "Test user".into(),
         login: auth::Login::Test,
     }
 }
@@ -177,12 +178,14 @@ async fn the_page_needs_a_login_and_lists_only_the_users_own_identities() {
     assert!(!answer.body.contains("web:root"));
     assert!(!answer.body.contains("web:owner"));
     assert!(!answer.body.contains("/account/identities/remove?"));
-    // The sidebar has the page, marked current, in the group of the user's own pages.
+    // The sidebar marks the Account link current: the page belongs to the account area, and
+    // says so with a link back.
     assert!(
         answer
             .body
-            .contains("href=\"/account/identities\" aria-current=\"page\"")
+            .contains("href=\"/account\" aria-current=\"page\"")
     );
+    assert!(answer.body.contains(r#"<a class="back" href="/account">"#));
     // The form offers the channels that run, never the web chat, and nothing is pending yet.
     for namespace in ["whatsapp", "discord", "irc:libera.chat"] {
         assert!(

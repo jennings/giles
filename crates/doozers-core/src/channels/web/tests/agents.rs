@@ -20,6 +20,7 @@ pub(super) fn guest() -> WebUser {
         role: doozers_store::Role::Member,
         sender: NativeId::new("guest").unwrap(),
         csrf: CSRF.into(),
+        display_name: "Test user".into(),
         login: auth::Login::Test,
     }
 }

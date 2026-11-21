@@ -1254,6 +1254,7 @@ mod tests {
             role: doozers_store::Role::Admin,
             sender: doozers_types::NativeId::new("owner").unwrap(),
             csrf: "token".to_owned(),
+            display_name: "Test user".into(),
             login: super::super::auth::Login::Test,
         };
         let err = ToolsetManagerError::Failed {

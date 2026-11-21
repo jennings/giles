@@ -138,12 +138,12 @@ From top to bottom:
 2. Navigation groups. Each has a label (11 px, uppercase, 0.08em tracking, faint) and links 40 px
    tall with 12 px side padding and radius 8 px. The current page's link has the "nav current" fill,
    white text, weight 600, and `aria-current="page"`. The others are secondary text with no fill.
-   - **You**: Chats, Scheduled jobs, Connections, SSH keys, Identities.
+   - **You**: Chats, Scheduled jobs, Connections, SSH keys, Account.
    - **Admin**: Status, Plugins, Agents, Routes, MCP servers, Workspaces, SSH keys, Known SSH hosts,
      Identity providers. It's shown only to admins.
-3. The user footer, pushed to the bottom with a top border: a 30 px initial badge, the user's id,
-   and **Log out**. Log out appears only for a cookie login, since a proxy login can't log out.
-   Today the id is always `owner`. This is where user information goes once there are other users.
+3. The user footer, pushed to the bottom with a top border: a 30 px initial badge, the user's
+   display name, and **Log out**. Log out appears only for a cookie login, since a proxy login can't
+   log out. The initial is the first letter of the display name.
 
 Pages below a link in the sidebar mark that link current: the job form marks Scheduled jobs, and an
 agent's edit page marks Agents.
