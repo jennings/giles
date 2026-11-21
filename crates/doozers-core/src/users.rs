@@ -23,6 +23,15 @@
 //! refuse it, and the store checks it inside the transaction of the change, so the check and the
 //! change can't be split by another one.
 //!
+//! # Invites
+//!
+//! [`Users::create_invite`] makes a one-time link that signs a user in: an `invite` sets up a new
+//! account, and a `recovery` link gets a user who lost every sign-in method back in
+//! (`doozers admin login-link`). Both last [`INVITE_TTL`] (72 hours), work once, and live in the
+//! database by the hash of their token, so they survive a restart and nothing stored can be
+//! replayed. Making one gives the user the `web:<id>` identity a web sign-in acts as. A recovery
+//! link takes nothing away from the user.
+//!
 //! # Import
 //!
 //! `doozers.toml`'s `[owner]` is imported once, by [`Users::open`], when the import has never run
@@ -39,10 +48,11 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::{Arc, PoisonError, RwLock};
+use std::time::Duration;
 
 use doozers_store::{
-    ImportedUser, NewIdentity, NewUser, Role, Store, StoredUser, UserState, Verification,
-    canonical_identity,
+    ImportedUser, InviteKind, NewIdentity, NewUser, Role, Store, StoredUser, UserState,
+    Verification, canonical_identity,
 };
 use doozers_types::{InboundMessage, NativeId, Timestamp, UserId};
 use jiff::tz::TimeZone;
@@ -52,6 +62,27 @@ use tracing::{info, warn};
 
 use crate::config::{Config, Identity, parse_timezone};
 use crate::identity;
+
+/// How long an invite or recovery link works.
+pub const INVITE_TTL: Duration = Duration::from_secs(72 * 60 * 60);
+
+/// Whether `token` has the form of an invite or recovery token: 256 random bits as 64 lowercase
+/// hex digits.
+pub fn is_invite_token(token: &str) -> bool {
+    token.len() == 64
+        && token
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// A link [`Users::create_invite`] made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewInvite {
+    /// The secret in the link. Only its hash is stored, so this is the one time it is known.
+    pub token: String,
+    /// When the link stops working.
+    pub expires_at: Timestamp,
+}
 
 /// A user: a person who talks to the agents.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -308,7 +339,8 @@ impl From<UsersError> for UserError {
     }
 }
 
-/// Why [`Users::login_user`] found no user to log in.
+/// Why [`Users::login_user`] found no user for a link, or [`Users::create_invite`] couldn't make
+/// one.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum LoginUserError {
@@ -321,7 +353,7 @@ pub enum LoginUserError {
     /// The user is disabled.
     #[error("user `{0}` is disabled")]
     Disabled(UserId),
-    /// The `web:<id>` identity a login link signs in as belongs to another user.
+    /// The `web:<id>` identity a link signs in as belongs to another user.
     #[error(
         "`web:{user}` is an identity of user `{owner}`, so `{user}` can't log in to the web chat"
     )]
@@ -757,8 +789,8 @@ impl Users {
         Ok(to_user(stored)?)
     }
 
-    /// The user a web login link is for, and the first admin if there are no users yet: this is
-    /// `doozers admin login-link`.
+    /// The user `doozers admin login-link` makes a recovery link for, and the first admin if there
+    /// are no users yet.
     ///
     /// - With no `requested` user and no users at all, it creates the first admin, the id
     ///   [`identity::OWNER`] (the id an imported owner has, and the user config jobs run as), and
@@ -767,8 +799,7 @@ impl Users {
     ///   several.
     /// - With no `requested` user and several users, it asks for one
     ///   ([`LoginUserError::NeedUser`]).
-    /// - With a `requested` user, who must exist and be active, it makes sure `web:<id>`, the
-    ///   identity a login link signs in as, is one of their identities, and returns the user.
+    /// - With a `requested` user, who must exist and be active, it returns the user.
     ///
     /// # Errors
     ///
@@ -804,21 +835,52 @@ impl Users {
         if !user.is_active() {
             return Err(LoginUserError::Disabled(id.clone()));
         }
-        let web = NativeId::new(id.as_str())
-            .map_err(|e| LoginUserError::Users(UserError::Invalid(format!("user id {id}: {e}"))))?;
+        Ok(id.clone())
+    }
+
+    /// Makes a one-time link for `user`, valid from `now` for [`INVITE_TTL`], made by `created_by`
+    /// (`None`: the operator). An `invite` sets up a new account and a `recovery` link gets a user
+    /// back in; both sign in whoever spends them first, and neither removes a way to sign in.
+    ///
+    /// The user gets the identity `web:<id>`, verified as `admin`, if they lack it: a web
+    /// sign-in acts as `web:<id>`, so without it the router would drop their messages.
+    ///
+    /// # Errors
+    ///
+    /// [`LoginUserError::NoSuchUser`] or [`LoginUserError::Disabled`] for a user who doesn't exist
+    /// or can't sign in, [`LoginUserError::WebIdentityTaken`] if another user has `web:<id>`, or a
+    /// database error.
+    pub async fn create_invite(
+        &self,
+        user: &UserId,
+        kind: InviteKind,
+        created_by: Option<&UserId>,
+        now: Timestamp,
+    ) -> Result<NewInvite, LoginUserError> {
+        let _changing = self.changing.lock().await;
+        let directory = self.list.get();
+        let found = directory
+            .user(user)
+            .ok_or_else(|| LoginUserError::NoSuchUser(user.clone()))?;
+        if !found.is_active() {
+            return Err(LoginUserError::Disabled(user.clone()));
+        }
+        let web = NativeId::new(user.as_str()).map_err(|e| {
+            LoginUserError::Users(UserError::Invalid(format!("user id {user}: {e}")))
+        })?;
         match directory.resolve(web_namespace(), &web) {
-            Some(owner) if owner.id == *id => {}
+            Some(owner) if owner.id == *user => {}
             Some(owner) => {
                 return Err(LoginUserError::WebIdentityTaken {
-                    user: id.clone(),
+                    user: user.clone(),
                     owner: owner.id.clone(),
                 });
             }
             None => {
                 self.add_identity_locked(
-                    id,
+                    user,
                     web_namespace(),
-                    id.as_str(),
+                    user.as_str(),
                     Verification::Admin,
                     now,
                 )
@@ -826,7 +888,16 @@ impl Users {
                 .map_err(LoginUserError::Users)?;
             }
         }
-        Ok(id.clone())
+        let token = crate::channels::chat_ids::random_hex(32);
+        let expires_at = now
+            .checked_add(INVITE_TTL)
+            .expect("72 hours from now is a valid time");
+        self.store
+            .user_invite_create(&token, user, kind, created_by, now, expires_at)
+            .await
+            .map_err(|e| LoginUserError::Users(UserError::from_store(e, user)))?;
+        info!(%user, kind = kind.as_str(), "created a one-time link");
+        Ok(NewInvite { token, expires_at })
     }
 
     /// Creates the first admin, with the changes lock held.
@@ -1749,14 +1820,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn login_for_a_named_user_gives_them_the_web_identity_a_link_signs_in_as() {
+    async fn login_for_a_named_user_is_that_active_user_and_changes_nothing() {
         let home = Home::new().await;
         let (users, list) = home
             .open("[owner]\nidentities = [\"whatsapp:+15551234567\"]\n")
             .await
             .unwrap();
-        // The imported owner has no `web:` identity yet.
-        assert!(!resolves(&list, "web", "owner"));
         assert_eq!(
             users
                 .login_user(Some(&identity::owner()), at(0))
@@ -1764,18 +1833,8 @@ mod tests {
                 .unwrap(),
             identity::owner()
         );
-        let directory = list.get();
-        let owner = directory.user(&identity::owner()).unwrap();
-        assert_eq!(
-            directory.resolve("web", &native("owner")).unwrap().id,
-            owner.id
-        );
-        assert_eq!(owner.identities[1].verification, Verification::Admin);
-        // The default identity stays where jobs go.
-        assert_eq!(
-            owner.default_identity.as_ref().unwrap().as_str(),
-            "whatsapp:+15551234567"
-        );
+        // Making the link is what gives the user an identity to sign in as.
+        assert!(!resolves(&list, "web", "owner"));
 
         let err = users
             .login_user(Some(&id("nobody")), at(1))
@@ -1789,16 +1848,122 @@ mod tests {
             .unwrap();
         let err = users.login_user(Some(&id("ann")), at(4)).await.unwrap_err();
         assert!(matches!(err, LoginUserError::Disabled(_)), "{err}");
-        // `web:bob` belongs to ann, so bob can't be logged in as `bob`.
+    }
+
+    #[tokio::test]
+    async fn an_invite_gives_the_user_the_web_identity_a_link_signs_in_as() {
+        let home = Home::new().await;
+        let (users, list) = home
+            .open("[owner]\nidentities = [\"whatsapp:+15551234567\"]\n")
+            .await
+            .unwrap();
+        // The imported owner has no `web:` identity yet.
+        assert!(!resolves(&list, "web", "owner"));
+        users
+            .create_invite(&identity::owner(), InviteKind::Recovery, None, at(0))
+            .await
+            .unwrap();
+        let directory = list.get();
+        let owner = directory.user(&identity::owner()).unwrap();
+        assert_eq!(
+            directory.resolve("web", &native("owner")).unwrap().id,
+            owner.id
+        );
+        assert_eq!(owner.identities[1].verification, Verification::Admin);
+        // The default identity stays where jobs go, and a second link adds nothing.
+        assert_eq!(
+            owner.default_identity.as_ref().unwrap().as_str(),
+            "whatsapp:+15551234567"
+        );
+        users
+            .create_invite(&identity::owner(), InviteKind::Recovery, None, at(1))
+            .await
+            .unwrap();
+        assert_eq!(
+            list.get()
+                .user(&identity::owner())
+                .unwrap()
+                .identities
+                .len(),
+            2
+        );
+
+        let err = users
+            .create_invite(&id("nobody"), InviteKind::Invite, None, at(1))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LoginUserError::NoSuchUser(_)), "{err}");
+        users.create(member("ann"), vec![], at(2)).await.unwrap();
+        users
+            .set_state(&id("ann"), UserState::Disabled, at(3))
+            .await
+            .unwrap();
+        let err = users
+            .create_invite(&id("ann"), InviteKind::Invite, None, at(4))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LoginUserError::Disabled(_)), "{err}");
+        // `web:bob` belongs to ann, so bob can't be signed in as `bob`.
         users
             .add_identity(&id("ann"), "web", "bob", Verification::Admin, at(5))
             .await
             .unwrap();
         users.create(member("bob"), vec![], at(6)).await.unwrap();
-        let err = users.login_user(Some(&id("bob")), at(7)).await.unwrap_err();
+        let err = users
+            .create_invite(&id("bob"), InviteKind::Invite, None, at(7))
+            .await
+            .unwrap_err();
         assert!(
             matches!(&err, LoginUserError::WebIdentityTaken { owner, .. } if owner == &id("ann")),
             "{err}"
         );
+    }
+
+    #[tokio::test]
+    async fn an_invite_works_once_for_72_hours_and_only_its_hash_is_stored() {
+        let home = Home::new().await;
+        let (users, _) = home.open("").await.unwrap();
+        let ann = users.create(member("ann"), vec![], at(0)).await.unwrap();
+        let root = users.create(member("root"), vec![], at(0)).await.unwrap();
+        let invite = users
+            .create_invite(&ann.id, InviteKind::Invite, Some(&root.id), at(10))
+            .await
+            .unwrap();
+        assert!(is_invite_token(&invite.token), "{}", invite.token);
+        assert_eq!(invite.expires_at, at(10 + 72 * 60 * 60));
+        let other = users
+            .create_invite(&ann.id, InviteKind::Recovery, None, at(10))
+            .await
+            .unwrap();
+        assert_ne!(invite.token, other.token);
+
+        let stored = home
+            .store
+            .user_invite(&invite.token, at(11))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.user, ann.id);
+        assert_eq!(stored.kind, InviteKind::Invite);
+        assert_eq!(stored.created_by, Some(root.id));
+        assert_eq!(stored.expires_at, invite.expires_at);
+        let kind = home
+            .store
+            .user_invite(&other.token, at(11))
+            .await
+            .unwrap()
+            .unwrap()
+            .kind;
+        assert_eq!(kind, InviteKind::Recovery);
+        assert!(
+            home.store
+                .user_invite(&invite.token, invite.expires_at)
+                .await
+                .unwrap()
+                .is_none(),
+            "expired"
+        );
+        assert!(!is_invite_token("ABC") && !is_invite_token(&"A".repeat(64)));
+        assert!(!is_invite_token(&"a".repeat(63)));
     }
 }

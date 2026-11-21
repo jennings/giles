@@ -16,9 +16,12 @@ can have only one web channel.
 
 Every page needs a login. You log in with a one-time link, or through a trusted reverse proxy.
 
-### Login links
+### Invite and recovery links
 
-Run this to get a login link:
+An invite link sets up a new user. A recovery link signs in a user who has lost every other way to
+sign in, and it keeps every way the user can already sign in. Both work once, within 72 hours.
+
+Run this to make a recovery link:
 
 ```sh
 doozers admin login-link
@@ -26,10 +29,16 @@ doozers admin login-link
 
 On a fresh install, this creates the first admin. With one user, the link is for that user. With
 several, name the user with `--user <id>`, such as `--user owner` for the owner you imported from
-[`[owner]`](configuration.md#owner). The command prints whose link it is.
+[`[owner]`](configuration.md#owner). The command prints whose link it is. It works for any active
+user, including one who has never signed in.
 
-Open the link and press **Log in** to log that browser in for 30 days. The link works once, and only
-for 10 minutes. **Log out** at the bottom of the sidebar ends the login. See [Command line](cli.md).
+Open the link and press the button on the page to log that browser in for 30 days. A chat app or
+mail client that fetches the link to show a preview doesn't use it up. The next page,
+**Set up how you sign in**, lists the ways you can add. Until there are others, the link is the only
+way to sign in, so ask for a new one when this login ends. **Log out** at the bottom of the sidebar
+ends the login. See [Command line](cli.md).
+
+An admin can't make invite links in the web UI yet.
 
 The link starts with the address Doozers listens on. If you reach Doozers at another address, such
 as through a reverse proxy, set `public_url`:
@@ -408,7 +417,7 @@ the sign-in of the person who asked.
 
 The server shows as failed until someone signs in. Once you sign in, your conversations get the
 tools your own account offers. If you reach Doozers through a domain name or a reverse proxy, set
-[`public_url`](#login-links) so the callback URL is the one your browser can open.
+[`public_url`](#invite-and-recovery-links) so the callback URL is the one your browser can open.
 
 The form has more settings, all optional:
 

@@ -3,10 +3,10 @@
 //! admin pages. Design: `Docs/technical/web-channel.md`.
 //!
 //! [`WebChannel`] is the [`Channel`]: an in-memory event queue (events stay pending until acked,
-//! and are sent again on every new [`Channel::events`] stream), per-chat hubs (`hub.rs`) that every
-//! open page of a chat follows, and the one-time login links. [`WebApp`] is the HTTP side: the
-//! pages, the event streams, `/blobs/<sha256>`, the login, the trusted-proxy listener, and the
-//! admin pages over the admin service (`admin.rs`).
+//! and are sent again on every new [`Channel::events`] stream), and per-chat hubs (`hub.rs`) that
+//! every open page of a chat follows. [`WebApp`] is the HTTP side: the pages, the event streams,
+//! `/blobs/<sha256>`, the login and the invite and recovery links, the trusted-proxy listener, and
+//! the admin pages over the admin service (`admin.rs`).
 
 mod admin;
 mod agents;
@@ -15,8 +15,8 @@ mod chat_actions;
 mod config;
 mod connections;
 mod hub;
+mod invite;
 mod jobs;
-mod links;
 mod login;
 mod memory;
 mod pages;
@@ -25,6 +25,7 @@ mod qr;
 mod render;
 mod routes;
 mod shell;
+mod signin;
 mod ssh_hosts;
 mod ssh_keys;
 mod toolsets;
@@ -57,11 +58,11 @@ use crate::users::UserList;
 
 pub use admin::ADMIN_REFRESH_SECS;
 pub use auth::{
-    CSRF_FIELD, CSRF_HEADER, CsrfRejected, SESSION_COOKIE, WEB_SESSION_TTL, WebUser, check_csrf,
+    CSRF_FIELD, CSRF_HEADER, CsrfRejected, NONCE_COOKIE, NonceRejected, SESSION_COOKIE,
+    WEB_SESSION_TTL, WebUser, check_csrf, check_nonce,
 };
 pub use chat_actions::ChatActivity;
 pub use config::{ProxyConfig, ProxyListen, WebConfig};
-pub use links::LOGIN_LINK_TTL;
 pub use pages::WebApp;
 pub use proxy::{ProxyError, ProxyListener};
 
@@ -165,14 +166,13 @@ pub struct WebChannel {
     info: ChannelInfo,
     config: WebConfig,
     users: UserList,
-    /// Where login links point: the public URL, else the HTTP listener (its bound address once
-    /// [`WebChannel::set_listen_addr`] has been called).
+    /// Where invite and recovery links point: the public URL, else the HTTP listener (its bound
+    /// address once [`WebChannel::set_listen_addr`] has been called).
     link_base: Mutex<String>,
     /// Keys proxy logins' CSRF tokens; random per run.
     proxy_key: [u8; 32],
     inbound: Mutex<Inbound>,
     hubs: hub::Hubs,
-    links: links::LoginLinks,
 }
 
 impl fmt::Debug for WebChannel {
@@ -183,34 +183,6 @@ impl fmt::Debug for WebChannel {
             .field("pending", &lock(&self.inbound).pending.len())
             .finish_non_exhaustive()
     }
-}
-
-/// A one-time login link ([`WebChannel::create_login_link`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LoginLink {
-    /// The URL to open: `<public URL>/login/<token>`.
-    pub url: String,
-    /// When it stops working.
-    pub expires_at: Timestamp,
-}
-
-/// A login link couldn't be created.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
-pub enum LoginLinkError {
-    /// No such user.
-    #[error("there is no user `{0}`")]
-    UnknownUser(UserId),
-    /// The user is disabled, and can't log in.
-    #[error("user `{0}` is disabled")]
-    Disabled(UserId),
-    /// The user has no identity `web:<user>`, the one a login link signs in as, so the router
-    /// would drop their messages.
-    #[error(
-        "user `{0}` doesn't have the identity `web:{0}`, so messages from the web chat would be \
-         dropped as from an unknown sender"
-    )]
-    NoWebIdentity(UserId),
 }
 
 /// `http://<addr>`, with an unspecified address (`0.0.0.0`, `::`) replaced by loopback.
@@ -225,7 +197,7 @@ fn listener_url(addr: SocketAddr) -> String {
 
 impl WebChannel {
     /// The channel for instance `instance` with `config`, for the `users` who may log in, whose
-    /// HTTP server listens on `http_listen` (the login links' address unless `config.public_url`
+    /// HTTP server listens on `http_listen` (the address invite and recovery links point at unless `config.public_url`
     /// is set). Its first event is a `Connected` status.
     pub fn new(
         instance: InstanceName,
@@ -260,7 +232,6 @@ impl WebChannel {
                 stream: None,
             }),
             hubs: hub::Hubs::new(),
-            links: links::LoginLinks::default(),
         }
     }
 
@@ -292,7 +263,7 @@ impl WebChannel {
         &self.config
     }
 
-    /// Points login links at `addr`, the address the HTTP listener actually bound, unless
+    /// Points invite and recovery links at `addr`, the address the HTTP listener actually bound, unless
     /// `public_url` is set. `serve` calls it after binding, so `http_listen` with port 0 (or an
     /// unspecified address) still gives a link that works.
     pub fn set_listen_addr(&self, addr: SocketAddr) {
@@ -301,42 +272,24 @@ impl WebChannel {
         }
     }
 
-    /// Creates a one-time login link for `user`: it logs in whoever opens it first, within
-    /// [`LOGIN_LINK_TTL`] (10 minutes), with a 30-day session cookie. This is what
-    /// `doozers admin login-link` calls over the admin service. Links
-    /// live in memory: a restart invalidates them.
-    ///
-    /// # Errors
-    ///
-    /// [`LoginLinkError::UnknownUser`] if there is no such user;
-    /// [`LoginLinkError::Disabled`] if the user is disabled;
-    /// [`LoginLinkError::NoWebIdentity`] if the user doesn't have `web:<user>`, the identity a
-    /// link login sends as.
-    pub fn create_login_link(
-        &self,
-        user: &UserId,
-        now: Timestamp,
-    ) -> Result<LoginLink, LoginLinkError> {
-        match self.users.get().user(user) {
-            None => return Err(LoginLinkError::UnknownUser(user.clone())),
-            Some(found) if !found.is_active() => {
-                return Err(LoginLinkError::Disabled(user.clone()));
-            }
-            Some(_) => {}
-        }
-        if !self.is_web_identity(user) {
-            return Err(LoginLinkError::NoWebIdentity(user.clone()));
-        }
-        let (token, expires_at) = self.links.create(user.clone(), now);
-        Ok(LoginLink {
-            url: format!("{}/login/{token}", lock(&self.link_base)),
-            expires_at,
-        })
+    /// The URL of the invite or recovery link with `token`: `<public URL>/invite/<token>`.
+    pub fn invite_url(&self, token: &str) -> String {
+        format!("{}/invite/{token}", lock(&self.link_base))
     }
 
     /// The origin absolute links to the web UI start with: `public_url`, or the listener's.
     pub(crate) fn link_base(&self) -> String {
         lock(&self.link_base).clone()
+    }
+
+    /// Whether `user` may sign in to the web chat now: an active user who has the identity
+    /// `web:<user>`, which every web sign-in acts as.
+    fn can_sign_in(&self, user: &UserId) -> bool {
+        self.users
+            .get()
+            .user(user)
+            .is_some_and(|found| found.is_active())
+            && self.is_web_identity(user)
     }
 
     /// Whether `web:<user>` is an identity of `user`: a cookie login's sender.

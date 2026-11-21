@@ -153,11 +153,15 @@ reads:
   identity `web:owner`, and returns it. With exactly one user it is that user, so an install that
   has only its owner keeps working with no arguments. With several it asks for one (`NeedUser`,
   whose message lists their ids and usernames). The admin service reports the user it chose, and the
-  CLI prints the id and username with the link. `login_user(Some(id), now)` requires an active user,
-  and gives them the identity `web:<id>`, verified as `admin`, if they lack it: a link login sends
-  as `web:<id>`, so without it the router would drop their messages. The admin service calls it
-  before it asks the web channel for the link, and only if the web channel is running, so a daemon
+  CLI prints the id and username with the link. `login_user(Some(id), now)` requires an active user.
+  The admin service calls it, then `create_invite`, only if the web channel is running, so a daemon
   that can't make a link makes no user.
+- **Invites and recovery links.** `create_invite(user, kind, created_by, now)` stores a one-time
+  link for an active user (`InviteKind::Invite` or `Recovery`, valid `INVITE_TTL`, 72 hours) and
+  returns its token and expiry ([web channel](web-channel.md#invite-and-recovery-links)). It gives
+  the user the identity `web:<id>`, verified as `admin`, if they lack it: a web sign-in sends as
+  `web:<id>`, so without it the router would drop their messages. If another user has `web:<id>` it
+  refuses (`WebIdentityTaken`). It takes nothing away from the user.
 - **Time zone and default identity.** `agent_loop::history::message_timezone(users, user, agent)` is
   the user's time zone, else the agent's, else the system's; a config job has no user and runs as
   `owner`. Jobs and proactive messages go to the user's default identity (`OutboxItem::to_user`); a

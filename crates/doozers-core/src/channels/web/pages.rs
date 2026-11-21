@@ -1,6 +1,6 @@
 //! The web channel's HTTP side: the chat list, chat pages, posting, approval buttons, the event
 //! streams, and `/blobs/<sha256>`. The login pages and the authentication middleware are in
-//! [`login`](super::login).
+//! [`login`](super::login) and [`invite`](super::invite).
 
 use std::convert::Infallible;
 use std::fmt;
@@ -168,6 +168,7 @@ impl WebApp {
             .merge(super::chat_actions::routes())
             .merge(super::jobs::routes())
             .merge(super::login::routes())
+            .merge(super::invite::routes())
             .with_state(self.clone())
     }
 }

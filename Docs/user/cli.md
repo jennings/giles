@@ -88,7 +88,9 @@ The report covers all requests by default. `--since` limits it to requests made 
 
 ## `doozers admin login-link`
 
-Prints a one-time URL that logs a user in to the web chat, for example from a phone.
+Prints a one-time recovery URL that signs a user in to the web chat, for example from a phone. It
+works for any active user, including one who has lost every other way to sign in, and it keeps every
+way the user can already sign in.
 
 On a fresh install, which has no users yet, the command creates the first admin, with the id `owner`
 and the username `admin`, and prints a link for it. With one user, the link is for that user. With
@@ -102,8 +104,9 @@ doozers admin login-link --user owner
 The command prints the link on standard output, and on standard error the id and username of the
 user it logs in.
 
-The link works once, within 10 minutes. The expiry time is printed on standard error. Login links
-need the built-in `web` channel.
+The link works once, within 72 hours. The expiry time is printed on standard error. Making another
+link doesn't end the earlier ones. Login links need the built-in `web` channel. See
+[Invite and recovery links](web.md#invite-and-recovery-links).
 
 ## `doozers toolset`
 

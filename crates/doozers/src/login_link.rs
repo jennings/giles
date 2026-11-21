@@ -1,5 +1,5 @@
-//! `doozers admin login-link [--user <user>]`: a one-time web login URL, from the admin service's
-//! `CreateLoginLink`.
+//! `doozers admin login-link [--user <user>]`: a one-time recovery URL that signs a user in to the
+//! web chat, from the admin service's `CreateLoginLink`.
 
 use std::path::Path;
 

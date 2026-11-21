@@ -199,12 +199,18 @@ Channels also drop messages that must never start a turn: echoes of the agent's 
   (`run/proxy.sock`, mode 0600) or a TCP listener that also requires a shared-secret header the
   proxy adds. Never by source address: any local process, including network-enabled plugins, can
   connect from loopback.
-- Bootstrap: `doozers admin login-link [--user <id>]` prints a one-time URL valid for 10 minutes,
-  for the first login before any channel is linked. On a fresh install, with no users, it creates
-  the first admin, whose id is `owner` and username `admin`. With exactly one user the link is that
-  user's, so a single-user install runs it with no arguments; with several it needs `--user`. It
-  prints whose link it is, and gives that user the identity `web:<id>`, the one a link login sends
-  as, if they lack it.
+- Invite and recovery links: a one-time URL (`/invite/<token>`) that signs a browser in and then
+  offers to add a sign-in method. An `invite` sets up a new user and a `recovery` link gets a user
+  who lost every method back in, without removing any. Both last 72 hours and work once. They live
+  in the `user_invites` table by the hash of a 256-bit token, so they survive a restart. Opening the
+  URL shows a button; the button's POST spends the link, so link previews can't. Every sign-in POST
+  carries a nonce that matches a cookie the browser got with the form (login CSRF).
+- Bootstrap: `doozers admin login-link [--user <id>]` prints a recovery link, for the first login
+  before any other method exists. On a fresh install, with no users, it creates the first admin,
+  whose id is `owner` and username `admin`. With exactly one user the link is that user's, so a
+  single-user install runs it with no arguments; with several it needs `--user`. It prints whose
+  link it is, and gives that user the identity `web:<id>`, the one a link sign-in sends as, if they
+  lack it.
 - Passkeys: later.
 
 ## 4. Components and traits

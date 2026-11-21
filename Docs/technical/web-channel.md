@@ -45,8 +45,9 @@ the live-output hook.
 | `POST /jobs/<id>/disable`      | Switches the user's job off (CSRF-checked), 303 to the list.     |
 | `POST /jobs/<id>/enable`       | Switches it back on (CSRF-checked), 303; 409 for a one-shot whose time passed. |
 | `POST /jobs/<id>/delete`       | Deletes the user's job (CSRF-checked), 303 to the list.          |
-| `GET /login/<token>`           | A login link: a page with a button that posts the token.         |
-| `POST /login`                  | Uses up the link (`token`), sets the session cookie, 303 to `/`. |
+| `GET /invite/<token>`          | An invite or recovery link: a page with a button that posts the token and the sign-in nonce ([Invite and recovery links](#invite-and-recovery-links)). |
+| `POST /invite`                 | Checks the nonce, spends the link (`token`), sets the session cookie, 303 to `/setup`. |
+| `GET /setup`                   | Where a user lands after a link: the sign-in methods they can add. |
 | `POST /logout`                 | Ends a cookie login (CSRF-checked), 303 to `/`.                  |
 | `GET /admin`                   | The status page ([Admin pages](#admin-pages)).                   |
 | `GET /admin/plugins`           | The plugins page.                                                |
@@ -80,13 +81,14 @@ the live-output hook.
 | `POST /admin/routes/<id>/remove` | Removes the route (CSRF-checked), 303 to the list.             |
 | `POST /admin/routes/<id>/move` | Moves it one place, `direction=up` or `down` (CSRF-checked), 303. |
 
-Every route except the two login routes needs a `WebUser` (below); without one it's a 401 page
-saying how to log in. A chat id is 128 random bits as 32 lowercase hex digits (`new_chat_id`), or
-`<agent>.<32 hex digits>` for a chat started with a chosen agent (`new_agent_chat_id`); either is
-the conversation id (PLAN section 10): web chats are created by the user. `is_chat_id` accepts both,
-and any other id in a path is a 404. A chat is `ConversationKind::Direct`, and belongs to the user
-who started it ([Whose data is whose](#whose-data-is-whose)). The chat id helpers are in
-`channels::chat_ids`, outside the feature, because the router reads them.
+Every route except `GET /invite/<token>` and `POST /invite` needs a `WebUser` (below); without one
+it's a 401 page saying how to log in. A chat id is 128 random bits as 32 lowercase hex digits
+(`new_chat_id`), or `<agent>.<32 hex digits>` for a chat started with a chosen agent
+(`new_agent_chat_id`); either is the conversation id (PLAN section 10): web chats are created by the
+user. `is_chat_id` accepts both, and any other id in a path is a 404. A chat is
+`ConversationKind::Direct`, and belongs to the user who started it
+([Whose data is whose](#whose-data-is-whose)). The chat id helpers are in `channels::chat_ids`,
+outside the feature, because the router reads them.
 
 ### Choosing an agent
 
@@ -105,10 +107,10 @@ such agent" (and the router would drop the message anyway).
 
 `channels::web::WebUser { user: UserId, sender: NativeId, csrf: String, .. }` is an axum extractor
 (`FromRequestParts` for any state) that reads a `WebUser` from the request's extensions, or rejects
-with the login page. The authentication middleware (`login::authenticate`, applied by `install`)
-inserts it; the extractor is the seam, so the admin pages use the same one (their router must be
-wrapped in the same middleware: `from_fn_with_state(web_app, authenticate)`, or merged through
-`WebApp`). `sender` is the native id in the `web` namespace that posted messages carry
+with the 401 login-required page. The authentication middleware (`login::authenticate`, applied by
+`install`) inserts it; the extractor is the seam, so the admin pages use the same one (their router
+must be wrapped in the same middleware: `from_fn_with_state(web_app, authenticate)`, or merged
+through `WebApp`). `sender` is the native id in the `web` namespace that posted messages carry
 (`InboundMessage::sender`, with `sender_authenticated: true`); the router matches it against the
 users' identities as `web:<sender>`, like any channel's sender. `can_log_out()` is true for a cookie
 login.
@@ -170,10 +172,12 @@ answered.
 
 ## Login
 
-PLAN section 3.4; v1 scope (section 1.1) is the login link and the trusted-proxy header. The login
-*code* flow (a code sent to the user's default channel) needs the outbox and isn't built. Code:
-`login.rs` (middleware and routes), `links.rs`, `proxy.rs`, the cookie helpers in `auth.rs`, and the
-keys in `config.rs`.
+PLAN section 3.4. A browser signs in with a one-time invite or recovery link, or the trusted-proxy
+header marks the user. Passwords, passkeys, and identity providers add more ways to sign in. The
+login *code* flow (a code sent to the user's default channel) is dropped. Code: `login.rs`
+(middleware, `start_session`, and logout), `invite.rs` (the link pages and the setup page),
+`signin.rs` (the sign-in methods the pages offer), `proxy.rs`, the cookie and nonce helpers in
+`auth.rs`, and the keys in `config.rs`.
 
 ### Configuration
 
@@ -182,8 +186,8 @@ collected into `WebConfig::unknown_keys` and logged by the registry; errors name
 scrubbed of secrets):
 
 - `public_url`: an `http`/`https` origin, normalized (lowercase host, no trailing slash); a path,
-  query, fragment, or user info is an error. Login links start with it; `https` makes the cookie
-  `Secure` on every listener. Unset: `http://<listener>`, the address `serve` bound for
+  query, fragment, or user info is an error. Invite and recovery links start with it; `https` makes
+  the cookies `Secure` on every listener. Unset: `http://<listener>`, the address `serve` bound for
   `core.http_listen` (`WebChannel::set_listen_addr` after the bind, so port 0 shows the real port),
   with an unspecified address shown as loopback.
 - `proxy.identity_header` (required in `proxy`): the header naming the user. `proxy.listen`
@@ -193,41 +197,76 @@ scrubbed of secrets):
   `secret_header` are errors and the listener is the Unix socket. Neither header may be
   `Authorization`, `Cookie`, `Host`, `X-CSRF-Token`, `X-Forwarded-Proto`, or `Last-Event-ID`.
 
-### Login links
+### Invite and recovery links
 
-`WebChannel::create_login_link(&UserId, now) -> Result<LoginLink { url, expires_at }, LoginLinkError>`
-is what `doozers admin login-link` calls over the admin service (2.24; the registry's
-`web_channel()` gives the typed channel), after `Users::login_user` has found the user, created the
-first admin on a fresh install, and given the user the `web:<user>` identity. It refuses a user who
-doesn't exist (`UnknownUser`), a disabled one (`Disabled`), and one without a `web:<user>` identity
-(`NoWebIdentity`: the router would drop their messages), which the admin service can't hit. The link
-is `<link base>/login/<token>`, 256 random bits as 64 hex digits, valid for `LOGIN_LINK_TTL` (10
-minutes). Pending links live in memory only, by the SHA-256 of the token (`links::LoginLinks`):
-nothing on disk can be replayed, and a restart invalidates them. Expired links are dropped whenever
-one is created or redeemed.
+One mechanism makes every one-time link: `Users::create_invite(user, kind, created_by, now)` stores
+a `user_invites` row ([User invites](storage.md#user-invites)) and returns the token and expiry
+(`INVITE_TTL`, 72 hours). The token is 256 random bits as 64 lowercase hex digits
+(`is_invite_token`); the table keeps its SHA-256, so links survive a restart and nothing stored can
+be replayed. The user must exist and be active. Creating a link gives the user the identity
+`web:<id>`, verified as `admin`, if they lack it (a web sign-in sends as `web:<id>`, so without it
+the router would drop their messages), and refuses a user whose `web:<id>` belongs to another
+(`WebIdentityTaken`). A second link for a user doesn't end the first.
 
-`GET /login/<token>` doesn't use the link: it shows a page with a form that posts the token to
-`POST /login`, so link previews (chat apps and mail clients fetch URLs) can't spend it.
-`POST /login` redeems it (removed under the lock: single use, even with concurrent posts), creates a
-session token (256 random bits) with `Store::web_session_create(token, user, now, now + 30 days)`,
-deletes the browser's previous cookie session if it had one, and answers 303 to `/` with
+- `kind = invite` sets up a new account: an admin creates the user, then a link for them. The admin
+  pages that do it come later; the tests make one through this API.
+- `kind = recovery` signs in a user who lost every sign-in method. It adds and removes nothing: the
+  user's identities, sessions, and other methods stay. `doozers admin login-link` makes one over the
+  admin service ([Admin service](admin.md#users-and-the-operator)), after `Users::login_user` has
+  found the user (and created the first admin on a fresh install). The web channel only says where
+  links point: `WebChannel::invite_url(token)` is `<link base>/invite/<token>`.
+
+`GET /invite/<token>` doesn't spend the link: if `Store::user_invite(token, now)` finds it unused
+and unexpired, it shows a page with a form that posts `token` and `nonce` to `POST /invite`, so link
+previews (chat apps and mail clients fetch URLs) can't spend it. The page also sets the nonce cookie
+([Sign-in CSRF](#sign-in-csrf)). A token that is malformed, unknown, used, or expired gets the same
+410 page, which also tells the operator about `doozers admin login-link`.
+
+`POST /invite` checks the nonce first, then reads the link without spending it. If its user can no
+longer sign in (disabled, gone, or without `web:<id>`) it answers 403 and leaves the link for when
+they can. Otherwise `Store::user_invite_redeem` spends it in one statement, so of two concurrent
+posts one gets the link and the other the 410 page. The winner goes through `login::start_session`,
+which every way of signing in ends in: it creates a session token (256 random bits) with
+`Store::web_session_create(token, user, method, now, now + 30 days)`, where `method` is `invite` or
+`recovery` and is stored with the session, deletes the browser's previous cookie session if it had
+one, and answers 303 to the given page with
 `Set-Cookie: doozers_session=<token>; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax` (`; Secure`
-over HTTPS). A link that doesn't exist, was used, or expired gets the same 410 page either way. Both
+over HTTPS). `POST /invite` sends the browser to `/setup` and deletes the nonce cookie. All these
 answers are `Cache-Control: no-store`. The `Referrer-Policy: no-referrer` security header keeps the
 token out of `Referer`.
 
-No login CSRF check on `POST /login`: a forged login would log the victim in as the user the link is
-for, which needs a valid link anyway.
+`GET /setup` needs a login. It lists `WebApp::setup_options(user)`, the sign-in methods the user can
+add (`signin.rs`), each with a label, a sentence, and the page that adds it. Each method that exists
+contributes its entry there. With no entries it says the link was the only way to sign in so far, so
+the user needs a new link when the session ends.
+
+### Sign-in CSRF
+
+A sign-in has no session to hold a CSRF token yet, and a forged one is a login CSRF: another site
+posts the attacker's own credentials or link from the victim's browser, and the victim ends up in
+the attacker's account. So every POST that signs a browser in carries a nonce: the form has a hidden
+`nonce` field, and the browser has the same value in the `doozers_login_nonce` cookie (`HttpOnly`,
+`SameSite=Strict`, the whole site, 15 minutes, `Secure` over HTTPS).
+`auth::check_nonce(headers, field)` runs before the handler reads anything else, compares SHA-256
+digests, and answers 403 when the cookie is missing or isn't a nonce (32 lowercase hex digits), the
+field is missing, or they differ. Another site's form post doesn't carry a `SameSite=Strict` cookie,
+and can't read a value only this site's page holds.
+
+A page with a sign-in form calls `auth::nonce_for_form(headers)`: the browser's own nonce if it has
+a well-formed one (so a second tab's form keeps working), else a new one, and sets it as the cookie
+in the same response (`auth::nonce_cookie`). A successful sign-in deletes the cookie
+(`auth::clear_nonce_cookie`).
 
 ### The session cookie
 
 The middleware reads `doozers_session` (`WEB_SESSION_TTL`, 30 days), looks the token up with
-`Store::web_session(token, now)` (expired rows don't count), and builds the `WebUser`: `user` and
-`sender` are the session's user id, so a link login posts as `web:<id>` (`web:owner` for the owner).
-If the user is gone or disabled, or no longer has the identity `web:<user>`, the session logs nobody
-in. A cookie that names no live session gets a deleting `Set-Cookie` on the response. A store error
-is a 500. `WebApp::expire_sessions` deletes expired rows now and every hour
-(`Store::web_sessions_expire`) until shutdown.
+`Store::web_session(token, now)` (expired rows don't count; the row also records how the session
+signed in, `method`), and builds the `WebUser`: `user` and `sender` are the session's user id, so a
+cookie login posts as `web:<id>` (`web:owner` for the owner). If the user is gone or disabled, or no
+longer has the identity `web:<user>`, the session logs nobody in. A cookie that names no live
+session gets a deleting `Set-Cookie` on the response. A store error is a 500.
+`WebApp::expire_sessions` deletes expired sessions and expired invite links now and every hour
+(`Store::web_sessions_expire`, `Store::user_invites_expire`) until shutdown.
 
 `POST /logout` (CSRF-checked) deletes the session and the cookie. A proxy login has nothing to end,
 so the sidebar shows no logout button for it.
@@ -1162,8 +1201,8 @@ Templates are in `crates/doozers-core/templates/web/`, and the design they follo
 `layout.html` and adds the sidebar, the top bar of narrow screens, and the navigation `<dialog>`
 (opened by an invoker button, `command="show-modal"`, so it needs no script). `nav.html` is the
 navigation and the user footer, included in both the sidebar and the dialog. The pages that render
-without a login (`error.html`, `login.html`, `login_required.html`) extend `layout.html` directly
-and are standalone cards.
+without a login (`error.html`, `login_required.html`, `invite.html`) extend `layout.html` directly
+and are standalone cards, and so does `setup.html`, which a signed-in user sees right after a link.
 
 `app.html` reads one field, `shell` (`shell::Shell`), that every page's struct has.
 `Shell::new(user, nav)` builds it from the `WebUser` and the sidebar link the page belongs to
@@ -1182,10 +1221,11 @@ Every form also works as a plain form post. Styles are classes in `assets/doozer
 
 `crates/doozers-core/src/channels/web/tests.rs` (router-level with `tower::ServiceExt::oneshot`, a
 temporary store; the chat tests inject a `WebUser`, the login tests go through the real middleware),
-plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`, `links.rs`,
+plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`, `invite.rs`,
 `proxy.rs`, `admin.rs`, `qr.rs`:
 
-- Every route without a user is a 401 login page; malformed chat and blob ids are 404s.
+- Every route without a user, but the invite routes, is a 401 login-required page; malformed chat
+  and blob ids are 404s.
 - The chat list: only this instance's chats, newest first, escaped titles. A chat page: transcript
   rendered and sanitized, cursor and CSRF token in place, nothing inline.
 - Posting: CSRF required (header or field), the event carries the chat, the sender, and
@@ -1234,11 +1274,16 @@ plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`, `l
   fake provider that streams slowly: a post becomes a turn whose text reaches the open page as a
   live message with out-of-band updates, then its final rendering, and a reload shows the stored
   reply once.
-- Login: a link shows its button without being used, logs in once with the right cookie flags and a
-  30-day `web_sessions` row, then is 410; expired, unknown, and malformed links; link creation
-  refusals; expired, unknown, and orphaned sessions logged out with the cookie deleted; the hourly
-  cleanup; logout with CSRF; a cookie login's CSRF token; `public_url` and `X-Forwarded-Proto`
-  making cookies `Secure` (the latter only through the proxy).
+- Login: an invite shows its button and the nonce cookie without being used, sets up a new user once
+  with the right cookie flags, a 30-day `web_sessions` row recording `invite`, and `web:<id>` as
+  their identity, lands on the setup page, then is 410; a recovery link signs in with `recovery` and
+  keeps the user's identities and other sessions; a new session replaces the browser's old cookie
+  session; expired, unknown, and malformed links are 410 on the page and the post; a post without
+  the matching nonce (no cookie, no field, another value, a cookie that isn't a nonce) is 403 and
+  leaves the link unspent; a page reuses the browser's nonce; a disabled user's link is refused and
+  left unspent; the setup page needs a login; expired, unknown, and orphaned sessions logged out
+  with the cookie deleted; the hourly cleanup; logout with CSRF; a cookie login's CSRF token;
+  `public_url` and `X-Forwarded-Proto` making cookies `Secure` (the latter only through the proxy).
 - Proxy: the identity header ignored on the main listener and honored on the proxy app, unknown
   identities refused, posts carry the header's identity and need its CSRF token; a TCP listener
   needs the exact secret; binding (socket mode 0600, `InUse`, stale socket replaced, non-socket left

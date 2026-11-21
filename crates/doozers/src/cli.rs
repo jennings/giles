@@ -79,7 +79,8 @@ pub struct AdminArgs {
 /// The `doozers admin` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum AdminCommand {
-    /// Print a one-time login URL for the web chat. With no users yet, it creates the first admin.
+    /// Print a one-time recovery URL that signs a user in to the web chat. With no users yet, it
+    /// creates the first admin.
     LoginLink(LoginLinkArgs),
 }
 

@@ -101,7 +101,7 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     let http_addr = listener
         .local_addr()
         .context("cannot read the HTTP listener's address")?;
-    // Login links point at the address actually bound (`http_listen` may say port 0).
+    // Invite and recovery links point at the address actually bound (`http_listen` may say port 0).
     #[cfg(feature = "channel-web")]
     if let Some(web) = runtime.registry.web_channel() {
         web.set_listen_addr(http_addr);
@@ -153,14 +153,14 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
         Launcher::new(root.clone(), doozers_exe, sandbox.clone().map(drop)),
         wiring,
     ));
-    // Login links come from the built-in web channel, if one is configured.
+    // The built-in web channel, if one is configured, says where invite and recovery links point.
     #[cfg(feature = "channel-web")]
-    let login_links = runtime
+    let invite_links = runtime
         .registry
         .web_channel()
-        .map(|web| web as Arc<dyn doozers_core::admin::LoginLinks>);
+        .map(|web| web as Arc<dyn doozers_core::admin::InviteLinks>);
     #[cfg(not(feature = "channel-web"))]
-    let login_links = None;
+    let invite_links = None;
     let admin = Arc::new(AdminService::new(AdminOptions {
         config: runtime.registry.live_config().clone(),
         root: root.clone(),
@@ -176,7 +176,7 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
             toolsets.clone() as Arc<dyn PluginControl>,
             toolset_manager.clone() as Arc<dyn PluginControl>,
         ]))),
-        login_links,
+        invite_links,
         users: runtime.users.clone(),
         // Every toolset RPC goes through the manager, as the web pages do.
         toolsets: Some(toolset_manager.clone() as Arc<dyn ToolsetAdmin>),

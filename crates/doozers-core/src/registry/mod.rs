@@ -613,7 +613,7 @@ impl Registry {
     }
 
     /// The built-in web channel, typed, if `doozers.toml` configures one: its pages
-    /// ([`WebApp`](crate::channels::web::WebApp)), approval prompts, and login links
+    /// ([`WebApp`](crate::channels::web::WebApp)), approval prompts, and invite and recovery links
     /// need more than [`Channel`].
     #[cfg(feature = "channel-web")]
     pub fn web_channel(&self) -> Option<Arc<crate::channels::web::WebChannel>> {

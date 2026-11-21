@@ -335,18 +335,23 @@ async fn only_an_admin_gets_the_admin_pages() {
     assert!(admin.restarted().is_empty());
 }
 
-/// Opens the stored users of `env`, which imports the owner of the test configuration (an
-/// admin), and adds a second admin `root` and a member `mia`, each with the `web:<id>` identity a
-/// login signs in as.
-pub(super) async fn stored_users(env: &Env) -> Arc<Users> {
-    let users = Users::open(
+/// Opens the stored users of `env`, which imports the owner of the test configuration (an admin)
+/// the first time. The channel's user list follows them.
+pub(super) async fn open_users(env: &Env) -> Users {
+    Users::open(
         env.store.clone(),
         env.channel.users().clone(),
         &env.registry.config(),
         &env._dir.path().join("doozers.toml"),
     )
     .await
-    .unwrap();
+    .unwrap()
+}
+
+/// The stored users of `env` ([`open_users`]), and a second admin `root` and a member `mia`, each
+/// with the `web:<id>` identity a login signs in as.
+pub(super) async fn stored_users(env: &Env) -> Arc<Users> {
+    let users = open_users(env).await;
     for (id, role) in [("root", UserRole::Admin), ("mia", UserRole::Member)] {
         let new = NewUser {
             id: UserId::new(id).unwrap(),
@@ -369,13 +374,10 @@ pub(super) async fn stored_users(env: &Env) -> Arc<Users> {
     Arc::new(users)
 }
 
-/// Logs `user` in with a login link on the main listener; the session token.
+/// Logs `user` in with a recovery link on the main listener; the session token.
 pub(super) async fn session_of(env: &Env, user: &str) -> String {
-    let link = env
-        .channel
-        .create_login_link(&UserId::new(user).unwrap(), Timestamp::now())
-        .unwrap();
-    let response = redeem(env.main_app(), &link, &[]).await;
+    let token = invite_token(env, &UserId::new(user).unwrap(), InviteKind::Recovery).await;
+    let response = redeem(env.main_app(), &token, &[]).await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER, "{user}");
     cookie_token(set_cookie(&response))
 }

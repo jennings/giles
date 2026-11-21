@@ -1,5 +1,6 @@
-//! The web login (PLAN section 3.4): the authentication middleware, the one-time login link pages,
-//! logout, and deleting expired sessions.
+//! The web login (PLAN section 3.4): the authentication middleware, starting a session, logout, and
+//! deleting expired sessions and invites. The invite and recovery links that sign a browser in are
+//! in [`invite`](super::invite).
 //!
 //! - A request through the trusted-proxy listener (marked [`TrustedProxy`]) that carries the
 //!   proxy's identity header is the active user who has that `web` identity. Nothing else ever
@@ -10,43 +11,37 @@
 
 use std::time::Duration;
 
-use askama::Template;
 use axum::Extension;
 use axum::Router;
-use axum::extract::{Form, Path, Request, State};
+use axum::extract::{Form, Request, State};
 use axum::http::header::SET_COOKIE;
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
+use axum::routing::post;
 use doozers_store::SignInMethod;
 use doozers_types::{NativeId, UserId};
 use serde::Deserialize;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use super::auth::{
     Login, SESSION_COOKIE, TrustedProxy, WEB_SESSION_TTL, WebUser, check_csrf,
     clear_session_cookie, cookie, cookie_csrf, proxy_csrf, session_cookie,
 };
 use super::pages::{WebApp, error_page, internal_error, no_store};
-use super::{COMPONENT, WebChannel, links, random_hex};
-use crate::http;
+use super::{COMPONENT, WebChannel, random_hex};
 
 /// How often expired web sessions are deleted.
 pub const SESSION_EXPIRY_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
-/// The login routes: `GET /login/<token>` (the link), `POST /login` (using it), and
-/// `POST /logout`.
+/// The login routes: `POST /logout`.
 pub(super) fn routes() -> Router<WebApp> {
-    Router::new()
-        .route("/login/{token}", get(login_page))
-        .route("/login", post(log_in))
-        .route("/logout", post(log_out))
+    Router::new().route("/logout", post(log_out))
 }
 
 /// Whether the response should mark cookies `Secure`: the public URL is `https`, or the trusted
 /// proxy says the browser used HTTPS (`X-Forwarded-Proto`, believed only from the proxy).
-fn is_https(channel: &WebChannel, headers: &HeaderMap, trusted: bool) -> bool {
+pub(super) fn is_https(channel: &WebChannel, headers: &HeaderMap, trusted: bool) -> bool {
     channel.config().https()
         || (trusted
             && headers
@@ -151,63 +146,19 @@ impl WebChannel {
     }
 }
 
-/// The answer for a link that doesn't (or no longer) work: the same whether it never existed,
-/// was used, or expired.
-fn dead_link() -> Response {
-    no_store(error_page(
-        StatusCode::GONE,
-        "Login link expired",
-        "This login link has expired or was already used. Ask the operator for a new one \
-         (`doozers admin login-link`); each works once, for 10 minutes.",
-    ))
-}
-
-#[derive(Template)]
-#[template(path = "web/login.html")]
-struct LoginPage<'a> {
-    token: &'a str,
-    expires: String,
-}
-
-/// `GET /login/<token>`: a page with a button that uses the link. Opening the link doesn't use it
-/// up, so a chat app or mail client that fetches links for a preview can't spend it.
-async fn login_page(State(app): State<WebApp>, Path(token): Path<String>) -> Response {
-    let now = app.inner.clock.now();
-    if !links::is_token(&token) {
-        return dead_link();
-    }
-    let Some(expires_at) = app.inner.channel.links.expires_at(&token, now) else {
-        return dead_link();
-    };
-    no_store(http::render(&LoginPage {
-        token: &token,
-        expires: expires_at.strftime("%Y-%m-%d %H:%M UTC").to_string(),
-    }))
-}
-
-#[derive(Debug, Deserialize)]
-struct LoginForm {
-    token: String,
-}
-
-/// `POST /login`: uses up the link and starts a 30-day session (a new random cookie token; the
-/// store keeps its SHA-256). A session cookie the browser already had is logged out.
-async fn log_in(
-    State(app): State<WebApp>,
-    user: Option<Extension<WebUser>>,
-    trusted: Option<Extension<TrustedProxy>>,
-    headers: HeaderMap,
-    Form(form): Form<LoginForm>,
+/// Signs `user` in, having proved who they are with `method`: stores a 30-day session (a new random
+/// cookie token; the store keeps its SHA-256 and `method`), logs `previous`, the browser's old
+/// cookie session if it had one, out, and answers 303 to `to` with the new session cookie. Every
+/// way of signing in ends here.
+pub(super) async fn start_session(
+    app: &WebApp,
+    user: UserId,
+    method: SignInMethod,
+    previous: Option<&WebUser>,
+    https: bool,
+    to: &str,
 ) -> Response {
     let now = app.inner.clock.now();
-    let channel = &app.inner.channel;
-    let Some(user_id) = links::is_token(&form.token)
-        .then(|| channel.links.redeem(&form.token, now))
-        .flatten()
-    else {
-        debug!("a dead login link was used");
-        return dead_link();
-    };
     let token = random_hex(32);
     let expires_at = now
         .checked_add(WEB_SESSION_TTL)
@@ -215,28 +166,20 @@ async fn log_in(
     if let Err(err) = app
         .inner
         .store
-        .web_session_create(
-            &token,
-            user_id.clone(),
-            SignInMethod::Recovery,
-            now,
-            expires_at,
-        )
+        .web_session_create(&token, user, method, now, expires_at)
         .await
     {
         return internal_error("cannot store a web session", &err);
     }
-    if let Some(Extension(WebUser {
+    if let Some(WebUser {
         login: Login::Cookie(old),
         ..
-    })) = user
-        && let Err(err) = app.inner.store.web_session_delete(&old).await
+    }) = previous
+        && let Err(err) = app.inner.store.web_session_delete(old).await
     {
         warn!(error = %err, "cannot delete the replaced web session");
     }
-    info!(user = %user_id, "logged in to the web chat with a login link");
-    let https = is_https(channel, &headers, trusted.is_some());
-    let mut response = Redirect::to("/").into_response();
+    let mut response = Redirect::to(to).into_response();
     response
         .headers_mut()
         .insert(SET_COOKIE, session_cookie(&token, https));
@@ -275,8 +218,8 @@ async fn log_out(
 }
 
 impl WebApp {
-    /// Deletes expired web sessions now and every hour until shutdown. Expired sessions never log
-    /// anyone in; this only keeps the table small.
+    /// Deletes expired web sessions and invites now and every hour until shutdown. Expired ones
+    /// never log anyone in; this only keeps the tables small.
     pub async fn expire_sessions(self) {
         let mut ticks = tokio::time::interval(SESSION_EXPIRY_INTERVAL);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -285,10 +228,16 @@ impl WebApp {
                 biased;
                 () = self.inner.shutdown.cancelled() => return,
                 _ = ticks.tick() => {
-                    match self.inner.store.web_sessions_expire(self.inner.clock.now()).await {
+                    let now = self.inner.clock.now();
+                    match self.inner.store.web_sessions_expire(now).await {
                         Ok(0) => {}
                         Ok(deleted) => debug!(deleted, "deleted expired web sessions"),
                         Err(error) => warn!(%error, "cannot delete expired web sessions"),
+                    }
+                    match self.inner.store.user_invites_expire(now).await {
+                        Ok(0) => {}
+                        Ok(deleted) => debug!(deleted, "deleted expired invite links"),
+                        Err(error) => warn!(%error, "cannot delete expired invite links"),
                     }
                 }
             }

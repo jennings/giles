@@ -57,7 +57,7 @@ Settings of the core itself. Optional.
 
 | Key               | Default            | Meaning                                                                        |
 | ----------------- | ------------------ | ------------------------------------------------------------------------------ |
-| `http_listen`     | `"127.0.0.1:8080"` | Address of the HTTP server (web chat, admin pages, login links)                |
+| `http_listen`     | `"127.0.0.1:8080"` | Address of the HTTP server (web chat, admin pages, invite and recovery links)                |
 | `journal_mode`    | `"wal"`            | SQLite journal mode of `data/doozers.db`: `wal`, `delete`, `truncate`, `persist` |
 | `secret_key_file` | `"secret.key"`     | The key that unlocks the secrets Doozers stores, relative to the data root     |
 
@@ -138,8 +138,8 @@ Remove it once Doozers has started. An `[owner]` added after the first start is 
 `[owner]` is invalid, the first start fails and nothing is imported.
 
 On a fresh install, you can leave `[owner]` out. Run `doozers admin login-link` to create the first
-admin and log in to the [web chat](web.md#login-links). To also talk to Doozers on other channels,
-list your identities in `[owner]` before the first start.
+admin and log in to the [web chat](web.md#invite-and-recovery-links). To also talk to Doozers on
+other channels, list your identities in `[owner]` before the first start.
 
 **An install that has already started can't add an identity yet.** Users will link their own
 identities from the web UI in a later release.

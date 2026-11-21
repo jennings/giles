@@ -682,13 +682,14 @@ fn status_usage_and_login_link_ask_the_running_daemon() {
     assert!(!ok && stderr.contains("doozers is not running"), "{stderr}");
 }
 
-/// `POST <path>` with the urlencoded `form` to `addr`; the whole response.
+/// `POST <path>` with the urlencoded `form` and the `headers` (each ending in `\r\n`) to `addr`;
+/// the whole response.
 #[cfg(feature = "channel-web")]
-fn http_post_form(addr: SocketAddr, path: &str, form: &str) -> String {
+fn http_post_form(addr: SocketAddr, path: &str, headers: &str, form: &str) -> String {
     let mut stream = TcpStream::connect(addr).unwrap();
     write!(
         stream,
-        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n{headers}\
          Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{form}",
         form.len()
     )
@@ -698,9 +699,30 @@ fn http_post_form(addr: SocketAddr, path: &str, form: &str) -> String {
     response
 }
 
+/// Opens the invite page of `token` on `addr`, as a browser does, and posts its form: the whole
+/// response of the page, and of the post. The post carries the nonce the page set. A link that is
+/// dead has a page without one, so the post makes one up.
+#[cfg(feature = "channel-web")]
+fn spend_link(addr: SocketAddr, token: &str) -> (String, String) {
+    let page = http_request(
+        TcpStream::connect(addr).unwrap(),
+        &format!("/invite/{token}"),
+        "",
+    );
+    let nonce = if page.starts_with("HTTP/1.1 200 OK\r\n") {
+        cookie_of(&page)
+    } else {
+        "doozers_login_nonce=0123456789abcdef0123456789abcdef".to_owned()
+    };
+    let value = nonce.split_once('=').unwrap().1.to_owned();
+    let form = format!("token={token}&nonce={value}");
+    let posted = http_post_form(addr, "/invite", &format!("cookie: {nonce}\r\n"), &form);
+    (page, posted)
+}
+
 #[cfg(feature = "channel-web")]
 #[test]
-fn admin_login_link_prints_a_url_that_logs_in_once() {
+fn admin_login_link_prints_a_url_that_signs_in_once() {
     let env = Env::new();
     let home = env.path("home");
     let home_arg = home.to_str().unwrap();
@@ -716,27 +738,23 @@ fn admin_login_link_prints_a_url_that_logs_in_once() {
     assert!(ok, "{stderr}");
     assert!(stderr.contains("The link works once, until"), "{stderr}");
     let url = stdout.trim();
-    let prefix = format!("http://{addr}/login/");
+    let prefix = format!("http://{addr}/invite/");
     let token = url
         .strip_prefix(&prefix)
         .unwrap_or_else(|| panic!("{url} doesn't start with {prefix}"));
 
-    // Opening the link shows the login page; posting its form logs in, once.
-    let page = http_request(
-        TcpStream::connect(addr).unwrap(),
-        &format!("/login/{token}"),
-        "",
-    );
-    assert!(page.starts_with("HTTP/1.1 200 OK\r\n"), "{page}");
-    let form = format!("token={token}");
-    let first = http_post_form(addr, "/login", &form);
+    // Opening the link shows a page; posting its form signs in, once.
+    let (_, first) = spend_link(addr, token);
     assert!(first.starts_with("HTTP/1.1 303 "), "{first}");
     assert!(
-        first.to_ascii_lowercase().contains("\r\nset-cookie: "),
+        first
+            .to_ascii_lowercase()
+            .contains("\r\nset-cookie: doozers_session="),
         "{first}"
     );
-    let again = http_post_form(addr, "/login", &form);
-    assert!(!again.starts_with("HTTP/1.1 303 "), "{again}");
+    let (page, again) = spend_link(addr, token);
+    assert!(page.starts_with("HTTP/1.1 410 "), "{page}");
+    assert!(again.starts_with("HTTP/1.1 410 "), "{again}");
 
     // Only users that exist get links.
     let (ok, stdout, stderr) = run_cli(
@@ -790,10 +808,10 @@ fn a_fresh_install_without_an_owner_gets_its_first_admin_from_login_link() {
     assert!(ok, "{stderr_of_first}");
     let url = stdout.trim().to_owned();
     let token = url
-        .strip_prefix(&format!("http://{addr}/login/"))
+        .strip_prefix(&format!("http://{addr}/invite/"))
         .unwrap_or_else(|| panic!("{url}"))
         .to_owned();
-    let login = http_post_form(addr, "/login", &format!("token={token}"));
+    let (_, login) = spend_link(addr, &token);
     assert!(login.starts_with("HTTP/1.1 303 "), "{login}");
     // The first admin is a working user: the cookie opens the chat list, and the admin pages.
     let cookie = format!("cookie: {}\r\n", cookie_of(&login));

@@ -9,7 +9,9 @@ use doozers_plugin_sdk::convert::{status_to_proto, timestamp_from_proto, timesta
 use doozers_proto::admin::v1 as pb;
 use doozers_proto::admin::v1::admin_service_server::AdminService as AdminRpc;
 use doozers_proto::types::v1 as types_pb;
-use doozers_store::{BlobStore, ModelUsage, SessionId, SessionKind, SessionSummary, Store};
+use doozers_store::{
+    BlobStore, InviteKind, ModelUsage, SessionId, SessionKind, SessionSummary, Store,
+};
 use doozers_types::{AgentId, Timestamp, UserId};
 use tonic::{Request, Response, Status};
 use tracing::{error, info};
@@ -39,57 +41,17 @@ impl ChannelStatuses for Sessions {
     }
 }
 
-/// Creates one-time web login links (PLAN section 3.4). The built-in web channel implements it;
-/// without one, `CreateLoginLink` answers `UNAVAILABLE`.
-pub trait LoginLinks: Send + Sync {
-    /// A new one-time login link for `user`, valid from `now`.
-    ///
-    /// # Errors
-    ///
-    /// [`LoginLinkError`], with a message for the operator.
-    fn create_login_link(&self, user: &UserId, now: Timestamp)
-    -> Result<LoginLink, LoginLinkError>;
-}
-
-/// A one-time web login link.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LoginLink {
-    /// The URL to open.
-    pub url: String,
-    /// When it stops working.
-    pub expires_at: Timestamp,
-}
-
-/// Why a login link couldn't be created. Each carries the message for the operator.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
-pub enum LoginLinkError {
-    /// There is no such user (`NOT_FOUND`).
-    #[error("{0}")]
-    UnknownUser(String),
-    /// The user exists but can't log in to the web chat, e.g. without a `web:` identity
-    /// (`FAILED_PRECONDITION`).
-    #[error("{0}")]
-    Refused(String),
+/// Where the one-time links to the web UI point (PLAN section 3.4). The built-in web channel
+/// implements it; without one, `CreateLoginLink` answers `UNAVAILABLE`.
+pub trait InviteLinks: Send + Sync {
+    /// The URL of the invite or recovery link with `token`.
+    fn invite_url(&self, token: &str) -> String;
 }
 
 #[cfg(feature = "channel-web")]
-impl LoginLinks for crate::channels::web::WebChannel {
-    fn create_login_link(
-        &self,
-        user: &UserId,
-        now: Timestamp,
-    ) -> Result<LoginLink, LoginLinkError> {
-        use crate::channels::web::{self, WebChannel};
-        match WebChannel::create_login_link(self, user, now) {
-            Ok(web::LoginLink { url, expires_at }) => Ok(LoginLink { url, expires_at }),
-            Err(err @ web::LoginLinkError::UnknownUser(_)) => {
-                Err(LoginLinkError::UnknownUser(err.to_string()))
-            }
-            Err(
-                err @ (web::LoginLinkError::NoWebIdentity(_) | web::LoginLinkError::Disabled(_)),
-            ) => Err(LoginLinkError::Refused(err.to_string())),
-        }
+impl InviteLinks for crate::channels::web::WebChannel {
+    fn invite_url(&self, token: &str) -> String {
+        crate::channels::web::WebChannel::invite_url(self, token)
     }
 }
 
@@ -112,9 +74,10 @@ pub struct AdminOptions {
     pub channels: Arc<dyn ChannelStatuses>,
     /// Plugin supervision, once there is one.
     pub plugins: Option<Arc<dyn PluginControl>>,
-    /// The web channel's login links, if it runs.
-    pub login_links: Option<Arc<dyn LoginLinks>>,
-    /// The users, whom `CreateLoginLink` finds or, on a fresh install, creates the first of.
+    /// Where the web channel's invite and recovery links point, if it runs.
+    pub invite_links: Option<Arc<dyn InviteLinks>>,
+    /// The users, whom `CreateLoginLink` finds or, on a fresh install, creates the first of, and
+    /// whose recovery links it stores.
     pub users: Arc<Users>,
     /// The toolset manager, which every toolset RPC calls. Without it they answer `UNAVAILABLE`.
     pub toolsets: Option<Arc<dyn ToolsetAdmin>>,
@@ -129,7 +92,7 @@ impl fmt::Debug for AdminOptions {
             .field("sandbox", &self.sandbox)
             .field("started_at", &self.started_at)
             .field("plugins", &self.plugins.is_some())
-            .field("login_links", &self.login_links.is_some())
+            .field("invite_links", &self.invite_links.is_some())
             .field("toolsets", &self.toolsets.is_some())
             .finish_non_exhaustive()
     }
@@ -177,6 +140,24 @@ fn store_error(rpc: &'static str) -> impl FnOnce(doozers_store::Error) -> Status
     move |err| {
         error!(rpc, error = %err, "admin call failed");
         Status::internal(format!("database error: {err}"))
+    }
+}
+
+/// The answer for a link that couldn't be made for a user.
+fn link_status(err: LoginUserError) -> Status {
+    match err {
+        LoginUserError::NeedUser(_) => Status::invalid_argument(err.to_string()),
+        LoginUserError::NoSuchUser(_) => Status::not_found(err.to_string()),
+        LoginUserError::Disabled(_) | LoginUserError::WebIdentityTaken { .. } => {
+            Status::failed_precondition(err.to_string())
+        }
+        LoginUserError::Users(ref users) if users.is_invalid_input() => {
+            Status::failed_precondition(err.to_string())
+        }
+        _ => {
+            error!(error = %err, "cannot prepare a login link");
+            Status::internal(err.to_string())
+        }
     }
 }
 
@@ -319,52 +300,34 @@ impl AdminRpc for AdminService {
             .transpose()
             .map_err(|err| Status::invalid_argument(format!("user: {err}")))?;
         // Before the first admin is created, so a daemon that can't make a link makes no user.
-        let Some(links) = &self.options.login_links else {
+        let Some(links) = &self.options.invite_links else {
             return Err(Status::unavailable(
                 "login links need the built-in web channel, which isn't running",
             ));
         };
         let now = self.options.clock.now();
-        let user = match self.options.users.login_user(requested.as_ref(), now).await {
-            Ok(user) => user,
-            Err(err @ LoginUserError::NeedUser(_)) => {
-                return Err(Status::invalid_argument(err.to_string()));
-            }
-            Err(err @ LoginUserError::NoSuchUser(_)) => {
-                return Err(Status::not_found(err.to_string()));
-            }
-            Err(err @ (LoginUserError::Disabled(_) | LoginUserError::WebIdentityTaken { .. })) => {
-                return Err(Status::failed_precondition(err.to_string()));
-            }
-            Err(LoginUserError::Users(err)) if err.is_invalid_input() => {
-                return Err(Status::failed_precondition(err.to_string()));
-            }
-            Err(err) => {
-                error!(error = %err, "cannot prepare a login link");
-                return Err(Status::internal(err.to_string()));
-            }
-        };
-        match links.create_login_link(&user, now) {
-            Ok(link) => {
-                info!(%user, "login link created through the admin service");
-                let username = self
-                    .options
-                    .users
-                    .list()
-                    .get()
-                    .user(&user)
-                    .map(|found| found.username.clone())
-                    .unwrap_or_default();
-                Ok(Response::new(pb::CreateLoginLinkResponse {
-                    url: link.url,
-                    expires_at: Some(timestamp_to_proto(link.expires_at)),
-                    user: user.to_string(),
-                    username,
-                }))
-            }
-            Err(LoginLinkError::UnknownUser(message)) => Err(Status::not_found(message)),
-            Err(LoginLinkError::Refused(message)) => Err(Status::failed_precondition(message)),
-        }
+        let users = &self.options.users;
+        let user = users
+            .login_user(requested.as_ref(), now)
+            .await
+            .map_err(link_status)?;
+        let invite = users
+            .create_invite(&user, InviteKind::Recovery, None, now)
+            .await
+            .map_err(link_status)?;
+        info!(%user, "recovery link created through the admin service");
+        let username = users
+            .list()
+            .get()
+            .user(&user)
+            .map(|found| found.username.clone())
+            .unwrap_or_default();
+        Ok(Response::new(pb::CreateLoginLinkResponse {
+            url: links.invite_url(&invite.token),
+            expires_at: Some(timestamp_to_proto(invite.expires_at)),
+            user: user.to_string(),
+            username,
+        }))
     }
 
     async fn usage_report(
