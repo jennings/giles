@@ -42,9 +42,9 @@ impl GroupSummaries for NoSummaries {
     async fn regenerate(&self, _: doozers_store::SessionId) {}
 }
 
-struct Pages {
-    env: Env,
-    users: Arc<Users>,
+pub(super) struct Pages {
+    pub(super) env: Env,
+    pub(super) users: Arc<Users>,
     forgetter: Forgetter,
     busy: Arc<Busy>,
     fake: Arc<Fake>,
@@ -52,7 +52,7 @@ struct Pages {
 }
 
 impl Pages {
-    async fn new() -> Self {
+    pub(super) async fn new() -> Self {
         let env = env_with_toml(WebConfig::default(), &["web:owner"], ENVIRONMENT).await;
         let users = stored_users(&env).await;
         let clock = TestClock::new();
@@ -114,7 +114,7 @@ impl Pages {
         }
     }
 
-    fn router(&self, user: Option<WebUser>) -> axum::Router {
+    pub(super) fn router(&self, user: Option<WebUser>) -> axum::Router {
         let app = self
             .env
             .app
@@ -132,7 +132,7 @@ impl Pages {
 
     /// `method path` as `user`, with the CSRF token in the form of a POST unless `csrf` is false.
     /// The status, body, and `Location`. Every answer is `no-store`.
-    async fn send(
+    pub(super) async fn send(
         &self,
         user: Option<WebUser>,
         method: Method,
@@ -166,7 +166,7 @@ impl Pages {
         self.send(Some(owner()), Method::POST, path, true).await
     }
 
-    fn user(&self, name: &str) -> Option<crate::users::User> {
+    pub(super) fn user(&self, name: &str) -> Option<crate::users::User> {
         self.users
             .list()
             .get()

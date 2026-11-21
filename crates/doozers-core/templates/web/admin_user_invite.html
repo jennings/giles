@@ -1,0 +1,38 @@
+{% extends "web/app.html" %}
+
+{% block title %}Invite a user - Users - Doozers{% endblock %}
+
+{% block content %}
+<a class="back" href="/admin/users">Users</a>
+<h1>Invite a user</h1>
+{%- if let Some(error) = error %}
+<p class="banner banner-error" role="alert">{{ error }}</p>
+{%- endif %}
+<p class="lede">Creating the user makes a link you send them. The link works once, for 72 hours, and signs them in so they can choose how to sign in next time.</p>
+<form class="card form" method="post" action="/admin/invite-user">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="field-row">
+<div class="field">
+<label for="username">Username</label>
+<input id="username" name="username" value="{{ form.username }}" required maxlength="{{ max_username }}" pattern="[A-Za-z0-9._\-]+" autocomplete="off" autocapitalize="none" spellcheck="false">
+<p class="help">What they type to sign in with a password. Letters, digits, <code>.</code>, <code>_</code>, and <code>-</code>. You can change it later.</p>
+</div>
+<div class="field">
+<label for="display-name">Display name</label>
+<input id="display-name" name="display_name" value="{{ form.display_name }}" required maxlength="{{ max_display_name }}" autocomplete="off">
+<p class="help">The name Doozers shows for them. They can change it.</p>
+</div>
+</div>
+<div class="field">
+<label for="role">Role</label>
+<select id="role" name="role">
+<option value="member"{% if form.role == "member" %} selected{% endif %}>Member: uses the chats, jobs, and their own account</option>
+<option value="admin"{% if form.role == "admin" %} selected{% endif %}>Admin: also manages Doozers, its users included</option>
+</select>
+</div>
+<div class="form-actions">
+<button type="submit" class="button-primary">Create user and link</button>
+<a class="button button-quiet" href="/admin/users">Cancel</a>
+</div>
+</form>
+{% endblock %}

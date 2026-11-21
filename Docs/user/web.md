@@ -40,7 +40,8 @@ mail client that fetches the link to show a preview doesn't use it up. The next 
 add one, the link is the only way to sign in, so ask for a new one when this login ends. **Log out**
 at the bottom of the sidebar ends the login. See [Command line](cli.md).
 
-An admin can't make invite links in the web UI yet.
+An admin makes an invite link when [inviting a user](#inviting-a-user), and a recovery link on the
+user's page.
 
 The link starts with the address Doozers listens on. If you reach Doozers at another address, such
 as through a reverse proxy, set `public_url`:
@@ -221,10 +222,9 @@ in the line `trusted-proxy listener open`.
 
 The header's value is your identity in the `web` namespace, such as `web:alice@example.com`. Doozers
 logs you in as the user who has that identity. A header value that no user has, or one of a disabled
-user, gets a "Not allowed" page, and the log shows the value. Identities come from the
-[`[owner]` import](configuration.md#owner), so list the identity there before the first start. An
-admin can't set a user's proxy identity in the web UI yet, and a user can't add it on the
-**Identities** page, because the proxy is the admin's own.
+user, gets a "Not allowed" page, and the log shows the value. An admin sets a user's proxy identity
+on the [user's page](#a-users-page). The [`[owner]` import](configuration.md#owner) can list one
+too. A user can't add it on the **Identities** page, because the proxy is the admin's own.
 
 If the proxy can't use a Unix socket, give the listener a TCP address and a shared secret. The proxy
 must send the secret in a header with every request:
@@ -359,8 +359,43 @@ The page reloads itself until the channel connects, so it always shows the newes
 ## Users
 
 **Users** under **Admin** lists everyone who uses Doozers with their username, display name, role
-(admin or member), and state (active or disabled). **Remove** next to a user opens the page that
-removes them. Only an admin can open the pages.
+(admin or member), state (active or disabled), and when they last signed in. A user who hasn't
+signed in shows **Never**, and so does one who only logs in through a
+[trusted proxy](#a-trusted-reverse-proxy). **Manage** opens a user's page, **Remove** opens the page
+that removes them, and **Invite a user** adds a new one. Only an admin can open the pages.
+
+### Inviting a user
+
+**Invite a user** opens a form with the new user's username, display name, and role. A username has
+1 to 64 letters, digits, `.`, `_`, or `-`, and no other user may have it, whatever the case.
+Pressing **Create user and link** creates the user and shows their invite link once. Copy it and
+send it over a channel only they read. Make a recovery link from the user's page if you lose it.
+
+The link works once, within 72 hours. The user opens it and chooses how to sign in, as
+[Invite and recovery links](#invite-and-recovery-links) describes.
+
+### A user's page
+
+**Manage** opens a page with the user's username, id, role, state, and last sign-in, and a form for
+each thing you can change:
+
+- **Details**: the username, display name, and time zone. A new username applies at once, to the
+  user's next password sign-in. Their chats and other data stay, because Doozers keeps them under
+  the user's id and not under the username. An empty time zone uses the agent's.
+- **Role**: **Member** or **Admin**. Doozers always keeps one active admin, so it refuses to demote
+  the last one. You can demote yourself while another active admin remains, and you lose the admin
+  pages at once.
+- **Proxy identity**: the identity a [trusted proxy](#a-trusted-reverse-proxy) sends for the user,
+  such as `alice@example.com` for `web:alice@example.com`. The page shows the one they have. Save an
+  empty field to remove it. Enter what the proxy sends, without `web:`. A user has at most one, and
+  no two users can have the same one.
+- **Recovery link**: **Make a recovery link** shows a link like the one `doozers admin login-link`
+  makes. It signs in whoever opens it first, once, within 72 hours, and keeps every way the user can
+  already sign in.
+- **Remove**: opens the [page that removes the user](#removing-a-user).
+
+A form that Doozers refuses, such as a username another user has, shows the page again with the
+reason and what you typed.
 
 ### Removing a user
 

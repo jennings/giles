@@ -5,12 +5,13 @@
 {% block content %}
 <h1>Users</h1>
 <p class="lede">The people who use this Doozers. An admin can open every admin page, and a member only their own pages. Removing a user deletes everything Doozers keeps about them.</p>
+<p class="actions"><a class="button button-primary" href="/admin/invite-user">Invite a user</a></p>
 {%- if let Some(notice) = notice %}
 <p class="banner banner-info" role="status">{{ notice }}</p>
 {%- endif %}
 <div class="table-wrap">
 <table class="table">
-<thead><tr><th>Username</th><th>Display name</th><th>Role</th><th>State</th><th><span class="sr-only">Actions</span></th></tr></thead>
+<thead><tr><th>Username</th><th>Display name</th><th>Role</th><th>State</th><th>Last sign-in</th><th><span class="sr-only">Actions</span></th></tr></thead>
 <tbody>
 {%- for user in users %}
 <tr id="user-{{ user.id }}">
@@ -18,7 +19,9 @@
 <td data-label="Display name" class="m-body">{{ user.display_name }}</td>
 <td data-label="Role" class="m-aside">{% if user.admin %}<span class="pill pill-ok">{{ user.role }}</span>{% else %}<span class="pill pill-neutral">{{ user.role }}</span>{% endif %}</td>
 <td data-label="State" class="m-aside">{% if user.active %}<span class="pill pill-ok">{{ user.state }}</span>{% else %}<span class="pill pill-warn">{{ user.state }}</span>{% endif %}</td>
+<td data-label="Last sign-in" class="secondary m-meta m-label">{{ user.last_sign_in }}</td>
 <td class="row-actions">
+<a class="button button-small" href="/admin/users/{{ user.id }}" aria-label="Manage {{ user.username }}">Manage</a>
 <a class="button button-small button-danger" href="/admin/users/{{ user.id }}/remove" aria-label="Remove {{ user.username }}">Remove</a>
 </td>
 </tr>

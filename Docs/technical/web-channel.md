@@ -1735,16 +1735,64 @@ Everything a provider's name, client id, or issuer says is escaped by the templa
 
 ## User pages
 
-In `users.rs`: `web.install_users(builder, users, forgetter)`, which `serve` calls with
-`Runtime::users` and the daemon's `Forgetter`. **Users**, in the Admin group after **Agents**, lists
-the users; admins only like the other admin pages: every route answers 403 to anyone else, every
-answer is `no-store`, every `POST` is `check_csrf`-checked, and every form works without JavaScript.
+In `users.rs` (the list and **Remove**) and `users_manage.rs` (everything else):
+`web.install_users(builder, users, forgetter)`, which `serve` calls with `Runtime::users` and the
+daemon's `Forgetter`. **Users**, in the Admin group after **Agents**, lists the users; admins only
+like the other admin pages: every route answers 403 to anyone else, every answer is `no-store`,
+every `POST` is `check_csrf`-checked, and every form works without JavaScript. A handler checks the
+admin role first, then the CSRF token, then reads the id in the path: an id that isn't a user
+(malformed or unknown) is a 404 on every route. `UserPages` holds the `WebApp`, the `Users`, and the
+`Forgetter`.
+
+| Route | Does |
+| ----- | ---- |
+| `GET /admin/users` | The list |
+| `GET /admin/invite-user` | The invite form |
+| `POST /admin/invite-user` | Creates the user and an invite link and shows it (200); the form again with why (400, 409) |
+| `GET /admin/users/<id>` | The user's page, with `?notice=` after a change |
+| `POST /admin/users/<id>/details` | Sets the username, display name, and time zone together, 303; the page again with why (400, 409) |
+| `POST /admin/users/<id>/role` | Sets the role, 303 (to `/` for an admin who demoted themselves); 409 for the last active admin |
+| `POST /admin/users/<id>/proxy-identity` | Sets or, empty, clears the proxy identity, 303; the page again with why (400, 409) |
+| `POST /admin/users/<id>/recovery-link` | Makes a recovery link and shows it (200); 409 for a user who can't sign in |
+| `GET /admin/users/<id>/remove` | What removing the user deletes, and the button |
+| `POST /admin/users/<id>/remove` | Forgets the user (CSRF-checked), 303 to the list |
+
+The invite form has its own path, `/admin/invite-user`, and not `/admin/users/invite`, so that no
+user id can hide behind a fixed segment.
 
 - **The list.** `GET /admin/users` has a row per user, from the live user list (`Users::list`): the
-  username (and "(you)" for the admin looking), the display name, the role, the state, and a
-  **Remove** link. It shows `?removed=<username>` as "Removed <username>.". It is the seam the user
-  management pages grow from: a row is where a user's other actions go, and the `Users` handle is
-  for them.
+  username (and "(you)" for the admin looking), the display name, the role, the state, when the user
+  last signed in, and **Manage** and **Remove** links. The last sign-in is read from the store
+  (`Store::users`, `StoredUser::last_sign_in_at`), not from the router's snapshot: a session starts
+  without replacing the snapshot, and the column is the time of the newest session any sign-in
+  method started ([Storage](storage.md#web-sessions)). A user who only logs in through the trusted
+  proxy has none, which the page shows as "Never". It shows `?removed=<username>` as "Removed
+  <username>.".
+- **Inviting.** The `POST` validates the role (`admin` or `member`), then `Users::create` with a
+  fresh random id (`random_hex(16)`; the store forgets a removed user's id, and a random one is
+  never one anybody had) and the username and display name trimmed (the checks are `Users`').
+  `Users::create_invite(id, Invite, Some(admin), now)` adds the `web:<id>` identity and makes the
+  link, and the answer shows `WebChannel::invite_url(token)`, the same URL
+  `doozers admin login-link` prints, with the expiry and a copy button. The link is on that answer
+  only, because the store keeps its hash. A refused form is the form again with what was typed and
+  nothing created. If the user was created and the link couldn't be made, the answer is a 500 that
+  says so and points to the recovery link on the user's page.
+- **A user's page.** `GET /admin/users/<id>` shows the username, id, role, state, and last sign-in,
+  and one form for each of the details, the role, and the proxy identity, and the buttons for a
+  recovery link and **Remove**. The proxy identity is `User::proxy_identity`, the user's `web`
+  identity other than `web:<id>`. A form that is refused renders the page again with the error above
+  the forms and the typed values in the form that was posted (the others show what is stored), with
+  the status of the refusal: 400 for a value that isn't valid, 409 for a username or identity
+  another user has and for the last active admin. The details form calls `Users::set_details`, which
+  checks and writes the three fields in one store transaction, so a refused edit writes none of
+  them. The role form calls `Users::set_role`, and the proxy form `Users::set_proxy_identity` (the
+  empty field is `None`; a value starting with `web:` is a 400, since the field is what follows it).
+  The last-active-admin rule is `Users`' and the store's, so the page only reports it: the role
+  form's 409 says the last admin can't be demoted. An admin who demotes themselves while another
+  admin remains is sent to `/`, since the admin pages are closed to them.
+- **The recovery link.** `POST /admin/users/<id>/recovery-link` calls
+  `Users::create_invite(id, Recovery, Some(admin), now)` and shows the link once, as the invite
+  does. A disabled user can't have one (`LoginUserError::Disabled`, a 409 on the user's page).
 - **The confirmation.** `GET /admin/users/<id>/remove` is built from `Forgetter::preview`: one
   sentence per kind of data the user has (chats, group messages, private memories, the profile,
   identities, sign-in methods, jobs, queued messages, approvals, SSH keys and secrets), the
@@ -1765,7 +1813,7 @@ answer is `no-store`, every `POST` is `check_csrf`-checked, and every form works
 
 The role the page checks is the one the request carried, and `forget` decides again from the stored
 users, which is why the last-admin refusal exists for a request whose admin was demoted a moment
-ago. Everything a user's name or display name says is escaped by the templates.
+ago. Everything a user's name, display name, or identity says is escaped by the templates.
 
 ## Account page
 

@@ -45,6 +45,7 @@ mod ssh_hosts;
 mod ssh_keys;
 mod toolsets;
 mod users;
+mod users_manage;
 mod workspaces;
 
 #[cfg(test)]

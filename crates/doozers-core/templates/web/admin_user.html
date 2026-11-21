@@ -1,0 +1,99 @@
+{% extends "web/app.html" %}
+
+{% block title %}{{ display_name }} - Users - Doozers{% endblock %}
+
+{% block content %}
+<a class="back" href="/admin/users#user-{{ id }}">Users</a>
+<h1>{{ display_name }}</h1>
+{%- if let Some(notice) = notice %}
+<p class="banner banner-info" role="status">{{ notice }}</p>
+{%- endif %}
+{%- if let Some(error) = error %}
+<p class="banner banner-error" role="alert">{{ error }}</p>
+{%- endif %}
+<dl class="facts">
+<dt>Username</dt>
+<dd><code>{{ username }}</code>{% if you %} <span class="meta">(you)</span>{% endif %}</dd>
+<dt>Id</dt>
+<dd><code>{{ id }}</code></dd>
+<dt>Role</dt>
+<dd>{% if admin %}<span class="pill pill-ok">{{ role }}</span>{% else %}<span class="pill pill-neutral">{{ role }}</span>{% endif %}</dd>
+<dt>State</dt>
+<dd>{% if active %}<span class="pill pill-ok">{{ state }}</span>{% else %}<span class="pill pill-warn">{{ state }}</span>{% endif %}</dd>
+<dt>Last sign-in</dt>
+<dd>{{ last_sign_in }}</dd>
+</dl>
+
+<h2 id="details">Details</h2>
+<form class="card form" method="post" action="/admin/users/{{ id }}/details">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="field-row">
+<div class="field">
+<label for="username">Username</label>
+<input id="username" name="username" value="{{ form.username }}" required maxlength="{{ max_username }}" pattern="[A-Za-z0-9._\-]+" autocomplete="off" autocapitalize="none" spellcheck="false">
+<p class="help">What they type to sign in with a password. Letters, digits, <code>.</code>, <code>_</code>, and <code>-</code>. Their chats, memories, and other data follow the id, so renaming loses nothing.</p>
+</div>
+<div class="field">
+<label for="display-name">Display name</label>
+<input id="display-name" name="display_name" value="{{ form.display_name }}" required maxlength="{{ max_display_name }}" autocomplete="off">
+<p class="help">The name Doozers shows for them.</p>
+</div>
+</div>
+<div class="field">
+<label for="timezone">Time zone</label>
+<input id="timezone" name="timezone" value="{{ form.timezone }}" placeholder="Europe/London" autocomplete="off" spellcheck="false">
+<p class="help">An IANA name, such as <code>America/Los_Angeles</code>. It sets the times agents see in their messages and when their jobs run. Leave it empty to use the agent's time zone, or else the server's.</p>
+</div>
+<div class="form-actions">
+<button type="submit" class="button-primary">Save details</button>
+</div>
+</form>
+
+<h2 id="role">Role</h2>
+<form class="card form" method="post" action="/admin/users/{{ id }}/role">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="field">
+<label for="role-select">Role</label>
+<select id="role-select" name="role">
+<option value="member"{% if form.role == "member" %} selected{% endif %}>Member: uses the chats, jobs, and their own account</option>
+<option value="admin"{% if form.role == "admin" %} selected{% endif %}>Admin: also manages Doozers, its users included</option>
+</select>
+<p class="help">Doozers always keeps one active admin, so it refuses to demote the last one.{% if you %} You are demoting yourself if you choose Member: you lose these pages at once.{% endif %}</p>
+</div>
+<div class="form-actions">
+<button type="submit" class="button-primary">Save role</button>
+</div>
+</form>
+
+<h2 id="proxy-identity">Proxy identity</h2>
+<form class="card form" method="post" action="/admin/users/{{ id }}/proxy-identity">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="field">
+<label for="proxy-identity-input">Identity</label>
+<input id="proxy-identity-input" name="proxy_identity" value="{{ form.proxy_identity }}" class="mono" placeholder="alice@example.com" autocomplete="off" autocapitalize="none" spellcheck="false">
+<p class="help">What a trusted reverse proxy puts in its identity header to log them in, such as <code>alice@example.com</code>, which is the identity <code>web:alice@example.com</code>. Leave it empty to remove it. {% if let Some(current) = proxy_identity %}They have <code>{{ current }}</code> now.{% else %}They have none now.{% endif %}</p>
+</div>
+<div class="form-actions">
+<button type="submit" class="button-primary">Save proxy identity</button>
+</div>
+</form>
+
+<h2 id="recovery-link">Recovery link</h2>
+<div class="card">
+{%- if active %}
+<p>A recovery link signs in whoever opens it first, once, within 72 hours. It keeps every way they can already sign in. Send it to {{ display_name }} if they lost their ways to sign in.</p>
+<form method="post" action="/admin/users/{{ id }}/recovery-link">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button type="submit" class="button">Make a recovery link</button>
+</form>
+{%- else %}
+<p>{{ username }} is disabled, and a disabled user can't sign in.</p>
+{%- endif %}
+</div>
+
+<h2 id="remove">Remove</h2>
+<div class="card">
+<p>Removing a user deletes everything Doozers keeps about them.</p>
+<p><a class="button button-danger" href="/admin/users/{{ id }}/remove">Remove {{ username }}</a></p>
+</div>
+{% endblock %}

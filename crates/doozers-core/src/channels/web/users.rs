@@ -3,13 +3,15 @@
 //! answer `no-store`, every change a CSRF-checked form post. Design:
 //! `Docs/technical/web-channel.md#user-pages`.
 //!
-//! The list is the seam the user management pages grow from: one row per user, with the actions a
-//! row has beside the username. The Remove confirmation, `/admin/users/<id>/remove`, is built
+//! The list has a row per user, with the actions a row has beside the username: **Manage**, which
+//! opens the user's page ([`users_manage`](super::users_manage), with **Invite a user**), and
+//! **Remove**. The Remove confirmation, `/admin/users/<id>/remove`, is built
 //! from [`Forgetter::preview`]: a count for each kind of data the removal deletes, the workspaces
 //! it deletes, and what stays. It says why a removal would be refused (it is the admin's own
 //! account, or the last active admin's, or the user has a turn running) and offers the button only
 //! when it wouldn't be. The `POST` calls [`Forgetter::forget`], which decides again.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use askama::Template;
@@ -18,25 +20,29 @@ use axum::extract::{Form, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{from_fn_with_state, map_response};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use doozers_store::{Role, UserData, UserState, WorkspaceOwner};
-use doozers_types::UserId;
+use doozers_types::{Timestamp, UserId};
 use serde::Deserialize;
 use tracing::error;
 
 use super::admin::{forbidden, may_administer};
 use super::auth::{WebUser, check_csrf};
-use super::pages::{WebApp, error_page, no_store};
+use super::pages::{WebApp, error_page, internal_error, no_store};
 use super::shell::{Nav, Shell};
+use super::users_manage::{
+    invite, invite_page, recovery_link, save_details, save_proxy_identity, save_role, sign_in_text,
+    user_page,
+};
 use crate::forget::{ForgetError, ForgetPreview, Forgetter};
 use crate::http::{self, RouterBuilder};
 use crate::users::Users;
 
 /// What the user pages need.
 #[derive(Clone)]
-struct UserPages {
-    app: WebApp,
-    users: Arc<Users>,
+pub(super) struct UserPages {
+    pub(super) app: WebApp,
+    pub(super) users: Arc<Users>,
     forgetter: Forgetter,
 }
 
@@ -53,6 +59,15 @@ impl WebApp {
         builder.merge(
             Router::new()
                 .route("/admin/users", get(list_page))
+                .route("/admin/invite-user", get(invite_page).post(invite))
+                .route("/admin/users/{id}", get(user_page))
+                .route("/admin/users/{id}/details", post(save_details))
+                .route("/admin/users/{id}/role", post(save_role))
+                .route(
+                    "/admin/users/{id}/proxy-identity",
+                    post(save_proxy_identity),
+                )
+                .route("/admin/users/{id}/recovery-link", post(recovery_link))
                 .route("/admin/users/{id}/remove", get(remove_page).post(remove))
                 .with_state(UserPages {
                     app: self.clone(),
@@ -74,6 +89,8 @@ struct UserRow {
     admin: bool,
     state: &'static str,
     active: bool,
+    /// When they last signed in, or "Never".
+    last_sign_in: String,
     /// The user looking at the page.
     you: bool,
 }
@@ -93,8 +110,8 @@ struct Notice {
     removed: Option<String>,
 }
 
-/// `GET /admin/users`: every user, with their username, display name, role, and state, and a
-/// **Remove** link.
+/// `GET /admin/users`: every user, with their username, display name, role, state, and last
+/// sign-in, and **Manage** and **Remove** links.
 async fn list_page(
     State(pages): State<UserPages>,
     user: WebUser,
@@ -103,6 +120,14 @@ async fn list_page(
     if !may_administer(&user) {
         return forbidden();
     }
+    // The last sign-ins are the store's: nothing replaces the router's list when a session starts.
+    let signed_in: HashMap<UserId, Option<Timestamp>> = match pages.app.inner.store.users().await {
+        Ok(stored) => stored
+            .into_iter()
+            .map(|stored| (stored.id, stored.last_sign_in_at))
+            .collect(),
+        Err(err) => return internal_error("cannot read the users", &err),
+    };
     let directory = pages.users.list().get();
     let users = directory
         .users()
@@ -121,6 +146,7 @@ async fn list_page(
                 UserState::Disabled => "Disabled",
             },
             active: listed.state == UserState::Active,
+            last_sign_in: sign_in_text(signed_in.get(&listed.id).copied().flatten()),
             you: listed.id == user.user,
         })
         .collect();
@@ -407,7 +433,7 @@ fn confirm_page(user: &WebUser, preview: ForgetPreview) -> Response {
     })
 }
 
-fn no_such_user() -> Response {
+pub(super) fn no_such_user() -> Response {
     error_page(
         StatusCode::NOT_FOUND,
         "No such user",
@@ -439,7 +465,7 @@ fn failed(error: &ForgetError, id: &UserId) -> Response {
 }
 
 /// The user in a path.
-fn user_id(raw: &str) -> Option<UserId> {
+pub(super) fn user_id(raw: &str) -> Option<UserId> {
     UserId::new(raw).ok()
 }
 
@@ -464,9 +490,9 @@ async fn remove_page(
 
 /// A form with nothing but the CSRF token.
 #[derive(Debug, Default, Deserialize)]
-struct CsrfForm {
+pub(super) struct CsrfForm {
     #[serde(default)]
-    csrf: Option<String>,
+    pub(super) csrf: Option<String>,
 }
 
 /// `POST /admin/users/<id>/remove` (CSRF-checked): forgets the user, then 303 to the list. A
