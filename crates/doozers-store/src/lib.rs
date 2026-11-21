@@ -38,6 +38,7 @@ mod time;
 mod toolsets;
 mod usage;
 mod user_invites;
+mod user_passwords;
 mod users;
 mod web_sessions;
 mod workspaces;
@@ -73,6 +74,7 @@ pub use ssh_known_hosts::{KnownHostId, KnownHostRecord, NewKnownHost};
 pub use toolsets::StoredToolset;
 pub use usage::{AgentUsage, ModelUsage, UsageRecord};
 pub use user_invites::{InviteKind, UserInvite};
+pub use user_passwords::StoredPassword;
 pub use users::{
     ImportedUser, NewIdentity, NewUser, Role, StoredIdentity, StoredUser, UserState, Verification,
     canonical_identity,

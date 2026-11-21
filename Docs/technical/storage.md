@@ -137,17 +137,17 @@ rules apply, and `before_migrate` receives that file's plan.
 - Row ids are opaque newtypes (`SessionId`, ...) over SQLite rowids.
 - Agent, user, channel instance, and conversation ids are stored as their string forms.
 
-## Schema (version 18)
+## Schema (version 19)
 
 The files in `crates/doozers-store/src/migrations/` are the authority. `0001_initial.sql` has every
 table but `blobs`, `routes`, `toolsets`, `workspaces`, `secrets`, `secret_key`,
 `archived_conversations`, `ssh_keys`, `ssh_known_hosts`, `users`, `user_identities`,
-`users_imported`, and `user_invites`, which `0002_blobs.sql`, `0003_routes.sql`,
+`users_imported`, `user_invites`, and `user_passwords`, which `0002_blobs.sql`, `0003_routes.sql`,
 `0004_toolsets.sql`, `0005_workspaces.sql`, `0007_secrets.sql`, `0009_archived_conversations.sql`,
-`0012_ssh_keys.sql`, `0014_ssh_known_hosts.sql`, `0015_users.sql`, and `0018_user_invites.sql` add
-(`0013_workspace_key_user.sql` adds `workspaces.key_user`, `0016_workspace_user.sql` adds
-`workspaces.user_id`, and `0018_user_invites.sql` adds `web_sessions.method`). This is their
-outline.
+`0012_ssh_keys.sql`, `0014_ssh_known_hosts.sql`, `0015_users.sql`, `0018_user_invites.sql`, and
+`0019_user_passwords.sql` add (`0013_workspace_key_user.sql` adds `workspaces.key_user`,
+`0016_workspace_user.sql` adds `workspaces.user_id`, and `0018_user_invites.sql` adds
+`web_sessions.method`). This is their outline.
 
 | Table          | Columns and rules                                                                    |
 | -------------- | ------------------------------------------------------------------------------------ |
@@ -175,6 +175,7 @@ outline.
 | `user_identities` | The channel identities of users: (`namespace`, `native_id`) as the primary key, `user_id` (cascades), `verified_at`, `verification` (`link`, `admin`, `imported`), and `identity`, the generated joined `<namespace>:<native id>`, which is unique. |
 | `users_imported` | One row, once the `[owner]` of `doozers.toml` was imported: `at`.                  |
 | `user_invites` | The one-time invite and recovery links: `token_hash` (SHA-256 of the token), `user_id` (cascades), `kind` (`invite`, `recovery`), `created_by` (null for the operator, and set null when that admin is removed), `created_at`, `expires_at`, `used_at`. See [User invites](#user-invites). |
+| `user_passwords` | The passwords users sign in with: `user_id` (primary key, cascades), `hash` (an Argon2id PHC string), `changed_at`. See [User passwords](#user-passwords). |
 
 `pairings` is deferred with multi-user support (PLAN 1.1, D49) and doesn't exist yet.
 
@@ -590,6 +591,20 @@ expires. `created_by` is the admin who made the link, and null for the operator'
 | `user_invite(token, now)`                                              | The link, if it exists, is unused, and hasn't expired. Doesn't use it up. |
 | `user_invite_redeem(token, now)`                                       | Marks the link used and returns it, in one statement, so of two requests with the same token one gets `None`. |
 | `user_invites_expire(now)`                                             | Deletes every expired link, used or not.                         |
+
+## User passwords
+
+`user_passwords` holds the password a user signs in with: one row per user at most, with the
+Argon2id hash as a PHC string (`$argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash>`), so the salt and the
+cost parameters travel with it, and `changed_at`. It is a table and not the [secret store](#secrets)
+because a secret is a value Doozers hands back out, and nothing can recover a password from its
+hash. The row goes when the user does. The store doesn't parse or check the string, and never sees a
+password: hashing and checking belong to the caller.
+
+| Method                                    | Contract                                                              |
+| ----------------------------------------- | --------------------------------------------------------------------- |
+| `user_password_set(user, hash, now)`      | Sets the hash, replacing the user's old one. `Error::NoSuchUser` if the user doesn't exist, `Error::InvalidRequest` for an empty string. |
+| `user_password(user)`                     | The `StoredPassword` (`hash`, `changed_at`), if the user has one.     |
 
 ## Toolsets
 
