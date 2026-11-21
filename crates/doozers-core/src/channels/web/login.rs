@@ -255,18 +255,16 @@ impl WebChannel {
     }
 }
 
-/// Signs `user` in, having proved who they are with `method`: stores a 30-day session (a new random
-/// cookie token; the store keeps its SHA-256 and `method`), logs `previous`, the browser's old
-/// cookie session if it had one, out, and answers 303 to `to` with the new session cookie. Every
-/// way of signing in ends here.
-pub(super) async fn start_session(
+/// Starts a session for `user`, who has proved who they are with `method`: stores a 30-day session
+/// under a new random cookie token (the store keeps its SHA-256 and `method`) and logs `previous`,
+/// the browser's old cookie session if it had one, out. The token, for the caller to set as the
+/// session cookie ([`session_cookie`]); the error is the page to answer with when the store fails.
+pub(super) async fn begin_session(
     app: &WebApp,
     user: UserId,
     method: SignInMethod,
     previous: Option<&WebUser>,
-    https: bool,
-    to: &str,
-) -> Response {
+) -> Result<String, Box<Response>> {
     let now = app.inner.clock.now();
     let token = random_hex(32);
     let expires_at = now
@@ -278,7 +276,7 @@ pub(super) async fn start_session(
         .web_session_create(&token, user, method, now, expires_at)
         .await
     {
-        return internal_error("cannot store a web session", &err);
+        return Err(Box::new(internal_error("cannot store a web session", &err)));
     }
     if let Some(WebUser {
         login: Login::Cookie(old),
@@ -288,6 +286,23 @@ pub(super) async fn start_session(
     {
         warn!(error = %err, "cannot delete the replaced web session");
     }
+    Ok(token)
+}
+
+/// Signs `user` in, having proved who they are with `method` ([`begin_session`]), and answers 303 to
+/// `to` with the new session cookie. Every way of signing in that answers with a page ends here.
+pub(super) async fn start_session(
+    app: &WebApp,
+    user: UserId,
+    method: SignInMethod,
+    previous: Option<&WebUser>,
+    https: bool,
+    to: &str,
+) -> Response {
+    let token = match begin_session(app, user, method, previous).await {
+        Ok(token) => token,
+        Err(response) => return *response,
+    };
     let mut response = Redirect::to(to).into_response();
     response
         .headers_mut()

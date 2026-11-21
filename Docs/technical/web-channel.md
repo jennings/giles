@@ -231,10 +231,11 @@ previews (chat apps and mail clients fetch URLs) can't spend it. The page also s
 longer sign in (disabled, gone, or without `web:<id>`) it answers 403 and leaves the link for when
 they can. Otherwise `Store::user_invite_redeem` spends it in one statement, so of two concurrent
 posts one gets the link and the other the 410 page. The winner goes through `login::start_session`,
-which every way of signing in ends in: it creates a session token (256 random bits) with
+which every way of signing in that answers with a page ends in. It calls `login::begin_session`,
+which creates a session token (256 random bits) with
 `Store::web_session_create(token, user, method, now, now + 30 days)`, where `method` is `invite`,
-`recovery`, or `password` and is stored with the session, deletes the browser's previous cookie
-session if it had one, and answers 303 to the given page with
+`recovery`, or `password` and is stored with the session, and deletes the browser's previous cookie
+session if it had one. `start_session` answers 303 to the given page with
 `Set-Cookie: doozers_session=<token>; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax` (`; Secure`
 over HTTPS). `POST /invite` sends the browser to `/setup` and deletes the nonce cookie. All these
 answers are `Cache-Control: no-store`. The `Referrer-Policy: no-referrer` security header keeps the
