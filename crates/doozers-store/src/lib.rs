@@ -39,6 +39,7 @@ mod time;
 mod toolsets;
 mod usage;
 mod user_invites;
+mod user_link_codes;
 mod user_passkeys;
 mod user_passwords;
 mod users;
@@ -80,6 +81,7 @@ pub use ssh_known_hosts::{KnownHostId, KnownHostRecord, NewKnownHost};
 pub use toolsets::StoredToolset;
 pub use usage::{AgentUsage, ModelUsage, UsageRecord};
 pub use user_invites::{InviteKind, UserInvite};
+pub use user_link_codes::{LINK_CODE_SALT_LEN, LinkCodeRow, LinkRedeemed};
 pub use user_passkeys::{NewPasskey, PasskeyId, PasskeyKind, StoredPasskey};
 pub use user_passwords::StoredPassword;
 pub use users::{

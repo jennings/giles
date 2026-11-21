@@ -250,7 +250,7 @@ fn list(conn: &Connection) -> Result<Vec<StoredUser>> {
     Ok(users)
 }
 
-fn find(conn: &Connection, id: &UserId) -> Result<Option<StoredUser>> {
+pub(crate) fn find(conn: &Connection, id: &UserId) -> Result<Option<StoredUser>> {
     let mut stmt =
         conn.prepare_cached(&format!("SELECT {USER_COLUMNS} FROM users WHERE id = ?1"))?;
     let Some(mut user) = query_opt(&mut stmt, [id.as_str()], user_from_row)? else {
@@ -378,7 +378,7 @@ fn touch(conn: &Connection, user: &UserId, now: Timestamp) -> Result<()> {
 
 /// Adds `identity` to user `id` (inside a write transaction). A user with no default identity
 /// takes it as their default.
-fn add_identity(
+pub(crate) fn add_identity(
     conn: &Connection,
     id: &UserId,
     identity: &NewIdentity,
@@ -509,9 +509,9 @@ impl Store {
         .await
     }
 
-    /// Deletes the account of user `id` and, by cascade, its identities, invite links, password,
-    /// passkeys, and OpenID Connect connections, and returns the user as it was. Links the user made stay, with no creator. It
-    /// deletes nothing else: what the user owns (web login sessions, conversations, memories,
+    /// Deletes the account of user `id` and, by cascade, its identities, invite links, link codes,
+    /// password, passkeys, and OpenID Connect connections, and returns the user as it was. Links
+    /// the user made stay, with no creator. It deletes nothing else: what the user owns (web login sessions, conversations, memories,
     /// secrets) stays, and is the caller's to delete.
     ///
     /// # Errors
@@ -565,6 +565,117 @@ impl Store {
         let identity = canonical_identity(identity);
         self.write(move |conn| {
             remove_identity(conn, &id, &identity, now)?;
+            find(conn, &id)?.ok_or_else(|| Error::corrupt("the user just updated is missing"))
+        })
+        .await
+    }
+
+    /// Makes `identity` (`<namespace>:<native id>`) the default identity of user `id`, where jobs
+    /// and proactive messages go, and returns the user.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoSuchUser`], or [`Error::NotFound`] if the user doesn't have the identity.
+    pub async fn user_default_identity_set(
+        &self,
+        id: &UserId,
+        identity: &str,
+        now: Timestamp,
+    ) -> Result<StoredUser> {
+        let id = id.clone();
+        let identity = canonical_identity(identity);
+        self.write(move |conn| {
+            let user = find(conn, &id)?.ok_or(Error::NoSuchUser)?;
+            if !user
+                .identities
+                .iter()
+                .any(|i| canonical_identity(&i.text()) == identity)
+            {
+                return Err(Error::not_found(format!(
+                    "identity {identity} of user {id}"
+                )));
+            }
+            conn.prepare_cached("UPDATE users SET default_identity = ?2 WHERE id = ?1")?
+                .execute(params![id.as_str(), identity])?;
+            touch(conn, &id, now)?;
+            find(conn, &id)?.ok_or_else(|| Error::corrupt("the user just updated is missing"))
+        })
+        .await
+    }
+
+    /// Sets the identity user `id` is logged in as by a trusted proxy: `native_id` in `namespace`
+    /// (`web`), verified as [`Verification::Admin`] at `now`, or none if `native_id` is `None`.
+    /// Every other identity of the user in `namespace` goes, except `login`, the one a link
+    /// sign-in acts as (`web:<id>`), which is not a proxy identity. Everything happens in one
+    /// transaction, so a user is never left without the proxy identity they had because the new one
+    /// was refused. If the default identity goes, the oldest one left becomes the default.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoSuchUser`], or [`Error::IdentityTaken`] if another user has the new identity;
+    /// nothing changes then.
+    pub async fn user_proxy_identity_set(
+        &self,
+        id: &UserId,
+        namespace: &str,
+        login: &str,
+        native_id: Option<&str>,
+        now: Timestamp,
+    ) -> Result<StoredUser> {
+        let id = id.clone();
+        let namespace = namespace.to_owned();
+        let login = login.to_owned();
+        let native_id = native_id.map(str::to_owned);
+        self.write(move |conn| {
+            let user = find(conn, &id)?.ok_or(Error::NoSuchUser)?;
+            let wanted = native_id
+                .as_deref()
+                .map(|native| canonical_identity(&format!("{namespace}:{native}")));
+            let is_wanted = |identity: &StoredIdentity| {
+                wanted.as_deref() == Some(canonical_identity(&identity.text()).as_str())
+            };
+            if let Some(native_id) = &native_id {
+                match user.identities.iter().find(|i| is_wanted(i)) {
+                    Some(have) if have.verification != Verification::Admin => {
+                        conn.prepare_cached(
+                            "UPDATE user_identities SET verification = 'admin', verified_at = ?3
+                             WHERE user_id = ?1 AND identity = ?2",
+                        )?
+                        .execute(params![
+                            id.as_str(),
+                            canonical_identity(&have.text()),
+                            to_millis(now)
+                        ])?;
+                    }
+                    Some(_) => {}
+                    None => insert_identity(
+                        conn,
+                        &id,
+                        &NewIdentity {
+                            namespace: namespace.clone(),
+                            native_id: native_id.clone(),
+                            verification: Verification::Admin,
+                        },
+                        now,
+                    )?,
+                }
+            }
+            for stale in user
+                .identities
+                .iter()
+                .filter(|i| i.namespace == namespace && i.native_id != login && !is_wanted(i))
+            {
+                remove_identity(conn, &id, &canonical_identity(&stale.text()), now)?;
+            }
+            // A user who had no default identity takes the new one, as with any added identity.
+            let user = find(conn, &id)?.ok_or_else(|| Error::corrupt("the user is missing"))?;
+            if user.default_identity.is_none()
+                && let Some(wanted) = &wanted
+            {
+                conn.prepare_cached("UPDATE users SET default_identity = ?2 WHERE id = ?1")?
+                    .execute(params![id.as_str(), wanted])?;
+            }
+            touch(conn, &id, now)?;
             find(conn, &id)?.ok_or_else(|| Error::corrupt("the user just updated is missing"))
         })
         .await
@@ -1243,5 +1354,167 @@ mod tests {
         assert!(matches!(err, Error::InvalidRequest(_)), "{err}");
         assert!(!store.users_imported().await.unwrap());
         assert!(store.users().await.unwrap().is_empty());
+    }
+
+    async fn two_users() -> (tempfile::TempDir, Store) {
+        let (dir, store) = store().await;
+        for (u, name) in [("u1", "ann"), ("u2", "bob")] {
+            store
+                .user_create(user(u, name, Role::Member), vec![], at(0))
+                .await
+                .unwrap();
+        }
+        (dir, store)
+    }
+
+    #[tokio::test]
+    async fn the_default_identity_is_set_to_one_the_user_has() {
+        let (_dir, store) = two_users().await;
+        store
+            .user_identity_add(&id("u1"), identity("whatsapp", "+1"), at(1))
+            .await
+            .unwrap();
+        store
+            .user_identity_add(&id("u1"), identity("email", "ann@Example.com"), at(2))
+            .await
+            .unwrap();
+        let set = store
+            .user_default_identity_set(&id("u1"), "email:ann@EXAMPLE.com", at(3))
+            .await
+            .unwrap();
+        assert_eq!(
+            set.default_identity.as_deref(),
+            Some("email:ann@example.com")
+        );
+        assert_eq!(set.updated_at, at(3));
+        // Another user's identity, an identity nobody has, and a user who doesn't exist.
+        store
+            .user_identity_add(&id("u2"), identity("whatsapp", "+2"), at(4))
+            .await
+            .unwrap();
+        for identity in ["whatsapp:+2", "whatsapp:+3"] {
+            let err = store
+                .user_default_identity_set(&id("u1"), identity, at(5))
+                .await;
+            assert!(matches!(err, Err(Error::NotFound(_))), "{err:?}");
+        }
+        let err = store
+            .user_default_identity_set(&id("nobody"), "whatsapp:+1", at(5))
+            .await;
+        assert!(matches!(err, Err(Error::NoSuchUser)), "{err:?}");
+        let ann = store.user(&id("u1")).await.unwrap().unwrap();
+        assert_eq!(
+            ann.default_identity.as_deref(),
+            Some("email:ann@example.com")
+        );
+    }
+
+    fn admin_identity(native_id: &str) -> NewIdentity {
+        NewIdentity {
+            verification: Verification::Admin,
+            ..identity("web", native_id)
+        }
+    }
+
+    #[tokio::test]
+    async fn the_proxy_identity_replaces_the_last_and_keeps_the_login_identity() {
+        let (_dir, store) = two_users().await;
+        store
+            .user_identity_add(&id("u1"), admin_identity("u1"), at(1))
+            .await
+            .unwrap();
+        store
+            .user_identity_add(&id("u1"), identity("whatsapp", "+1"), at(2))
+            .await
+            .unwrap();
+        let set = |native: Option<&'static str>, secs| {
+            let store = store.clone();
+            async move {
+                store
+                    .user_proxy_identity_set(&id("u1"), "web", "u1", native, at(secs))
+                    .await
+            }
+        };
+        let first = set(Some("ann@example.com"), 3).await.unwrap();
+        let texts: Vec<_> = first.identities.iter().map(StoredIdentity::text).collect();
+        assert_eq!(texts, ["web:u1", "whatsapp:+1", "web:ann@example.com"]);
+        assert_eq!(first.identities[2].verification, Verification::Admin);
+        assert_eq!(first.identities[2].verified_at, at(3));
+        // A second one replaces it. The login identity and other namespaces stay.
+        let second = set(Some("ann@corp.example"), 4).await.unwrap();
+        let texts: Vec<_> = second.identities.iter().map(StoredIdentity::text).collect();
+        assert_eq!(texts, ["web:u1", "whatsapp:+1", "web:ann@corp.example"]);
+        // The same one again changes no identity.
+        let same = set(Some("ann@corp.example"), 5).await.unwrap();
+        assert_eq!(same.identities, second.identities);
+        // None clears it.
+        let cleared = set(None, 6).await.unwrap();
+        let texts: Vec<_> = cleared
+            .identities
+            .iter()
+            .map(StoredIdentity::text)
+            .collect();
+        assert_eq!(texts, ["web:u1", "whatsapp:+1"]);
+        assert_eq!(cleared.updated_at, at(6));
+    }
+
+    #[tokio::test]
+    async fn a_refused_proxy_identity_leaves_the_one_the_user_had() {
+        let (_dir, store) = two_users().await;
+        store
+            .user_identity_add(&id("u2"), admin_identity("bob@example.com"), at(1))
+            .await
+            .unwrap();
+        store
+            .user_proxy_identity_set(&id("u1"), "web", "u1", Some("ann@example.com"), at(2))
+            .await
+            .unwrap();
+        let err = store
+            .user_proxy_identity_set(&id("u1"), "web", "u1", Some("bob@example.com"), at(3))
+            .await;
+        assert!(matches!(err, Err(Error::IdentityTaken { .. })), "{err:?}");
+        let ann = store.user(&id("u1")).await.unwrap().unwrap();
+        let texts: Vec<_> = ann.identities.iter().map(StoredIdentity::text).collect();
+        assert_eq!(texts, ["web:ann@example.com"]);
+        let err = store
+            .user_proxy_identity_set(&id("nobody"), "web", "nobody", None, at(4))
+            .await;
+        assert!(matches!(err, Err(Error::NoSuchUser)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn an_imported_proxy_identity_is_replaced_and_one_the_user_has_becomes_an_admin_one() {
+        let (_dir, store) = store().await;
+        let imported = ImportedUser {
+            user: user("owner", "owner", Role::Admin),
+            identities: vec!["web:alice@example.com".to_owned(), "web:owner".to_owned()],
+        };
+        store.users_import(Some(imported), at(0)).await.unwrap();
+        let same = store
+            .user_proxy_identity_set(
+                &id("owner"),
+                "web",
+                "owner",
+                Some("alice@example.com"),
+                at(1),
+            )
+            .await
+            .unwrap();
+        let alice = same
+            .identities
+            .iter()
+            .find(|i| i.native_id == "alice@example.com")
+            .unwrap();
+        assert_eq!(
+            (alice.verification, alice.verified_at),
+            (Verification::Admin, at(1))
+        );
+        // Replacing the imported one removes it, and the default moves off it.
+        let other = store
+            .user_proxy_identity_set(&id("owner"), "web", "owner", Some("al@example.com"), at(2))
+            .await
+            .unwrap();
+        let texts: Vec<_> = other.identities.iter().map(StoredIdentity::text).collect();
+        assert_eq!(texts, ["web:owner", "web:al@example.com"]);
     }
 }

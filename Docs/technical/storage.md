@@ -137,19 +137,19 @@ rules apply, and `before_migrate` receives that file's plan.
 - Row ids are opaque newtypes (`SessionId`, ...) over SQLite rowids.
 - Agent, user, channel instance, and conversation ids are stored as their string forms.
 
-## Schema (version 21)
+## Schema (version 22)
 
 The files in `crates/doozers-store/src/migrations/` are the authority. `0001_initial.sql` has every
 table but `blobs`, `routes`, `toolsets`, `workspaces`, `secrets`, `secret_key`,
 `archived_conversations`, `ssh_keys`, `ssh_known_hosts`, `users`, `user_identities`,
 `users_imported`, `user_invites`, `user_passwords`, `user_passkeys`, `passkey_fake_key`,
-`oidc_providers`, and `user_oidc_connections`, which `0002_blobs.sql`, `0003_routes.sql`,
-`0004_toolsets.sql`, `0005_workspaces.sql`, `0007_secrets.sql`, `0009_archived_conversations.sql`,
-`0012_ssh_keys.sql`, `0014_ssh_known_hosts.sql`, `0015_users.sql`, `0018_user_invites.sql`,
-`0019_user_passwords.sql`, `0020_user_passkeys.sql`, and `0021_oidc.sql` add
-(`0013_workspace_key_user.sql` adds `workspaces.key_user`, `0016_workspace_user.sql` adds
-`workspaces.user_id`, and `0018_user_invites.sql` adds `web_sessions.method`). This is their
-outline.
+`oidc_providers`, `user_oidc_connections`, and `user_link_codes`, which `0002_blobs.sql`,
+`0003_routes.sql`, `0004_toolsets.sql`, `0005_workspaces.sql`, `0007_secrets.sql`,
+`0009_archived_conversations.sql`, `0012_ssh_keys.sql`, `0014_ssh_known_hosts.sql`,
+`0015_users.sql`, `0018_user_invites.sql`, `0019_user_passwords.sql`, `0020_user_passkeys.sql`,
+`0021_oidc.sql`, and `0022_user_link_codes.sql` add (`0013_workspace_key_user.sql` adds
+`workspaces.key_user`, `0016_workspace_user.sql` adds `workspaces.user_id`, and
+`0018_user_invites.sql` adds `web_sessions.method`). This is their outline.
 
 | Table          | Columns and rules                                                                    |
 | -------------- | ------------------------------------------------------------------------------------ |
@@ -182,6 +182,7 @@ outline.
 | `passkey_fake_key` | One row, once a sign-in page has needed it: the 32-byte key stand-in credential ids are made with. See [User passkeys](#user-passkeys). |
 | `oidc_providers` | The OpenID Connect identity providers admins configure: `id` (a slug, primary key), `display_name`, `issuer`, `client_id`, `client_secret` (the name of the secret in the secret store, or null), `scopes` (space-separated, `openid` among them), `enabled`, `created_at`, `updated_at`. See [OpenID Connect providers](#openid-connect-providers). |
 | `user_oidc_connections` | Which provider account signs in as which user: (`provider_id`, `issuer`, `subject`) as the primary key, `user_id`, `connected_at`. `UNIQUE (provider_id, user_id)`. Both foreign keys cascade. |
+| `user_link_codes` | The codes users send from a channel identity to link it: (`user_id` (cascades), `namespace`) as the primary key, `salt`, `code_hash` (SHA-256 of the salt and the code), `created_at`, `expires_at`, `attempts`. See [User link codes](#user-link-codes). |
 
 `pairings` is deferred with multi-user support (PLAN 1.1, D49) and doesn't exist yet.
 
@@ -567,9 +568,11 @@ inside the write transaction of the change.
 | `user_create(user, identities, now)`    | Creates an active user with identities verified at `now`. `Error::UserIdTaken`, `Error::UsernameTaken`, or `Error::IdentityTaken` store nothing. The default identity must be one of the identities. |
 | `user_set_state(id, state, now)`        | Sets `active` or `disabled`; `Error::NoSuchUser` if absent. `Error::LastAdmin` for disabling the last active admin. |
 | `user_set_role(id, role, now)`          | Sets `admin` or `member`; `Error::NoSuchUser` if absent. `Error::LastAdmin` for demoting the last active admin. |
-| `user_delete(id)`                       | Deletes the user and, by cascade, their identities, invite links, password, passkeys, and OpenID Connect connections, clears `created_by` on the links they made, and returns the user as it was; what else the user owns (web login sessions, conversations, memories, secrets) stays. `Error::NoSuchUser` if absent, `Error::LastAdmin` for the last active admin. |
+| `user_delete(id)`                       | Deletes the user and, by cascade, their identities, invite links, link codes, password, passkeys, and OpenID Connect connections, clears `created_by` on the links they made, and returns the user as it was; what else the user owns (web login sessions, conversations, memories, secrets) stays. `Error::NoSuchUser` if absent, `Error::LastAdmin` for the last active admin. |
 | `user_identity_add(id, identity, now)`  | Adds an identity; the user's first becomes their default. `Error::IdentityTaken` if any user has it. |
 | `user_identity_remove(id, identity, now)` | Removes an identity, named as `<namespace>:<native id>`. If it was the default, the oldest one left is, or there is none. |
+| `user_default_identity_set(id, identity, now)` | Makes one of the user's identities their default. `Error::NoSuchUser` if absent, `Error::NotFound` if they don't have it. |
+| `user_proxy_identity_set(id, namespace, login, native_id, now)` | Sets the identity a trusted proxy logs the user in as, verified as `admin`, or none: it replaces the user's other identities in `namespace` except `login`, in one transaction, so a refused identity (`Error::IdentityTaken`) leaves the old one. If the user has the identity already, it is only verified as `admin`. |
 | `users_imported`                        | Whether the import below has run.                                |
 | `users_import(owner, now)`              | The one-time import, below.                                      |
 
@@ -597,6 +600,35 @@ expires. `created_by` is the admin who made the link, and null for the operator'
 | `user_invite(token, now)`                                              | The link, if it exists, is unused, and hasn't expired. Doesn't use it up. |
 | `user_invite_redeem(token, now)`                                       | Marks the link used and returns it, in one statement, so of two requests with the same token one gets `None`. |
 | `user_invites_expire(now)`                                             | Deletes every expired link, used or not.                         |
+
+## User link codes
+
+`user_link_codes` holds the codes a user sends from a channel identity to prove it is theirs (PLAN
+3.2). A code is for one user and one identity namespace, and a user has one per namespace: making a
+code replaces the one they had, so the page that shows the codes has at most one row for a channel.
+The table keeps only `SHA-256(salt ‖ code)`, with a random 16-byte salt for each code, so a database
+copy can't be read for the code. That is all the hash guarantees: the code has 40 bits, so someone
+with a copy could find it by brute force in minutes, and a backup is safe because a code expires
+within 10 minutes. What protects a code is that it lives 10 minutes (`expires_at`, set by the core)
+and gets few guesses (`attempts`). A code that is used is deleted. One that expired stays, so the
+page can say so, until the core prunes it.
+
+`user_link_code_redeem` does everything one `/link <code>` message needs in a single write
+transaction. It reads the codes that haven't expired, have fewer than `max_attempts` wrong guesses,
+and belong to an active user, and finds the one whose namespace and salted hash match. If there is
+one, it adds the identity to the code's user (verified as `link`, through the same step as
+`user_identity_add`) and deletes the code. If the identity is taken, the transaction fails with
+`Error::IdentityTaken` and the code stays. If there is none, it adds one to `attempts` of every
+pending code in the sender's namespace, because a wrong code can't be told apart from a guess at any
+of them, and a code for another namespace can't be what the sender guessed at. So two messages with
+one code can't both link, and a code is never used up by a link that failed.
+
+| Method                                                                 | Contract                                                         |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `user_link_code_create(user, namespace, code, salt, now, expires_at)`  | Stores a code, replacing the user's code for the namespace. `Error::NoSuchUser`, or `Error::InvalidRequest` for an empty namespace or code or an `expires_at` that isn't after `now`. |
+| `user_link_codes(user)`                                                | The user's codes (namespace, created, expires, attempts), expired ones included, by namespace. |
+| `user_link_code_redeem(namespace, native_id, code, now, max_attempts)` | Links the identity or counts a wrong guess, as above. Returns `LinkRedeemed::Linked(user)` or `LinkRedeemed::Refused`. |
+| `user_link_codes_prune(cutoff)`                                        | Deletes the codes that expired at or before `cutoff`.            |
 
 ## User passwords
 

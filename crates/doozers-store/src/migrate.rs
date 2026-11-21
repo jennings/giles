@@ -106,6 +106,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "0021_oidc",
         sql: include_str!("migrations/0021_oidc.sql"),
     },
+    Migration {
+        name: "0022_user_link_codes",
+        sql: include_str!("migrations/0022_user_link_codes.sql"),
+    },
 ];
 
 /// The schema version this binary writes.
@@ -343,6 +347,7 @@ mod tests {
             "passkey_fake_key",
             "oidc_providers",
             "user_oidc_connections",
+            "user_link_codes",
         ] {
             assert!(tables(&conn).iter().any(|t| t == table), "missing {table}");
         }
