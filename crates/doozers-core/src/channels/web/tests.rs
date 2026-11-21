@@ -55,6 +55,7 @@ mod memory;
 mod oidc;
 mod passkeys;
 mod passwords;
+mod reverify;
 mod routes;
 mod ssh_hosts;
 mod ssh_keys;

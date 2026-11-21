@@ -7,13 +7,24 @@
 //! ([`password_collapsed`](WebApp::password_collapsed)); its setup page is in
 //! [`password_pages`](super::password_pages). The login page always says how to use an invite or
 //! recovery link.
+//!
+//! Adding, changing, or removing a sign-in method is allowed only from a session that came from an
+//! invite or recovery link, or one the user re-verified in the last [`STEP_UP_TTL`]
+//! ([`WebApp::sign_in_change`]); [`reverify`](super::reverify) is where they re-verify.
 
+use std::time::Duration;
+
+use askama::Template;
 use axum::http::StatusCode;
 use axum::response::Response;
 use doozers_store::SignInMethod;
+use doozers_types::Timestamp;
 
 use super::auth::{Login, WebUser};
-use super::pages::{WebApp, error_page, no_store};
+use super::pages::{WebApp, no_store};
+use super::passkey_pages::json_error;
+use super::reverify::reverify_href;
+use crate::http;
 
 /// A sign-in method a user can add to their account, as the setup page lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,21 +46,110 @@ pub(super) struct LoginOption {
     pub href: String,
 }
 
-/// The answer for a login that may not add or change a sign-in method.
-pub(super) fn needs_a_link() -> Response {
-    no_store(error_page(
+/// How long after the user proved who they are again their session may change sign-in methods.
+pub(super) const STEP_UP_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// How long after a session began an invite or recovery link's session may change sign-in methods
+/// without confirming it's them. The link proves who the user is when they have nothing else to
+/// prove it with, so it is meant for setting up soon after opening it: a 30-day session from a
+/// link that was stolen is no more than any other.
+pub(super) const LINK_WINDOW: Duration = Duration::from_secs(30 * 60);
+
+/// Whether a session may add, change, or remove a sign-in method, and why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SignInChange {
+    /// The session came from an invite or recovery link.
+    Link,
+    /// The user proved who they are again, with one of their own methods, and the session may
+    /// change methods until `until`.
+    Reverified {
+        /// When the permission ends.
+        until: Timestamp,
+    },
+    /// Neither: the session is a cookie session that wasn't re-verified recently, or the login
+    /// has no session to re-verify (a proxy login).
+    Refused,
+}
+
+#[derive(Template)]
+#[template(path = "web/confirm_first.html")]
+struct ConfirmFirstPage {
+    /// The page that confirms it's you, if the login can.
+    reverify: Option<String>,
+}
+
+/// The answer for a login that may not add, change, or remove a sign-in method: a page with the
+/// way to confirm it's you, then back to `back` (one of the pages [`back_to`](super::reverify::back_to) knows), or, for a
+/// login that can't, what to do instead.
+pub(super) fn confirm_first(user: &WebUser, back: &str) -> Response {
+    let reverify = matches!(user.login, Login::Cookie(_)).then(|| reverify_href(back));
+    let mut response = http::render(&ConfirmFirstPage { reverify });
+    if response.status().is_success() {
+        *response.status_mut() = StatusCode::FORBIDDEN;
+    }
+    no_store(response)
+}
+
+/// What [`confirm_first`] says as JSON, for the requests `passkey.js` makes.
+pub(super) fn confirm_first_json(user: &WebUser) -> Response {
+    json_error(
         StatusCode::FORBIDDEN,
-        "Open a link first",
-        "You add or change a way to sign in from a login that came from an invite or recovery link. \
-         Ask an admin for a link, or run `doozers admin login-link` if you run Doozers.",
-    ))
+        if matches!(user.login, Login::Cookie(_)) {
+            "Confirm it's you first: open your account page and choose \"Confirm it's you\", then try again."
+        } else {
+            "A proxy login can't add a way to sign in. Ask an admin for a recovery link, or run \
+             `doozers admin login-link` if you run Doozers."
+        },
+    )
 }
 
 impl WebApp {
-    /// Whether `user` may add or change a sign-in method now: they have a cookie session that
-    /// signed in with an invite or recovery link. Those are how a user proves who they are when
-    /// they have no other way to prove it, and a 30-day session that came from anything else isn't
-    /// enough to take over the account's way in.
+    /// Whether `user` may add, change, or remove a sign-in method now, and why
+    /// ([`SignInChange`]): their cookie session signed in with an invite or recovery link, or the
+    /// user proved who they are again, with a password, passkey, or connected identity provider
+    /// of their own, within [`STEP_UP_TTL`]. Those are how a user proves who they are when they
+    /// have no other way to, or still have one. A 30-day session that came from anything else,
+    /// and wasn't re-verified, isn't enough to take over the account's way in, so a stolen cookie
+    /// can't do it. The time is the one stored on the session, never one the client sends.
+    ///
+    /// # Errors
+    ///
+    /// The store's error, if it can't look the session up.
+    pub(super) async fn sign_in_change(
+        &self,
+        user: &WebUser,
+    ) -> doozers_store::Result<SignInChange> {
+        let Login::Cookie(token) = &user.login else {
+            return Ok(SignInChange::Refused);
+        };
+        let now = self.inner.clock.now();
+        let Some(session) = self.inner.store.web_session(token, now).await? else {
+            return Ok(SignInChange::Refused);
+        };
+        let fresh = session
+            .created_at
+            .checked_add(LINK_WINDOW)
+            .is_ok_and(|end| end > now);
+        if fresh
+            && matches!(
+                session.method,
+                SignInMethod::Invite | SignInMethod::Recovery
+            )
+        {
+            return Ok(SignInChange::Link);
+        }
+        let until = session
+            .reverified_at
+            .and_then(|at| at.checked_add(STEP_UP_TTL).ok())
+            .filter(|until| *until > now);
+        Ok(
+            until.map_or(SignInChange::Refused, |until| SignInChange::Reverified {
+                until,
+            }),
+        )
+    }
+
+    /// Whether `user` may add, change, or remove a sign-in method now ([`Self::sign_in_change`]).
     ///
     /// # Errors
     ///
@@ -58,17 +158,7 @@ impl WebApp {
         &self,
         user: &WebUser,
     ) -> doozers_store::Result<bool> {
-        let Login::Cookie(token) = &user.login else {
-            return Ok(false);
-        };
-        let now = self.inner.clock.now();
-        let session = self.inner.store.web_session(token, now).await?;
-        Ok(session.is_some_and(|session| {
-            matches!(
-                session.method,
-                SignInMethod::Invite | SignInMethod::Recovery
-            )
-        }))
+        Ok(self.sign_in_change(user).await? != SignInChange::Refused)
     }
 
     /// The ways to sign in on the login page that are a link to another page: one for each enabled

@@ -746,7 +746,7 @@ async fn only_a_login_that_came_from_a_link_may_set_a_password() {
     .await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     let html = body_text(response).await;
-    assert!(html.contains("invite or recovery link"), "{html}");
+    assert!(html.contains("Confirm it's you first"), "{html}");
     let form = format!(
         "csrf={}&password=a+completely+new+password&confirm=a+completely+new+password",
         auth::cookie_csrf(&token)

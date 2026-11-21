@@ -70,8 +70,10 @@ impl Page {
             .map(|b| vec![("cookie", b.cookie.as_str())])
             .unwrap_or_default();
         let response = call(self.router(), method, path, &headers, form).await;
-        assert_eq!(response.headers()[CACHE_CONTROL], "no-store", "{path}");
         let status = response.status();
+        if status != StatusCode::UNAUTHORIZED {
+            assert_eq!(response.headers()[CACHE_CONTROL], "no-store", "{path}");
+        }
         let location = response
             .headers()
             .get(LOCATION)

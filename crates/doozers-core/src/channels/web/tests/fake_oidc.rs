@@ -91,6 +91,9 @@ pub(super) struct Tamper {
     pub(super) signer: Option<String>,
     /// Flips a bit of the signature.
     pub(super) corrupt_signature: bool,
+    /// Seconds ago the user authenticated (`auth_time`): `Some(None)` leaves it out. The default
+    /// is now.
+    pub(super) auth_time_ago: Option<Option<i64>>,
     /// Answers the token request with no ID token.
     pub(super) no_id_token: bool,
 }
@@ -382,6 +385,11 @@ fn mint(inner: &Inner, grant: &Grant) -> String {
         "email": "someone@example.com",
         "email_verified": true,
     });
+    match tamper.auth_time_ago {
+        None => claims["auth_time"] = json!(now),
+        Some(Some(ago)) => claims["auth_time"] = json!(now - ago),
+        Some(None) => {}
+    }
     match &tamper.nonce {
         None => claims["nonce"] = json!(grant.nonce),
         Some(Some(nonce)) => claims["nonce"] = json!(nonce),

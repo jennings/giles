@@ -150,6 +150,8 @@ pub(super) enum Ceremony {
         user: UserId,
         state: PasskeyAuthentication,
     },
+    /// A confirmation that it's them, by a user who is logged in, with one of their own passkeys.
+    Reverify { state: PasskeyAuthentication },
     /// A sign-in that was offered made-up credential ids, because the username has no passkeys to
     /// offer (or isn't a user): nothing finishes it.
     Fake,
@@ -161,6 +163,11 @@ pub(super) type Ceremonies = Pending<Ceremony>;
 /// What a registration is bound to: the user and the CSRF token of their login.
 pub(super) fn registration_binding(user: &UserId, csrf: &str) -> String {
     format!("register\0{user}\0{csrf}")
+}
+
+/// What a re-verification is bound to: the user and the CSRF token of their login.
+pub(super) fn reverify_binding(user: &UserId, csrf: &str) -> String {
+    format!("reverify\0{user}\0{csrf}")
 }
 
 /// What a sign-in is bound to: the browser's sign-in nonce.

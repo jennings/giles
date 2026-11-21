@@ -57,8 +57,8 @@ Give only the scheme, host, and optional port. Doozers is always served at the r
 A password lets you log in at `/login` with your username and password, without a link.
 
 To set a password, open an invite or recovery link, then choose **Password** on the page that
-follows. To change it later, ask for a recovery link and do the same. A login that came from a
-password can't change it.
+follows. To set or change it later, [confirm it's you](#confirming-its-you) first. A login that came
+from a password can't change it without that.
 
 A password has 15 to 128 characters. Spaces and any other characters are fine, and nothing else is
 required, so a few random words make a good password. It can't be one character repeated, or contain
@@ -85,6 +85,24 @@ username applies, because every visitor looks like the proxy. Use the
 [proxy listener](#a-trusted-reverse-proxy) to get the limit per address too, and have the proxy add
 the visitor's address to the `X-Forwarded-For` header. Without that header, Doozers counts every
 visitor through the proxy as one address.
+
+### Confirming it's you
+
+Adding, changing, or removing a way to sign in needs more than a login, so someone who got hold of
+your browser's login can't take over your account. Doozers asks you to confirm it's you with a way
+you already use: your password, a passkey, or the identity provider you connected. A login that came
+from an invite or recovery link doesn't need to confirm for its first 30 minutes, because that link
+is how you proved who you are. So finish setting up soon after you open the link. After that,
+confirm it's you like any other login, or ask for a new link if you have nothing to confirm with.
+
+When you open a page that needs it, Doozers shows **Confirm it's you first** with a button that
+leads to **Confirm it's you**. Choose a way, and Doozers takes you back to the page you came from.
+The confirmation lasts 10 minutes and applies only to this login, not to your other browsers.
+
+Confirming with a password counts as a login attempt of yours: the limits on wrong
+[passwords](#passwords) apply to it. If you have no password, passkey, or connected provider, ask
+for a recovery link. A login through a [trusted proxy](#a-trusted-reverse-proxy) can't confirm, so
+it can't change how you sign in.
 
 ### Passkeys
 
@@ -116,7 +134,7 @@ use one of the two buttons:
 
 Name each one, so you can tell them apart. You can add as many as you like, such as one per device.
 
-A login that came from a password can't add a passkey. Ask for a recovery link.
+A login that didn't come from a link [confirms it's you](#confirming-its-you) first.
 
 To log in with a passkey, open the login page at your `public_url`. Choose the username field, and
 your browser offers your passkeys. You can also press **Sign in with a passkey**. If you added a
@@ -175,7 +193,7 @@ it, for up to 30 days. To end a user's logins, disable the user.
 To connect an account, a user opens an invite or recovery link, then chooses the provider on the
 page that follows. The provider asks them to log in, and Doozers connects that account to them.
 Choosing the provider again connects a different account in place of the first. A login that came
-from a password, a passkey, or a provider can't connect an account. Ask for a recovery link.
+from a password, a passkey, or a provider [confirms it's you](#confirming-its-you) first.
 
 To log in later, the user chooses **Sign in with** the provider's name on the login page. Doozers
 matches the account the provider vouches for, never its email address or name. A user an admin

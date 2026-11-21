@@ -50,14 +50,19 @@ the live-output hook.
 | `POST /invite`                 | Checks the nonce, spends the link (`token`), sets the session cookie, 303 to `/setup`. |
 | `GET /setup`                   | Where a user lands after a link: the sign-in methods they can add. |
 | `POST /login/password`         | Checks the nonce, the limits, and the password (`username`, `password`); sets the session cookie, 303 to `/`. The login page again with the reason otherwise: 401, 429, or 503 ([Passwords](#passwords)). |
-| `GET /setup/password`          | The form that sets or changes the user's password; 403 unless the login came from an invite or recovery link. |
+| `GET /setup/password`          | The form that sets or changes the user's password; 403 unless the login came from an invite or recovery link or the user confirmed it's them in the last 10 minutes ([Step-up re-verification](#step-up-re-verification)). |
 | `POST /setup/password`         | Sets the password (CSRF-checked), 303 to the page, which says it is saved; the form again with why (400) if it breaks a rule. |
 | `POST /login/passkey/discover` | JSON `{nonce}` (nonce-checked, rate-limited): the options of a sign-in that names no user, and a ceremony id ([Passkeys](#passkeys)). |
 | `POST /login/passkey/username` | JSON `{nonce, username}`: the options of a sign-in by username; the same answer for a name that isn't a user. |
 | `POST /login/passkey/finish`   | JSON `{nonce, ceremony, credential}`: checks the passkey and signs in, answering `{redirect}` and the session cookie; a 401 with one message otherwise. |
-| `GET /setup/passkey`           | The user's passkeys and the two buttons that add one; 403 unless the login came from an invite or recovery link ([Passkeys](#passkeys)). |
+| `GET /setup/passkey`           | The user's passkeys and the two buttons that add one; 403 under the same rule as `/setup/password` ([Passkeys](#passkeys)). |
 | `POST /setup/passkey/start`    | JSON `{kind}` (CSRF-checked): the options for `navigator.credentials.create` and a ceremony id; 403 for any other login, 409 when passkeys aren't available. |
 | `POST /setup/passkey/finish`   | JSON `{ceremony, name, credential}` (CSRF-checked): verifies and stores the passkey, answers `{redirect}`. |
+| `GET /account/reverify`        | `?next=`: the user's own ways to confirm it's them: a password form, a passkey button, and a link for each connected provider ([Step-up re-verification](#step-up-re-verification)). |
+| `POST /account/reverify/password` | `password`, `next` (CSRF-checked, counted like a login attempt): records the confirmation and 303 to `next`; the page again with why (401, 429, or 503) otherwise. |
+| `POST /account/reverify/passkey/start` | JSON (CSRF-checked): the options of a sign-in with one of the user's own passkeys, and a ceremony id bound to the login. |
+| `POST /account/reverify/passkey/finish` | JSON `{ceremony, next, credential}` (CSRF-checked): checks the passkey, records the confirmation, answers `{redirect}`; a 401 with one message otherwise. |
+| `GET /account/reverify/oidc/<id>` | `?csrf=&next=`: sends the browser to provider `id` to confirm it's the user ([OpenID Connect](#openid-connect)). |
 | `POST /logout`                 | Ends a cookie login (CSRF-checked), 303 to `/`.                  |
 | `GET /admin`                   | The status page ([Admin pages](#admin-pages)).                   |
 | `GET /admin/plugins`           | The plugins page.                                                |
@@ -264,8 +269,10 @@ token out of `Referer`.
 `GET /setup` needs a login. It lists `WebApp::setup_options(user)`, the sign-in methods the user can
 add (`signin.rs`), each with a label, a sentence, and the page that adds it. Each method contributes
 its entry there when the user may add it. Today those are passkeys ([Passkeys](#passkeys)) and the
-password ([Passwords](#passwords)), for a login that came from an invite or recovery link. With no
-entries the page says that this login can't add a way to sign in, and that a new link can.
+password ([Passwords](#passwords)), for a login that may change sign-in methods
+([Step-up re-verification](#step-up-re-verification)). With no entries the page says that this login
+can't add a way to sign in, and points to the account page, where the user can confirm it's them,
+and to a new link.
 
 ### The login page
 
@@ -394,15 +401,14 @@ leaves every existing hash working.
    it, and answers 303 to `/` and deletes the nonce cookie.
 
 **Setting a password.** The setup page lists "Password" (or "Change your password" for a user who
-has one) for a login that came from an invite or recovery link: a cookie session whose `method`
-([The session cookie](#the-session-cookie)) is `invite` or `recovery`. Those links are how a user
-proves who they are when they have nothing else to prove it with, and a 30-day session from any
-other source isn't enough to take over the way into the account, so `GET` and `POST /setup/password`
-answer 403 for any other login (a proxy login included) until the account page can ask for the
-current password. The form shows the username (read-only, so a password manager files the password
-under it), two new-password fields, and the rules. `POST` checks CSRF, then the two fields match,
-then `check_new`, hashes, and replaces the stored hash with `Store::user_password_set`; changing the
-password doesn't end other sessions.
+has one) for a login that may change sign-in methods
+([Step-up re-verification](#step-up-re-verification)). `GET` and `POST /setup/password` answer 403
+with a page that links to the confirmation for any other login (a proxy login, which can't confirm,
+gets the reason). Changing a password needs no separate field for the current one: the confirmation,
+with the current password or another method, is what proves it's the user. The form shows the
+username (read-only, so a password manager files the password under it), two new-password fields,
+and the rules. `POST` checks CSRF, then the two fields match, then `check_new`, hashes, and replaces
+the stored hash with `Store::user_password_set`; changing the password doesn't end other sessions.
 
 **Plain HTTP.** Passwords sent over plain HTTP can be read by anyone on the network. The login form,
 the failed sign-in's page, and the page that sets a password carry a warning when
@@ -432,9 +438,10 @@ as its sentence, so a user who is told to add one can find out why they can't. T
 a `public_url` that is unset means no passkeys, even where the request came over HTTPS, because
 nothing else says what the RP ID should be.
 
-**Registration.** Only a login that came from an invite or recovery link may add a passkey, as for a
-password, for the same reason (`WebApp::may_change_sign_in_methods`). `passkey.js` makes two
-requests, both JSON, both CSRF-checked with the `X-CSRF-Token` header:
+**Registration.** Only a login that may change sign-in methods may add a passkey, as for a password
+and for the same reason (`WebApp::may_change_sign_in_methods`,
+[Step-up re-verification](#step-up-re-verification)). `passkey.js` makes two requests, both JSON,
+both CSRF-checked with the `X-CSRF-Token` header:
 
 1. `POST /setup/passkey/start` `{kind: "discoverable" | "non_resident"}` calls
    `start_passkey_registration` for the user: user verification required, no attestation, the user
@@ -647,8 +654,14 @@ again, instead of being refused because the fetch was a moment ago.
   address, but not with that cookie, so it can't use up the visitor's limit on starts (and that of
   everyone behind the same address) or fill the table of sign-ins in flight.
 - `GET /setup/oidc/<id>?csrf=` connects an account to the user who is logged in. The setup page's
-  link carries the CSRF token of the login, and the login must have come from an invite or recovery
-  link (`may_change_sign_in_methods`), the same rule as for a password or a passkey.
+  link carries the CSRF token of the login, and the login must be allowed to change sign-in methods
+  (`may_change_sign_in_methods`), the same rule as for a password or a passkey.
+- `GET /account/reverify/oidc/<id>?csrf=&next=` confirms it's the user, with the same checks of the
+  CSRF token and the cookie login, and without needing to be allowed to change anything. The flow
+  has the purpose `Reverify` (the user, the CSRF token, and the page to go on to). The callback
+  finishes it only in the login that began it, and only if the account that signed in is connected
+  to that user (`user_oidc_user`): another user's account, or one nobody connected, is refused with
+  a page, though the provider vouches for it just as well.
 
 A start discovers the provider, makes a `Flow` (the nonce, the PKCE verifier, the provider, its
 issuer then, and whether it is a sign-in or a connection by which user), keeps it in a `Pending`
@@ -687,6 +700,51 @@ setup page uses it now, and the account page will use it for a user who is alrea
 told it didn't sign them in. A provider that can't be reached when a sign-in starts, or whose client
 secret can't be read, gets a 502 and a line in the log. Nothing in a URL, a page, or a log line
 holds a code, a token, or a secret.
+
+### Step-up re-verification
+
+A 30-day cookie that was stolen must not be enough to take over an account's way in. So adding,
+changing, or removing a sign-in method (a password, a passkey, a connection to an identity provider)
+is allowed from a session only when `WebApp::sign_in_change` says so (`signin.rs`):
+
+- `Link`: the session's `method` is `invite` or `recovery`, and it began less than `LINK_WINDOW` (30
+  minutes) ago. A user who signed in with a link has no other way to prove who they are, so the link
+  is enough to set up with. The window is short because the session lasts 30 days: a link's session
+  that was stolen gets no more than any other session after it. After it, such a session confirms
+  like any other, and a user with nothing to confirm with asks for a new link.
+- `Reverified`: the user proved who they are again, in that session, with one of their own methods
+  in the last `STEP_UP_TTL` (10 minutes). The time is `web_sessions.reverified_at`
+  ([Web sessions](storage.md#web-sessions)), written by the server when a check succeeds and never
+  taken from the client.
+- Otherwise `Refused`, and so is a proxy login, which has no session to store it on.
+
+A refused request gets a 403 page, "Confirm it's you first", with a link to
+`/account/reverify?next=<page>` (a JSON answer with the same words for `passkey.js`). The page,
+`reverify.rs`, offers only the user's own methods that can sign them in on this install: a password
+form if they have a password, a passkey button if they have a passkey and the relying party works,
+and a link for each enabled provider with a connection of theirs whose issuer is still the
+provider's. A user with none is told to ask for a recovery link.
+
+- **Password.** `POST /account/reverify/password` checks the user's own password with the same
+  `Passwords::verify` as login, a user with no password against the dummy hash. It counts against
+  `LoginLimits` under the user's username and the client's address, the same counters as
+  `POST /login/password`, so holding a stolen cookie is no way around the limits on guessing. Over a
+  limit is a 429 with `Retry-After` and nothing hashed.
+- **Passkey.** `passkey.js` posts to `/account/reverify/passkey/start`, which calls
+  `start_passkey_authentication` with the user's own readable passkeys and keeps the state in the
+  ceremony table as `Ceremony::Reverify`, bound to the user and the CSRF token of the login. The
+  finish takes the ceremony (once; another login can't), lets the library check the answer, requires
+  the credential to be one of the user's own, records its use as a sign-in does (`record_use`), and
+  confirms. Every failure is one 401 message.
+- **Identity provider.** See [OpenID Connect](#openid-connect). The start asks the provider for
+  `max_age=0`, so it authenticates the user again even if its own session is still there, and the
+  callback refuses an ID token whose `auth_time` is missing or more than 60 seconds before the flow
+  began (the leeway is for a provider clock that differs from ours).
+
+Each success calls `WebApp::reverified`, which sets the time on the session's own row. Another
+session of the same user has none. `next` is one of four pages (`/account`, `/setup`,
+`/setup/password`, `/setup/passkey`) and anything else means `/account`, so it can't send the
+browser elsewhere.
 
 ### Rate limits
 
@@ -1855,6 +1913,16 @@ plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`, `i
   password form behind "Use a password instead" and loads the script only when passkeys are
   available. `passkey.rs` has unit tests for the origin rules, user handles, and which binding a
   ceremony belongs to, and `pending.rs` for the table (single use, binding, expiry, the cap).
+- Step-up (`tests/reverify.rs`, with the passkey and identity provider ways in `tests/passkeys.rs`
+  and `tests/oidc.rs`): a session that signed in with a password, which is what a stolen cookie is,
+  can't set a password, start a passkey registration, or connect an account, and its pages say to
+  confirm it's you; a recovery session still can. Confirming with the password stores the time on
+  that session only, leads back to one of the three pages and nowhere else, and lets that session
+  change methods; another session of the user, and another user's, still can't. A confirmation lasts
+  10 minutes, a wrong password confirms nothing, and guessing counts against the same limits as
+  logging in, both ways. A passkey confirms only if it is the user's own, in the login that started
+  the ceremony, once; an account at a provider only if it is connected to the user. A proxy login
+  can't confirm.
 - Account page (`tests/account.rs`, through the real login middleware with a session cookie, over
   stored users): the page needs a login and shows only the user's own profile and identities; the
   sidebar links it and the footer shows the display name; saving changes the name and time zone the

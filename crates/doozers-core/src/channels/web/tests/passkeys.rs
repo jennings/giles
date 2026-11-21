@@ -563,7 +563,7 @@ async fn registering_needs_an_invite_or_recovery_login_and_its_csrf_token() {
         json_of(response).await["error"]
             .as_str()
             .unwrap()
-            .contains("invite or recovery link")
+            .contains("Confirm it's you first")
     );
     let response = call(
         env.main_app(),
@@ -1478,4 +1478,309 @@ async fn the_login_page_offers_passkeys_above_a_folded_password_form() {
         let response = Page::new().finish(&env, &json!("x"), &json!({})).await;
         assert!(response.status().is_client_error(), "{public_url:?}");
     }
+}
+
+// --- Confirming it's you with a passkey -------------------------------------------------------
+
+/// `mia`, who has one discoverable passkey on the returned browser, and a session of hers that
+/// signed in with a password, which is what a stolen cookie is.
+async fn with_a_passkey_and_a_password_login() -> (Env, Browser, Login) {
+    let env = env_at(Some(ORIGIN)).await;
+    stored_users(&env).await;
+    let recovery = login(&env, "mia").await;
+    let mut browser = Browser::new(false);
+    let (_, response) = register(&env, &recovery, &mut browser, "discoverable", "Phone").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let stolen = password_login(&env, "mia").await;
+    (env, browser, stolen)
+}
+
+async fn password_login(env: &Env, user: &str) -> Login {
+    let token = random_hex(32);
+    let now = Timestamp::now();
+    env.store
+        .web_session_create(
+            &token,
+            UserId::new(user).unwrap(),
+            SignInMethod::Password,
+            now,
+            now.checked_add(std::time::Duration::from_secs(3600))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    Login::new(token)
+}
+
+/// What the page's script does to confirm it's you: start, let `browser` answer, finish. The answers
+/// of both requests.
+async fn reverify(
+    env: &Env,
+    login: &Login,
+    browser: &mut Browser,
+    next: &str,
+) -> (Value, Response) {
+    let response = post_json(
+        env.main_app(),
+        "/account/reverify/passkey/start",
+        &login.headers(),
+        &json!({}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let started = json_of(response).await;
+    let answered = browser
+        .get(&started["options"])
+        .await
+        .unwrap_or_else(|err| panic!("{err:?}"));
+    let response = post_json(
+        env.main_app(),
+        "/account/reverify/passkey/finish",
+        &login.headers(),
+        &json!({
+            "ceremony": started["ceremony"],
+            "next": next,
+            "credential": asserted(&answered),
+        }),
+    )
+    .await;
+    (started, response)
+}
+
+async fn begin(env: &Env, login: &Login) -> Response {
+    post_json(
+        env.main_app(),
+        "/account/reverify/passkey/start",
+        &login.headers(),
+        &json!({}),
+    )
+    .await
+}
+
+async fn finish(env: &Env, login: &Login, body: Value) -> Response {
+    post_json(
+        env.main_app(),
+        "/account/reverify/passkey/finish",
+        &login.headers(),
+        &body,
+    )
+    .await
+}
+
+async fn reverified_at(env: &Env, login: &Login) -> Option<Timestamp> {
+    let token = login
+        .cookie
+        .strip_prefix(&format!("{SESSION_COOKIE}="))
+        .unwrap();
+    env.store
+        .web_session(token, Timestamp::now())
+        .await
+        .unwrap()
+        .unwrap()
+        .reverified_at
+}
+
+#[tokio::test]
+async fn confirming_with_a_passkey_lets_that_session_add_a_passkey() {
+    let (env, mut phone, stolen) = with_a_passkey_and_a_password_login().await;
+    let mia = UserId::new("mia").unwrap();
+
+    // A stolen cookie can't add a passkey, and its page offers the user's own passkey.
+    let response = start(&env, &stolen.headers()).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(
+        json_of(response).await["error"]
+            .as_str()
+            .unwrap()
+            .contains("Confirm it's you first")
+    );
+    let page = call(
+        env.main_app(),
+        Method::GET,
+        "/account/reverify?next=/setup/passkey",
+        &[("cookie", &stolen.cookie)],
+        None,
+    )
+    .await;
+    let html = body_text(page).await;
+    assert!(html.contains(r#"id="passkey-reverify""#), "{html}");
+    assert!(html.contains(r#"data-next="/setup/passkey""#), "{html}");
+    assert!(
+        html.contains(&format!(r#"data-origin="{ORIGIN}""#)),
+        "{html}"
+    );
+    assert!(
+        html.contains(crate::http::assets::passkey_script_path()),
+        "{html}"
+    );
+
+    // The user's passkey answers, and the session is confirmed.
+    let (started, response) = reverify(&env, &stolen, &mut phone, "/setup/passkey").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
+    assert_eq!(
+        json_of(response).await,
+        json!({ "redirect": "/setup/passkey" })
+    );
+    assert_eq!(
+        started["options"]["publicKey"]["allowCredentials"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(reverified_at(&env, &stolen).await.is_some());
+    let used = env.store.user_passkeys(&mia).await.unwrap();
+    assert!(used[0].last_used_at.is_some());
+
+    // Now that session adds a second passkey, as an invite's would.
+    let mut key = Browser::new(true);
+    let (_, response) = register(&env, &stolen, &mut key, "non_resident", "Key").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(env.store.user_passkeys(&mia).await.unwrap().len(), 2);
+
+    // Another session of the user didn't confirm anything.
+    let other = password_login(&env, "mia").await;
+    assert_eq!(
+        start(&env, &other.headers()).await.status(),
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn a_confirmation_ceremony_is_the_users_own_and_belongs_to_one_login_and_works_once() {
+    let (env, mut phone, stolen) = with_a_passkey_and_a_password_login().await;
+    let root_login = login(&env, "root").await;
+    let mut roots = Browser::new(false);
+    let (_, response) = register(&env, &root_login, &mut roots, "discoverable", "Root").await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Another user's passkey can't answer the options of this user's.
+    let started = json_of(begin(&env, &stolen).await).await;
+    assert!(roots.get(&started["options"]).await.is_err());
+
+    // A ceremony finishes only in the login that started it.
+    let answered = phone.get(&started["options"]).await.unwrap();
+    let elsewhere = password_login(&env, "mia").await;
+    let response = finish(
+        &env,
+        &elsewhere,
+        json!({ "ceremony": started["ceremony"], "credential": asserted(&answered) }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    // It was used up by trying, so the right login can't finish it now either.
+    let response = finish(
+        &env,
+        &stolen,
+        json!({ "ceremony": started["ceremony"], "credential": asserted(&answered) }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(reverified_at(&env, &stolen).await, None);
+    assert_eq!(reverified_at(&env, &elsewhere).await, None);
+
+    // A ceremony finishes once.
+    let (started, response) = reverify(&env, &stolen, &mut phone, "/account").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let answered = phone.get(&started["options"]).await.unwrap();
+    let response = finish(
+        &env,
+        &stolen,
+        json!({ "ceremony": started["ceremony"], "credential": asserted(&answered) }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // Each request needs the login's CSRF token and a login.
+    for headers in [
+        vec![("cookie", stolen.cookie.as_str())],
+        vec![
+            ("cookie", stolen.cookie.as_str()),
+            ("x-csrf-token", "wrong"),
+        ],
+    ] {
+        let response = post_json(
+            env.main_app(),
+            "/account/reverify/passkey/start",
+            &headers,
+            &json!({}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+    let response = post_json(
+        env.main_app(),
+        "/account/reverify/passkey/start",
+        &[],
+        &json!({}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // A user with no passkeys has none to use.
+    let mia_without = password_login(&env, "root").await;
+    let started = begin(&env, &mia_without).await;
+    assert_eq!(started.status(), StatusCode::OK, "root has one");
+    let nobody = {
+        let users = open_users(&env).await;
+        let new = doozers_store::NewUser {
+            id: UserId::new("nokey").unwrap(),
+            username: "nokey".to_owned(),
+            display_name: "No key".to_owned(),
+            role: doozers_store::Role::Member,
+            timezone: None,
+            default_identity: None,
+        };
+        let web = doozers_store::NewIdentity {
+            namespace: "web".to_owned(),
+            native_id: "nokey".to_owned(),
+            verification: doozers_store::Verification::Admin,
+        };
+        users
+            .create(new, vec![web], Timestamp::now())
+            .await
+            .unwrap();
+        password_login(&env, "nokey").await
+    };
+    assert_eq!(begin(&env, &nobody).await.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn without_a_secure_public_url_a_passkey_cannot_confirm_and_is_not_offered() {
+    let env = env_at(None).await;
+    stored_users(&env).await;
+    let mia = UserId::new("mia").unwrap();
+    // A passkey stored before the install lost its address.
+    env.store
+        .user_passkey_add(
+            doozers_store::NewPasskey {
+                user: mia,
+                credential_id: vec![1, 2, 3],
+                credential: "{}".to_owned(),
+                kind: PasskeyKind::Discoverable,
+                name: "Old".to_owned(),
+            },
+            Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    let session = password_login(&env, "mia").await;
+    let response = post_json(
+        env.main_app(),
+        "/account/reverify/passkey/start",
+        &session.headers(),
+        &json!({}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let page = call(
+        env.main_app(),
+        Method::GET,
+        "/account/reverify",
+        &[("cookie", &session.cookie)],
+        None,
+    )
+    .await;
+    assert!(!body_text(page).await.contains("passkey-reverify"));
 }

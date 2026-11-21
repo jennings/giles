@@ -1,4 +1,4 @@
-// Passkeys on two pages. WebAuthn can only be called from script, so this is the one first-party
+// Passkeys on three pages. WebAuthn can only be called from script, so this is the one first-party
 // script a page needs to work, not a convenience; Docs/technical/web-ui.md says why. Without it the
 // passkey parts of the pages stay hidden and the password form is the way in.
 //
@@ -9,6 +9,10 @@
 //   WebAuthn request at a time, so each of the others aborts the conditional one first.
 // - The setup page (`#passkey-setup`): "Add a passkey" and "Add a non-resident key" each ask the
 //   server for registration options, call the browser, and post the result.
+//
+// - The re-verify page (`#passkey-reverify`): "Confirm with a passkey" asks the server for the
+//   options of a sign-in with one of the user's own passkeys, calls the browser, and posts the
+//   assertion, which the server accepts as proof it's the user before they change how they sign in.
 //
 // All data goes to the server as JSON. The server's options use base64url strings for the byte
 // fields; the browser wants buffers.
@@ -357,6 +361,57 @@
     });
   }
 
+  function initReverify(root) {
+    var error = root.querySelector('[data-passkey-error]');
+    var unsupported = root.querySelector('[data-passkey-unsupported]');
+    var elsewhere = root.querySelector('[data-passkey-elsewhere]');
+    var section = root.querySelector('[data-passkey-controls]');
+    var button = root.querySelector('[data-passkey-reverify]');
+    var csrf = root.getAttribute('data-csrf');
+    var next = root.getAttribute('data-next');
+    var urls = {
+      start: root.getAttribute('data-start-url'),
+      finish: root.getAttribute('data-finish-url')
+    };
+
+    if (window.location.origin !== root.getAttribute('data-origin')) {
+      unsupported.hidden = true;
+      elsewhere.hidden = false;
+      return;
+    }
+    if (!supported) {
+      return;
+    }
+    unsupported.hidden = true;
+    section.hidden = false;
+
+    var busy = false;
+    button.addEventListener('click', function () {
+      if (busy) {
+        return;
+      }
+      busy = true;
+      error.hidden = true;
+      var headers = { 'X-CSRF-Token': csrf };
+      var started;
+      post(urls.start, {}, headers).then(reply).then(function (json) {
+        started = json;
+        return navigator.credentials.get({ publicKey: requestOptions(json.options.publicKey) });
+      }).then(function (credential) {
+        return post(urls.finish, {
+          ceremony: started.ceremony,
+          next: next,
+          credential: asserted(credential)
+        }, headers);
+      }).then(reply).then(function (json) {
+        window.location.assign(json.redirect);
+      }).catch(function (failure) {
+        show(error, problem(failure));
+        busy = false;
+      });
+    });
+  }
+
   var signin = document.getElementById('passkey-signin');
   if (signin) {
     initSignin(signin);
@@ -364,5 +419,9 @@
   var setup = document.getElementById('passkey-setup');
   if (setup) {
     initSetup(setup);
+  }
+  var reverify = document.getElementById('passkey-reverify');
+  if (reverify) {
+    initReverify(reverify);
   }
 })();

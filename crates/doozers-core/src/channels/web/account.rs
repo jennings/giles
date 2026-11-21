@@ -120,6 +120,10 @@ struct Notice {
 fn notice_text(notice: Option<&str>) -> Option<String> {
     let text = match notice? {
         "saved" => "Saved your profile.",
+        "reverified" => {
+            "You confirmed it's you. For the next 10 minutes you can add or remove a way to \
+             sign in, or change your password."
+        }
         _ => return None,
     };
     Some(text.to_owned())

@@ -6,8 +6,10 @@
 <h1>Set up how you sign in</h1>
 <p>You're signed in as {{ name }}, and this browser stays signed in for 30 days.</p>
 {% if options.is_empty() %}
-<p>There's no way to add from this login. To add one, open an invite or recovery link, which an
-admin can send you. If you run Doozers, <code>doozers admin login-link</code> makes one.</p>
+<p>There's nothing to add from this login yet. To add a way to sign in,
+<a href="/account/reverify?next=/setup">confirm it's you</a> with a way you already use. If you have
+none, or the link you opened was a while ago, open a new invite or recovery link, which an admin can
+send you. If you run Doozers, <code>doozers admin login-link</code> makes one.</p>
 {% else %}
 <p>Add a way to sign in, so you don't need a link next time:</p>
 <ul>

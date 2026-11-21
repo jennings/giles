@@ -5,7 +5,8 @@
 //!
 //! - `POST /login/password` signs in. The login page ([`login`](super::login)) holds its form.
 //! - `GET` and `POST /setup/password` set the password. Only a browser that signed in with an
-//!   invite or recovery link may: those are how a user proves who they are when they have no
+//!   invite or recovery link, or one the user re-verified in the last 10 minutes
+//!   ([`reverify`](super::reverify)), may: those are how a user proves who they are when they have no
 //!   password to prove it with, and a 30-day session that came from anything else isn't enough to
 //!   take over the account's way in.
 
@@ -27,7 +28,7 @@ use super::limits::{Limited, client_key, username_key};
 use super::login::{is_https, render_login, start_session};
 use super::pages::{WebApp, error_page, internal_error, no_store};
 use super::password::{self, MAX_CHARS, MIN_CHARS};
-use super::signin::{SetupOption, needs_a_link};
+use super::signin::{SetupOption, confirm_first};
 use crate::http::{self, PeerAddr};
 
 /// The password routes: `POST /login/password`, `GET /setup/password`, and `POST /setup/password`.
@@ -319,7 +320,7 @@ async fn setup_page(
 ) -> Response {
     match app.may_change_sign_in_methods(&user).await {
         Ok(true) => {}
-        Ok(false) => return needs_a_link(),
+        Ok(false) => return confirm_first(&user, "/setup/password"),
         Err(err) => return internal_error("cannot look up a web session", &err),
     }
     render_setup(
@@ -359,7 +360,7 @@ async fn set_password(
     }
     match app.may_change_sign_in_methods(&user).await {
         Ok(true) => {}
-        Ok(false) => return needs_a_link(),
+        Ok(false) => return confirm_first(&user, "/setup/password"),
         Err(err) => return internal_error("cannot look up a web session", &err),
     }
     let trusted = trusted.is_some();

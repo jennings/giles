@@ -357,7 +357,7 @@ async fn an_invited_user_connects_an_account_and_signs_in_with_it_later() {
         )
         .await;
     assert_eq!(again.status(), StatusCode::FORBIDDEN);
-    assert!(body_text(again).await.contains("Open a link first"));
+    assert!(body_text(again).await.contains("Confirm it's you first"));
 }
 
 #[tokio::test]
@@ -669,7 +669,7 @@ async fn only_a_login_that_came_from_a_link_connects_an_account() {
     let path = format!("/setup/oidc/idp?csrf={}", browser.csrf());
     let response = browser.get(&site.router, &path).await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert!(body_text(response).await.contains("Open a link first"));
+    assert!(body_text(response).await.contains("Confirm it's you first"));
     let setup = body_text(browser.get(&site.router, "/setup").await).await;
     assert!(!setup.contains("/setup/oidc/"), "{setup}");
 
@@ -2014,4 +2014,213 @@ async fn the_removal_page_counts_every_connection_the_removal_forgets() {
         page.contains("stay logged in") && page.contains("disable the user"),
         "says that logins made with the provider last: {page}"
     );
+}
+
+// --- Confirming it's you with an identity provider ---------------------------------------------
+
+impl Site {
+    /// A browser of `user` whose session signed in with a password: a login that is no invite's.
+    async fn password_login(&self, user: &str) -> Browser {
+        let token = random_hex(32);
+        let now = Timestamp::now();
+        self.env
+            .store
+            .web_session_create(
+                &token,
+                id(user),
+                SignInMethod::Password,
+                now,
+                now.checked_add(Duration::from_secs(3600)).unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut browser = Browser::default();
+        browser.cookies.insert(SESSION_COOKIE.to_owned(), token);
+        browser
+    }
+
+    /// The re-verification time of the browser's session.
+    async fn reverified_at(&self, browser: &Browser) -> Option<Timestamp> {
+        self.env
+            .store
+            .web_session(browser.session().unwrap(), Timestamp::now())
+            .await
+            .unwrap()
+            .unwrap()
+            .reverified_at
+    }
+
+    /// The link on the re-verify page that confirms it's you at provider `idp`.
+    fn reverify_path(browser: &Browser, next: &str) -> String {
+        format!(
+            "/account/reverify/oidc/idp?csrf={}&next={next}",
+            browser.csrf()
+        )
+    }
+}
+
+#[tokio::test]
+async fn confirming_with_a_connected_account_lets_that_session_change_methods() {
+    let site = site().await;
+    site.connected("mia", "mia-sub").await;
+    let mut mia = site.password_login("mia").await;
+
+    // Connecting another account is refused to a login that hasn't confirmed anything, and the
+    // re-verify page offers the provider the user is connected to.
+    let response = mia
+        .get(
+            &site.router,
+            &format!("/setup/oidc/idp?csrf={}", mia.csrf()),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(body_text(response).await.contains("Confirm it's you first"));
+    let page = body_text(mia.get(&site.router, "/account/reverify").await).await;
+    assert!(page.contains("Confirm with Idp"), "{page}");
+    assert!(
+        page.contains(&format!(
+            "/account/reverify/oidc/idp?csrf={}&#38;next=/account",
+            mia.csrf()
+        )),
+        "{page}"
+    );
+    assert_eq!(site.reverified_at(&mia).await, None);
+
+    // The user's own account at the provider confirms it, and leads to the account page.
+    let path = Site::reverify_path(&mia, "/account");
+    let response = site.through_idp(&mut mia, &path, "mia-sub").await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(location(&response), "/account?notice=reverified");
+    assert!(site.reverified_at(&mia).await.is_some());
+    // The login is the same one: confirming doesn't sign anyone in again.
+    assert!(mia.session().is_some());
+
+    // Now the session connects another account, as an invite's would.
+    let response = site.connect(&mut mia, "mia-second").await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(site.connection("mia-second").await, Some(id("mia")));
+}
+
+#[tokio::test]
+async fn an_account_that_is_not_the_users_confirms_nothing() {
+    let site = site().await;
+    site.connected("mia", "mia-sub").await;
+    site.connected("root", "root-sub").await;
+    let mut mia = site.password_login("mia").await;
+    let path = Site::reverify_path(&mia, "/account");
+    // Another user's account, and one nobody connected, are both signed in at the provider
+    // successfully, and neither is Mia.
+    for subject in ["root-sub", "nobody-sub"] {
+        let response = site.through_idp(&mut mia, &path, subject).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{subject}");
+        assert!(
+            body_text(response)
+                .await
+                .contains("That isn&#39;t your account"),
+            "{subject}"
+        );
+        assert_eq!(site.reverified_at(&mia).await, None, "{subject}");
+    }
+    // The provider's own sign-in didn't sign the browser in as anyone else either.
+    assert_eq!(
+        mia.session(),
+        mia.cookies.get(SESSION_COOKIE).map(String::as_str)
+    );
+}
+
+#[tokio::test]
+async fn a_confirmation_finishes_only_in_the_login_that_began_it_and_needs_the_csrf_token() {
+    let site = site().await;
+    site.connected("mia", "mia-sub").await;
+    let mut mia = site.password_login("mia").await;
+
+    // No CSRF token, or the wrong one, and nobody logged in.
+    for path in [
+        "/account/reverify/oidc/idp".to_owned(),
+        "/account/reverify/oidc/idp?csrf=nope".to_owned(),
+    ] {
+        let response = mia.get(&site.router, &path).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+    }
+    let mut nobody = Browser::default();
+    let response = nobody
+        .get(&site.router, "/account/reverify/oidc/idp?csrf=x")
+        .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // Someone else's login, with Mia's binding cookie, can't finish Mia's confirmation, and it is
+    // gone afterwards.
+    let start = mia
+        .get(&site.router, &Site::reverify_path(&mia, "/account"))
+        .await;
+    assert_eq!(start.status(), StatusCode::SEE_OTHER);
+    let back = path_of(&site.idp.approve(&location(&start), "mia-sub").unwrap());
+    let mut other = site.password_login("root").await;
+    other
+        .cookies
+        .insert("doozers_oidc".into(), mia.cookies["doozers_oidc"].clone());
+    let response = other.get(&site.router, &back).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let response = mia.get(&site.router, &back).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(site.reverified_at(&mia).await, None);
+    assert_eq!(site.reverified_at(&other).await, None);
+}
+
+#[tokio::test]
+async fn a_provider_that_is_disabled_is_not_offered_to_confirm_with() {
+    let site = site().await;
+    site.connected("mia", "mia-sub").await;
+    let mut mia = site.password_login("mia").await;
+    site.env
+        .store
+        .oidc_provider_set_enabled("idp", false, Timestamp::now())
+        .await
+        .unwrap();
+    let page = body_text(mia.get(&site.router, "/account/reverify").await).await;
+    assert!(!page.contains("Confirm with Idp"), "{page}");
+    let response = mia
+        .get(&site.router, &Site::reverify_path(&mia, "/account"))
+        .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn confirming_makes_the_provider_authenticate_the_user_again() {
+    let site = site().await;
+    site.connected("mia", "mia-sub").await;
+    let mut mia = site.password_login("mia").await;
+    let path = Site::reverify_path(&mia, "/account");
+
+    // The start asks for a fresh authentication; a sign-in doesn't.
+    let start = mia.get(&site.router, &path).await;
+    assert!(
+        location(&start).contains("max_age=0"),
+        "{}",
+        location(&start)
+    );
+    let mut other = Browser::default();
+    let start = other.get(&site.router, &login_path("idp")).await;
+    assert!(
+        !location(&start).contains("max_age"),
+        "{}",
+        location(&start)
+    );
+
+    // An ID token that says the user authenticated long before, or doesn't say when, confirms
+    // nothing, though the account is the user's.
+    for (what, ago) in [
+        ("an old authentication", Some(Some(3600))),
+        ("no authentication time", Some(None)),
+    ] {
+        site.idp.tamper(|t| t.auth_time_ago = ago);
+        let response = site.through_idp(&mut mia, &path, "mia-sub").await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{what}");
+        assert_eq!(site.reverified_at(&mia).await, None, "{what}");
+    }
+    // A fresh one, a few seconds before the clock of the provider says now, does.
+    site.idp.tamper(|t| t.auth_time_ago = Some(Some(5)));
+    let response = site.through_idp(&mut mia, &path, "mia-sub").await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(site.reverified_at(&mia).await.is_some());
 }

@@ -3,8 +3,9 @@
 //!
 //! - `GET /setup/passkey` lists the user's passkeys and has the two buttons that add one.
 //! - `POST /setup/passkey/start` and `POST /setup/passkey/finish` are the registration, called by
-//!   `passkey.js` with JSON. Only a browser that signed in with an invite or recovery link may use
-//!   any of them, as for a password: a 30-day session from any other source isn't enough to take
+//!   `passkey.js` with JSON. Only a browser that may change sign-in methods may use any of them, as
+//!   for a password (a session from an invite or recovery link, or one the user re-verified lately,
+//!   see [`signin`](super::signin)): a 30-day session from any other source isn't enough to take
 //!   over the account's way in. Both check CSRF, and the ceremony in between is bound to the
 //!   login that started it.
 //!
@@ -37,7 +38,7 @@ use webauthn_rs_proto::ResidentKeyRequirement;
 use super::auth::{WebUser, check_csrf};
 use super::pages::{WebApp, internal_error, no_store};
 use super::passkey::{Ceremony, registration_binding, user_handle};
-use super::signin::{SetupOption, needs_a_link};
+use super::signin::{SetupOption, confirm_first, confirm_first_json};
 use crate::http;
 
 /// The longest name a passkey is given, in characters.
@@ -60,14 +61,6 @@ fn out_of_date() -> Response {
     json_error(
         StatusCode::FORBIDDEN,
         "This page is out of date. Reload it and try again.",
-    )
-}
-
-fn needs_a_link_json() -> Response {
-    json_error(
-        StatusCode::FORBIDDEN,
-        "You add a passkey from a login that came from an invite or recovery link. Ask an admin \
-         for a link, or run `doozers admin login-link` if you run Doozers.",
     )
 }
 
@@ -194,7 +187,7 @@ async fn setup_page(
 ) -> Response {
     match app.may_change_sign_in_methods(&user).await {
         Ok(true) => {}
-        Ok(false) => return needs_a_link(),
+        Ok(false) => return confirm_first(&user, "/setup/passkey"),
         Err(err) => return internal_error("cannot look up a web session", &err),
     }
     let stored = match app.inner.store.user_passkeys(&user.user).await {
@@ -239,7 +232,7 @@ async fn start(
     }
     match app.may_change_sign_in_methods(&user).await {
         Ok(true) => {}
-        Ok(false) => return needs_a_link_json(),
+        Ok(false) => return confirm_first_json(&user),
         Err(err) => return internal_error("cannot look up a web session", &err),
     }
     let rp = match app.inner.passkeys.relying_party() {
@@ -313,7 +306,7 @@ async fn finish(
     }
     match app.may_change_sign_in_methods(&user).await {
         Ok(true) => {}
-        Ok(false) => return needs_a_link_json(),
+        Ok(false) => return confirm_first_json(&user),
         Err(err) => return internal_error("cannot look up a web session", &err),
     }
     let rp = match app.inner.passkeys.relying_party() {

@@ -204,7 +204,7 @@ async fn made_up_ids(app: &WebApp, username: &str) -> Result<Vec<Vec<u8>>, Strin
 }
 
 /// The user's passkeys as the library holds them: those whose stored credential can be read.
-fn readable(stored: &[StoredPasskey]) -> Vec<Passkey> {
+pub(super) fn readable(stored: &[StoredPasskey]) -> Vec<Passkey> {
     stored
         .iter()
         .filter_map(|passkey| match serde_json::from_str(&passkey.credential) {
@@ -323,7 +323,7 @@ fn failed() -> Response {
 }
 
 /// What the library said about a passkey's answer. A counter that went backwards is warned about.
-fn judge(
+pub(super) fn judge(
     stored: &StoredPasskey,
     outcome: WebauthnResult<AuthenticationResult>,
 ) -> Option<AuthenticationResult> {
@@ -471,7 +471,7 @@ async fn finish(
         Ceremony::ByUsername { user, state } => {
             check_by_username(&app, rp, &user, &state, &request.credential).await
         }
-        Ceremony::Fake | Ceremony::Register { .. } => Ok(None),
+        Ceremony::Fake | Ceremony::Register { .. } | Ceremony::Reverify { .. } => Ok(None),
     };
     let (stored, passkey, result) = match checked {
         Ok(Some(signed)) => signed,

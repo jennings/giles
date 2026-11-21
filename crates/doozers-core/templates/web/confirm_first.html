@@ -1,0 +1,14 @@
+{% extends "layout.html" %}
+
+{% block title %}Confirm it's you first - Doozers{% endblock %}
+
+{% block content %}
+<h1>Confirm it's you first</h1>
+{%- if let Some(href) = reverify %}
+<p>To add or remove a way to sign in, or to change your password, first confirm it's you with a way you already use. This keeps someone who got hold of your login from taking over your account.</p>
+<p><a class="button button-primary" href="{{ href }}">Confirm it's you</a></p>
+{%- else %}
+<p>You are logged in through the proxy in front of Doozers, so Doozers can't ask you to confirm it's you. To add a way to sign in, ask an admin for a recovery link, or run <code>doozers admin login-link</code> if you run Doozers.</p>
+{%- endif %}
+<p><a href="/account">Back to your account</a></p>
+{% endblock %}

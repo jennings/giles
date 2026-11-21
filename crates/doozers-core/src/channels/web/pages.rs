@@ -192,6 +192,7 @@ impl WebApp {
             .merge(super::password_pages::routes())
             .merge(super::passkey_pages::routes())
             .merge(super::passkey_signin::routes())
+            .merge(super::reverify::routes())
             .with_state(self.clone())
     }
 }

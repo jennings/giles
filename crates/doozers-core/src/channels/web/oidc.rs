@@ -205,6 +205,10 @@ impl<'c> AsyncHttpClient<'c> for Http {
     }
 }
 
+/// How many seconds before a re-verification began the provider's `auth_time` may be, for a clock
+/// that runs a little differently from ours.
+const AUTH_TIME_LEEWAY_SECS: i64 = 60;
+
 /// What the browser's sign-in is for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Purpose {
@@ -218,6 +222,27 @@ pub(super) enum Purpose {
         /// The CSRF token of their login.
         csrf: String,
     },
+    /// Prove that the account is connected to `user`, who is logged in, to confirm it's them (see
+    /// [`reverify`](super::reverify)), and go on to `next`.
+    Reverify {
+        /// The user who started it.
+        user: UserId,
+        /// The CSRF token of their login.
+        csrf: String,
+        /// The page to go on to, one of the pages `reverify::back_to` knows.
+        next: &'static str,
+    },
+}
+
+impl Purpose {
+    /// The user and the CSRF token of the login that started a sign-in that needs one: the only
+    /// login that may finish it.
+    pub(super) fn login(&self) -> Option<(&UserId, &str)> {
+        match self {
+            Self::SignIn => None,
+            Self::Connect { user, csrf } | Self::Reverify { user, csrf, .. } => Some((user, csrf)),
+        }
+    }
 }
 
 /// A sign-in in flight: what the callback must find to be the one that started.
@@ -227,6 +252,8 @@ pub(super) struct Flow {
     /// The issuer that provider had then.
     issuer: String,
     nonce: Nonce,
+    /// When it began: a re-verification needs the user to have authenticated since.
+    started_at: Timestamp,
     verifier: PkceCodeVerifier,
     /// What it is for.
     pub(super) purpose: Purpose,
@@ -546,8 +573,9 @@ impl Oidc {
                 provider: provider.id.clone(),
                 issuer: provider.issuer.clone(),
                 nonce: nonce.clone(),
+                started_at: now,
                 verifier,
-                purpose,
+                purpose: purpose.clone(),
             },
             now,
         );
@@ -558,6 +586,11 @@ impl Oidc {
                 move || nonce,
             )
             .set_pkce_challenge(challenge);
+        // Confirming it's the user must not be answered by a provider's session that is already
+        // there: it has to ask the user to authenticate again.
+        if matches!(purpose, Purpose::Reverify { .. }) {
+            request = request.set_max_age(std::time::Duration::ZERO);
+        }
         // `openid` is always asked for.
         for scope in provider.scopes.iter().filter(|scope| *scope != "openid") {
             request = request.add_scope(Scope::new(scope.clone()));
@@ -631,6 +664,18 @@ impl Oidc {
                     {
                         return Err(refuse(
                             "the ID token's authorized party isn't this client".to_owned(),
+                        ));
+                    }
+                    // A re-verification needs proof that the user authenticated for it: the ID
+                    // token says when (`auth_time`, which `max_age` makes the provider send), and
+                    // it must be since the flow began, within a little clock difference.
+                    if matches!(flow.purpose, Purpose::Reverify { .. })
+                        && !claims.auth_time().is_some_and(|at| {
+                            at.timestamp() >= flow.started_at.as_second() - AUTH_TIME_LEEWAY_SECS
+                        })
+                    {
+                        return Err(refuse(
+                            "the provider didn't authenticate the user again".to_owned(),
                         ));
                     }
                     let subject = claims.subject().as_str();

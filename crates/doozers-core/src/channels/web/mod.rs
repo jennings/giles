@@ -35,6 +35,7 @@ mod pending;
 mod proxy;
 mod qr;
 mod render;
+mod reverify;
 mod routes;
 mod shell;
 mod signin;
