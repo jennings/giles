@@ -7,7 +7,8 @@ use doozers_store::{
     ConversationAccess, InboxState, NewInboxEvent, Session, SessionId, SessionKind,
 };
 use doozers_types::{
-    Channel, ChannelEvent, ChannelStatus, EventId, OutboundMessage, SendTarget, Timestamp,
+    Channel, ChannelEvent, ChannelStatus, ConversationId, EventId, OutboundMessage, SendTarget,
+    Timestamp,
 };
 use futures::StreamExt;
 use jiff::SignedDuration;
@@ -20,7 +21,7 @@ use crate::commands::CoreCommand;
 use crate::config::InstanceName;
 use crate::router::{ChannelSource, Inbound, Routed};
 
-/// How long `/env reset` waits for the channel to take its reply.
+/// How long a command waits for the channel to take its reply.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A channel's latest status event.
@@ -366,25 +367,45 @@ async fn env_reset(inner: Arc<Inner>, to: Routed) {
         EnvReset::NoWorkspace => "This conversation has no workspace.",
         EnvReset::Failed(message) => message,
     };
+    say(
+        &inner,
+        channel,
+        &to.session.conversation,
+        text,
+        "/env reset",
+    )
+    .await;
+}
+
+/// Sends `text` to `conversation` on channel instance `channel`, as the reply to `command`. A
+/// reply that can't be sent is logged: the event it answers can't be redelivered any more.
+async fn say(
+    inner: &Inner,
+    channel: &str,
+    conversation: &ConversationId,
+    text: &str,
+    command: &str,
+) {
     let Some(channel_handle) = inner.channels.channel(channel) else {
         warn!(
             channel,
-            "cannot tell the user about /env reset: the channel is not registered"
+            "cannot tell the user about {command}: the channel is not registered"
         );
         return;
     };
     let message = OutboundMessage {
-        target: SendTarget::Conversation(to.session.conversation.clone()),
+        target: SendTarget::Conversation(conversation.clone()),
         markdown: text.to_owned(),
         attachments: Vec::new(),
         reply_to: None,
     };
     match tokio::time::timeout(REPLY_TIMEOUT, channel_handle.send(message)).await {
         Ok(Ok(_)) => {}
-        Ok(Err(error)) => warn!(channel, %error, "cannot tell the user about /env reset"),
-        Err(_) => warn!(channel, "timed out telling the user about /env reset"),
+        Ok(Err(error)) => warn!(channel, %error, "cannot tell the user about {command}"),
+        Err(_) => warn!(channel, "timed out telling the user about {command}"),
     }
 }
+
 #[cfg(test)]
 mod tests {
     use doozers_types::{AgentId, ConversationId};
