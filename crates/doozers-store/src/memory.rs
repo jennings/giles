@@ -317,6 +317,55 @@ impl MemoryStore {
             .await
     }
 
+    /// How many private memories `user` has in this database: what
+    /// [`forget_user`](Self::forget_user) deletes.
+    pub async fn user_memories(&self, user: &UserId) -> Result<u64> {
+        let user = user.to_string();
+        self.store
+            .read(move |conn| {
+                let count: i64 = conn
+                    .prepare_cached(
+                        "SELECT count(*) FROM memories
+                         WHERE shared = 0 AND owner_kind = 'user' AND owner_user = ?1",
+                    )?
+                    .query_row([user], |row| row.get(0))?;
+                u64::try_from(count).map_err(|_| Error::corrupt("negative memory count"))
+            })
+            .await
+    }
+
+    /// Forgets `user` in one write transaction: their private memories are deleted (the search
+    /// index follows by its trigger, with FTS5's `secure-delete` on so none of the words stay in
+    /// it), and a shared memory they wrote stays for everyone, with no author (the owner of a
+    /// config job's, [`MemoryOwner::None`]). Returns how many memories were deleted and how many
+    /// lost their author. Idempotent.
+    pub async fn forget_user(&self, user: &UserId) -> Result<(u64, u64)> {
+        let user = user.to_string();
+        self.store
+            .write(move |conn| {
+                // The deleted words leave the full-text index with the rows (FTS5's
+                // `secure-delete`, kept in the index, so later deletes do the same).
+                conn.execute(
+                    "INSERT INTO memory_search (memory_search, rank) VALUES ('secure-delete', 1)",
+                    [],
+                )?;
+                let deleted = conn
+                    .prepare_cached(
+                        "DELETE FROM memories
+                         WHERE shared = 0 AND owner_kind = 'user' AND owner_user = ?1",
+                    )?
+                    .execute([&user])?;
+                let detached = conn
+                    .prepare_cached(
+                        "UPDATE memories SET owner_kind = 'none', owner_user = NULL
+                         WHERE shared = 1 AND owner_kind = 'user' AND owner_user = ?1",
+                    )?
+                    .execute([&user])?;
+                Ok((deleted as u64, detached as u64))
+            })
+            .await
+    }
+
     /// Adds a memory and returns it.
     ///
     /// # Errors

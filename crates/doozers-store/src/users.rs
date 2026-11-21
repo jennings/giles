@@ -548,8 +548,9 @@ impl Store {
 
     /// Deletes the account of user `id` and, by cascade, its identities, invite links, link codes,
     /// password, passkeys, and OpenID Connect connections, and returns the user as it was. Links
-    /// the user made stay, with no creator. It deletes nothing else: what the user owns (web login sessions, conversations, memories,
-    /// secrets) stays, and is the caller's to delete.
+    /// the user made stay, with no creator. It deletes nothing else: what the user owns
+    /// (web login sessions, conversations, memories, secrets, workspaces) stays, and is the caller's
+    /// to delete first ([`user_data_forget`](Store::user_data_forget) does the database's part).
     ///
     /// # Errors
     ///

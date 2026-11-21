@@ -188,7 +188,7 @@ adds `web_sessions.method`, and `0023_web_session_account.sql` adds `web_session
 `pairings` is deferred with multi-user support (PLAN 1.1, D49) and doesn't exist yet.
 
 Deleting a session cascades to its messages and summaries and clears `session_id` in `inbox` and
-`usage`, which keeps `doozers user forget` (PLAN 11.4) a matter of deleting rows.
+`usage`, which keeps [forgetting a user](#forgetting-a-user) (PLAN 11.4) a matter of deleting rows.
 
 ## Sessions
 
@@ -263,10 +263,10 @@ None has an index of its own: they scan `sessions` (small: one row per conversat
 `search` is an FTS5 table over messages for `memory_search` (PLAN 6.7). It holds the top-level
 `Text` blocks of each message, joined by newlines; tool inputs and results, reasoning, and media are
 left out. Three triggers on `messages` maintain it on insert, on update of `content` (so a tombstone
-from `doozers user forget` replaces the old text), and on delete (including deletes that cascade
-from a session). The extraction runs in SQL (`json_each` over `content`), so no code path can forget
-to update the index. The tokenizer is `porter unicode61 remove_diacritics 2`: English stemming, case
-and accent folding.
+from [forgetting a user](#forgetting-a-user) replaces the old text), and on delete (including
+deletes that cascade from a session). The extraction runs in SQL (`json_each` over `content`), so no
+code path can forget to update the index. The tokenizer is `porter unicode61 remove_diacritics 2`:
+English stemming, case and accent folding.
 
 `Store::search(scope, query, limit)`:
 
@@ -358,6 +358,12 @@ memories too, as their author.
   count: a shared memory a group authored is everyone's and doesn't list its group, and user-owned
   or ownerless memories never do. It isn't filtered by viewer; the caller restricts it (the web page
   shows it to admins only, who then lists a group's memories with a `MemoryViewer` for that group).
+- `user_memories(user)` and `forget_user(user)` are for [forgetting a user](#forgetting-a-user), so
+  they take no viewer. `user_memories` counts the user's private memories. `forget_user` deletes
+  them and, in the same transaction, makes a shared memory they wrote ownerless (`owner_kind`
+  `none`, no author), since it belongs to everyone; it turns on FTS5's `secure-delete` for
+  `memory_search` first, so no word of a deleted memory stays in the index. It returns how many
+  memories were deleted and how many lost their author, and does nothing the second time.
 - `recall(viewer, query, limit)`: FTS5 over the visible memories, core ones included. The query is
   turned into FTS5 syntax as for transcript search: each word with a letter or digit becomes a
   quoted string (so `"`, `*`, `-`, `:`, `(`, `AND`, `NEAR` in the query are matched as text) and the
@@ -581,7 +587,7 @@ inside the write transaction of the change.
 | `user_set_state(id, state, now)`        | Sets `active` or `disabled`; `Error::NoSuchUser` if absent. `Error::LastAdmin` for disabling the last active admin. |
 | `user_set_role(id, role, now)`          | Sets `admin` or `member`; `Error::NoSuchUser` if absent. `Error::LastAdmin` for demoting the last active admin. |
 | `user_profile_set(id, display_name, timezone, now)` | Sets the display name and time zone (an IANA name, or none) a user edits on their account page. `Error::NoSuchUser` if absent, `Error::InvalidRequest` for an empty display name. |
-| `user_delete(id)`                       | Deletes the user and, by cascade, their identities, invite links, link codes, password, passkeys, and OpenID Connect connections, clears `created_by` on the links they made, and returns the user as it was; what else the user owns (web login sessions, conversations, memories, secrets) stays. `Error::NoSuchUser` if absent, `Error::LastAdmin` for the last active admin. |
+| `user_delete(id)`                       | Deletes the user and, by cascade, their identities, invite links, link codes, password, passkeys, and OpenID Connect connections, clears `created_by` on the links they made, and returns the user as it was; what else the user owns (web login sessions, conversations, memories, secrets, workspaces) stays, and [forgetting the user](#forgetting-a-user) deletes it first. `Error::NoSuchUser` if absent, `Error::LastAdmin` for the last active admin. |
 | `user_identity_add(id, identity, now)`  | Adds an identity; the user's first becomes their default. `Error::IdentityTaken` if any user has it. |
 | `user_identity_remove(id, identity, now)` | Removes an identity, named as `<namespace>:<native id>`. If it was the default, the oldest one left is, or there is none. |
 | `user_default_identity_set(id, identity, now)` | Makes one of the user's identities their default. `Error::NoSuchUser` if absent, `Error::NotFound` if they don't have it. |
@@ -730,6 +736,56 @@ allowed. A user with no method at all, such as one who was just invited and sign
 never asked to keep one. The proxy login isn't a method of the user's: an admin sets it, and it
 works only where a trusted proxy is set up, so it doesn't keep the last method from being refused.
 
+## Forgetting a user
+
+Removing a user from the web UI forgets their data (PLAN 11.4). The database's half is these store
+methods, which the core calls in an order that a failed removal can be finished from.
+
+| Method                   | Contract                                                                  |
+| ------------------------ | ------------------------------------------------------------------------- |
+| `user_data(user)`        | Counts what the next method changes, as `UserData`: one number per kind of row. The `identities` count is the user's row's to delete, not the next method's. |
+| `user_data_forget(user)` | Changes it all in one transaction, and returns `UserDataDeletion::Done` with what it counted, the group sessions whose summaries it deleted, and the (channel instance, conversation) of the deleted direct sessions, or `UserDataDeletion::Busy`, changing nothing, while an inbox row of the user's, or one routed to their sessions, is `queued` or `started`. Idempotent: a second call finds nothing. |
+| `user_session_ids(user)` | The ids of the sessions the previous method deletes, for the state in memory that is keyed by them. |
+| `user_workspaces(user)`, `workspaces_forget_user(user)` | The workspace rows, [below](#workspaces). |
+| `MemoryStore::user_memories(user)`, `MemoryStore::forget_user(user)` | The user's rows in an agent's `memory.db`, [above](#memory-database). |
+
+`user_data_forget` does this, in this order:
+
+- **Signs the user out and revokes their links.** Their link codes, invite and recovery links,
+  passkeys, password, OpenID Connect connections, and web sessions are deleted. The links they made
+  for others stay, with no creator.
+- **Deletes their work.** Their runtime jobs (the trigger deletes the `job_runs`), their `inbox`
+  rows and the inbox rows routed to their sessions, and their `outbox` rows and the ones addressed
+  to one of their identities.
+- **Handles group sessions.** A message the user sent in a `group` session (a user message whose
+  `meta.sender` is theirs) keeps its row and its place in the transcript, but its content becomes
+  one text block, `TOMBSTONE`, and its sender is removed, so an assistant message answering it still
+  follows a message. Every summary whose range covers one of those messages is deleted. Summaries
+  are cumulative (each covers everything from the first message), so that is every summary from the
+  first one that reached the message on, and the session's history is the raw messages again, which
+  may not fit a model's context. The core writes the summaries again from the tombstoned messages
+  with its usual compaction, and the sessions it must do that for are the ones returned. A summary
+  whose range stops short of those messages stays. The `search` index follows by its triggers. The
+  token usage the assistant's messages in those sessions recorded is removed (`meta.usage`): it was
+  measured against the summaries just deleted, and compaction's estimate would trust it.
+- **Deletes their sessions.** Every session of the user that isn't a group's (direct sessions, and
+  the sessions of the runs of their jobs) goes, and messages and summaries cascade. A group session
+  that names the user as its user loses only the name. The archive row of a conversation that has no
+  session left is deleted.
+- **Clears the rest.** `usage.user_id` becomes null, so the token counts stay; the SSH key rows are
+  deleted; `ssh_known_hosts.first_user` and `added_by`, and `secrets.created_by` and `updated_by`,
+  become null.
+
+FTS5 keeps a deleted row's words in the index as delete markers until its segments are merged. So
+that none of the user's words stay in the files, `user_data_forget` turns on FTS5's `secure-delete`
+option for `search` before it deletes, and `MemoryStore::forget_user` does the same for
+`memory_search`. The option is stored in the index, so it applies to every later delete too, and
+setting it again does no harm; a merge of the whole index, which would hold the only writer, isn't
+needed. Words of messages deleted before the first forget may stay in older segments until SQLite
+merges them. SQLite also keeps what a delete frees in the file until the pages are reused or the
+database is copied with `VACUUM INTO`, which `doozers backup` does, so a backup doesn't hold the
+freed pages.
+
 ## Toolsets
 
 `toolsets` holds the MCP toolsets that the web UI creates and edits: one row per toolset, `spec`
@@ -875,6 +931,8 @@ and left job rows null.
 | `workspaces_end_job_runs(now)`               | Every `active` job-owned row becomes `deleting` (`job_run_ended`): at startup no run is alive. |
 | `workspaces_all()`                           | Every row of every instance, in every state, oldest first: what the workspaces page shows. |
 | `workspaces_prune(environment, before)`      | Removes `deleted` rows of the instance deleted before `before`.       |
+| `user_workspaces(user)`                      | The `creating` and `active` rows that go with a user: a direct conversation's they own, and a job run's whose SSH keys are theirs. |
+| `workspaces_forget_user(user)`               | Once those are deleted: removes the user's `deleted` rows and clears them from the rest (a `deleting` row, and a shared workspace's key user); `Error::Conflict` if a live one is left. |
 | `workspace_owner_activity(owner)`            | A conversation's newest message across every session of its key, ended ones included (a session's start if it has none); `None` for a job. |
 
 Because the table is in `doozers.db`, a [backup](backups.md) holds it, but not the workspaces'

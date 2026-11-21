@@ -285,6 +285,9 @@ const COLUMNS: &str = "id, environment, agent, channel, conversation, job_sessio
                        description, working_directory, persistence, state, created_at, \
                        last_used_at, deleted_at, delete_reason, key_user, user_id";
 
+/// The workspaces a user owns (`?1`): a direct conversation's, or a job run's with their keys.
+const USER_OWNS: &str = "(user_id = ?1 OR (job_session IS NOT NULL AND key_user = ?1))";
+
 const OWNER_IS: &str = "agent IS ?1 AND channel IS ?2 AND conversation IS ?3 AND job_session IS ?4 \
                         AND user_id IS ?5";
 
@@ -514,6 +517,63 @@ impl Store {
                 "SELECT {COLUMNS} FROM workspaces ORDER BY created_at, id"
             ))?;
             query_all(&mut stmt, [], from_row)
+        })
+        .await
+    }
+
+    /// The `creating` and `active` workspaces that go with `user`: a direct conversation's, which
+    /// the user owns, and a job run's whose SSH keys are the user's. Forgetting the user deletes
+    /// these through their plugins first ([`workspaces_forget_user`](Self::workspaces_forget_user)).
+    /// Oldest first.
+    pub async fn user_workspaces(&self, user: &UserId) -> Result<Vec<WorkspaceRecord>> {
+        let user = user.to_string();
+        self.read(move |conn| {
+            let mut stmt = conn.prepare_cached(&format!(
+                "SELECT {COLUMNS} FROM workspaces
+                 WHERE state IN ('creating', 'active') AND {USER_OWNS}
+                 ORDER BY created_at, id"
+            ))?;
+            query_all(&mut stmt, [user], from_row)
+        })
+        .await
+    }
+
+    /// Removes `user` from the workspace rows once their live workspaces are deleted: `deleted`
+    /// rows that name them are removed, and the user is cleared from the others (a `deleting` row
+    /// the plugin hasn't confirmed yet, which the sweep finishes, and a shared workspace that has
+    /// the user as its key user). Returns how many rows were removed. Idempotent.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Conflict`], changing nothing, if a workspace the user owns is still `creating` or
+    /// `active`.
+    pub async fn workspaces_forget_user(&self, user: &UserId) -> Result<u64> {
+        let user = user.to_string();
+        self.write(move |conn| {
+            let live: bool = conn
+                .prepare_cached(&format!(
+                    "SELECT EXISTS (SELECT 1 FROM workspaces
+                     WHERE state IN ('creating', 'active') AND {USER_OWNS})"
+                ))?
+                .query_row([&user], |row| row.get(0))?;
+            if live {
+                return Err(Error::conflict(format!(
+                    "{user} still owns a live workspace"
+                )));
+            }
+            let removed = conn
+                .prepare_cached(
+                    "DELETE FROM workspaces
+                     WHERE state = 'deleted' AND (user_id = ?1 OR key_user = ?1)",
+                )?
+                .execute([&user])?;
+            conn.prepare_cached(
+                "UPDATE workspaces SET user_id = NULL WHERE user_id = ?1 AND state = 'deleting'",
+            )?
+            .execute([&user])?;
+            conn.prepare_cached("UPDATE workspaces SET key_user = NULL WHERE key_user = ?1")?
+                .execute([&user])?;
+            Ok(removed as u64)
         })
         .await
     }
@@ -1257,6 +1317,72 @@ mod tests {
                 .key_user,
             None
         );
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_user_clears_their_workspace_rows_once_the_live_ones_are_deleted() {
+        let (_dir, store) = store().await;
+        let ann = UserId::new("ann").unwrap();
+        let mut keyed = new("ws-job", job(7), 1);
+        keyed.key_user = Some(ann.clone());
+        store.workspace_insert(keyed).await.unwrap();
+        store
+            .workspace_activate(&id("ws-job"), "alpine", "/work", "files persist")
+            .await
+            .unwrap();
+        active(&store, "ws-ann", conversation_of("c1", Some("ann")), 2).await;
+        active(&store, "ws-ann-2", conversation_of("c2", Some("ann")), 3).await;
+        active(&store, "ws-bob", conversation_of("c1", Some("bob")), 4).await;
+        // A shared workspace that has ann's keys, and one that is somebody else's.
+        let mut shared = new("ws-shared", conversation("room"), 5);
+        shared.key_user = Some(ann.clone());
+        store.workspace_insert(shared).await.unwrap();
+        store
+            .workspace_activate(&id("ws-shared"), "alpine", "/work", "files persist")
+            .await
+            .unwrap();
+
+        let live: Vec<_> = store
+            .user_workspaces(&ann)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|w| w.id.to_string())
+            .collect();
+        assert_eq!(live, ["ws-job", "ws-ann", "ws-ann-2"]);
+        assert!(matches!(
+            store.workspaces_forget_user(&ann).await,
+            Err(Error::Conflict(_))
+        ));
+
+        // The core deletes them through their plugins: one confirmed, one not yet.
+        for ws in ["ws-job", "ws-ann", "ws-ann-2"] {
+            store
+                .workspace_begin_delete(&id(ws), DeleteReason::ChatDeleted, at(10))
+                .await
+                .unwrap();
+        }
+        store.workspace_finish_delete(&id("ws-job")).await.unwrap();
+        store.workspace_finish_delete(&id("ws-ann")).await.unwrap();
+        assert_eq!(store.workspaces_forget_user(&ann).await.unwrap(), 2);
+
+        let rows: Vec<_> = store
+            .workspaces_all()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|w| (w.id.to_string(), w.state, w.key_user, w.owner))
+            .collect();
+        assert_eq!(rows.len(), 3);
+        let by_id = |name: &str| rows.iter().find(|row| row.0 == name).unwrap();
+        // Still deleting: the row stays for the sweep, with no user.
+        assert_eq!(by_id("ws-ann-2").1, WorkspaceState::Deleting);
+        assert_eq!(by_id("ws-ann-2").3, conversation("c2"));
+        // Shared: stays, without the key user.
+        assert_eq!(by_id("ws-shared").2, None);
+        // Bob's is untouched.
+        assert_eq!(by_id("ws-bob").3, conversation_of("c1", Some("bob")));
+        assert_eq!(store.workspaces_forget_user(&ann).await.unwrap(), 0);
     }
 
     #[tokio::test]

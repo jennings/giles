@@ -271,7 +271,7 @@ mod store_tests {
         let scope = SearchScope::direct(jeeves(), owner());
         let (first, second) = (appended[0].id, appended[1].id);
 
-        // Update: a tombstone replaces the content (PLAN 11.4, `user forget`).
+        // Update: a tombstone replaces the content (forgetting a user, PLAN 11.4).
         let tombstone = serde_json::to_string(&[text("cherries")]).unwrap();
         store
             .write(move |conn| {
