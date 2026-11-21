@@ -14,16 +14,23 @@ reverse proxy, never by Doozers.
    busy or forbidden address is a startup error: `cannot listen for HTTP on <addr>` with the OS
    error as the cause (`http::BindError { addr, source }`).
 2. `http::RouterBuilder::new().build()` assembles the application, and
-   `http::serve(listener, app, shutdown)` runs on its own task. `serve` takes any
-   `axum::serve::Listener`: the TCP listener here, or a `tokio::net::UnixListener` (the web
-   channel's trusted-proxy socket). The `doozers started` line carries `http=http://<addr>/` (the
-   bound address, so port `0` shows the port the OS picked).
+   `http::serve(listener, app, shutdown)` runs on its own task. `serve` takes a
+   `tokio::net::TcpListener`, as here, or a `tokio::net::UnixListener` (the web channel's
+   trusted-proxy socket). The `doozers started` line carries `http=http://<addr>/` (the bound
+   address, so port `0` shows the port the OS picked).
 3. When the shutdown token is cancelled, the server stops accepting connections, closes idle
    keep-alive connections, and waits for in-flight requests, for at most `http::DRAIN_TIMEOUT` (5
    s). Requests still open then are dropped with a warning, and `serve` returns; the runtime
    shutting down cancels their tasks. `serve` awaits the server before logging `doozers stopped`.
 4. If the server task ends before shutdown (it shouldn't: accept errors are retried), `serve`
    cancels the token and exits with an error instead of running on without its web interface.
+
+`serve` adds the peer of each connection to every request as the extension
+`ConnectInfo<http::PeerAddr>`. `PeerAddr(Some(ip))` is the IP address of the socket's peer (an
+IPv4-mapped IPv6 address is reported as the IPv4 address), and `PeerAddr(None)` is a Unix socket's
+peer, which has none. Only `serve` adds it, so a client can't send one. A handler reads it with
+`Option<Extension<ConnectInfo<PeerAddr>>>`, which is `None` in a test that calls the router without
+a server. Behind a reverse proxy the peer is the proxy.
 
 Long-lived responses must end by themselves when the daemon stops: an SSE stream should finish on
 the shutdown token (`stream.take_until(token.cancelled_owned())`). The drain deadline is only a
@@ -224,5 +231,6 @@ servers on `127.0.0.1:0`) and `crates/doozers/tests/serve.rs` (the daemon end to
 - A real server answers over TCP and returns once the token is cancelled; a request that never
   finishes doesn't hold shutdown past the drain deadline; a busy address fails `bind` with the
   address in the message.
+- Each request carries its peer's IP address over TCP, and none over a Unix socket.
 - `doozers serve` answers on `core.http_listen`, stops listening when it exits, and fails at startup
   when the address is taken.
