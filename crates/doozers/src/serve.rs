@@ -133,10 +133,10 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     ))));
     let runner = Arc::new(AgentLoop::from_runtime(&runtime, approvals.clone()));
     let sessions = runtime
-        .start_sessions(runner.clone(), approvals, shutdown.clone())
+        .start_sessions(runner.clone(), approvals.clone(), shutdown.clone())
         .await?;
     // Config and runtime jobs; their replies and approval prompts go through the outbox.
-    let scheduler = runtime.start_scheduler(sessions.clone(), runner, shutdown.clone());
+    let scheduler = runtime.start_scheduler(sessions.clone(), runner.clone(), shutdown.clone());
     // Removal of blobs nothing references any more, first a minute from now.
     let blob_sweep = runtime.start_blob_sweep(shutdown.clone());
     // Environment workspaces: idle ones stopped, abandoned ones deleted, and each plugin
@@ -188,8 +188,9 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     // pages, which create, edit, and remove agents in the running configuration (the registry's,
     // which the web app also reads), the route pages, which change the routes the router reads, and
     // the toolset pages, which change the stored toolsets through the manager and show how each is
-    // doing from the admin service, and the workspaces page, which lists, stops, and deletes
-    // environment workspaces.
+    // doing from the admin service, the workspaces page, which lists, stops, and deletes
+    // environment workspaces, and the user pages, which list users and forget one (refused while the
+    // session manager is working for them).
     #[cfg(feature = "channel-web")]
     let builder = match &web {
         Some(web) => {
@@ -225,6 +226,24 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
             let builder = web.install_ssh_keys(builder, runtime.ssh_keys.clone());
             let builder = web.install_identities(builder, runtime.links.clone());
             let builder = web.install_account(builder, runtime.users.clone());
+            let forgetter =
+                doozers_core::forget::Forgetter::new(doozers_core::forget::ForgetOptions {
+                    store: runtime.store.clone(),
+                    users: runtime.users.clone(),
+                    root: runtime.root.clone(),
+                    memory_dbs: runtime.memory_dbs.clone(),
+                    secrets: runtime.secrets.clone(),
+                    workspaces: runtime.workspaces.clone(),
+                    approvals: approvals.clone(),
+                    jobs: runtime.jobs.clone(),
+                    activity: Arc::new(doozers_core::forget::DaemonUserActivity {
+                        sessions: sessions.clone(),
+                        scheduler: scheduler.clone(),
+                    }),
+                    summaries: runner.clone(),
+                    clock: Arc::new(SystemClock),
+                });
+            let builder = web.install_users(builder, runtime.users.clone(), forgetter);
             let builder = web.install_ssh_hosts(builder, runtime.workspaces.known_hosts().clone());
             web.install_workspaces(builder, runtime.workspaces.clone())
         }

@@ -43,6 +43,7 @@ use crate::users::{INVITE_TTL, User, UserList, Users};
 
 mod account;
 mod admin;
+mod admin_users;
 mod agent_edit;
 mod agent_environments;
 mod agent_remove;

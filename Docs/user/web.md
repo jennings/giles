@@ -356,6 +356,54 @@ needs on the status page:
 
 The page reloads itself until the channel connects, so it always shows the newest code.
 
+## Users
+
+**Users** under **Admin** lists everyone who uses Doozers with their username, display name, role
+(admin or member), and state (active or disabled). **Remove** next to a user opens the page that
+removes them. Only an admin can open the pages.
+
+### Removing a user
+
+**Remove** opens a page that lists what removing the user deletes, with a count for each kind.
+Nothing happens until you press **Remove user**. Removing a user deletes everything Doozers keeps
+about them, at once, and **can't be undone**:
+
+- Their chats and scheduled job runs, with every message and summary in them.
+- Their private memories in every agent, and their profile, `USER.md`, with the rest of
+  `users/<id>/` in the data root.
+- Their channel identities and pending link codes, their password, passkeys, and identity provider
+  connections, their logins, and invite or recovery links.
+- The jobs they scheduled, which stop, and the messages Doozers received from them or waits to send
+  them.
+- Their SSH keys, and every secret in their space of the secret store.
+- Their workspaces, with everything in them. The page lists each one and the environment that holds
+  it.
+- Approvals waiting for their answer, which are denied.
+
+In a group chat, the messages they sent are replaced with a note that the message was removed, and
+the summaries that covered them are written again.
+
+These stay:
+
+- The usage records, with their token counts and without the user.
+- The invite and recovery links they made for other people, without a creator.
+- A shared memory they wrote, which belongs to everyone, without an author.
+
+Pictures and files that only their messages used are deleted by Doozers' regular clean-up of unused
+files. Doozers doesn't touch `trash/agents/`, where the files of agents you removed earlier are, so
+delete a removed agent's `memory.db` yourself if it has memories of the user.
+
+Doozers refuses to remove a user in two cases. The page says which one.
+
+- **It's you.** Ask another admin to remove your account.
+- **They are working right now.** A chat turn or one of their jobs is running, or messages of theirs
+  are waiting. Have them stop the chat with `/stop`, or wait, then try again. Doozers doesn't stop
+  it for you.
+
+If something fails in the middle, such as an environment or the secret store that can't be reached,
+the page says so and the user stays disabled. Open their **Remove** page and press the button again
+to finish.
+
 ## Agents
 
 **Agents** in the sidebar lists every agent, with buttons to chat with it, edit it, or remove it. An

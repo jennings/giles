@@ -1733,6 +1733,40 @@ store.
 
 Everything a provider's name, client id, or issuer says is escaped by the templates.
 
+## User pages
+
+In `users.rs`: `web.install_users(builder, users, forgetter)`, which `serve` calls with
+`Runtime::users` and the daemon's `Forgetter`. **Users**, in the Admin group after **Agents**, lists
+the users; admins only like the other admin pages: every route answers 403 to anyone else, every
+answer is `no-store`, every `POST` is `check_csrf`-checked, and every form works without JavaScript.
+
+- **The list.** `GET /admin/users` has a row per user, from the live user list (`Users::list`): the
+  username (and "(you)" for the admin looking), the display name, the role, the state, and a
+  **Remove** link. It shows `?removed=<username>` as "Removed <username>.". It is the seam the user
+  management pages grow from: a row is where a user's other actions go, and the `Users` handle is
+  for them.
+- **The confirmation.** `GET /admin/users/<id>/remove` is built from `Forgetter::preview`: one
+  sentence per kind of data the user has (chats, group messages, private memories, the profile,
+  identities, sign-in methods, jobs, queued messages, approvals, SSH keys and secrets), the
+  workspaces one by one with their environment, and what stays. The counts are the store's
+  (`UserData`), so the page counts what the removal then deletes. It names why a removal would be
+  refused (`Refusal`: the admin's own account, or the last active admin; or a user who is busy) and
+  has no button then. An id that isn't a user is a 404.
+- **The removal.** `POST /admin/users/<id>/remove` calls `Forgetter::forget` with the signed-in
+  admin as the one asking, and answers 303 to `/admin/users?removed=<username>`. A refusal
+  (`ForgetError::is_refusal`) shows the confirmation again, which says why once from what is stored
+  now, as a 409, and nothing changed. An error after the removal began is a logged 500 that says the
+  user is disabled, some of their data may be left, and the removal can be run again. A preview that
+  can't be read (the `GET`, or the second preview of a refusal) is its own 500, "Couldn't read the
+  user's data", that says nothing was changed. The user's web chats are read before the removal and
+  their live state is dropped (`Hubs::remove`), as deleting a chat does, after a removal that
+  finished or failed after deleting, so a retry needn't find them. What the removal does is in
+  [Storage](storage.md#forgetting-a-user).
+
+The role the page checks is the one the request carried, and `forget` decides again from the stored
+users, which is why the last-admin refusal exists for a request whose admin was demoted a moment
+ago. Everything a user's name or display name says is escaped by the templates.
+
 ## Account page
 
 In `account.rs`: `web.install_account(builder, users)`, which `serve` calls with `Runtime::users`.
@@ -2118,3 +2152,12 @@ plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`, `i
   the typed name, and the toolset and the agent are as they were. Undoing a failed step can't be
   provoked from the router, so a unit test in `toolsets.rs` renders the page for a `Failed` error
   with undo errors: the list to put right by hand, escaped, and no "Nothing was changed".
+- The user pages (`tests/admin_users.rs`, with the fake environment as `box`): every route is 401
+  without a login and 403 for a member; the list shows each user's username, display name, role, and
+  state, a Remove link each, and the Users link marked current; the confirmation counts a user's
+  chat, messages, memory, profile, identity, job, and workspace, and has the button; a user with
+  work running has no button, and posting is a 409 that changes nothing; the post needs the CSRF
+  token, then forgets the user (the user, their workspace, and `users/<id>/` are gone) and 303s to
+  the list with the notice; an admin can't remove themselves, and a request whose admin is stale
+  can't remove the last active admin, each a 409 with the reason and nothing changed. What the
+  removal deletes is tested in `forget/tests.rs` against every place that holds data.

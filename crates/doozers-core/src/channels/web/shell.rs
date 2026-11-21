@@ -17,6 +17,7 @@ pub(super) enum Nav {
     Status,
     Plugins,
     Agents,
+    Users,
     Routes,
     McpServers,
     Workspaces,
@@ -33,10 +34,11 @@ const YOU: [(Nav, &str, &str); 5] = [
     (Nav::SshKeys, "SSH keys", "/ssh-keys"),
     (Nav::Account, "Account", "/account"),
 ];
-const ADMIN: [(Nav, &str, &str); 9] = [
+const ADMIN: [(Nav, &str, &str); 10] = [
     (Nav::Status, "Status", "/admin"),
     (Nav::Plugins, "Plugins", "/admin/plugins"),
     (Nav::Agents, "Agents", "/admin/agents"),
+    (Nav::Users, "Users", "/admin/users"),
     (Nav::Routes, "Routes", "/admin/routes"),
     (Nav::McpServers, "MCP servers", "/admin/mcp-servers"),
     (Nav::Workspaces, "Workspaces", "/admin/workspaces"),
@@ -164,6 +166,7 @@ mod tests {
                         "Status",
                         "Plugins",
                         "Agents",
+                        "Users",
                         "Routes",
                         "MCP servers",
                         "Workspaces",
