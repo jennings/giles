@@ -69,6 +69,7 @@ async fn every_response_has_the_security_headers() {
             StatusCode::OK,
         ),
         (Method::GET, assets::copy_script_path(), StatusCode::OK),
+        (Method::GET, assets::passkey_script_path(), StatusCode::OK),
         (Method::GET, stylesheet, StatusCode::OK),
         (Method::GET, "/no/such/page", StatusCode::NOT_FOUND),
         (
@@ -161,6 +162,14 @@ fn stylesheet_path_is_its_content_hash() {
     let stylesheet = assets::stylesheet();
     let hash = &sha256_hex(stylesheet.body)[..16];
     assert_eq!(stylesheet.path, format!("/static/doozers-{hash}.css"));
+}
+
+#[test]
+fn passkey_script_path_is_its_content_hash() {
+    let script = assets::passkey_script();
+    let hash = &sha256_hex(script.body)[..16];
+    assert_eq!(script.path, format!("/static/passkey-{hash}.js"));
+    assert_eq!(script.content_type, "text/javascript; charset=utf-8");
 }
 
 #[test]

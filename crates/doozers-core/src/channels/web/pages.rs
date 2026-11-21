@@ -31,6 +31,7 @@ use super::auth::{WebUser, check_csrf};
 use super::chat_actions::no_such_chat;
 use super::hub::{Event, Subscription};
 use super::limits::LoginLimits;
+use super::passkey::Passkeys;
 use super::password::Passwords;
 use super::shell::{Nav, Shell};
 use super::{
@@ -75,6 +76,8 @@ pub(super) struct Inner {
     pub(super) passwords: Passwords,
     /// Counts password attempts per username and per client address.
     pub(super) logins: LoginLimits,
+    /// The relying party, if passkeys can be offered, and the ceremonies in flight.
+    pub(super) passkeys: Passkeys,
     pub(super) shutdown: CancellationToken,
 }
 
@@ -119,6 +122,7 @@ impl WebApp {
         clock: Arc<dyn Clock>,
         shutdown: CancellationToken,
     ) -> Self {
+        let passkeys = Passkeys::new(channel.config().public_url.as_deref());
         Self {
             inner: Arc::new(Inner {
                 channel,
@@ -129,6 +133,7 @@ impl WebApp {
                 jobs,
                 passwords: Passwords::default(),
                 logins: LoginLimits::default(),
+                passkeys,
                 shutdown,
             }),
         }
@@ -178,6 +183,7 @@ impl WebApp {
             .merge(super::login::routes())
             .merge(super::invite::routes())
             .merge(super::password_pages::routes())
+            .merge(super::passkey_pages::routes())
             .with_state(self.clone())
     }
 }

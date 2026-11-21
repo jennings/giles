@@ -49,6 +49,7 @@ mod agents;
 mod chat_actions;
 mod jobs;
 mod memory;
+mod passkeys;
 mod passwords;
 mod routes;
 mod ssh_hosts;

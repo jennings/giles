@@ -40,8 +40,8 @@ pub(super) fn needs_a_link() -> Response {
     no_store(error_page(
         StatusCode::FORBIDDEN,
         "Open a link first",
-        "You set or change a password from a login that came from an invite or recovery link. Ask \
-         an admin for a link, or run `doozers admin login-link` if you run Doozers.",
+        "You add or change a way to sign in from a login that came from an invite or recovery link. \
+         Ask an admin for a link, or run `doozers admin login-link` if you run Doozers.",
     ))
 }
 
@@ -95,6 +95,7 @@ impl WebApp {
         user: &WebUser,
     ) -> doozers_store::Result<Vec<SetupOption>> {
         let mut options = Vec::new();
+        options.extend(self.passkey_setup_option(user).await?);
         options.extend(self.password_setup_option(user).await?);
         Ok(options)
     }

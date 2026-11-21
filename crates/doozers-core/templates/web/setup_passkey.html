@@ -1,0 +1,52 @@
+{% extends "layout.html" %}
+
+{% block title %}Passkeys - Doozers{% endblock %}
+
+{% block head %}
+<script src="{{ crate::http::assets::passkey_script_path() }}" defer></script>
+{% endblock %}
+
+{% block content %}
+<h1>Passkeys</h1>
+{%- if saved %}
+<p class="banner banner-info" role="status">Your passkey is saved.</p>
+{%- endif %}
+{%- if let Some(why) = unavailable %}
+<p class="banner banner-warn" role="alert">{{ why }}</p>
+{%- else %}
+<p>A passkey is kept by your phone, laptop, password manager, or a security key, and unlocked with your fingerprint, face, PIN, or screen lock. Nobody can read it back.</p>
+{%- endif %}
+{%- if !passkeys.is_empty() %}
+<h2>Your passkeys</h2>
+<ul>
+{%- for passkey in passkeys %}
+<li>{{ passkey.name }}: {{ passkey.kind }}, added {{ passkey.added }}, last used {{ passkey.last_used }}</li>
+{%- endfor %}
+</ul>
+{%- endif %}
+{%- if unavailable.is_none() %}
+<div id="passkey-setup" data-csrf="{{ csrf }}" data-origin="{{ origin }}" data-start-url="/setup/passkey/start" data-finish-url="/setup/passkey/finish">
+<p class="banner banner-error" role="alert" data-passkey-error hidden></p>
+<p class="banner banner-warn" role="alert" data-passkey-unsupported>Adding a passkey needs a browser that supports passkeys, with script turned on for this page.</p>
+<p class="banner banner-warn" role="alert" data-passkey-elsewhere hidden>Passkeys only work at <strong>{{ origin }}</strong>. Open this page there to add one.</p>
+<div data-passkey-controls hidden>
+<div class="field">
+<label for="passkey-name">Name (optional)</label>
+<input id="passkey-name" data-passkey-name maxlength="64" autocomplete="off">
+<p class="help">Helps you tell your passkeys apart, such as "Work laptop".</p>
+</div>
+<h2>Add a passkey</h2>
+<p>Use this for a passkey on your phone, laptop, or password manager. It's the way to go for nearly everyone: the browser offers it when you open the login page.</p>
+<div class="form-actions">
+<button type="button" class="button-primary" data-passkey-add="discoverable">Add a passkey</button>
+</div>
+<h2>Add a non-resident key</h2>
+<p>Use this only with a hardware security key that has few slots for passkeys. A non-resident key doesn't take a slot, but you type your username before you use it. Older keys (CTAP 2.0) can't delete a single passkey without a factory reset that erases everything on the key.</p>
+<div class="form-actions">
+<button type="button" data-passkey-add="non_resident">Add a non-resident key</button>
+</div>
+</div>
+</div>
+{%- endif %}
+<p><a href="/setup">Back to setup</a> · <a href="/">Go to your chats</a></p>
+{% endblock %}

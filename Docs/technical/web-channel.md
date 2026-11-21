@@ -52,6 +52,9 @@ the live-output hook.
 | `POST /login/password`         | Checks the nonce, the limits, and the password (`username`, `password`); sets the session cookie, 303 to `/`. The login page again with the reason otherwise: 401, 429, or 503 ([Passwords](#passwords)). |
 | `GET /setup/password`          | The form that sets or changes the user's password; 403 unless the login came from an invite or recovery link. |
 | `POST /setup/password`         | Sets the password (CSRF-checked), 303 to the page, which says it is saved; the form again with why (400) if it breaks a rule. |
+| `GET /setup/passkey`           | The user's passkeys and the two buttons that add one; 403 unless the login came from an invite or recovery link ([Passkeys](#passkeys)). |
+| `POST /setup/passkey/start`    | JSON `{kind}` (CSRF-checked): the options for `navigator.credentials.create` and a ceremony id; 403 for any other login, 409 when passkeys aren't available. |
+| `POST /setup/passkey/finish`   | JSON `{ceremony, name, credential}` (CSRF-checked): verifies and stores the passkey, answers `{redirect}`. |
 | `POST /logout`                 | Ends a cookie login (CSRF-checked), 303 to `/`.                  |
 | `GET /admin`                   | The status page ([Admin pages](#admin-pages)).                   |
 | `GET /admin/plugins`           | The plugins page.                                                |
@@ -181,7 +184,8 @@ password, or the trusted-proxy header marks the user. Passkeys and identity prov
 to sign in. The login *code* flow (a code sent to the user's default channel) is dropped. Code:
 `login.rs` (middleware, the login page, `start_session`, and logout), `invite.rs` (the link pages
 and the setup page), `signin.rs` (the sign-in methods the pages offer), `password.rs` (the rules and
-the hashing), `password_pages.rs` (the password routes), `limits.rs` (the limits on guessing),
+the hashing), `password_pages.rs` (the password routes), `passkey.rs` (the relying party and the
+ceremonies), `passkey_pages.rs` (the passkey setup routes), `limits.rs` (the limits on guessing),
 `proxy.rs`, the cookie and nonce helpers in `auth.rs`, and the keys in `config.rs`.
 
 ### Configuration
@@ -243,9 +247,9 @@ token out of `Referer`.
 
 `GET /setup` needs a login. It lists `WebApp::setup_options(user)`, the sign-in methods the user can
 add (`signin.rs`), each with a label, a sentence, and the page that adds it. Each method contributes
-its entry there when the user may add it. Today that is the password, for a login that came from an
-invite or recovery link ([Passwords](#passwords)). With no entries the page says that this login
-can't add a way to sign in, and that a new link can.
+its entry there when the user may add it. Today those are passkeys ([Passkeys](#passkeys)) and the
+password ([Passwords](#passwords)), for a login that came from an invite or recovery link. With no
+entries the page says that this login can't add a way to sign in, and that a new link can.
 
 ### The login page
 
@@ -387,6 +391,78 @@ the failed sign-in's page, and the page that sets a password carry a warning whe
 machine: the `Host` header, or the host of the link base when there is none, isn't `localhost`, a
 name under it, or a loopback IP address. Those are the pages a browser treats as secure anyway. The
 warning doesn't stop anyone from signing in: on an insecure origin a password is the only choice.
+
+### Passkeys
+
+PLAN section 3.4. A passkey is a WebAuthn credential, made and checked with the `webauthn-rs` crate
+(feature `conditional-ui`, which the discoverable sign-in needs, and no `danger-` feature).
+`passkey.rs` has what needs no request, `passkey_pages.rs` the setup page and the registration. The
+credentials are in `user_passkeys` ([User passkeys](storage.md#user-passkeys)).
+
+**Availability.** A passkey belongs to a relying party id (RP ID) and to nothing else, so changing
+the RP ID breaks every passkey. The RP ID is the host of the channel's `public_url`, and the origin
+a ceremony is checked against is that URL, so a browser at another address fails the origin check.
+`RelyingParty::new` therefore offers passkeys only when `public_url` is set, its host is a domain
+name (WebAuthn has no RP ID for an IP address, `127.0.0.1` included), and the origin is secure:
+`https`, or `http` at `localhost` or a name under it, which a browser treats as secure. Otherwise
+the reason is an `Unavailable` value, and its text is what the setup page says (it names
+`public_url` and what to set it to). The setup page still lists "Passkey", with "Not available here"
+as its sentence, so a user who is told to add one can find out why they can't. There is no fallback:
+a `public_url` that is unset means no passkeys, even where the request came over HTTPS, because
+nothing else says what the RP ID should be.
+
+**Registration.** Only a login that came from an invite or recovery link may add a passkey, as for a
+password, for the same reason (`WebApp::may_add_sign_in_method`). `passkey.js` makes two requests,
+both JSON, both CSRF-checked with the `X-CSRF-Token` header:
+
+1. `POST /setup/passkey/start` `{kind: "discoverable" | "non_resident"}` calls
+   `start_passkey_registration` for the user: user verification required, no attestation, the user
+   handle (see User handles below) as the user id, the username and display name, and every
+   credential the user has already in `excludeCredentials`, so an authenticator that has one isn't
+   asked for a second. It keeps the ceremony state and answers `{ceremony, options}`.
+2. `POST /setup/passkey/finish` `{ceremony, name, credential}` takes the ceremony out, calls
+   `finish_passkey_registration`, and stores the `Passkey` serialized as JSON with its credential
+   id, `kind`, and a name (what the user typed, trimmed, without control characters, at most 64
+   characters, or "Passkey 2", "Non-resident key 3" and so on). A credential id that exists already
+   is a 409. The page then shows the saved passkey.
+
+**The override.** The setup page has two buttons. "Add a passkey" registers a discoverable
+credential, which the authenticator keeps, so the browser can offer it without a username. "Add a
+non-resident key" registers one it doesn't keep, for a hardware key with few slots for passkeys: a
+CTAP 2.0 key can't delete one passkey without a factory reset that wipes every credential on it.
+`start_passkey_registration` always builds `residentKey: "discouraged"` and
+`requireResidentKey: false`. For the first button `passkey_pages::require_discoverable` sets
+`authenticator_selection.resident_key = Some(Required)` and `require_resident_key = true` on the
+`CreationChallengeResponse` before it is sent, and fails (500, logged) if the library built no
+authenticator selection to change. `webauthn-rs-core` ignores both fields when it verifies a
+registration (`require_resident_key: _` in `register_credential`), so nothing in the library notices
+whether the override is there. The tests do: the software authenticator keeps a credential
+discoverable (with a user handle) only if the options asked for one, so after a registration through
+the first button its store must hold a discoverable credential, and after one through the second it
+must not, and dropping the override fails them. A library upgrade that begins checking `residentKey`
+against a response fails the same tests. The one check the server makes itself is the browser's own
+report: a registration that asked for a discoverable credential and whose `credProps.rk` says
+`false` is refused with a pointer to the other button, and nothing is stored.
+
+**Ceremonies.** The state between the two requests stays in memory (`Ceremonies`): the library's
+serialized form is behind a `danger-` feature. Each ceremony has a random id (128 bits), is kept for
+6 minutes (the browser is told 5), and finishes once: `finish` removes the entry whether or not the
+caller matches it. An entry is bound to a string the finishing request must repeat, and for a
+registration that is the user and the CSRF token of their login, so no other login can finish it. At
+most 10,000 are kept; at the cap the expired go first, then the oldest. A restart forgets them, and
+the page says to try again.
+
+**User handles.** A discoverable passkey tells the server who it is for by a user handle.
+`passkey::user_handle` is 16 bytes of a SHA-256 of the user's id, as a UUID: the same for every
+passkey of a user, as authenticators expect, and it needs no column.
+
+**Script.** `assets/passkey.js` is the one first-party script that has to run: WebAuthn can be
+called only from script ([Web interface design](web-ui.md#principles)). It decodes the server's
+base64url options into buffers, calls `navigator.credentials.create`, and sends back only the fields
+the server reads (`id`, `rawId`, `type`, `attestationObject`, `clientDataJSON`, the transports, and
+`credProps`), as base64url. Without it, or where the browser has no WebAuthn or the page isn't at
+the RP's origin (`data-origin`), the buttons stay hidden and the page says why. The CSP needed no
+change (`script-src 'self'`, no inline script; [HTTP server](http.md)).
 
 ### Rate limits
 
@@ -1414,6 +1490,16 @@ plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`, `i
   with the cookie deleted; the login page says how to get a link, offers no method, and sends a
   logged-in browser to `/`; the hourly cleanup; logout with CSRF; a cookie login's CSRF token;
   `public_url` and `X-Forwarded-Proto` making cookies `Secure` (the latter only through the proxy).
+- Passkeys (`tests/passkeys.rs`, with a software authenticator from 1Password's `passkey-rs`, the
+  `passkey-client` and `passkey-authenticator` crates, behind the real handlers): both buttons add a
+  passkey through an invite and the setup page lists them; the options of the first button carry
+  `residentKey: required` and the second `discouraged`; the authenticator keeps only the first
+  discoverable; a registration the browser says wasn't discoverable is refused; only an invite or
+  recovery login with its CSRF token may register, and a registration is finished once by the login
+  that started it; names are trimmed, cut, and defaulted; without a secure `public_url` passkeys are
+  unavailable and the page says why, while `localhost` works; the script is served under the policy
+  and every script on the page is a file. `passkey.rs` has unit tests for the origin rules, user
+  handles, and the ceremony table (single use, binding, expiry, the cap).
 - Proxy: the identity header ignored on the main listener and honored on the proxy app, unknown
   identities refused, posts carry the header's identity and need its CSRF token; a TCP listener
   needs the exact secret; binding (socket mode 0600, `InUse`, stale socket replaced, non-socket left

@@ -12,7 +12,7 @@ publish = false
 [features]
 default = ["channel-web", "provider-anthropic", "provider-openai"]
 # The built-in web channel (`channels::web`): chat pages, live output, login, admin pages.
-channel-web = ["dep:argon2", "dep:qrcode", "dep:unicode-normalization"]
+channel-web = ["dep:argon2", "dep:qrcode", "dep:unicode-normalization", "dep:webauthn-rs", "dep:webauthn-rs-proto"]
 # The built-in Anthropic Messages API provider (`providers::anthropic`).
 provider-anthropic = []
 # The built-in OpenAI-compatible Chat Completions provider (`providers::openai`).
@@ -90,6 +90,12 @@ tonic-health.workspace = true
 tower.workspace = true
 tracing.workspace = true
 url = "2.5.8"
+# WebAuthn relying party for passkey sign-in (`channels::web::passkey`). `conditional-ui` adds the
+# discoverable (usernameless) authentication; no `danger-` feature, so ceremony state stays in memory.
+webauthn-rs = { version = "0.6.2", default-features = false, features = ["conditional-ui"], optional = true }
+# The types of its options and credentials that `webauthn-rs` doesn't re-export; the version is the
+# one it uses.
+webauthn-rs-proto = { version = "0.6.2", optional = true }
 webpki-root-certs = "1.0.10"
 # Wipes key material of the local secret store (`secrets`) from memory.
 zeroize = "1.9.1"
@@ -107,6 +113,12 @@ workspace = true
 
 [dev-dependencies]
 prost.workspace = true
+# A software authenticator and WebAuthn client (1Password's passkey-rs) for the passkey sign-in tests.
+passkey-authenticator = "0.6.0"
+passkey-client = "0.6.0"
+passkey-crypto = "0.1.1"
+passkey-types = "0.6.0"
+public-suffix = "0.1"
 # The MCP test server (tests/support/mcp_server.rs).
 rmcp = { version = "3.7.0", default-features = false, features = ["elicitation", "server", "transport-io", "transport-streamable-http-server"] }
 # Fault injection into the database in the sessions tests.

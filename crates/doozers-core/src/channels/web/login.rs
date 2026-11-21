@@ -121,7 +121,7 @@ pub(super) fn is_https(channel: &WebChannel, headers: &HeaderMap, trusted: bool)
 /// Whether `host`, a `Host` header or the host of a URL, with or without a port, is this machine:
 /// `localhost` or a name under it, or a loopback IP address. A browser treats such a page as a
 /// secure context, whatever the scheme.
-fn is_loopback_host(host: &str) -> bool {
+pub(super) fn is_loopback_host(host: &str) -> bool {
     let host = host.trim();
     let name = match host.strip_prefix('[') {
         Some(bracketed) => bracketed.split(']').next().unwrap_or_default(),

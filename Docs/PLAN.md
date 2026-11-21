@@ -215,7 +215,11 @@ Channels also drop messages that must never start a turn: echoes of the agent's 
   single-user install runs it with no arguments; with several it needs `--user`. It prints whose
   link it is, and gives that user the identity `web:<id>`, the one a link sign-in sends as, if they
   lack it.
-- Passkeys: later.
+- Passkeys (WebAuthn, `webauthn-rs`): offered when the page is on a secure origin (HTTPS, or
+  `localhost`) and the web channel has a `public_url`, whose host is the relying party id. A user
+  adds one on the page an invite or recovery link leads to, with "Add a passkey" (discoverable, so
+  no username is needed to sign in) or "Add a non-resident key" (for a hardware key with few slots).
+  User verification is required for both. They live in the `user_passkeys` table.
 
 ## 4. Components and traits
 

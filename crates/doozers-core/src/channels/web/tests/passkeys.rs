@@ -1,0 +1,788 @@
+//! Passkeys through the real handlers, with a software authenticator (1Password's `passkey-rs`):
+//! registering both kinds through an invite, and what must hold when it goes wrong.
+//!
+//! The browser is [`Browser`]: a `passkey-client` with an authenticator whose store keeps what a
+//! real authenticator would (a passkey is discoverable only if it was registered as one). The pages
+//! are called as the script calls them, with JSON.
+
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use axum::http::header::CACHE_CONTROL;
+use base64::Engine;
+use doozers_store::PasskeyKind;
+use passkey_authenticator::{
+    Authenticator, CredentialStore, DiscoverabilitySupport, StoreInfo, UiHint, UserCheck,
+    UserValidationMethod,
+};
+use passkey_client::{Client, DefaultClientData};
+use passkey_crypto::AvailableBackend;
+use passkey_types::Passkey as SoftPasskey;
+use passkey_types::ctap2::make_credential::{
+    Options, PublicKeyCredentialRpEntity, PublicKeyCredentialUserEntity,
+};
+use passkey_types::ctap2::{Aaguid, Ctap2Error, StatusCode as CtapStatus};
+use passkey_types::webauthn::{CredentialCreationOptions, PublicKeyCredentialDescriptor};
+use serde_json::{Value, json};
+use url::Url;
+
+use super::admin::{open_users, stored_users};
+use super::*;
+
+/// Where passkeys work in these tests.
+const ORIGIN: &str = "https://doozers.example.com";
+
+/// The software authenticator's credentials, which a test can reach into.
+#[derive(Clone, Default)]
+struct SoftStore(Arc<Mutex<Vec<SoftPasskey>>>);
+
+#[async_trait]
+impl CredentialStore for SoftStore {
+    type PasskeyItem = SoftPasskey;
+
+    async fn find_credentials(
+        &self,
+        ids: Option<&[PublicKeyCredentialDescriptor]>,
+        rp_id: &str,
+        user_handle: Option<&[u8]>,
+    ) -> Result<Vec<SoftPasskey>, CtapStatus> {
+        let found: Vec<_> = self
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|passkey| passkey.rp_id == rp_id)
+            .filter(|passkey| match ids {
+                // A named credential is found whether or not it is discoverable.
+                Some(ids) if !ids.is_empty() => {
+                    ids.iter().any(|id| *id.id == *passkey.credential_id)
+                }
+                // Nothing named: only what the authenticator keeps for the site.
+                _ => passkey.user_handle.is_some(),
+            })
+            .filter(|passkey| {
+                user_handle.is_none_or(|handle| {
+                    passkey
+                        .user_handle
+                        .as_ref()
+                        .is_some_and(|stored| stored[..] == *handle)
+                })
+            })
+            .cloned()
+            .collect();
+        if found.is_empty() {
+            Err(Ctap2Error::NoCredentials.into())
+        } else {
+            Ok(found)
+        }
+    }
+
+    async fn save_credential(
+        &mut self,
+        credential: SoftPasskey,
+        _user: PublicKeyCredentialUserEntity,
+        _rp: PublicKeyCredentialRpEntity,
+        _options: Options,
+    ) -> Result<(), CtapStatus> {
+        let mut all = self.0.lock().unwrap();
+        // A discoverable credential replaces the one for the same site and user.
+        all.retain(|old| {
+            credential.user_handle.is_none()
+                || old.rp_id != credential.rp_id
+                || old.user_handle != credential.user_handle
+        });
+        all.push(credential);
+        Ok(())
+    }
+
+    async fn update_credential(&mut self, credential: &SoftPasskey) -> Result<(), CtapStatus> {
+        let mut all = self.0.lock().unwrap();
+        all.retain(|old| old.credential_id != credential.credential_id);
+        all.push(credential.clone());
+        Ok(())
+    }
+
+    async fn get_info(&self) -> StoreInfo {
+        StoreInfo {
+            discoverability: DiscoverabilitySupport::Full,
+        }
+    }
+}
+
+/// Approves everything, with user verification: what a fingerprint or a PIN does.
+struct Approves;
+
+#[async_trait]
+impl UserValidationMethod for Approves {
+    type PasskeyItem = SoftPasskey;
+
+    async fn check_user<'a>(
+        &self,
+        _hint: UiHint<'a, SoftPasskey>,
+        _presence: bool,
+        _verification: bool,
+    ) -> Result<UserCheck, Ctap2Error> {
+        Ok(UserCheck {
+            presence: true,
+            verification: true,
+        })
+    }
+
+    fn is_presence_enabled(&self) -> bool {
+        true
+    }
+
+    fn is_verification_enabled(&self) -> Option<bool> {
+        Some(true)
+    }
+}
+
+/// The bytes `passkey-client` serializes as a JSON array, as the base64url string a browser's
+/// script sends.
+fn base64url(bytes: &Value) -> String {
+    let bytes: Vec<u8> = serde_json::from_value(bytes.clone()).unwrap();
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// A browser with one authenticator, which does what the server's options say.
+struct Browser {
+    client: Client<SoftStore, Approves, AvailableBackend, public_suffix::PublicSuffixList, ()>,
+    store: SoftStore,
+    origin: Url,
+}
+
+impl Browser {
+    /// An authenticator that counts its signatures when `counter`, as a hardware key does.
+    fn new(counter: bool) -> Self {
+        let store = SoftStore::default();
+        let mut authenticator = Authenticator::new(
+            Aaguid::new_empty(),
+            store.clone(),
+            Approves,
+            AvailableBackend,
+        );
+        authenticator.set_make_credentials_with_signature_counter(counter);
+        Self {
+            client: Client::new(authenticator),
+            store,
+            origin: Url::parse(ORIGIN).unwrap(),
+        }
+    }
+
+    /// `navigator.credentials.create` for the server's `options` (the `options` of its answer):
+    /// what the browser sends back.
+    async fn create(&mut self, options: &Value) -> Result<Value, passkey_client::WebauthnError> {
+        let options: CredentialCreationOptions = serde_json::from_value(options.clone()).unwrap();
+        let created = self
+            .client
+            .register(&self.origin, options, DefaultClientData)
+            .await?;
+        // What the script sends: the fields the server reads, bytes as base64url.
+        let created = serde_json::to_value(created).unwrap();
+        let response = &created["response"];
+        let mut sent = json!({
+            "id": created["id"],
+            "rawId": base64url(&created["rawId"]),
+            "type": created["type"],
+            "response": {
+                "attestationObject": base64url(&response["attestationObject"]),
+                "clientDataJSON": base64url(&response["clientDataJSON"]),
+                "transports": response["transports"],
+            },
+            "clientExtensionResults": {},
+        });
+        if let Some(props) = created["clientExtensionResults"].get("credProps") {
+            sent["clientExtensionResults"]["credProps"] = props.clone();
+        }
+        Ok(sent)
+    }
+
+    /// The authenticator's credentials, as `(discoverable, counter)`.
+    fn credentials(&self) -> Vec<(bool, Option<u32>)> {
+        self.store
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|passkey| (passkey.user_handle.is_some(), passkey.counter))
+            .collect()
+    }
+}
+
+/// A POST of JSON, as the script makes it.
+async fn post_json(
+    app: axum::Router,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &Value,
+) -> Response {
+    let mut request = Request::builder()
+        .method(Method::POST)
+        .uri(path)
+        .header(CONTENT_TYPE, "application/json");
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    app.oneshot(request.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap()
+}
+
+/// The JSON a response carries.
+async fn json_of(response: Response) -> Value {
+    let text = body_text(response).await;
+    serde_json::from_str(&text).unwrap_or_else(|err| panic!("{err}: {text}"))
+}
+
+/// An environment whose web channel has `public_url` (when given), with the users of
+/// [`stored_users`].
+async fn env_at(public_url: Option<&str>) -> Env {
+    let config = match public_url {
+        Some(url) => WebConfig::from_json(&json!({ "public_url": url })).unwrap(),
+        None => WebConfig::default(),
+    };
+    env_with(config, &["web:owner"]).await
+}
+
+/// A logged-in browser's headers: its session cookie and CSRF token.
+struct Login {
+    cookie: String,
+    csrf: String,
+}
+
+impl Login {
+    fn new(token: String) -> Self {
+        Self {
+            cookie: session(&token),
+            csrf: auth::cookie_csrf(&token),
+        }
+    }
+
+    fn headers(&self) -> [(&str, &str); 2] {
+        [("cookie", &self.cookie), ("x-csrf-token", &self.csrf)]
+    }
+}
+
+/// Logs `user` in with an invite or recovery link.
+async fn login(env: &Env, user: &str) -> Login {
+    Login::new(super::admin::session_of(env, user).await)
+}
+
+/// What a registration page does: start, let `browser` make the credential, finish. The answers of
+/// both requests.
+async fn register(
+    env: &Env,
+    login: &Login,
+    browser: &mut Browser,
+    kind: &str,
+    name: &str,
+) -> (Value, Response) {
+    let response = post_json(
+        env.main_app(),
+        "/setup/passkey/start",
+        &login.headers(),
+        &json!({ "kind": kind }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let started = json_of(response).await;
+    let created = browser
+        .create(&started["options"])
+        .await
+        .unwrap_or_else(|err| panic!("{err:?}"));
+    let response = post_json(
+        env.main_app(),
+        "/setup/passkey/finish",
+        &login.headers(),
+        &json!({ "ceremony": started["ceremony"], "name": name, "credential": created }),
+    )
+    .await;
+    (started, response)
+}
+
+/// `POST /setup/passkey/start` for a discoverable passkey, with `headers`.
+async fn start(env: &Env, headers: &[(&str, &str)]) -> Response {
+    post_json(
+        env.main_app(),
+        "/setup/passkey/start",
+        headers,
+        &json!({ "kind": "discoverable" }),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn the_setup_page_adds_both_kinds_of_passkey_and_lists_them() {
+    let env = env_at(Some(ORIGIN)).await;
+    let users = open_users(&env).await;
+    let newbie = add_user(&users, "newbie", doozers_store::Role::Member).await;
+    let invite = invite_token(&env, &newbie, InviteKind::Invite).await;
+    let response = redeem(env.main_app(), &invite, &[]).await;
+    let login = Login::new(cookie_token(set_cookie(&response)));
+
+    // The setup page offers passkeys.
+    let response = call(
+        env.main_app(),
+        Method::GET,
+        "/setup",
+        &[("cookie", &login.cookie)],
+        None,
+    )
+    .await;
+    let html = body_text(response).await;
+    assert!(
+        html.contains(r#"<a href="/setup/passkey">Passkey</a>"#),
+        "{html}"
+    );
+
+    // The page has both buttons and says when to use each, and loads the one script.
+    let response = call(
+        env.main_app(),
+        Method::GET,
+        "/setup/passkey",
+        &[("cookie", &login.cookie)],
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
+    let html = body_text(response).await;
+    for expected in [
+        r#"data-passkey-add="discoverable">Add a passkey</button>"#,
+        r#"data-passkey-add="non_resident">Add a non-resident key</button>"#,
+        "few slots for passkeys",
+        "CTAP 2.0",
+        &format!(r#"data-origin="{ORIGIN}""#),
+        &format!(r#"data-csrf="{}""#, login.csrf),
+        &format!(
+            r#"<script src="{}" defer></script>"#,
+            crate::http::assets::passkey_script_path()
+        ),
+    ] {
+        assert!(html.contains(expected), "{expected}: {html}");
+    }
+    assert!(!html.contains("Your passkeys"), "none yet: {html}");
+
+    // A phone's passkey, and a hardware key that keeps none.
+    let mut phone = Browser::new(false);
+    let mut key = Browser::new(true);
+    let (started, response) = register(&env, &login, &mut phone, "discoverable", "My phone").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
+    assert_eq!(
+        json_of(response).await,
+        json!({ "redirect": "/setup/passkey?saved=1" })
+    );
+    // The options the discoverable button asks for, over the library's `discouraged`.
+    let selection = &started["options"]["publicKey"]["authenticatorSelection"];
+    assert_eq!(selection["residentKey"], "required");
+    assert_eq!(selection["requireResidentKey"], true);
+    assert_eq!(selection["userVerification"], "required");
+    assert_eq!(started["options"]["publicKey"]["attestation"], "none");
+    assert_eq!(
+        started["options"]["publicKey"]["rp"]["id"],
+        "doozers.example.com"
+    );
+    assert_eq!(started["options"]["publicKey"]["rp"]["name"], "Doozers");
+    assert_eq!(started["options"]["publicKey"]["user"]["name"], "newbie");
+    assert_eq!(
+        started["options"]["publicKey"]["user"]["displayName"],
+        "NEWBIE"
+    );
+    assert!(
+        started["options"]["publicKey"]
+            .get("excludeCredentials")
+            .is_none()
+    );
+
+    let (started, response) = register(&env, &login, &mut key, "non_resident", "").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let selection = &started["options"]["publicKey"]["authenticatorSelection"];
+    assert_eq!(selection["residentKey"], "discouraged");
+    assert_eq!(selection["requireResidentKey"], false);
+    assert_eq!(selection["userVerification"], "required");
+    // The user already has a passkey, so the browser is told not to make a second on the same
+    // authenticator.
+    assert_eq!(
+        started["options"]["publicKey"]["excludeCredentials"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // The authenticators kept what they were asked to keep: the passkey is discoverable, so a
+    // sign-in with no username can find it, and the key's isn't.
+    assert_eq!(phone.credentials(), [(true, None)]);
+    assert_eq!(key.credentials(), [(false, Some(0))]);
+
+    // Both are stored, the kind decided by the button, the name by the user or by the page.
+    let stored = env.store.user_passkeys(&newbie).await.unwrap();
+    assert_eq!(stored.len(), 2);
+    assert_eq!(stored[0].kind, PasskeyKind::Discoverable);
+    assert_eq!(stored[0].name, "My phone");
+    assert_eq!(stored[1].kind, PasskeyKind::NonResident);
+    assert_eq!(stored[1].name, "Non-resident key 2");
+    assert!(stored.iter().all(|passkey| passkey.last_used_at.is_none()));
+    // What is stored is the library's credential, with a public key and no private one.
+    let credential: Value = serde_json::from_str(&stored[0].credential).unwrap();
+    let credential = &credential["cred"];
+    assert!(credential["cred"].is_object(), "{credential}");
+    assert_eq!(credential["counter"], 0);
+    assert!(!stored[0].credential.contains("private"), "{credential}");
+
+    // The page lists them.
+    let response = call(
+        env.main_app(),
+        Method::GET,
+        "/setup/passkey?saved=1",
+        &[("cookie", &login.cookie)],
+        None,
+    )
+    .await;
+    let html = body_text(response).await;
+    for expected in [
+        "Your passkey is saved",
+        "Your passkeys",
+        "My phone: Passkey, added ",
+        "Non-resident key 2: Non-resident key, added ",
+        "last used never",
+    ] {
+        assert!(html.contains(expected), "{expected}: {html}");
+    }
+}
+
+#[tokio::test]
+async fn the_discoverable_button_is_what_makes_a_passkey_discoverable() {
+    // A library that built `discouraged` and a server that didn't override it would make a key
+    // that a username-less sign-in can't find. Registered through the non-resident button, the
+    // same authenticator keeps nothing it can offer without a username.
+    let env = env_at(Some(ORIGIN)).await;
+    stored_users(&env).await;
+    let login = login(&env, "mia").await;
+    let mut browser = Browser::new(false);
+    let (_, response) = register(&env, &login, &mut browser, "non_resident", "Key").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(browser.credentials(), [(false, None)]);
+    // The same authenticator, through the discoverable button, keeps one it can offer without a
+    // username.
+    let mut phone = Browser::new(false);
+    let (_, response) = register(&env, &login, &mut phone, "discoverable", "Phone").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(phone.credentials(), [(true, None)]);
+}
+
+#[tokio::test]
+async fn a_passkey_the_browser_says_isnt_discoverable_is_refused_as_one() {
+    let env = env_at(Some(ORIGIN)).await;
+    stored_users(&env).await;
+    let login = login(&env, "mia").await;
+    let mut browser = Browser::new(false);
+    let started = json_of(
+        post_json(
+            env.main_app(),
+            "/setup/passkey/start",
+            &login.headers(),
+            &json!({ "kind": "discoverable" }),
+        )
+        .await,
+    )
+    .await;
+    let mut created = browser.create(&started["options"]).await.unwrap();
+    created["clientExtensionResults"] = json!({ "credProps": { "rk": false } });
+    let response = post_json(
+        env.main_app(),
+        "/setup/passkey/finish",
+        &login.headers(),
+        &json!({ "ceremony": started["ceremony"], "credential": created }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error = json_of(response).await["error"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(error.contains("Add a non-resident key"), "{error}");
+    let mia = UserId::new("mia").unwrap();
+    assert!(env.store.user_passkeys(&mia).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn registering_needs_an_invite_or_recovery_login_and_its_csrf_token() {
+    let env = env_at(Some(ORIGIN)).await;
+    stored_users(&env).await;
+    let mia = UserId::new("mia").unwrap();
+    // A login that came from a password isn't enough to add a way in.
+    let token = "p".repeat(64);
+    env.store
+        .web_session_create(
+            &token,
+            mia.clone(),
+            SignInMethod::Password,
+            Timestamp::now(),
+            Timestamp::now()
+                .checked_add(std::time::Duration::from_secs(3600))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let password = Login::new(token);
+    let response = start(&env, &password.headers()).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(
+        json_of(response).await["error"]
+            .as_str()
+            .unwrap()
+            .contains("invite or recovery link")
+    );
+    let response = call(
+        env.main_app(),
+        Method::GET,
+        "/setup/passkey",
+        &[("cookie", &password.cookie)],
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let response = call(
+        env.main_app(),
+        Method::GET,
+        "/setup",
+        &[("cookie", &password.cookie)],
+        None,
+    )
+    .await;
+    let html = body_text(response).await;
+    assert!(!html.contains("/setup/passkey"), "{html}");
+
+    // Nobody logged in gets the login-required page.
+    let response = start(&env, &[]).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = call(env.main_app(), Method::GET, "/setup/passkey", &[], None).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // A recovery login still needs the CSRF token of that login.
+    let recovery = login(&env, "mia").await;
+    let response = start(&env, &[("cookie", &recovery.cookie)]).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let response = start(
+        &env,
+        &[("cookie", &recovery.cookie), ("x-csrf-token", "wrong")],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(
+        json_of(response).await["error"]
+            .as_str()
+            .unwrap()
+            .contains("out of date")
+    );
+    let response = start(&env, &recovery.headers()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(env.store.user_passkeys(&mia).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_registration_belongs_to_the_login_that_started_it_and_finishes_once() {
+    let env = env_at(Some(ORIGIN)).await;
+    stored_users(&env).await;
+    let mia = login(&env, "mia").await;
+    let root = login(&env, "root").await;
+    let mut browser = Browser::new(false);
+    let started = json_of(
+        post_json(
+            env.main_app(),
+            "/setup/passkey/start",
+            &mia.headers(),
+            &json!({ "kind": "discoverable" }),
+        )
+        .await,
+    )
+    .await;
+    let created = browser.create(&started["options"]).await.unwrap();
+    let body = json!({ "ceremony": started["ceremony"], "credential": created });
+
+    // Another user's login can't finish it, and the attempt ends it.
+    let response = post_json(
+        env.main_app(),
+        "/setup/passkey/finish",
+        &root.headers(),
+        &body,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let response = post_json(
+        env.main_app(),
+        "/setup/passkey/finish",
+        &mia.headers(),
+        &body,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        json_of(response).await["error"]
+            .as_str()
+            .unwrap()
+            .contains("took too long")
+    );
+
+    // A fresh one finishes once.
+    let (_, response) = register(&env, &mia, &mut Browser::new(false), "discoverable", "A").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let mia_id = UserId::new("mia").unwrap();
+    assert_eq!(env.store.user_passkeys(&mia_id).await.unwrap().len(), 1);
+    let started = json_of(
+        post_json(
+            env.main_app(),
+            "/setup/passkey/start",
+            &mia.headers(),
+            &json!({ "kind": "non_resident" }),
+        )
+        .await,
+    )
+    .await;
+    let created = Browser::new(false)
+        .create(&started["options"])
+        .await
+        .unwrap();
+    let body = json!({ "ceremony": started["ceremony"], "credential": created });
+    let first = post_json(
+        env.main_app(),
+        "/setup/passkey/finish",
+        &mia.headers(),
+        &body,
+    )
+    .await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let again = post_json(
+        env.main_app(),
+        "/setup/passkey/finish",
+        &mia.headers(),
+        &body,
+    )
+    .await;
+    assert_eq!(again.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(env.store.user_passkeys(&mia_id).await.unwrap().len(), 2);
+
+    // A kind that isn't one is refused.
+    let response = post_json(
+        env.main_app(),
+        "/setup/passkey/start",
+        &mia.headers(),
+        &json!({ "kind": "both" }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn names_are_trimmed_cut_and_defaulted() {
+    let env = env_at(Some(ORIGIN)).await;
+    stored_users(&env).await;
+    let login = login(&env, "mia").await;
+    let long = format!("  {}\u{7}  ", "x".repeat(100));
+    for (kind, name) in [("discoverable", long.as_str()), ("discoverable", "   ")] {
+        let (_, response) = register(&env, &login, &mut Browser::new(false), kind, name).await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let names: Vec<_> = env
+        .store
+        .user_passkeys(&UserId::new("mia").unwrap())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|passkey| passkey.name)
+        .collect();
+    assert_eq!(names, ["x".repeat(64), "Passkey 2".to_owned()]);
+}
+
+#[tokio::test]
+async fn without_a_secure_public_url_passkeys_are_unavailable_and_the_page_says_why() {
+    for (public_url, why) in [
+        (None, "doesn&#39;t know its own address"),
+        (Some("http://doozers.example.com"), "isn&#39;t secure"),
+        (Some("http://127.0.0.1:8080"), "is an IP address"),
+    ] {
+        let env = env_at(public_url).await;
+        stored_users(&env).await;
+        let login = login(&env, "mia").await;
+        let response = call(
+            env.main_app(),
+            Method::GET,
+            "/setup",
+            &[("cookie", &login.cookie)],
+            None,
+        )
+        .await;
+        let html = body_text(response).await;
+        assert!(
+            html.contains("Not available here"),
+            "{public_url:?}: {html}"
+        );
+        let response = call(
+            env.main_app(),
+            Method::GET,
+            "/setup/passkey",
+            &[("cookie", &login.cookie)],
+            None,
+        )
+        .await;
+        let html = body_text(response).await;
+        assert!(html.contains(why), "{public_url:?}: {html}");
+        assert!(html.contains("public_url"), "{public_url:?}: {html}");
+        assert!(!html.contains("data-passkey-add"), "{public_url:?}: {html}");
+        let response = post_json(
+            env.main_app(),
+            "/setup/passkey/start",
+            &login.headers(),
+            &json!({ "kind": "discoverable" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT, "{public_url:?}");
+    }
+    // A browser treats localhost as secure, so passkeys work there.
+    let env = env_at(Some("http://localhost:8080")).await;
+    stored_users(&env).await;
+    let login = login(&env, "mia").await;
+    let response = post_json(
+        env.main_app(),
+        "/setup/passkey/start",
+        &login.headers(),
+        &json!({ "kind": "discoverable" }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let started = json_of(response).await;
+    assert_eq!(started["options"]["publicKey"]["rp"]["id"], "localhost");
+}
+
+#[tokio::test]
+async fn the_script_is_served_under_the_policy_that_allows_no_inline_script() {
+    let env = env_at(Some(ORIGIN)).await;
+    stored_users(&env).await;
+    let login = login(&env, "mia").await;
+    let response = call(
+        env.main_app(),
+        Method::GET,
+        "/setup/passkey",
+        &[("cookie", &login.cookie)],
+        None,
+    )
+    .await;
+    let policy = response.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(policy.contains("script-src 'self';"), "{policy}");
+    assert!(policy.contains("connect-src 'self';"), "{policy}");
+    assert!(!policy.contains("unsafe"), "{policy}");
+    let html = body_text(response).await;
+    // Every script on the page is a file, and the page has no handler attributes.
+    assert_eq!(
+        html.matches("<script").count(),
+        html.matches("<script src=").count(),
+        "{html}"
+    );
+    assert!(!html.contains(" onclick="), "{html}");
+    assert!(!html.contains(" style="), "{html}");
+}

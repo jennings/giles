@@ -2,9 +2,9 @@
 
 The core runs one HTTP server (PLAN section 9) for web chat, the admin pages, and the login flow. It
 lives in `doozers_core::http`, is built on `axum`, renders pages with `askama` templates compiled
-into the binary, and ships its JavaScript (`htmx`, its SSE extension, and one small script of our
-own for the new-agent form) inside the binary too. There is no build step. TLS is terminated by a
-reverse proxy, never by Doozers.
+into the binary, and ships its JavaScript (`htmx`, its SSE extension, and a few small scripts of our
+own) inside the binary too. There is no build step. TLS is terminated by a reverse proxy, never by
+Doozers.
 
 ## Lifecycle
 
@@ -114,14 +114,15 @@ The home page (`index.html`) shows the version; it's `/` only when no web channe
 | `/static/agent-form-<hash>.js`       | `assets/agent-form.js`                        | `text/javascript; charset=utf-8` |
 | `/static/mcp-server-form-<hash>.js`  | `assets/mcp-server-form.js`                   | `text/javascript; charset=utf-8` |
 | `/static/copy-button-<hash>.js`      | `assets/copy-button.js`                       | `text/javascript; charset=utf-8` |
+| `/static/passkey-<hash>.js`          | `assets/passkey.js`                           | `text/javascript; charset=utf-8` |
 
 Each path changes whenever its content does: the vendored files carry their version, and our own
 files carry the first 16 hex digits of their SHA-256 (`assets::stylesheet_path()`,
-`assets::agent_form_script_path()`, `assets::mcp_server_form_script_path()`, and
-`assets::copy_script_path()`, computed once). So every asset is served with
-`Cache-Control: public, max-age=31536000, immutable`, and a browser never revalidates or keeps a
-stale copy across an upgrade. `HEAD` works on every asset; any other method is a 405, and an unknown
-path under `/static/` gets the 404 page.
+`assets::agent_form_script_path()`, `assets::mcp_server_form_script_path()`,
+`assets::copy_script_path()`, and `assets::passkey_script_path()`, computed once). So every asset is
+served with `Cache-Control: public, max-age=31536000, immutable`, and a browser never revalidates or
+keeps a stale copy across an upgrade. `HEAD` works on every asset; any other method is a 405, and an
+unknown path under `/static/` gets the 404 page.
 
 ### Vendored files
 
@@ -179,12 +180,15 @@ Why each part:
   URLs, the two kinds the renderer keeps.
 - `script-src 'self'` and `style-src 'self'`, no `'unsafe-inline'` or `'unsafe-eval'`: the only
   scripts are the two vendored files, `agent-form.js` (only the new-agent form loads it),
-  `mcp-server-form.js` (only the MCP server form loads it), and `copy-button.js` (only the SSH keys
-  page loads it), each through the layout's `head` block, and the only stylesheet is `doozers.css`.
-  Any injected `<script>`, `on*=` handler, or `javascript:` URL is inert even if it got past the
-  renderer. This also blocks inline `style="..."` attributes, so pages style with classes. Note for
-  2.22: `pulldown-cmark` writes table column alignment as `style="text-align: ..."`, which browsers
-  drop (and log as a violation) under this policy; tables still render, unaligned.
+  `mcp-server-form.js` (only the MCP server form loads it), `copy-button.js` (only the SSH keys page
+  loads it), and `passkey.js` (only the pages that add a passkey load it), each through the layout's
+  `head` block, and the only stylesheet is `doozers.css`. Passkeys needed no change to the policy:
+  `script-src 'self'` serves `passkey.js`, `connect-src 'self'` allows its requests, and WebAuthn
+  itself is outside the policy. Any injected `<script>`, `on*=` handler, or `javascript:` URL is
+  inert even if it got past the renderer. This also blocks inline `style="..."` attributes, so pages
+  style with classes. Note for 2.22: `pulldown-cmark` writes table column alignment as
+  `style="text-align: ..."`, which browsers drop (and log as a violation) under this policy; tables
+  still render, unaligned.
 - `connect-src 'self'`: `htmx` requests and the SSE `EventSource` go to this origin only. Already
   implied by `default-src`, but stated because the SSE extension depends on it.
 - `default-src 'self'`: everything not named (fonts, media for audio attachments, manifests,

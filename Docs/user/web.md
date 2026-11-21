@@ -85,6 +85,38 @@ username applies, because every visitor looks like the proxy. Use the
 the visitor's address to the `X-Forwarded-For` header. Without that header, Doozers counts every
 visitor through the proxy as one address.
 
+### Passkeys
+
+A passkey is kept by your phone, laptop, password manager, or a security key, and unlocked with your
+fingerprint, face, PIN, or screen lock. Nobody can read it back, and it only works at your Doozers'
+address.
+
+Passkeys need an address that browsers trust, so set `public_url` to the `https` address you open
+Doozers at, or to `localhost` when you run it on your own machine:
+
+```toml
+[channel.web.config]
+public_url = "https://doozers.example.com"
+```
+
+Without a `public_url`, or with one that starts with `http://` and isn't `localhost`, or that is an
+IP address, the page that adds a passkey says why you can't.
+**Changing the host of `public_url` breaks every passkey**, because a passkey belongs to that host.
+Users then log in with a [password](#passwords) or a recovery link and add their passkeys again.
+
+To add a passkey, open an invite or recovery link, choose **Passkey** on the page that follows, and
+use one of the two buttons:
+
+- **Add a passkey** is for nearly everyone. Use it for the passkey on your phone, laptop, or
+  password manager, or on a security key that has room for it.
+- **Add a non-resident key** is only for a hardware security key with few slots for passkeys. It
+  uses no slot, but you type your username before you use it. Older keys (CTAP 2.0) can't delete a
+  single passkey without a factory reset that erases everything on the key.
+
+Name each one, so you can tell them apart. You can add as many as you like, such as one per device.
+
+A login that came from a password can't add a passkey. Ask for a recovery link.
+
 ### A trusted reverse proxy
 
 If a reverse proxy already authenticates people, such as Tailscale Serve, oauth2-proxy, or Authelia,

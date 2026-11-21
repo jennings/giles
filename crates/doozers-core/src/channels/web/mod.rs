@@ -21,6 +21,8 @@ mod limits;
 mod login;
 mod memory;
 mod pages;
+mod passkey;
+mod passkey_pages;
 mod password;
 mod password_pages;
 mod proxy;

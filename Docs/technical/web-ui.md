@@ -32,7 +32,10 @@ The implementation differs from the boards on purpose in four ways:
   `light-dark()`, `color-mix()`, `<dialog>` with `closedby`, `command` and `commandfor`, and
   `popover`. Don't add fallbacks for old browsers.
 - **Script is the last resort.** A page must work with no script except where it streams (the chat
-  page). The small per-form scripts only add conveniences, such as filling an id from a name.
+  page) and where the browser offers nothing else: WebAuthn can be called only from script, so
+  `passkey.js` is the one stated exception, and the pages that add a passkey need it. Where it
+  doesn't run, the passkey buttons stay hidden and a password is the way in. The small per-form
+  scripts only add conveniences, such as filling an id from a name.
 - **Quiet and dense.** Dark surfaces a step apart, thin borders, one accent color, and text that
   tells the owner what each control does.
 
