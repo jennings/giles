@@ -210,12 +210,18 @@ pub(super) fn tool_element(slot: impl std::fmt::Display) -> String {
     format!("t-{slot}")
 }
 
-/// A tool call's input as text: an object's fields one per line (`key: value`, a string value
-/// as is, anything else as JSON), any other value as JSON. Empty for no arguments.
+/// A tool call's input as text: an object's fields one per line, sorted by name (`key: value`, a
+/// string value as is, anything else as JSON), any other value as JSON. Empty for no arguments.
 pub(super) fn tool_input(input: &Value) -> String {
     let mut out = String::new();
     match input {
         Value::Object(fields) => {
+            // The top-level fields are sorted here, not left to the map: `serde_json` keeps the
+            // order the model wrote them in when any crate in the build turns on its
+            // `preserve_order` feature. (A nested object is shown with `Display`, as the map
+            // holds it.)
+            let mut fields: Vec<_> = fields.iter().collect();
+            fields.sort_by_key(|(key, _)| key.as_str());
             for (key, value) in fields {
                 if !out.is_empty() {
                     out.push('\n');

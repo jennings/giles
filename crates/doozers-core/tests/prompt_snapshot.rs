@@ -235,6 +235,27 @@ async fn assemble_session(home: &Home, agent: &str, session: &Session) -> Sessio
         .unwrap()
 }
 
+/// `value` with every object's keys in sorted order, which is the order `serde_json` writes them in
+/// unless some crate in the build turns on its `preserve_order` feature (a test dependency does),
+/// so the snapshots read the same either way.
+fn sorted(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(fields) => {
+            let mut keys: Vec<_> = fields.keys().collect();
+            keys.sort();
+            serde_json::Value::Object(
+                keys.into_iter()
+                    .map(|key| (key.clone(), sorted(&fields[key])))
+                    .collect(),
+            )
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(sorted).collect())
+        }
+        other => other.clone(),
+    }
+}
+
 /// The snapshot text: `system`, then each tool with its description and schema.
 fn render(prompt: &SessionPrompt) -> String {
     let mut out = format!(
@@ -249,7 +270,7 @@ fn render(prompt: &SessionPrompt) -> String {
             "--- {}\n{}\n{}",
             spec.name,
             spec.description,
-            serde_json::to_string(&spec.input_schema).unwrap()
+            serde_json::to_string(&sorted(&spec.input_schema)).unwrap()
         )
         .unwrap();
     }
