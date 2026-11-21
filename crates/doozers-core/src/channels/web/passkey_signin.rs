@@ -418,6 +418,25 @@ async fn check_by_username(
     Ok(judge(&stored, outcome).map(|result| (stored, passkey, result)))
 }
 
+/// Records that `stored` answered a ceremony: its credential, with the signature counter `result`
+/// moved, and the time. Done for every answer the library accepted, whatever it is used for.
+pub(super) async fn record_use(
+    app: &WebApp,
+    stored: &StoredPasskey,
+    mut passkey: Passkey,
+    result: &AuthenticationResult,
+) -> Result<(), Box<Response>> {
+    passkey.update_credential(result);
+    let credential = serde_json::to_string(&passkey)
+        .map_err(|err| Box::new(internal_error("cannot serialize a passkey", &err)))?;
+    app.inner
+        .store
+        .user_passkey_used(stored.id, &credential, app.inner.clock.now())
+        .await
+        .map_err(|err| Box::new(internal_error("cannot record the use of a passkey", &err)))?;
+    Ok(())
+}
+
 /// `POST /login/passkey/finish`: checks the browser's answer, and signs it in as the passkey's user
 /// with `{"redirect": "/"}` and the session cookie.
 async fn finish(
@@ -454,27 +473,13 @@ async fn finish(
         }
         Ceremony::Fake | Ceremony::Register { .. } => Ok(None),
     };
-    let (stored, mut passkey, result) = match checked {
+    let (stored, passkey, result) = match checked {
         Ok(Some(signed)) => signed,
         Ok(None) => return failed(),
         Err(response) => return *response,
     };
-
-    // The counter moved, and the passkey was used.
-    passkey.update_credential(&result);
-    let now = app.inner.clock.now();
-    match serde_json::to_string(&passkey) {
-        Ok(credential) => {
-            if let Err(err) = app
-                .inner
-                .store
-                .user_passkey_used(stored.id, &credential, now)
-                .await
-            {
-                return internal_error("cannot record the use of a passkey", &err);
-            }
-        }
-        Err(err) => return internal_error("cannot serialize a passkey", &err),
+    if let Err(response) = record_use(&app, &stored, passkey, &result).await {
+        return *response;
     }
 
     info!(user = %stored.user, method = SignInMethod::Passkey.as_str(), "signed in to the web chat");
