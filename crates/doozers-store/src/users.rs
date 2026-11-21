@@ -509,6 +509,43 @@ impl Store {
         .await
     }
 
+    /// Sets the display name and time zone of user `id`, which a user edits on their own account
+    /// page, and returns the user. `timezone` is an IANA name, or `None` to clear it; the store
+    /// doesn't know which names exist.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NoSuchUser`]; [`Error::InvalidRequest`] if `display_name` is empty.
+    pub async fn user_profile_set(
+        &self,
+        id: &UserId,
+        display_name: &str,
+        timezone: Option<&str>,
+        now: Timestamp,
+    ) -> Result<StoredUser> {
+        if display_name.is_empty() {
+            return Err(Error::invalid("a display name can't be empty"));
+        }
+        let (id, display_name, timezone) = (
+            id.clone(),
+            display_name.to_owned(),
+            timezone.map(str::to_owned),
+        );
+        self.write(move |conn| {
+            let changed = conn
+                .prepare_cached(
+                    "UPDATE users SET display_name = ?2, timezone = ?3, updated_at = ?4
+                     WHERE id = ?1",
+                )?
+                .execute(params![id.as_str(), display_name, timezone, to_millis(now)])?;
+            if changed == 0 {
+                return Err(Error::NoSuchUser);
+            }
+            find(conn, &id)?.ok_or_else(|| Error::corrupt("the user just updated is missing"))
+        })
+        .await
+    }
+
     /// Deletes the account of user `id` and, by cascade, its identities, invite links, link codes,
     /// password, passkeys, and OpenID Connect connections, and returns the user as it was. Links
     /// the user made stay, with no creator. It deletes nothing else: what the user owns (web login sessions, conversations, memories,
@@ -884,6 +921,48 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, Error::InvalidRequest(_)), "{err}");
         assert!(store.users().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_profile_change_is_stored_and_touches_only_the_profile() {
+        let (_dir, store) = store().await;
+        store
+            .user_create(
+                user("u1", "ann", Role::Admin),
+                vec![identity("web", "ann")],
+                at(0),
+            )
+            .await
+            .unwrap();
+        store
+            .user_create(user("u2", "bob", Role::Member), vec![], at(0))
+            .await
+            .unwrap();
+        let changed = store
+            .user_profile_set(&id("u1"), "Ann Example", Some("Europe/London"), at(5))
+            .await
+            .unwrap();
+        assert_eq!(changed.display_name, "Ann Example");
+        assert_eq!(changed.timezone.as_deref(), Some("Europe/London"));
+        assert_eq!(
+            (changed.username.as_str(), changed.role),
+            ("ann", Role::Admin)
+        );
+        assert_eq!(changed.identities.len(), 1);
+        assert_eq!((changed.created_at, changed.updated_at), (at(0), at(5)));
+        let bob = store.user(&id("u2")).await.unwrap().unwrap();
+        assert_ne!(bob.display_name, "Ann Example");
+        let cleared = store
+            .user_profile_set(&id("u1"), "Ann", None, at(6))
+            .await
+            .unwrap();
+        assert_eq!(cleared.timezone, None);
+        let empty = store.user_profile_set(&id("u1"), "", None, at(7)).await;
+        assert!(matches!(empty, Err(Error::InvalidRequest(_))), "{empty:?}");
+        let missing = store
+            .user_profile_set(&id("nobody"), "N", None, at(7))
+            .await;
+        assert!(matches!(missing, Err(Error::NoSuchUser)), "{missing:?}");
     }
 
     #[tokio::test]

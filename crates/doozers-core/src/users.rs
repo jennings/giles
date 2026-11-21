@@ -712,6 +712,36 @@ impl Users {
         Ok(to_user(stored)?)
     }
 
+    /// Sets the display name and time zone of user `id`: the profile a user edits on their account
+    /// page. The display name is checked as when a user is created, and `timezone`, an IANA name
+    /// or `None` for none, is checked as a time zone in `doozers.toml` is.
+    ///
+    /// # Errors
+    ///
+    /// [`UserError::Invalid`] for a display name or time zone that isn't valid, and
+    /// [`UserError::NoSuchUser`].
+    pub async fn set_profile(
+        &self,
+        id: &UserId,
+        display_name: &str,
+        timezone: Option<&str>,
+        now: Timestamp,
+    ) -> Result<User, UserError> {
+        let display_name = display_name.trim();
+        check_display_name(display_name)?;
+        if let Some(name) = timezone {
+            parse_timezone(name).map_err(UserError::Invalid)?;
+        }
+        let _changing = self.changing.lock().await;
+        let stored = self
+            .store
+            .user_profile_set(id, display_name, timezone, now)
+            .await
+            .map_err(|e| UserError::from_store(e, id))?;
+        self.publish().await?;
+        Ok(to_user(stored)?)
+    }
+
     /// Deletes the account of user `id`, with its identities, and returns the user as it was.
     /// Everything else the user owns stays: forgetting that data (PLAN section 11.4) is built on
     /// this and does it in the same operation.
@@ -1642,6 +1672,75 @@ mod tests {
         // A fresh start sees the same users.
         let (_again, reloaded) = home.open("").await.unwrap();
         assert_eq!(reloaded.get().users(), list.get().users());
+    }
+
+    #[tokio::test]
+    async fn a_profile_change_replaces_the_snapshot_and_is_checked_first() {
+        let home = Home::new().await;
+        let (users, list) = home.open("").await.unwrap();
+        users.create(member("ann"), vec![], at(0)).await.unwrap();
+
+        let ann = users
+            .set_profile(
+                &id("ann"),
+                "  Ann Example ",
+                Some("America/Los_Angeles"),
+                at(1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ann.display_name, "Ann Example");
+        // Padding doesn't count towards the length: a name that fits once trimmed is kept.
+        let padded = format!(" {} ", "x".repeat(MAX_DISPLAY_NAME_CHARS));
+        let long = users
+            .set_profile(&id("ann"), &padded, None, at(1))
+            .await
+            .unwrap();
+        assert_eq!(long.display_name.chars().count(), MAX_DISPLAY_NAME_CHARS);
+        users
+            .set_profile(
+                &id("ann"),
+                "Ann Example",
+                Some("America/Los_Angeles"),
+                at(1),
+            )
+            .await
+            .unwrap();
+        let seen = list.get().user(&id("ann")).unwrap().clone();
+        assert_eq!(seen.display_name, "Ann Example");
+        assert_eq!(
+            seen.timezone.as_ref().and_then(|zone| zone.iana_name()),
+            Some("America/Los_Angeles")
+        );
+        users
+            .set_profile(&id("ann"), "Ann", None, at(2))
+            .await
+            .unwrap();
+        assert!(list.get().user(&id("ann")).unwrap().timezone.is_none());
+
+        for (name, zone) in [
+            ("", None),
+            ("   ", None),
+            ("Ann\u{7}", None),
+            (&"x".repeat(MAX_DISPLAY_NAME_CHARS + 1), None),
+            ("Ann", Some("Mars/Olympus")),
+            ("Ann", Some("")),
+        ] {
+            let err = users
+                .set_profile(&id("ann"), name, zone, at(3))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, UserError::Invalid(_)),
+                "{name:?} {zone:?}: {err}"
+            );
+        }
+        assert_eq!(list.get().user(&id("ann")).unwrap().display_name, "Ann");
+        let err = users
+            .set_profile(&id("nobody"), "Nobody", None, at(3))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, UserError::NoSuchUser(_)), "{err}");
     }
 
     #[tokio::test]
