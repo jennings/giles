@@ -73,8 +73,12 @@ impl WebApp {
 
     /// The ways to sign in on the login page that are a link to another page. No method is one yet,
     /// so there are none.
-    pub(super) fn login_options(&self) -> Vec<LoginOption> {
-        Vec::new()
+    ///
+    /// # Errors
+    ///
+    /// The store's error, if it can't say.
+    pub(super) async fn login_options(&self) -> doozers_store::Result<Vec<LoginOption>> {
+        Ok(Vec::new())
     }
 
     /// Whether the login page folds the password form away behind "Use a password instead", for

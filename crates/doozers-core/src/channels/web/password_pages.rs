@@ -99,7 +99,8 @@ async fn log_in(
                     wait_text(retry_after.as_secs())
                 ),
                 &form.username,
-            );
+            )
+            .await;
         }
     };
 
@@ -145,7 +146,8 @@ async fn log_in(
                 5,
                 "Doozers is busy checking other passwords. Try again in a moment.",
                 &form.username,
-            );
+            )
+            .await;
         }
         Err(err) => {
             app.inner.logins.cancel(attempt);
@@ -162,7 +164,8 @@ async fn log_in(
             0,
             WRONG,
             &form.username,
-        );
+        )
+        .await;
     };
 
     app.inner.logins.succeeded(attempt);
@@ -185,7 +188,7 @@ async fn log_in(
 
 /// The login page again with `error` and the status that says why, and `Retry-After` (seconds)
 /// unless it is 0. The username stays in the form; the password never does.
-fn refused(
+async fn refused(
     app: &WebApp,
     headers: &HeaderMap,
     trusted: bool,
@@ -194,7 +197,11 @@ fn refused(
     error: &str,
     username: &str,
 ) -> Response {
-    let mut response = render_login(app, headers, trusted, Some(error), username);
+    let mut response = render_login(app, headers, trusted, Some(error), username).await;
+    // A page that couldn't be rendered says so as it is.
+    if !response.status().is_success() {
+        return response;
+    }
     *response.status_mut() = status;
     if retry_after > 0 {
         response

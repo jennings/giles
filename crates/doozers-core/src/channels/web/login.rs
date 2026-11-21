@@ -88,21 +88,25 @@ async fn login_page(
     if user.is_some() {
         return Redirect::to("/").into_response();
     }
-    render_login(&app, &headers, trusted.is_some(), None, "")
+    render_login(&app, &headers, trusted.is_some(), None, "").await
 }
 
 /// The login page: the options, and the password form with `username` in it and `error` above it,
 /// if any. It carries the sign-in nonce, which the response also sets as a cookie.
-pub(super) fn render_login(
+pub(super) async fn render_login(
     app: &WebApp,
     headers: &HeaderMap,
     trusted: bool,
     error: Option<&str>,
     username: &str,
 ) -> Response {
+    let options = match app.login_options().await {
+        Ok(options) => options,
+        Err(err) => return internal_error("cannot look up the sign-in methods", &err),
+    };
     let nonce = nonce_for_form(headers);
     let mut response = http::render(&LoginPage {
-        options: app.login_options(),
+        options,
         password: PasswordForm {
             nonce: &nonce,
             username,
