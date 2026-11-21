@@ -40,6 +40,29 @@ impl Page {
         Browser::new(token)
     }
 
+    /// A browser of `user` whose session signed in with `method` `age` ago.
+    pub(super) async fn aged_login(
+        &self,
+        user: &str,
+        method: SignInMethod,
+        age: Duration,
+    ) -> Browser {
+        let token = random_hex(32);
+        let now = Timestamp::now();
+        self.env
+            .store
+            .web_session_create(
+                &token,
+                UserId::new(user).unwrap(),
+                method,
+                now.checked_sub(age).unwrap(),
+                now.checked_add(minutes(600)).unwrap(),
+            )
+            .await
+            .unwrap();
+        Browser::new(token)
+    }
+
     /// Gives `user` the password `password`, without the pages.
     pub(super) async fn give_password(&self, user: &str, password: &str) {
         let normalized = check_new(password, user).unwrap();

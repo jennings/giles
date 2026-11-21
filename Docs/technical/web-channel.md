@@ -325,6 +325,10 @@ session gets a deleting `Set-Cookie` on the response. A store error is a 500.
 `WebApp::expire_sessions` deletes expired sessions and expired invite links now and every hour
 (`Store::web_sessions_expire`, `Store::user_invites_expire`) until shutdown.
 
+A request that finds a live session records its use as `last_seen_at` (`Store::web_session_seen`),
+but only when none was recorded or the last one is 10 minutes old (`SEEN_EVERY`), so a page full of
+requests writes once. The account page shows it.
+
 `POST /logout` (CSRF-checked) deletes the session and the cookie. A proxy login has nothing to end,
 so the sidebar shows no logout button for it.
 
@@ -1745,6 +1749,7 @@ JavaScript. `AccountPages` holds the `WebApp` and the `Users`, and converts to t
 | `GET /account/sign-in/remove?method=` | Asks before removing a sign-in method; 404 for one the user doesn't have |
 | `POST /account/sign-in/remove` | Removes the method (CSRF-checked, and allowed like adding one), 303; 409 for the only one that can sign the user in |
 | `POST /account/sign-in/passkey/rename` | Renames one of the user's passkeys (CSRF-checked), 303; 404 for another user's |
+| `POST /account/sessions/<id>/revoke` | Ends one of the user's logins (CSRF-checked), 303; 404 for another user's id |
 
 - **Profile.** The form has the username and role as read-only facts, and the display name and time
   zone as fields. The `POST` calls `Users::set_profile`, which checks the display name as creating a
@@ -1779,6 +1784,20 @@ JavaScript. `AccountPages` holds the `WebApp` and the `Users`, and converts to t
   keep.
 - **Renaming a passkey** needs no confirmation: it adds no access. The name is cleaned as when it
   was added (trimmed, no control characters, 64 characters), and an empty one is a 400.
+- **Logins.** In `account_sessions.rs`. The page lists the user's live sessions, newest first
+  (`Store::web_sessions_of`): how each signed in (`method`: invite link, recovery link, password,
+  passkey, or identity provider), when it started, when it was last used, and when it ends. The one
+  the request came in on is marked **this login**, found by the token of the request's own cookie. A
+  session is named by its opaque `id` (`web_sessions.id`): neither a token nor the hash the store
+  keeps of it is ever on a page, in a link, or in a form. **End** posts to
+  `/account/sessions/<id>/revoke`, which calls `Store::web_session_revoke(user, id)`: the delete is
+  by user and id together, so another user's id, one nobody has, and one that isn't 32 lowercase hex
+  digits are all the same 404. Revoking the current session also deletes the cookie and goes to `/`,
+  as logging out does. The event streams a login opened (`GET /chats/<id>/events`) end with it: each
+  one watches its own cookie session (`WebApp::session_ended`, every 5 seconds) and closes when the
+  session is revoked, logged out, or expired, so a login that was ended stops receiving what the
+  user's chats say. It needs no confirmation, because it adds no access. A proxy login has no
+  session of its own, so none is marked, and the user's cookie logins are listed.
 - **Channel identities.** The page lists the user's identities, marks the default, and links to the
   [Identities page](#identities-page), which stays where it was and does the adding and removing.
 
@@ -1959,6 +1978,13 @@ plus unit tests in `hub.rs`, `render.rs`, `pages.rs`, `auth.rs`, `config.rs`, `i
   id nobody has, and a malformed method are 404s; where passkeys can't be used the password stays as
   the last way in; a connection to a provider that is off doesn't count; a passkey is renamed
   without confirming and nobody else's is.
+- Logins (also `tests/account.rs`): ending a login ends the chat streams it opened, whether it was
+  revoked from another browser or logged out; a proxy login marks no login as its own and ends a
+  cookie login without touching any cookie; the page lists only the user's own sessions with how
+  each signed in and marks the current one, and shows no token or hash of one; ending another login
+  ends it and leaves this one; ending this one deletes the cookie and logs out; another user's id,
+  an id nobody has, and a malformed one are 404s that leave the sessions alone; the CSRF token is
+  needed; the last use is recorded by the first request and not again within 10 minutes.
 - Account page (`tests/account.rs`, through the real login middleware with a session cookie, over
   stored users): the page needs a login and shows only the user's own profile and identities; the
   sidebar links it and the footer shows the display name; saving changes the name and time zone the

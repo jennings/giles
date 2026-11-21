@@ -10,6 +10,7 @@
 
 mod account;
 mod account_methods;
+mod account_sessions;
 mod admin;
 mod agents;
 mod auth;

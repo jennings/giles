@@ -643,7 +643,7 @@ key to GitHub.
 ## Account
 
 **Account** in the sidebar is where you manage yourself. It has your profile, the ways you sign in,
-and a summary of your channel identities.
+a summary of your channel identities, and your logins.
 
 Your profile is your display name and time zone.
 
@@ -681,7 +681,23 @@ You can add or remove a way to sign in, or change your password, only after you
 that came from an invite or recovery link doesn't need to for its first 30 minutes. Renaming a
 passkey doesn't need it.
 
-**Manage identities** opens the **Identities** page.
+### Channel identities
+
+**Channel identities** lists your accounts on channels. **Manage identities** opens the
+**Identities** page.
+
+### Logins
+
+**Logins** lists the browsers you are logged in on. Each shows how you signed in (an invite or
+recovery link, a password, a passkey, or an identity provider), when the login started, when it was
+last used, and when it ends. **this login** marks the one you are using.
+
+Choose **End** to log a browser out, such as one you don't recognize or on a device you no longer
+use. The browser's open chat pages stop updating within a few seconds. **Log out** on your own row
+ends this login. Ending a login needs no confirmation.
+
+A login through a [trusted proxy](#a-trusted-reverse-proxy) isn't kept by Doozers, so it isn't
+listed.
 
 ## Identities
 

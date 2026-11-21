@@ -814,3 +814,417 @@ async fn a_passkey_is_renamed_by_its_user_without_confirming_and_nobody_elses_is
         .await;
     assert_eq!(answer.status, StatusCode::FORBIDDEN);
 }
+
+// --- Sessions ----------------------------------------------------------------------------------
+
+impl Page {
+    /// The ids of `user`'s sessions, newest first.
+    async fn session_ids(&self, user: &str) -> Vec<String> {
+        self.env
+            .store
+            .web_sessions_of(&id(user), Timestamp::now())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|session| session.id)
+            .collect()
+    }
+
+    async fn revoke(&self, browser: &Browser, session: &str) -> Answer {
+        self.post(browser, &format!("/account/sessions/{session}/revoke"), &[])
+            .await
+    }
+
+    /// Whether the browser's session still logs in.
+    async fn logged_in(&self, browser: &Browser) -> bool {
+        self.send(Some(browser), Method::GET, "/account", None)
+            .await
+            .status
+            == StatusCode::OK
+    }
+}
+
+#[tokio::test]
+async fn the_page_lists_the_users_own_logins_marks_this_one_and_shows_no_token_or_hash() {
+    let p = Page::new().await;
+    let recovery = p.login("mia").await;
+    let password = p.password_login("mia").await;
+    let roots = p.login("root").await;
+    // Used once, so it has a time.
+    p.get(&recovery, "/account").await;
+
+    let html = p.get(&password, "/account").await.body;
+    assert!(html.contains("<h2 id=\"sessions\">Logins</h2>"), "{html}");
+    assert_eq!(html.matches(r#"pill-ok">this login"#).count(), 1, "{html}");
+    assert!(html.contains("Recovery link"), "{html}");
+    assert!(html.contains(">Password"), "{html}");
+    // Two logins of Mia's, and not Root's.
+    let mine = p.session_ids("mia").await;
+    assert_eq!(mine.len(), 2);
+    assert_eq!(html.matches("/revoke\"").count(), 2, "{html}");
+    for session in &mine {
+        assert!(
+            html.contains(&format!("/account/sessions/{session}/revoke")),
+            "{html}"
+        );
+    }
+    for session in p.session_ids("root").await {
+        assert!(!html.contains(&session), "{html}");
+    }
+    // The current login's own row says so and offers to log out.
+    let current_row = html
+        .split("<tr>")
+        .find(|row| row.contains(r#"pill-ok">this login"#))
+        .unwrap();
+    assert!(current_row.contains(">Password"), "{current_row}");
+    assert!(current_row.contains("Log out"), "{current_row}");
+
+    // Never a token, or the hash of one, which would be as good as the token for anyone with a
+    // copy of the database, and not the id of the session.
+    use sha2::{Digest, Sha256};
+    for browser in [&recovery, &password, &roots] {
+        let hash: String = Sha256::digest(browser.token.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert!(!html.contains(&browser.token), "token on the page");
+        assert!(!html.contains(&hash), "hash on the page");
+        assert!(!mine.contains(&browser.token));
+        assert!(!mine.contains(&hash));
+    }
+}
+
+#[tokio::test]
+async fn a_user_ends_one_of_their_other_logins() {
+    let p = Page::new().await;
+    let here = p.login("mia").await;
+    let there = p.password_login("mia").await;
+    let ids = p.session_ids("mia").await;
+    let mine = p.session_id_of(&here).await;
+    let theirs = ids
+        .iter()
+        .find(|session| **session != mine)
+        .unwrap()
+        .clone();
+
+    assert!(p.logged_in(&there).await);
+    let answer = p.revoke(&here, &theirs).await;
+    assert_eq!(answer.status, StatusCode::SEE_OTHER, "{}", answer.body);
+    assert_eq!(answer.location.as_deref(), Some("/account?notice=revoked"));
+    assert!(!p.logged_in(&there).await, "the other login ended");
+    assert!(p.logged_in(&here).await, "this one stays");
+    assert_eq!(p.session_ids("mia").await.len(), 1);
+    let html = p.get(&here, "/account?notice=revoked").await.body;
+    assert!(html.contains("Ended that login."), "{html}");
+}
+
+impl Page {
+    async fn session_id_of(&self, browser: &Browser) -> String {
+        self.env
+            .store
+            .web_session(&browser.token, Timestamp::now())
+            .await
+            .unwrap()
+            .unwrap()
+            .id
+    }
+}
+
+#[tokio::test]
+async fn ending_this_login_logs_out_and_deletes_the_cookie() {
+    let p = Page::new().await;
+    let here = p.login("mia").await;
+    let me = p.session_id_of(&here).await;
+    let response = call(
+        p.router(),
+        Method::POST,
+        &format!("/account/sessions/{me}/revoke"),
+        &[("cookie", &session(&here.token))],
+        Some(&format!("csrf={}", here.csrf)),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.headers()[LOCATION], "/");
+    let cookie = set_cookie(&response);
+    assert!(
+        cookie.starts_with("doozers_session=;") && cookie.contains("Max-Age=0"),
+        "{cookie}"
+    );
+    assert!(!p.logged_in(&here).await);
+    assert!(p.session_ids("mia").await.is_empty());
+}
+
+#[tokio::test]
+async fn another_users_login_or_none_at_all_is_a_404_and_ending_needs_the_csrf_token() {
+    let p = Page::new().await;
+    let mia = p.login("mia").await;
+    let roots = p.login("root").await;
+    let root_session = p.session_ids("root").await[0].clone();
+
+    for target in [
+        root_session.clone(),
+        "0".repeat(32),
+        "nope".to_owned(),
+        "A".repeat(32),
+    ] {
+        let answer = p.revoke(&mia, &target).await;
+        assert_eq!(answer.status, StatusCode::NOT_FOUND, "{target}");
+    }
+    assert!(p.logged_in(&roots).await, "Root's login is untouched");
+    assert_eq!(
+        p.session_ids("root").await,
+        std::slice::from_ref(&root_session)
+    );
+
+    let answer = p
+        .send(
+            Some(&mia),
+            Method::POST,
+            &format!("/account/sessions/{}/revoke", p.session_id_of(&mia).await),
+            Some("csrf=wrong"),
+        )
+        .await;
+    assert_eq!(answer.status, StatusCode::FORBIDDEN);
+    let answer = p
+        .send(
+            None,
+            Method::POST,
+            &format!("/account/sessions/{root_session}/revoke"),
+            Some("csrf=x"),
+        )
+        .await;
+    assert_eq!(answer.status, StatusCode::UNAUTHORIZED);
+    assert!(p.logged_in(&mia).await);
+    assert!(p.logged_in(&roots).await);
+}
+
+#[tokio::test]
+async fn a_login_remembers_when_it_was_last_used_but_not_on_every_request() {
+    let p = Page::new().await;
+    let mia = p.login("mia").await;
+    let seen = || async {
+        p.env
+            .store
+            .web_session(&mia.token, Timestamp::now())
+            .await
+            .unwrap()
+            .unwrap()
+            .last_seen_at
+    };
+    assert_eq!(seen().await, None);
+    // A login that was never used says so, and the one asking has just been used.
+    let unused = p.password_login("mia").await;
+    let html = p.get(&mia, "/account").await.body;
+    assert_eq!(html.matches("not since it began").count(), 1, "{html}");
+    assert!(p.logged_in(&unused).await);
+    let html = p.get(&mia, "/account").await.body;
+    assert!(!html.contains("not since it began"), "{html}");
+    let first = seen().await.expect("recorded by the first request");
+    p.get(&mia, "/account").await;
+    assert_eq!(seen().await, Some(first), "not written again so soon");
+
+    // Eleven minutes after the last time, the next request records it again.
+    let old = Timestamp::now()
+        .checked_sub(super::reverify::minutes(11))
+        .unwrap();
+    p.env.store.web_session_seen(&mia.token, old).await.unwrap();
+    p.get(&mia, "/account").await;
+    assert!(seen().await.unwrap() > old);
+    let html = p.get(&mia, "/account").await.body;
+    assert!(!html.contains("not since it began"), "{html}");
+}
+
+// --- Logins that are not a plain cookie session -------------------------------------------------
+
+/// Mia's login through the trusted proxy: no session of its own.
+fn proxy_mia() -> WebUser {
+    WebUser {
+        user: id("mia"),
+        role: doozers_store::Role::Member,
+        display_name: "MIA".into(),
+        sender: NativeId::new("mia").unwrap(),
+        csrf: "csrf-of-proxy".into(),
+        login: auth::Login::Proxy,
+    }
+}
+
+impl Page {
+    async fn as_proxy(&self, method: Method, path: &str, form: Option<&str>) -> Response {
+        call(
+            self.router().layer(Extension(proxy_mia())),
+            method,
+            path,
+            &[],
+            form,
+        )
+        .await
+    }
+}
+
+#[tokio::test]
+async fn a_proxy_login_is_told_why_it_cannot_change_methods_and_marks_no_login_as_its_own() {
+    let (p, key) = with_every_method().await;
+    let cookie_login = p.login("mia").await;
+    let cookie_id = p.session_id_of(&cookie_login).await;
+
+    let html = body_text(p.as_proxy(Method::GET, "/account", None).await).await;
+    assert!(html.contains("proxy in front of Doozers"), "{html}");
+    assert!(!html.contains("Confirm it's you"), "{html}");
+    assert!(!html.contains("/account/sign-in/remove"), "{html}");
+    // Its cookie logins are listed, and none is this one.
+    assert!(
+        html.contains(&format!("/account/sessions/{cookie_id}/revoke")),
+        "{html}"
+    );
+    assert!(!html.contains(r#"pill-ok">this login"#), "{html}");
+
+    let response = p
+        .as_proxy(
+            Method::POST,
+            "/account/sign-in/remove",
+            Some(&format!("csrf=csrf-of-proxy&method=passkey:{key}")),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(
+        body_text(response)
+            .await
+            .contains("proxy in front of Doozers")
+    );
+    assert_eq!(p.methods_left("mia").await, (true, 1, true));
+
+    // Revoking a cookie login ends it, and there is no cookie of the proxy's to delete.
+    let response = p
+        .as_proxy(
+            Method::POST,
+            &format!("/account/sessions/{cookie_id}/revoke"),
+            Some("csrf=csrf-of-proxy"),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.headers()[LOCATION], "/account?notice=revoked");
+    assert!(response.headers().get(SET_COOKIE).is_none());
+    assert!(!p.logged_in(&cookie_login).await);
+}
+
+#[tokio::test]
+async fn a_links_session_older_than_thirty_minutes_is_sent_to_confirm_like_any_other() {
+    let (p, key) = with_every_method().await;
+    let old = p
+        .aged_login("mia", SignInMethod::Recovery, minutes(31))
+        .await;
+    let html = p.get(&old, "/account").await.body;
+    assert!(
+        html.contains(r#"href="/account/reverify">Confirm it's you"#),
+        "{html}"
+    );
+    assert!(!html.contains("You signed in with a link"), "{html}");
+    assert!(!html.contains("/account/sign-in/remove"), "{html}");
+    let answer = p
+        .post(
+            &old,
+            "/account/sign-in/remove",
+            &[("method", &format!("passkey:{key}"))],
+        )
+        .await;
+    assert_eq!(answer.status, StatusCode::FORBIDDEN);
+    // The page it sends to leads back to the account page.
+    assert!(
+        answer
+            .body
+            .contains(r#"href="/account/reverify?next=/account""#),
+        "{}",
+        answer.body
+    );
+    assert_eq!(p.methods_left("mia").await, (true, 1, true));
+}
+
+#[tokio::test]
+async fn a_connection_whose_provider_changed_issuer_says_it_no_longer_signs_in() {
+    let (p, _) = with_every_method().await;
+    let mia = p.login("mia").await;
+    let html = p.get(&mia, "/account").await.body;
+    assert!(!html.contains("no longer signs you in"), "{html}");
+    p.env
+        .store
+        .oidc_provider_update(
+            "idp",
+            OidcProviderSettings {
+                display_name: "Idp".to_owned(),
+                issuer: "https://moved.example.com".to_owned(),
+                client_id: "client".to_owned(),
+                client_secret: None,
+                scopes: vec!["openid".to_owned()],
+                enabled: true,
+            },
+            Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    let html = p.get(&mia, "/account").await.body;
+    assert!(
+        html.contains("this account no longer signs you in"),
+        "{html}"
+    );
+    assert!(html.contains("Connect another account"), "{html}");
+}
+
+#[tokio::test]
+async fn ending_a_login_ends_the_live_streams_it_opened() {
+    use std::time::Duration;
+    let p = Page::new().await;
+    let here = p.login("mia").await;
+    let there = p.password_login("mia").await;
+    let chat = "0123456789abcdef0123456789abcdef";
+    let open = |browser: &Browser| {
+        let path = format!("/chats/{chat}/events");
+        let cookie = session(&browser.token);
+        let router = p.router();
+        async move {
+            let response = call(router, Method::GET, &path, &[("cookie", &cookie)], None).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            response.into_body().into_data_stream()
+        }
+    };
+    let ended = |mut stream: axum::body::BodyDataStream| async move {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while stream.next().await.is_some() {}
+        })
+        .await
+        .is_ok()
+    };
+
+    // Revoked from another browser.
+    let mut revoked = open(&there).await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(400), revoked.next())
+            .await
+            .is_err(),
+        "the stream stays open"
+    );
+    let theirs = p.session_id_of(&there).await;
+    assert_eq!(p.revoke(&here, &theirs).await.status, StatusCode::SEE_OTHER);
+    assert!(ended(revoked).await, "revoking ends the stream");
+
+    // Logged out.
+    let third = p.password_login("mia").await;
+    let logging_out = open(&third).await;
+    let response = call(
+        p.router(),
+        Method::POST,
+        "/logout",
+        &[("cookie", &session(&third.token))],
+        Some(&format!("csrf={}", third.csrf)),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(ended(logging_out).await, "logging out ends the stream");
+
+    // A login that wasn't ended keeps its stream.
+    let mut kept = open(&here).await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(400), kept.next())
+            .await
+            .is_err()
+    );
+}

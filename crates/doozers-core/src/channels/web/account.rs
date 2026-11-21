@@ -22,6 +22,7 @@ use serde::Deserialize;
 use tracing::error;
 
 use super::account_methods::MethodsView;
+use super::account_sessions::SessionRow;
 use super::auth::{WebUser, check_csrf};
 use super::pages::{WebApp, error_page, internal_error, no_store};
 use super::shell::{Nav, Shell};
@@ -64,6 +65,10 @@ impl WebApp {
                 .route(
                     "/account/sign-in/remove",
                     get(super::account_methods::remove_page).post(super::account_methods::remove),
+                )
+                .route(
+                    "/account/sessions/{id}/revoke",
+                    post(super::account_sessions::revoke),
                 )
                 .route(
                     "/account/sign-in/passkey/rename",
@@ -128,6 +133,7 @@ struct AccountPage<'a> {
     timezone: String,
     max_display_name: usize,
     methods: MethodsView,
+    sessions: Vec<SessionRow>,
     identities: Vec<IdentityRow>,
 }
 
@@ -143,6 +149,7 @@ fn notice_text(notice: Option<&str>) -> Option<String> {
         "saved" => "Saved your profile.",
         "removed" => "Removed the way to sign in.",
         "renamed" => "Renamed the passkey.",
+        "revoked" => "Ended that login.",
         "connected" => "Connected your account.",
         "reverified" => {
             "You confirmed it's you. For the next 10 minutes you can add or remove a way to \
@@ -167,6 +174,10 @@ async fn render(app: &WebApp, user: &WebUser, status: StatusCode, state: PageSta
         Ok(methods) => methods,
         Err(err) => return internal_error("cannot look up the sign-in methods", &err),
     };
+    let sessions = match app.sessions_view(user).await {
+        Ok(sessions) => sessions,
+        Err(err) => return internal_error("cannot look up the web sessions", &err),
+    };
     let directory = app.inner.channel.users().get();
     let Some(account) = directory.user(&user.user) else {
         return unavailable();
@@ -186,6 +197,7 @@ async fn render(app: &WebApp, user: &WebUser, status: StatusCode, state: PageSta
         timezone: typed.timezone,
         max_display_name: MAX_DISPLAY_NAME_CHARS,
         methods,
+        sessions,
         identities: account
             .identities
             .iter()

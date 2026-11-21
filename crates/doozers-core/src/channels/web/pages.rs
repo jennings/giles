@@ -769,7 +769,7 @@ enum Item {
 
 /// `GET /chats/<id>/events`: server-sent events, each an HTML fragment for the message list
 /// (event name `message`), starting after `Last-Event-ID` or `?after=`. Ends when the daemon
-/// shuts down.
+/// shuts down, or when the login's session ends ([`WebApp::session_ended`]).
 async fn events(
     State(app): State<WebApp>,
     user: WebUser,
@@ -791,7 +791,8 @@ async fn events(
     let subscription = channel.hub(&chat).subscribe(channel.hubs.after(cursor));
     let stream = event_stream(subscription)
         .map(move |item| Ok::<_, Infallible>(sse_event(&channel, item)))
-        .take_until(app.inner.shutdown.clone().cancelled_owned());
+        .take_until(app.inner.shutdown.clone().cancelled_owned())
+        .take_until(app.clone().session_ended(user.login));
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response()

@@ -37,6 +37,15 @@ use super::signin::LoginOption;
 use super::{COMPONENT, WebChannel, random_hex};
 use crate::http;
 
+/// How often a session's last use is recorded at most.
+const SEEN_EVERY: Duration = Duration::from_secs(10 * 60);
+
+/// How often a long-lived stream checks that its session is still there.
+#[cfg(not(test))]
+const SESSION_RECHECK: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const SESSION_RECHECK: Duration = Duration::from_millis(50);
+
 /// How often expired web sessions are deleted.
 pub const SESSION_EXPIRY_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
@@ -236,12 +245,23 @@ pub(super) async fn authenticate(
     }
 
     let mut stale = false;
-    if let Some(token) = cookie(request.headers(), SESSION_COOKIE) {
+    if let Some(token) = cookie(request.headers(), SESSION_COOKIE).map(str::to_owned) {
+        let token = token.as_str();
         let now = app.inner.clock.now();
         match app.inner.store.web_session(token, now).await {
             Ok(Some(session)) => match channel.cookie_user(&session.user, token) {
                 Some(user) => {
                     request.extensions_mut().insert(user);
+                    // The account page says when a session was last used, about to the nearest
+                    // `SEEN_EVERY`: a write for every request would cost more than it tells. The
+                    // check and the write are apart, so requests at once may each write; the
+                    // time is the same to within moments, which is all the page says.
+                    let due = session.last_seen_at.is_none_or(|seen| {
+                        seen.checked_add(SEEN_EVERY).is_ok_and(|next| next <= now)
+                    });
+                    if due && let Err(err) = app.inner.store.web_session_seen(token, now).await {
+                        warn!(error = %err, "cannot record that a web session was used");
+                    }
                 }
                 None => stale = true,
             },
@@ -257,6 +277,34 @@ pub(super) async fn authenticate(
             .append(SET_COOKIE, clear_session_cookie(https));
     }
     response
+}
+
+impl WebApp {
+    /// Finishes when the cookie session of `login` is gone (revoked, logged out, or expired), and
+    /// never for a login that has no session. A stream that outlives the request it began with
+    /// ends on this, since the check at the start is the only one a request makes: a login that
+    /// was ended must not keep receiving what its user's chats say. It looks every
+    /// [`SESSION_RECHECK`], and a store error is not an ended session.
+    pub(super) async fn session_ended(self, login: Login) {
+        let Login::Cookie(token) = login else {
+            return std::future::pending().await;
+        };
+        let mut ticks = tokio::time::interval(SESSION_RECHECK);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ticks.tick().await;
+        loop {
+            ticks.tick().await;
+            if matches!(
+                self.inner
+                    .store
+                    .web_session(&token, self.inner.clock.now())
+                    .await,
+                Ok(None)
+            ) {
+                return;
+            }
+        }
+    }
 }
 
 impl WebChannel {
