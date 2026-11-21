@@ -54,7 +54,7 @@ impl WebApp {
     /// # Errors
     ///
     /// The store's error, if it can't look the session up.
-    pub(super) async fn may_add_sign_in_method(
+    pub(super) async fn may_change_sign_in_methods(
         &self,
         user: &WebUser,
     ) -> doozers_store::Result<bool> {

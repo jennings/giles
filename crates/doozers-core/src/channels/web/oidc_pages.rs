@@ -145,7 +145,7 @@ impl WebApp {
         &self,
         user: &WebUser,
     ) -> doozers_store::Result<Vec<SetupOption>> {
-        if !self.may_add_sign_in_method(user).await? {
+        if !self.may_change_sign_in_methods(user).await? {
             return Ok(Vec::new());
         }
         let connections = self.inner.store.user_oidc_connections(&user.user).await?;
@@ -352,7 +352,7 @@ async fn connect(
     if let Err(rejected) = check_csrf(&user, &headers, query.csrf.as_deref()) {
         return rejected.into_response();
     }
-    match pages.app.may_add_sign_in_method(&user).await {
+    match pages.app.may_change_sign_in_methods(&user).await {
         Ok(true) => {}
         Ok(false) => return needs_a_link(),
         Err(err) => return internal_error("cannot look up a web session", &err),
@@ -440,7 +440,7 @@ async fn callback(
     if matches!(purpose, Purpose::Connect { .. })
         && let Some(user) = &user
     {
-        match app.may_add_sign_in_method(user).await {
+        match app.may_change_sign_in_methods(user).await {
             Ok(true) => {}
             Ok(false) => return needs_a_link(),
             Err(err) => return internal_error("cannot look up a web session", &err),

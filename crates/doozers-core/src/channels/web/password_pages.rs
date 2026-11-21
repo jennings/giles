@@ -228,7 +228,7 @@ impl WebApp {
         &self,
         user: &WebUser,
     ) -> doozers_store::Result<Option<SetupOption>> {
-        if !self.may_add_sign_in_method(user).await? {
+        if !self.may_change_sign_in_methods(user).await? {
             return Ok(None);
         }
         let has = self.inner.store.user_password(&user.user).await?.is_some();
@@ -317,7 +317,7 @@ async fn setup_page(
     headers: HeaderMap,
     Query(query): Query<SetupQuery>,
 ) -> Response {
-    match app.may_add_sign_in_method(&user).await {
+    match app.may_change_sign_in_methods(&user).await {
         Ok(true) => {}
         Ok(false) => return needs_a_link(),
         Err(err) => return internal_error("cannot look up a web session", &err),
@@ -357,7 +357,7 @@ async fn set_password(
     if let Err(rejected) = check_csrf(&user, &headers, form.csrf.as_deref()) {
         return rejected.into_response();
     }
-    match app.may_add_sign_in_method(&user).await {
+    match app.may_change_sign_in_methods(&user).await {
         Ok(true) => {}
         Ok(false) => return needs_a_link(),
         Err(err) => return internal_error("cannot look up a web session", &err),

@@ -433,8 +433,8 @@ a `public_url` that is unset means no passkeys, even where the request came over
 nothing else says what the RP ID should be.
 
 **Registration.** Only a login that came from an invite or recovery link may add a passkey, as for a
-password, for the same reason (`WebApp::may_add_sign_in_method`). `passkey.js` makes two requests,
-both JSON, both CSRF-checked with the `X-CSRF-Token` header:
+password, for the same reason (`WebApp::may_change_sign_in_methods`). `passkey.js` makes two
+requests, both JSON, both CSRF-checked with the `X-CSRF-Token` header:
 
 1. `POST /setup/passkey/start` `{kind: "discoverable" | "non_resident"}` calls
    `start_passkey_registration` for the user: user verification required, no attestation, the user
@@ -648,7 +648,7 @@ again, instead of being refused because the fetch was a moment ago.
   everyone behind the same address) or fill the table of sign-ins in flight.
 - `GET /setup/oidc/<id>?csrf=` connects an account to the user who is logged in. The setup page's
   link carries the CSRF token of the login, and the login must have come from an invite or recovery
-  link (`may_add_sign_in_method`), the same rule as for a password or a passkey.
+  link (`may_change_sign_in_methods`), the same rule as for a password or a passkey.
 
 A start discovers the provider, makes a `Flow` (the nonce, the PKCE verifier, the provider, its
 issuer then, and whether it is a sign-in or a connection by which user), keeps it in a `Pending`

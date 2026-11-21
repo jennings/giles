@@ -133,7 +133,7 @@ impl WebApp {
         &self,
         user: &WebUser,
     ) -> doozers_store::Result<Option<SetupOption>> {
-        if !self.may_add_sign_in_method(user).await? {
+        if !self.may_change_sign_in_methods(user).await? {
             return Ok(None);
         }
         let have = self.inner.store.user_passkeys(&user.user).await?.len();
@@ -192,7 +192,7 @@ async fn setup_page(
     user: WebUser,
     Query(query): Query<SetupQuery>,
 ) -> Response {
-    match app.may_add_sign_in_method(&user).await {
+    match app.may_change_sign_in_methods(&user).await {
         Ok(true) => {}
         Ok(false) => return needs_a_link(),
         Err(err) => return internal_error("cannot look up a web session", &err),
@@ -237,7 +237,7 @@ async fn start(
     if check_csrf(&user, &headers, None).is_err() {
         return out_of_date();
     }
-    match app.may_add_sign_in_method(&user).await {
+    match app.may_change_sign_in_methods(&user).await {
         Ok(true) => {}
         Ok(false) => return needs_a_link_json(),
         Err(err) => return internal_error("cannot look up a web session", &err),
@@ -311,7 +311,7 @@ async fn finish(
     if check_csrf(&user, &headers, None).is_err() {
         return out_of_date();
     }
-    match app.may_add_sign_in_method(&user).await {
+    match app.may_change_sign_in_methods(&user).await {
         Ok(true) => {}
         Ok(false) => return needs_a_link_json(),
         Err(err) => return internal_error("cannot look up a web session", &err),
