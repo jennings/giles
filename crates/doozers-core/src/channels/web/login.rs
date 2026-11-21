@@ -40,11 +40,11 @@ use crate::http;
 /// How often a session's last use is recorded at most.
 const SEEN_EVERY: Duration = Duration::from_secs(10 * 60);
 
-/// How often a long-lived stream checks that its session is still there.
+/// How often a long-lived stream checks that its login is still there.
 #[cfg(not(test))]
-const SESSION_RECHECK: Duration = Duration::from_secs(5);
+const LOGIN_RECHECK: Duration = Duration::from_secs(5);
 #[cfg(test)]
-const SESSION_RECHECK: Duration = Duration::from_millis(50);
+const LOGIN_RECHECK: Duration = Duration::from_millis(50);
 
 /// How often expired web sessions are deleted.
 pub const SESSION_EXPIRY_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -280,27 +280,36 @@ pub(super) async fn authenticate(
 }
 
 impl WebApp {
-    /// Finishes when the cookie session of `login` is gone (revoked, logged out, or expired), and
-    /// never for a login that has no session. A stream that outlives the request it began with
-    /// ends on this, since the check at the start is the only one a request makes: a login that
-    /// was ended must not keep receiving what its user's chats say. It looks every
-    /// [`SESSION_RECHECK`], and a store error is not an ended session.
-    pub(super) async fn session_ended(self, login: Login) {
-        let Login::Cookie(token) = login else {
-            return std::future::pending().await;
-        };
-        let mut ticks = tokio::time::interval(SESSION_RECHECK);
+    /// Finishes when a login is over: its cookie session is gone (revoked, logged out, or
+    /// expired), or it no longer logs `user` in, as the same check at the start of a request says
+    /// it ([`authenticate`]): the user is disabled or removed, or `sender`, the identity the login
+    /// acts as, isn't one of theirs any more (an admin changed a proxy identity, which also ends a
+    /// login through the trusted proxy, the one that has no session). A stream that outlives the
+    /// request it began with ends on this, since the check at the start is the only one a request
+    /// makes: a login that was ended must not keep receiving what its user's chats say. It looks
+    /// every [`LOGIN_RECHECK`], and a store error is not an ended login.
+    pub(super) async fn login_ended(self, user: UserId, sender: NativeId, login: Login) {
+        let mut ticks = tokio::time::interval(LOGIN_RECHECK);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         ticks.tick().await;
         loop {
             ticks.tick().await;
-            if matches!(
-                self.inner
-                    .store
-                    .web_session(&token, self.inner.clock.now())
-                    .await,
-                Ok(None)
-            ) {
+            let directory = self.inner.channel.users().get();
+            let logs_in = directory
+                .resolve(COMPONENT, &sender)
+                .is_some_and(|known| known.id == user && known.is_active());
+            if !logs_in {
+                return;
+            }
+            if let Login::Cookie(token) = &login
+                && matches!(
+                    self.inner
+                        .store
+                        .web_session(token, self.inner.clock.now())
+                        .await,
+                    Ok(None)
+                )
+            {
                 return;
             }
         }

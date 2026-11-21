@@ -1828,9 +1828,12 @@ JavaScript. `AccountPages` holds the `WebApp` and the `Users`, and converts to t
   by user and id together, so another user's id, one nobody has, and one that isn't 32 lowercase hex
   digits are all the same 404. Revoking the current session also deletes the cookie and goes to `/`,
   as logging out does. The event streams a login opened (`GET /chats/<id>/events`) end with it: each
-  one watches its own cookie session (`WebApp::session_ended`, every 5 seconds) and closes when the
-  session is revoked, logged out, or expired, so a login that was ended stops receiving what the
-  user's chats say. It needs no confirmation, because it adds no access. A proxy login has no
+  one watches its login (`WebApp::login_ended`, every 5 seconds) and closes when the cookie session
+  is revoked, logged out, or expired, or when the login no longer logs its user in: the user is
+  disabled or removed, or the identity the login acts as isn't theirs any more, which is the
+  `authenticate` check made again (a proxy login, which has no session, ends on that alone, such as
+  when an admin changes the user's proxy identity), so a login that was ended stops receiving what
+  the user's chats say. It needs no confirmation, because it adds no access. A proxy login has no
   session of its own, so none is marked, and the user's cookie logins are listed.
 - **Channel identities.** The page lists the user's identities, marks the default, and links to the
   [Identities page](#identities-page), which stays where it was and does the adding and removing.

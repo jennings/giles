@@ -1228,3 +1228,86 @@ async fn ending_a_login_ends_the_live_streams_it_opened() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn a_login_that_no_longer_logs_its_user_in_ends_its_live_streams() {
+    use std::time::Duration;
+    let p = Page::new().await;
+    let chat = "0123456789abcdef0123456789abcdef";
+    let path = format!("/chats/{chat}/events");
+    let open = |router: axum::Router, headers: Vec<(&'static str, String)>| {
+        let path = path.clone();
+        async move {
+            let sent: Vec<(&str, &str)> = headers.iter().map(|(n, v)| (*n, v.as_str())).collect();
+            let response = call(router, Method::GET, &path, &sent, None).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            response.into_body().into_data_stream()
+        }
+    };
+    let ended = |mut stream: axum::body::BodyDataStream| async move {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while stream.next().await.is_some() {}
+        })
+        .await
+        .is_ok()
+    };
+    let cookie = async |user: &str| {
+        let browser = p.login(user).await;
+        open(p.router(), vec![("cookie", session(&browser.token))]).await
+    };
+    let proxy = async |sender: &str| {
+        let mut who = proxy_mia();
+        who.sender = NativeId::new(sender).unwrap();
+        open(p.router().layer(Extension(who)), vec![]).await
+    };
+    let now = Timestamp::now;
+
+    // The user is disabled: the session is still stored, and both kinds of login end.
+    let (by_cookie, by_proxy) = (cookie("mia").await, proxy("mia").await);
+    let mut other = cookie("root").await;
+    p.users
+        .set_state(&id("mia"), doozers_store::UserState::Disabled, now())
+        .await
+        .unwrap();
+    assert!(ended(by_cookie).await, "a cookie login's stream ends");
+    assert!(ended(by_proxy).await, "a proxy login's stream ends");
+    // Another user's stream stays.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(400), other.next())
+            .await
+            .is_err()
+    );
+    p.users
+        .set_state(&id("mia"), doozers_store::UserState::Active, now())
+        .await
+        .unwrap();
+
+    // An admin changes the proxy identity the proxy logs her in as: the browser behind the old
+    // header stops, and the one behind the new header would be hers.
+    p.users
+        .set_proxy_identity(&id("mia"), Some("mia@corp.example"), now())
+        .await
+        .unwrap();
+    let old = proxy("mia@corp.example").await;
+    let mut kept = cookie("mia").await;
+    p.users
+        .set_proxy_identity(&id("mia"), Some("mia@new.example"), now())
+        .await
+        .unwrap();
+    assert!(ended(old).await, "the old proxy identity's stream ends");
+    // Her cookie login acts as `web:mia`, which a new proxy identity doesn't take away.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(400), kept.next())
+            .await
+            .is_err()
+    );
+
+    // The user is removed: both kinds of login end.
+    let (by_cookie, by_proxy) = (cookie("mia").await, proxy("mia").await);
+    p.users.remove(&id("mia")).await.unwrap();
+    assert!(
+        ended(by_cookie).await,
+        "a removed user's cookie stream ends"
+    );
+    assert!(ended(by_proxy).await, "a removed user's proxy stream ends");
+}
