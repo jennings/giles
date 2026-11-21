@@ -137,17 +137,18 @@ rules apply, and `before_migrate` receives that file's plan.
 - Row ids are opaque newtypes (`SessionId`, ...) over SQLite rowids.
 - Agent, user, channel instance, and conversation ids are stored as their string forms.
 
-## Schema (version 19)
+## Schema (version 20)
 
 The files in `crates/doozers-store/src/migrations/` are the authority. `0001_initial.sql` has every
 table but `blobs`, `routes`, `toolsets`, `workspaces`, `secrets`, `secret_key`,
 `archived_conversations`, `ssh_keys`, `ssh_known_hosts`, `users`, `user_identities`,
-`users_imported`, `user_invites`, and `user_passwords`, which `0002_blobs.sql`, `0003_routes.sql`,
-`0004_toolsets.sql`, `0005_workspaces.sql`, `0007_secrets.sql`, `0009_archived_conversations.sql`,
-`0012_ssh_keys.sql`, `0014_ssh_known_hosts.sql`, `0015_users.sql`, `0018_user_invites.sql`, and
-`0019_user_passwords.sql` add (`0013_workspace_key_user.sql` adds `workspaces.key_user`,
-`0016_workspace_user.sql` adds `workspaces.user_id`, and `0018_user_invites.sql` adds
-`web_sessions.method`). This is their outline.
+`users_imported`, `user_invites`, `user_passwords`, `user_passkeys`, and `passkey_fake_key`, which
+`0002_blobs.sql`, `0003_routes.sql`, `0004_toolsets.sql`, `0005_workspaces.sql`, `0007_secrets.sql`,
+`0009_archived_conversations.sql`, `0012_ssh_keys.sql`, `0014_ssh_known_hosts.sql`,
+`0015_users.sql`, `0018_user_invites.sql`, `0019_user_passwords.sql`, and `0020_user_passkeys.sql`
+add (`0013_workspace_key_user.sql` adds `workspaces.key_user`, `0016_workspace_user.sql` adds
+`workspaces.user_id`, and `0018_user_invites.sql` adds `web_sessions.method`). This is their
+outline.
 
 | Table          | Columns and rules                                                                    |
 | -------------- | ------------------------------------------------------------------------------------ |
@@ -176,6 +177,8 @@ table but `blobs`, `routes`, `toolsets`, `workspaces`, `secrets`, `secret_key`,
 | `users_imported` | One row, once the `[owner]` of `doozers.toml` was imported: `at`.                  |
 | `user_invites` | The one-time invite and recovery links: `token_hash` (SHA-256 of the token), `user_id` (cascades), `kind` (`invite`, `recovery`), `created_by` (null for the operator, and set null when that admin is removed), `created_at`, `expires_at`, `used_at`. See [User invites](#user-invites). |
 | `user_passwords` | The passwords users sign in with: `user_id` (primary key, cascades), `hash` (an Argon2id PHC string), `changed_at`. See [User passwords](#user-passwords). |
+| `user_passkeys` | The passkeys users sign in with: `id` (`AUTOINCREMENT`, never reused), `user_id` (cascades), `credential_id` (unique across users), `credential` (the WebAuthn library's serialized credential, JSON), `kind` (`discoverable`, `non_resident`), `name`, `created_at`, `last_used_at`. See [User passkeys](#user-passkeys). |
+| `passkey_fake_key` | One row, once a sign-in page has needed it: the 32-byte key stand-in credential ids are made with. See [User passkeys](#user-passkeys). |
 
 `pairings` is deferred with multi-user support (PLAN 1.1, D49) and doesn't exist yet.
 
@@ -561,7 +564,7 @@ inside the write transaction of the change.
 | `user_create(user, identities, now)`    | Creates an active user with identities verified at `now`. `Error::UserIdTaken`, `Error::UsernameTaken`, or `Error::IdentityTaken` store nothing. The default identity must be one of the identities. |
 | `user_set_state(id, state, now)`        | Sets `active` or `disabled`; `Error::NoSuchUser` if absent. `Error::LastAdmin` for disabling the last active admin. |
 | `user_set_role(id, role, now)`          | Sets `admin` or `member`; `Error::NoSuchUser` if absent. `Error::LastAdmin` for demoting the last active admin. |
-| `user_delete(id)`                       | Deletes the user and, by cascade, their identities and invite links, clears `created_by` on the links they made, and returns the user as it was; nothing else the user owns. `Error::NoSuchUser` if absent, `Error::LastAdmin` for the last active admin. |
+| `user_delete(id)`                       | Deletes the user and, by cascade, their identities, invite links, password, and passkeys, clears `created_by` on the links they made, and returns the user as it was; what else the user owns (web login sessions, conversations, memories, secrets) stays. `Error::NoSuchUser` if absent, `Error::LastAdmin` for the last active admin. |
 | `user_identity_add(id, identity, now)`  | Adds an identity; the user's first becomes their default. `Error::IdentityTaken` if any user has it. |
 | `user_identity_remove(id, identity, now)` | Removes an identity, named as `<namespace>:<native id>`. If it was the default, the oldest one left is, or there is none. |
 | `users_imported`                        | Whether the import below has run.                                |
@@ -606,6 +609,28 @@ password: hashing and checking belong to the caller. The web channel does them o
 | ----------------------------------------- | --------------------------------------------------------------------- |
 | `user_password_set(user, hash, now)`      | Sets the hash, replacing the user's old one. `Error::NoSuchUser` if the user doesn't exist, `Error::InvalidRequest` for an empty string. |
 | `user_password(user)`                     | The `StoredPassword` (`hash`, `changed_at`), if the user has one.     |
+
+## User passkeys
+
+`user_passkeys` holds the passkeys users sign in with, any number per user. The row keeps the
+authenticator's `credential_id`, which is unique across all users because a sign-in finds the user
+by it, and the `credential`: the JSON the WebAuthn library serializes for a `Passkey` (public key,
+signature counter, backup flags, and the transports the browser reported). The store never parses
+it. `kind` is `discoverable` for a passkey made with "Add a passkey" and `non_resident` for one made
+with "Add a non-resident key" on the web channel's setup page. The rows go when the user does.
+
+`passkey_fake_key` is one row of 32 random bytes. The login page answers a username that has no
+passkeys, real or not, with credential ids made up from this key and the name, so the answer doesn't
+say which usernames exist. The ids must be the same after a restart, or the change would tell
+made-up ids from real ones, so the key is stored.
+
+| Method                                         | Contract                                                      |
+| ---------------------------------------------- | ------------------------------------------------------------- |
+| `user_passkey_add(new, now)`                   | Adds a passkey and returns it. `Error::NoSuchUser` if the user doesn't exist, `Error::Conflict` if any passkey has the credential id, `Error::InvalidRequest` for an empty credential id, credential, or name. |
+| `user_passkeys(user)`                          | The user's passkeys, oldest first.                            |
+| `user_passkey_by_credential(credential_id)`    | The passkey with that credential id, whoever it belongs to.   |
+| `user_passkey_used(id, credential, now)`       | Stores the new serialized credential (its counter moved) and `last_used_at`; `false` if there is no such passkey. |
+| `passkey_fake_key(candidate)`                  | The stored stand-in key; if none is stored, stores `candidate` and returns it. |
 
 ## Toolsets
 

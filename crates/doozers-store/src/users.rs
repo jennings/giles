@@ -463,9 +463,10 @@ impl Store {
         .await
     }
 
-    /// Deletes the account of user `id`, its identities, and its invite links, and returns the user
-    /// as it was. Links the user made stay, with no creator. It deletes nothing else: what the user
-    /// owns (sessions, memories, secrets) is the caller's to delete.
+    /// Deletes the account of user `id` and, by cascade, its identities, invite links, password, and
+    /// passkeys, and returns the user as it was. Links the user made stay, with no creator. It
+    /// deletes nothing else: what the user owns (web login sessions, conversations, memories,
+    /// secrets) stays, and is the caller's to delete.
     ///
     /// # Errors
     ///

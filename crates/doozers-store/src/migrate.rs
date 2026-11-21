@@ -98,6 +98,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "0019_user_passwords",
         sql: include_str!("migrations/0019_user_passwords.sql"),
     },
+    Migration {
+        name: "0020_user_passkeys",
+        sql: include_str!("migrations/0020_user_passkeys.sql"),
+    },
 ];
 
 /// The schema version this binary writes.
@@ -331,6 +335,8 @@ mod tests {
             "archived_conversations",
             "user_invites",
             "user_passwords",
+            "user_passkeys",
+            "passkey_fake_key",
         ] {
             assert!(tables(&conn).iter().any(|t| t == table), "missing {table}");
         }
