@@ -22,12 +22,12 @@ use doozers_types::UserId;
 use serde::Deserialize;
 use tracing::{debug, info, warn};
 
-use super::auth::{Login, TrustedProxy, WebUser, check_csrf, check_nonce, clear_nonce_cookie};
+use super::auth::{TrustedProxy, WebUser, check_csrf, check_nonce, clear_nonce_cookie};
 use super::limits::{Limited, client_key, username_key};
 use super::login::{is_https, render_login, start_session};
 use super::pages::{WebApp, error_page, internal_error, no_store};
 use super::password::{self, MAX_CHARS, MIN_CHARS};
-use super::signin::SetupOption;
+use super::signin::{SetupOption, needs_a_link};
 use crate::http::{self, PeerAddr};
 
 /// The password routes: `POST /login/password`, `GET /setup/password`, and `POST /setup/password`.
@@ -214,32 +214,6 @@ fn wait_text(seconds: u64) -> String {
     }
 }
 
-/// Whether `user` may set a password now: they have a cookie session that signed in with an invite
-/// or recovery link.
-async fn may_set_password(app: &WebApp, user: &WebUser) -> doozers_store::Result<bool> {
-    let Login::Cookie(token) = &user.login else {
-        return Ok(false);
-    };
-    let now = app.inner.clock.now();
-    let session = app.inner.store.web_session(token, now).await?;
-    Ok(session.is_some_and(|session| {
-        matches!(
-            session.method,
-            SignInMethod::Invite | SignInMethod::Recovery
-        )
-    }))
-}
-
-/// The answer for a login that may not set a password.
-fn needs_a_link() -> Response {
-    no_store(error_page(
-        StatusCode::FORBIDDEN,
-        "Open a link first",
-        "You set or change a password from a login that came from an invite or recovery link. Ask \
-         an admin for a link, or run `doozers admin login-link` if you run Doozers.",
-    ))
-}
-
 impl WebApp {
     /// The setup page's entry for the password, if `user` may set one: what it offers depends on
     /// whether they have one.
@@ -247,7 +221,7 @@ impl WebApp {
         &self,
         user: &WebUser,
     ) -> doozers_store::Result<Option<SetupOption>> {
-        if !may_set_password(self, user).await? {
+        if !self.may_add_sign_in_method(user).await? {
             return Ok(None);
         }
         let has = self.inner.store.user_password(&user.user).await?.is_some();
@@ -336,7 +310,7 @@ async fn setup_page(
     headers: HeaderMap,
     Query(query): Query<SetupQuery>,
 ) -> Response {
-    match may_set_password(&app, &user).await {
+    match app.may_add_sign_in_method(&user).await {
         Ok(true) => {}
         Ok(false) => return needs_a_link(),
         Err(err) => return internal_error("cannot look up a web session", &err),
@@ -376,7 +350,7 @@ async fn set_password(
     if let Err(rejected) = check_csrf(&user, &headers, form.csrf.as_deref()) {
         return rejected.into_response();
     }
-    match may_set_password(&app, &user).await {
+    match app.may_add_sign_in_method(&user).await {
         Ok(true) => {}
         Ok(false) => return needs_a_link(),
         Err(err) => return internal_error("cannot look up a web session", &err),
