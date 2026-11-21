@@ -110,6 +110,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "0022_user_link_codes",
         sql: include_str!("migrations/0022_user_link_codes.sql"),
     },
+    Migration {
+        name: "0023_web_session_account",
+        sql: include_str!("migrations/0023_web_session_account.sql"),
+    },
 ];
 
 /// The schema version this binary writes.
@@ -351,6 +355,66 @@ mod tests {
         ] {
             assert!(tables(&conn).iter().any(|t| t == table), "missing {table}");
         }
+    }
+
+    #[test]
+    fn the_web_session_migration_keeps_sessions_and_gives_each_an_id() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn, &MIGRATIONS[..22], None).unwrap();
+        conn.execute_batch(
+            "INSERT INTO web_sessions (token_hash, user_id, method, created_at, expires_at)
+             VALUES (zeroblob(32), 'ann', 'password', 1, 9),
+                    (x'0101010101010101010101010101010101010101010101010101010101010101',
+                     'bob', 'recovery', 2, 9);",
+        )
+        .unwrap();
+        assert_eq!(migrate(&mut conn, MIGRATIONS, None).unwrap(), 22);
+        type Row = (String, String, String, Option<i64>, Option<i64>);
+        let rows: Vec<Row> = conn
+            .prepare(
+                "SELECT id, user_id, method, last_seen_at, reverified_at
+                 FROM web_sessions ORDER BY created_at",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            (rows[0].1.as_str(), rows[0].2.as_str()),
+            ("ann", "password")
+        );
+        assert_eq!(
+            (rows[1].1.as_str(), rows[1].2.as_str()),
+            ("bob", "recovery")
+        );
+        assert!(
+            rows.iter()
+                .all(|r| r.0.len() == 32 && r.3.is_none() && r.4.is_none())
+        );
+        assert_ne!(rows[0].0, rows[1].0);
+        // The rebuilt table keeps the method's check and makes ids unique.
+        let unknown = conn.execute(
+            "INSERT INTO web_sessions (token_hash, id, user_id, method, created_at, expires_at)
+             VALUES (zeroblob(31) || x'02', lower(hex(randomblob(16))), 'ann', 'telepathy', 1, 2)",
+            [],
+        );
+        assert!(unknown.is_err(), "the method is one the store knows");
+        let duplicate = conn.execute(
+            "INSERT INTO web_sessions (token_hash, id, user_id, method, created_at, expires_at)
+             SELECT zeroblob(31) || x'03', id, 'ann', 'password', 1, 2 FROM web_sessions LIMIT 1",
+            [],
+        );
+        assert!(duplicate.is_err(), "a session id is unique");
     }
 
     #[test]
@@ -616,8 +680,8 @@ mod tests {
             .unwrap();
         assert_eq!(method, "recovery");
         let unknown = conn.execute(
-            "INSERT INTO web_sessions (token_hash, user_id, method, created_at, expires_at)
-             VALUES (zeroblob(31) || x'01', 'owner', 'telepathy', 1, 2)",
+            "INSERT INTO web_sessions (token_hash, id, user_id, method, created_at, expires_at)
+             VALUES (zeroblob(31) || x'01', lower(hex(randomblob(16))), 'owner', 'telepathy', 1, 2)",
             [],
         );
         assert!(unknown.is_err(), "the method is one the store knows");

@@ -137,7 +137,7 @@ rules apply, and `before_migrate` receives that file's plan.
 - Row ids are opaque newtypes (`SessionId`, ...) over SQLite rowids.
 - Agent, user, channel instance, and conversation ids are stored as their string forms.
 
-## Schema (version 22)
+## Schema (version 23)
 
 The files in `crates/doozers-store/src/migrations/` are the authority. `0001_initial.sql` has every
 table but `blobs`, `routes`, `toolsets`, `workspaces`, `secrets`, `secret_key`,
@@ -148,8 +148,9 @@ table but `blobs`, `routes`, `toolsets`, `workspaces`, `secrets`, `secret_key`,
 `0009_archived_conversations.sql`, `0012_ssh_keys.sql`, `0014_ssh_known_hosts.sql`,
 `0015_users.sql`, `0018_user_invites.sql`, `0019_user_passwords.sql`, `0020_user_passkeys.sql`,
 `0021_oidc.sql`, and `0022_user_link_codes.sql` add (`0013_workspace_key_user.sql` adds
-`workspaces.key_user`, `0016_workspace_user.sql` adds `workspaces.user_id`, and
-`0018_user_invites.sql` adds `web_sessions.method`). This is their outline.
+`workspaces.key_user`, `0016_workspace_user.sql` adds `workspaces.user_id`, `0018_user_invites.sql`
+adds `web_sessions.method`, and `0023_web_session_account.sql` adds `web_sessions.id`,
+`last_seen_at`, and `reverified_at`). This is their outline.
 
 | Table          | Columns and rules                                                                    |
 | -------------- | ------------------------------------------------------------------------------------ |
@@ -162,7 +163,7 @@ table but `blobs`, `routes`, `toolsets`, `workspaces`, `secrets`, `secret_key`,
 | `jobs`         | Runtime jobs: `agent`, `creator`, `spec` (JSON), `created_at`; ids never reused.      |
 | `job_runs`     | (`agent`, `job`) to `last_run_at`; `job` is `config:<id>` or `runtime:<jobs.id>`.      |
 | `usage`        | `at`, `provider`, `model`, `agent`, `user_id`, `session_id`, four token counts, `fallback`. |
-| `web_sessions` | `token_hash` (SHA-256 of the cookie token), `user_id`, `method` (how it signed in: `invite`, `recovery`, `password`, `passkey`, `oidc`), `created_at`, `expires_at`. |
+| `web_sessions` | `token_hash` (SHA-256 of the cookie token), `id` (random, unique: what the account page names the session by), `user_id`, `method` (how it signed in: `invite`, `recovery`, `password`, `passkey`, `oidc`), `created_at`, `expires_at`, `last_seen_at`, `reverified_at`. |
 | `blobs`        | `id` (hex SHA-256), `size`, `media_type`, `name`, `created_at`, `stored_at` (latest put). |
 | `routes`       | The ordered routing rules: `position` (dense, 0 first), `channel`, `kind` (`direct`, `group`), `conversation` (each null for any), `agent`. Ids are `AUTOINCREMENT`, never reused. |
 | `routes_imported` | One row, once the `[[routes]]` of `doozers.toml` were imported: `at`.                |
@@ -502,6 +503,17 @@ collision) takes the `SignInMethod` the session signed in with, which `web_sessi
 `web_sessions_expire(now)`. The 30-day lifetime is the caller's `expires_at`. Sessions that existed
 before the column was added are `recovery`, since the one-time login link they came from is what a
 recovery link replaced.
+
+Each session also has an opaque `id`, 32 random hex digits made by the database when the row is
+inserted. It has nothing to do with the token or its hash, so the account page can list and revoke
+sessions without showing anything that could log someone in. `web_sessions_of(user, now)` lists a
+user's unexpired sessions, newest first. `web_session_revoke(user, id)` deletes by user and id
+together, so another user's id finds nothing (`false`). `web_session_seen(token, now)` sets
+`last_seen_at`; the caller decides how often, because a write for every request would be a cost for
+nothing. `web_session_reverified(token, now)` sets `reverified_at`, the time the user last proved
+who they are again in that session, which tells the caller whether the user proved it recently
+enough. The migration rebuilt the table to make `id` `NOT NULL` and `UNIQUE`, and gave every
+existing session an id.
 
 ## Routes
 
