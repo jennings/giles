@@ -150,7 +150,7 @@ impl Hosts {
 }
 
 #[tokio::test]
-async fn every_route_needs_a_login_and_the_owner() {
+async fn every_route_needs_a_login_and_an_admin() {
     let hosts = Hosts::new().await;
     let id = hosts.record("box", "github.com", 22, &Key::new()).await;
     let routes = [
@@ -184,7 +184,7 @@ async fn every_route_needs_a_login_and_the_owner() {
             .send(&guest(), method.clone(), path, form.as_deref())
             .await;
         assert_eq!(answer.status, StatusCode::FORBIDDEN, "{method} {path}");
-        assert!(answer.body.contains("Only the owner"), "{path}");
+        assert!(answer.body.contains("Only an admin"), "{path}");
     }
     let rows = hosts.rows().await;
     assert_eq!(rows.len(), 1, "nothing was added or deleted");
@@ -579,9 +579,9 @@ async fn a_pasted_line_is_escaped() {
 }
 
 #[tokio::test]
-async fn the_sidebar_links_the_page_for_the_owner_only() {
+async fn the_sidebar_links_the_page_for_admins_only() {
     let hosts = Hosts::new().await;
-    // A non-owner is refused, so its sidebar comes from the shell: any page it can open shows it.
+    // A member is refused, so its sidebar comes from the shell: any page it can open shows it.
     let shell =
         crate::channels::web::shell::Shell::new(&guest(), crate::channels::web::shell::Nav::Chats);
     let links: Vec<&str> = shell

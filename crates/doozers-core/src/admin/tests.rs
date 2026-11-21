@@ -30,6 +30,8 @@ use crate::toolsets::{
     AgentGlobChange, GlobChange, Removed, ToolsetManagerError, ToolsetRenamed, ToolsetSource,
     ToolsetView,
 };
+use crate::users::{UserList, Users};
+use doozers_store::{InviteKind, NewUser, Role, UserState};
 
 const CONFIG: &str = r#"
 [owner]
@@ -109,20 +111,9 @@ impl PluginControl for FakeControl {
 
 struct FakeLinks;
 
-impl LoginLinks for FakeLinks {
-    fn create_login_link(
-        &self,
-        user: &UserId,
-        now: Timestamp,
-    ) -> Result<LoginLink, LoginLinkError> {
-        match user.as_str() {
-            "owner" => Ok(LoginLink {
-                url: "http://127.0.0.1:8080/login/abc".into(),
-                expires_at: now + jiff::SignedDuration::from_mins(15),
-            }),
-            "guest" => Err(LoginLinkError::Refused("no web identity".into())),
-            other => Err(LoginLinkError::UnknownUser(format!("no user {other}"))),
-        }
+impl InviteLinks for FakeLinks {
+    fn invite_url(&self, token: &str) -> String {
+        format!("http://127.0.0.1:8080/invite/{token}")
     }
 }
 
@@ -407,6 +398,7 @@ struct Harness {
     _dir: TempDir,
     root: DataRoot,
     store: Store,
+    users: Arc<Users>,
     statuses: Arc<FakeStatuses>,
     shutdown: CancellationToken,
     server: JoinHandle<Result<(), tonic::transport::Error>>,
@@ -419,6 +411,8 @@ struct Fakes {
     control: Option<Arc<dyn PluginControl>>,
     toolsets: Option<Arc<dyn ToolsetAdmin>>,
     links: bool,
+    /// A fresh install: `doozers.toml` has no `[owner]`.
+    fresh: bool,
     sandbox: Option<Result<HostReport, String>>,
 }
 
@@ -427,7 +421,12 @@ impl Harness {
         let dir = tempfile::tempdir().unwrap();
         let root = DataRoot::new(dir.path(), Path::new("/tmp")).unwrap();
         root.create_layout().unwrap();
-        std::fs::write(root.config_file(), CONFIG).unwrap();
+        let config_text = if fakes.fresh {
+            CONFIG.replace("[owner]\nidentities = [\"web:owner\"]\n", "")
+        } else {
+            CONFIG.to_owned()
+        };
+        std::fs::write(root.config_file(), config_text).unwrap();
         let mut config = Config::load_with(
             &root,
             &LoadOptions {
@@ -443,6 +442,16 @@ impl Harness {
             .await
             .unwrap();
         let statuses = Arc::new(FakeStatuses::default());
+        let users = Arc::new(
+            Users::open(
+                store.clone(),
+                UserList::default(),
+                &config,
+                &root.config_file(),
+            )
+            .await
+            .unwrap(),
+        );
         let lock = InstanceLock::acquire(&root).unwrap();
         let listener = AdminListener::bind(&root, &lock).unwrap();
         let service = Arc::new(AdminService::new(AdminOptions {
@@ -456,9 +465,10 @@ impl Harness {
             started_at: at(0),
             channels: statuses.clone(),
             plugins: fakes.control,
-            login_links: fakes
+            invite_links: fakes
                 .links
-                .then(|| Arc::new(FakeLinks) as Arc<dyn LoginLinks>),
+                .then(|| Arc::new(FakeLinks) as Arc<dyn InviteLinks>),
+            users: users.clone(),
             toolsets: fakes.toolsets,
             clock: Arc::new(FixedClock),
         }));
@@ -468,6 +478,7 @@ impl Harness {
             _dir: dir,
             root,
             store,
+            users,
             statuses,
             shutdown,
             server,
@@ -1344,8 +1355,14 @@ async fn sessions_are_listed_and_reset() {
     h.stop().await;
 }
 
+/// The token at the end of a link's URL.
+fn token_of(url: &str) -> &str {
+    url.strip_prefix("http://127.0.0.1:8080/invite/")
+        .unwrap_or_else(|| panic!("{url}"))
+}
+
 #[tokio::test]
-async fn login_links_come_from_the_web_channel() {
+async fn login_links_are_recovery_links_the_web_channel_places() {
     let request = |user: &str| pb::CreateLoginLinkRequest { user: user.into() };
 
     let h = Harness::start(Fakes::default()).await;
@@ -1364,14 +1381,42 @@ async fn login_links_come_from_the_web_channel() {
         ..Fakes::default()
     })
     .await;
+    // The imported owner and users made since.
+    let member = |id: &str| NewUser {
+        id: UserId::new(id).unwrap(),
+        username: id.to_owned(),
+        display_name: id.to_owned(),
+        role: Role::Member,
+        timezone: None,
+        default_identity: None,
+    };
+    for id in ["guest", "away"] {
+        h.users.create(member(id), vec![], at(1)).await.unwrap();
+    }
+    h.users
+        .set_state(&UserId::new("away").unwrap(), UserState::Disabled, at(2))
+        .await
+        .unwrap();
     let mut client = h.client().await;
     let link = client
         .create_login_link(request("owner"))
         .await
         .unwrap()
         .into_inner();
-    assert_eq!(link.url, "http://127.0.0.1:8080/login/abc");
-    assert_eq!(link.expires_at.unwrap().seconds, at(1000).as_second() + 900);
+    // The link is a recovery row, which works once for 72 hours from now, the operator's.
+    let expires_at = at(1000 + 72 * 60 * 60);
+    assert_eq!(link.expires_at.unwrap().seconds, expires_at.as_second());
+    let stored = h
+        .store
+        .user_invite(token_of(&link.url), at(1001))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (stored.user.as_str(), stored.kind, stored.created_by),
+        ("owner", InviteKind::Recovery, None)
+    );
+    assert_eq!(stored.expires_at, expires_at);
     let code = |user| {
         let mut client = client.clone();
         async move {
@@ -1382,9 +1427,124 @@ async fn login_links_come_from_the_web_channel() {
                 .code()
         }
     };
-    assert_eq!(code("guest").await, Code::FailedPrecondition);
+    // A disabled user can't be signed in, and no row is written for them.
+    assert_eq!(code("away").await, Code::FailedPrecondition);
     assert_eq!(code("stranger").await, Code::NotFound);
+    // With users, one must be named.
     assert_eq!(code("").await, Code::InvalidArgument);
+    // Any active user gets a link, and with it the identity the web sign-in acts as.
+    let guest = client
+        .create_login_link(request("guest"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(guest.user, "guest");
+    let stored = h
+        .store
+        .user_invite(token_of(&guest.url), at(1001))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.user.as_str(), "guest");
+    let directory = h.users.list().get();
+    let guest = directory.user(&UserId::new("guest").unwrap()).unwrap();
+    assert_eq!(
+        guest
+            .identities
+            .iter()
+            .map(|i| i.identity.as_str())
+            .collect::<Vec<_>>(),
+        ["web:guest"]
+    );
+    // A second link for the same user doesn't replace the first.
+    let again = client
+        .create_login_link(request("owner"))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_ne!(again.url, link.url);
+    for url in [&again.url, &link.url] {
+        let found = h.store.user_invite(token_of(url), at(1001)).await.unwrap();
+        assert!(found.is_some(), "{url}");
+    }
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_fresh_install_gets_its_first_admin_from_the_first_login_link() {
+    let request = || pb::CreateLoginLinkRequest {
+        user: String::new(),
+    };
+    // Without a web channel there's no link, and no user is made for it.
+    let h = Harness::start(Fakes {
+        fresh: true,
+        ..Fakes::default()
+    })
+    .await;
+    assert!(h.users.list().get().users().is_empty());
+    let err = h
+        .client()
+        .await
+        .create_login_link(request())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::Unavailable);
+    assert!(h.users.list().get().users().is_empty());
+    h.stop().await;
+
+    let h = Harness::start(Fakes {
+        fresh: true,
+        links: true,
+        ..Fakes::default()
+    })
+    .await;
+    let mut client = h.client().await;
+    let link = client
+        .create_login_link(request())
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(
+        link.url.starts_with("http://127.0.0.1:8080/invite/"),
+        "{}",
+        link.url
+    );
+    let stored = h
+        .store
+        .user_invite(token_of(&link.url), at(1001))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.kind, InviteKind::Recovery);
+    assert_eq!(stored.user.as_str(), "owner");
+    let directory = h.users.list().get();
+    let [first] = directory.users() else {
+        panic!("{:?}", directory.users());
+    };
+    assert_eq!(first.id.as_str(), "owner");
+    assert_eq!(first.role, Role::Admin);
+    assert!(first.is_active());
+    assert_eq!(
+        first.default_identity.as_ref().map(|i| i.as_str()),
+        Some("web:owner")
+    );
+    assert_eq!(
+        (link.user.as_str(), link.username.as_str()),
+        ("owner", "admin")
+    );
+    // The first admin is stored, and with one user the next link needs no name.
+    assert_eq!(h.store.users().await.unwrap().len(), 1);
+    let next = client
+        .create_login_link(request())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(next.user, "owner");
+    assert_eq!(h.store.users().await.unwrap().len(), 1);
+    let again = pb::CreateLoginLinkRequest {
+        user: "owner".into(),
+    };
+    assert!(client.create_login_link(again).await.is_ok());
     h.stop().await;
 }
 

@@ -1,57 +1,193 @@
-//! The web login (PLAN section 3.4): the authentication middleware, the one-time login link pages,
-//! logout, and deleting expired sessions.
+//! The web login (PLAN section 3.4): the authentication middleware, the login page, starting a
+//! session, logout, and deleting expired sessions and invites. The invite and recovery links that
+//! sign a browser in are in [`invite`](super::invite), and password sign-in in
+//! [`password_pages`](super::password_pages).
 //!
 //! - A request through the trusted-proxy listener (marked [`TrustedProxy`]) that carries the
-//!   proxy's identity header is the user that header names, if it's one of the owner's `web`
-//!   identities. Nothing else ever reads that header.
-//! - Otherwise the session cookie, if it names a live `web_sessions` row, is the user. A stale
-//!   cookie is deleted in the response.
-//! - Otherwise the request has no [`WebUser`] and the pages answer with the login page.
+//!   proxy's identity header is the active user who has that `web` identity. Nothing else ever
+//!   reads that header.
+//! - Otherwise the session cookie, if it names a live `web_sessions` row of an active user who
+//!   still has their `web` identity, is the user. A stale cookie is deleted in the response.
+//! - Otherwise the request has no [`WebUser`] and the pages answer 401 with a pointer to the login
+//!   page, `GET /login`, which lists the ways to sign in.
 
 use std::time::Duration;
 
 use askama::Template;
 use axum::Extension;
 use axum::Router;
-use axum::extract::{Form, Path, Request, State};
-use axum::http::header::SET_COOKIE;
+use axum::extract::{Form, Request, State};
+use axum::http::header::{HOST, SET_COOKIE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
+use doozers_store::SignInMethod;
 use doozers_types::{NativeId, UserId};
 use serde::Deserialize;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use super::auth::{
     Login, SESSION_COOKIE, TrustedProxy, WEB_SESSION_TTL, WebUser, check_csrf,
-    clear_session_cookie, cookie, cookie_csrf, proxy_csrf, session_cookie,
+    clear_session_cookie, cookie, cookie_csrf, nonce_cookie, nonce_for_form, proxy_csrf,
+    session_cookie,
 };
 use super::pages::{WebApp, error_page, internal_error, no_store};
-use super::{COMPONENT, WebChannel, links, random_hex};
+use super::signin::LoginOption;
+use super::{COMPONENT, WebChannel, random_hex};
 use crate::http;
-use crate::identity;
+
+/// How often a session's last use is recorded at most.
+const SEEN_EVERY: Duration = Duration::from_secs(10 * 60);
+
+/// How often a long-lived stream checks that its login is still there.
+#[cfg(not(test))]
+const LOGIN_RECHECK: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const LOGIN_RECHECK: Duration = Duration::from_millis(50);
 
 /// How often expired web sessions are deleted.
 pub const SESSION_EXPIRY_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
-/// The login routes: `GET /login/<token>` (the link), `POST /login` (using it), and
-/// `POST /logout`.
+/// The login routes: `GET /login` and `POST /logout`.
 pub(super) fn routes() -> Router<WebApp> {
     Router::new()
-        .route("/login/{token}", get(login_page))
-        .route("/login", post(log_in))
+        .route("/login", get(login_page))
         .route("/logout", post(log_out))
+}
+
+#[derive(Template)]
+#[template(path = "web/login.html")]
+struct LoginPage<'a> {
+    options: Vec<LoginOption>,
+    password: PasswordForm<'a>,
+    /// The passkey sign-in, where passkeys are offered.
+    passkeys: Option<PasskeyLogin<'a>>,
+    /// Whether the password form sits behind "Use a password instead".
+    collapse_password: bool,
+}
+
+/// What the passkey section of the login page needs.
+struct PasskeyLogin<'a> {
+    /// The sign-in nonce its requests carry.
+    nonce: &'a str,
+    /// The origin passkeys work at, which the script compares the page's with.
+    origin: &'a str,
+}
+
+/// What the password form on the login page shows.
+struct PasswordForm<'a> {
+    /// The sign-in nonce the form carries ([`nonce_for_form`]).
+    nonce: &'a str,
+    /// The username to put back in the form.
+    username: &'a str,
+    /// Whether to warn that the page isn't encrypted ([`WebApp::plain_http`]).
+    plain_http: bool,
+    /// Why the last attempt didn't sign in, if there was one.
+    error: Option<&'a str>,
+}
+
+/// `GET /login`: the ways to sign in. Someone who is signed in goes to the chat list.
+async fn login_page(
+    State(app): State<WebApp>,
+    user: Option<Extension<WebUser>>,
+    trusted: Option<Extension<TrustedProxy>>,
+    headers: HeaderMap,
+) -> Response {
+    if user.is_some() {
+        return Redirect::to("/").into_response();
+    }
+    render_login(&app, &headers, trusted.is_some(), None, "").await
+}
+
+/// The login page: the options, and the password form with `username` in it and `error` above it,
+/// if any. It carries the sign-in nonce, which the response also sets as a cookie.
+pub(super) async fn render_login(
+    app: &WebApp,
+    headers: &HeaderMap,
+    trusted: bool,
+    error: Option<&str>,
+    username: &str,
+) -> Response {
+    let nonce = nonce_for_form(headers);
+    let options = match app.login_options(&nonce).await {
+        Ok(options) => options,
+        Err(err) => return internal_error("cannot look up the sign-in methods", &err),
+    };
+    let mut response = http::render(&LoginPage {
+        options,
+        password: PasswordForm {
+            nonce: &nonce,
+            username,
+            plain_http: app.plain_http(headers, trusted),
+            error,
+        },
+        passkeys: app
+            .inner
+            .passkeys
+            .relying_party()
+            .ok()
+            .map(|rp| PasskeyLogin {
+                nonce: &nonce,
+                origin: rp.origin(),
+            }),
+        collapse_password: app.password_collapsed(),
+    });
+    let https = is_https(&app.inner.channel, headers, trusted);
+    response
+        .headers_mut()
+        .append(SET_COOKIE, nonce_cookie(&nonce, https));
+    no_store(response)
 }
 
 /// Whether the response should mark cookies `Secure`: the public URL is `https`, or the trusted
 /// proxy says the browser used HTTPS (`X-Forwarded-Proto`, believed only from the proxy).
-fn is_https(channel: &WebChannel, headers: &HeaderMap, trusted: bool) -> bool {
+pub(super) fn is_https(channel: &WebChannel, headers: &HeaderMap, trusted: bool) -> bool {
     channel.config().https()
         || (trusted
             && headers
                 .get("x-forwarded-proto")
                 .is_some_and(|proto| proto.as_bytes().eq_ignore_ascii_case(b"https")))
+}
+
+/// Whether `host`, a `Host` header or the host of a URL, with or without a port, is this machine:
+/// `localhost` or a name under it, or a loopback IP address. A browser treats such a page as a
+/// secure context, whatever the scheme.
+pub(super) fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim();
+    let name = match host.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next().unwrap_or_default(),
+        None => host.rsplit_once(':').map_or(host, |(name, _)| name),
+    };
+    let name = name.trim_end_matches('.').to_ascii_lowercase();
+    name == "localhost"
+        || name.ends_with(".localhost")
+        || name
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+impl WebApp {
+    /// Whether a page for this request should warn that it isn't encrypted: it is plain HTTP
+    /// ([`is_https`] says no) and its host isn't this machine ([`is_loopback_host`]). The host is
+    /// the request's `Host` header, or, when there is none, the address Doozers' links point to.
+    pub(super) fn plain_http(&self, headers: &HeaderMap, trusted: bool) -> bool {
+        let channel = &self.inner.channel;
+        if is_https(channel, headers, trusted) {
+            return false;
+        }
+        let host = match headers.get(HOST).and_then(|host| host.to_str().ok()) {
+            Some(host) => host.to_owned(),
+            None => {
+                let base = channel.link_base();
+                let authority = base
+                    .split_once("://")
+                    .map_or(base.as_str(), |(_, rest)| rest);
+                authority.split('/').next().unwrap_or_default().to_owned()
+            }
+        };
+        !is_loopback_host(&host)
+    }
 }
 
 /// Who a request is, if anyone ([`WebUser`]); see the module docs.
@@ -73,21 +209,34 @@ pub(super) async fn authenticate(
             .to_str()
             .ok()
             .and_then(|value| NativeId::new(value.trim()).ok());
-        let Some(sender) = sender.filter(|id| channel.owner.contains(COMPONENT, id)) else {
+        let directory = channel.users().get();
+        let known = sender
+            .as_ref()
+            .and_then(|id| directory.resolve(COMPONENT, id));
+        let (Some(sender), Some(known)) = (sender, known) else {
             warn!(
                 identity = ?value,
-                "the trusted proxy named someone who isn't one of the owner's web identities",
+                "the trusted proxy named someone who isn't the web identity of any user",
             );
             return error_page(
                 StatusCode::FORBIDDEN,
                 "Not allowed",
-                "The proxy in front of Doozers logged you in as someone Doozers doesn't know. The \
-                 operator can add your identity to `[owner] identities` as `web:<id>`; the log \
-                 shows the id.",
+                "The proxy in front of Doozers logged you in as someone Doozers doesn't know. An \
+                 admin can set your identity as `web:<id>`; the log shows the id.",
             );
         };
+        if !known.is_active() {
+            warn!(user = %known.id, "the trusted proxy named a disabled user");
+            return error_page(
+                StatusCode::FORBIDDEN,
+                "Not allowed",
+                "Your account is disabled. Ask an admin.",
+            );
+        }
         request.extensions_mut().insert(WebUser {
-            user: identity::owner(),
+            user: known.id.clone(),
+            role: known.role,
+            display_name: known.display_name.clone(),
             csrf: proxy_csrf(&channel.proxy_key, &sender),
             sender,
             login: Login::Proxy,
@@ -96,12 +245,23 @@ pub(super) async fn authenticate(
     }
 
     let mut stale = false;
-    if let Some(token) = cookie(request.headers(), SESSION_COOKIE) {
+    if let Some(token) = cookie(request.headers(), SESSION_COOKIE).map(str::to_owned) {
+        let token = token.as_str();
         let now = app.inner.clock.now();
         match app.inner.store.web_session(token, now).await {
             Ok(Some(session)) => match channel.cookie_user(&session.user, token) {
                 Some(user) => {
                     request.extensions_mut().insert(user);
+                    // The account page says when a session was last used, about to the nearest
+                    // `SEEN_EVERY`: a write for every request would cost more than it tells. The
+                    // check and the write are apart, so requests at once may each write; the
+                    // time is the same to within moments, which is all the page says.
+                    let due = session.last_seen_at.is_none_or(|seen| {
+                        seen.checked_add(SEEN_EVERY).is_ok_and(|next| next <= now)
+                    });
+                    if due && let Err(err) = app.inner.store.web_session_seen(token, now).await {
+                        warn!(error = %err, "cannot record that a web session was used");
+                    }
                 }
                 None => stale = true,
             },
@@ -119,15 +279,57 @@ pub(super) async fn authenticate(
     response
 }
 
+impl WebApp {
+    /// Finishes when a login is over: its cookie session is gone (revoked, logged out, or
+    /// expired), or it no longer logs `user` in, as the same check at the start of a request says
+    /// it ([`authenticate`]): the user is disabled or removed, or `sender`, the identity the login
+    /// acts as, isn't one of theirs any more (an admin changed a proxy identity, which also ends a
+    /// login through the trusted proxy, the one that has no session). A stream that outlives the
+    /// request it began with ends on this, since the check at the start is the only one a request
+    /// makes: a login that was ended must not keep receiving what its user's chats say. It looks
+    /// every [`LOGIN_RECHECK`], and a store error is not an ended login.
+    pub(super) async fn login_ended(self, user: UserId, sender: NativeId, login: Login) {
+        let mut ticks = tokio::time::interval(LOGIN_RECHECK);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ticks.tick().await;
+        loop {
+            ticks.tick().await;
+            let directory = self.inner.channel.users().get();
+            let logs_in = directory
+                .resolve(COMPONENT, &sender)
+                .is_some_and(|known| known.id == user && known.is_active());
+            if !logs_in {
+                return;
+            }
+            if let Login::Cookie(token) = &login
+                && matches!(
+                    self.inner
+                        .store
+                        .web_session(token, self.inner.clock.now())
+                        .await,
+                    Ok(None)
+                )
+            {
+                return;
+            }
+        }
+    }
+}
+
 impl WebChannel {
-    /// The user of a live cookie session for `user`, unless `web:<user>` is no longer one of the
-    /// owner's identities (then the session no longer logs anyone in).
+    /// The user of a live cookie session for `user`, unless the user is gone or disabled, or
+    /// `web:<user>` is no longer one of their identities (then the session no longer logs anyone
+    /// in).
     fn cookie_user(&self, user: &UserId, token: &str) -> Option<WebUser> {
-        if *user != identity::owner() || !self.is_web_identity(user) {
+        let directory = self.users().get();
+        let known = directory.user(user).filter(|known| known.is_active())?;
+        if !self.is_web_identity(user) {
             return None;
         }
         Some(WebUser {
             user: user.clone(),
+            role: known.role,
+            display_name: known.display_name.clone(),
             sender: NativeId::new(user.as_str()).ok()?,
             csrf: cookie_csrf(token),
             login: Login::Cookie(token.to_owned()),
@@ -135,63 +337,17 @@ impl WebChannel {
     }
 }
 
-/// The answer for a link that doesn't (or no longer) work: the same whether it never existed,
-/// was used, or expired.
-fn dead_link() -> Response {
-    no_store(error_page(
-        StatusCode::GONE,
-        "Login link expired",
-        "This login link has expired or was already used. Ask the operator for a new one \
-         (`doozers admin login-link --user owner`); each works once, for 10 minutes.",
-    ))
-}
-
-#[derive(Template)]
-#[template(path = "web/login.html")]
-struct LoginPage<'a> {
-    token: &'a str,
-    expires: String,
-}
-
-/// `GET /login/<token>`: a page with a button that uses the link. Opening the link doesn't use it
-/// up, so a chat app or mail client that fetches links for a preview can't spend it.
-async fn login_page(State(app): State<WebApp>, Path(token): Path<String>) -> Response {
+/// Starts a session for `user`, who has proved who they are with `method`: stores a 30-day session
+/// under a new random cookie token (the store keeps its SHA-256 and `method`) and logs `previous`,
+/// the browser's old cookie session if it had one, out. The token, for the caller to set as the
+/// session cookie ([`session_cookie`]); the error is the page to answer with when the store fails.
+pub(super) async fn begin_session(
+    app: &WebApp,
+    user: UserId,
+    method: SignInMethod,
+    previous: Option<&WebUser>,
+) -> Result<String, Box<Response>> {
     let now = app.inner.clock.now();
-    if !links::is_token(&token) {
-        return dead_link();
-    }
-    let Some(expires_at) = app.inner.channel.links.expires_at(&token, now) else {
-        return dead_link();
-    };
-    no_store(http::render(&LoginPage {
-        token: &token,
-        expires: expires_at.strftime("%Y-%m-%d %H:%M UTC").to_string(),
-    }))
-}
-
-#[derive(Debug, Deserialize)]
-struct LoginForm {
-    token: String,
-}
-
-/// `POST /login`: uses up the link and starts a 30-day session (a new random cookie token; the
-/// store keeps its SHA-256). A session cookie the browser already had is logged out.
-async fn log_in(
-    State(app): State<WebApp>,
-    user: Option<Extension<WebUser>>,
-    trusted: Option<Extension<TrustedProxy>>,
-    headers: HeaderMap,
-    Form(form): Form<LoginForm>,
-) -> Response {
-    let now = app.inner.clock.now();
-    let channel = &app.inner.channel;
-    let Some(user_id) = links::is_token(&form.token)
-        .then(|| channel.links.redeem(&form.token, now))
-        .flatten()
-    else {
-        debug!("a dead login link was used");
-        return dead_link();
-    };
     let token = random_hex(32);
     let expires_at = now
         .checked_add(WEB_SESSION_TTL)
@@ -199,22 +355,46 @@ async fn log_in(
     if let Err(err) = app
         .inner
         .store
-        .web_session_create(&token, user_id.clone(), now, expires_at)
+        .web_session_create(&token, user, method, now, expires_at)
         .await
     {
-        return internal_error("cannot store a web session", &err);
+        // A user who was disabled after the sign-in began, as the store refuses to start a session
+        // for them.
+        if matches!(err, doozers_store::Error::UserDisabled) {
+            return Err(Box::new(no_store(error_page(
+                StatusCode::FORBIDDEN,
+                "Not allowed",
+                "Your account is disabled. Ask an admin.",
+            ))));
+        }
+        return Err(Box::new(internal_error("cannot store a web session", &err)));
     }
-    if let Some(Extension(WebUser {
+    if let Some(WebUser {
         login: Login::Cookie(old),
         ..
-    })) = user
-        && let Err(err) = app.inner.store.web_session_delete(&old).await
+    }) = previous
+        && let Err(err) = app.inner.store.web_session_delete(old).await
     {
         warn!(error = %err, "cannot delete the replaced web session");
     }
-    info!(user = %user_id, "logged in to the web chat with a login link");
-    let https = is_https(channel, &headers, trusted.is_some());
-    let mut response = Redirect::to("/").into_response();
+    Ok(token)
+}
+
+/// Signs `user` in, having proved who they are with `method` ([`begin_session`]), and answers 303 to
+/// `to` with the new session cookie. Every way of signing in that answers with a page ends here.
+pub(super) async fn start_session(
+    app: &WebApp,
+    user: UserId,
+    method: SignInMethod,
+    previous: Option<&WebUser>,
+    https: bool,
+    to: &str,
+) -> Response {
+    let token = match begin_session(app, user, method, previous).await {
+        Ok(token) => token,
+        Err(response) => return *response,
+    };
+    let mut response = Redirect::to(to).into_response();
     response
         .headers_mut()
         .insert(SET_COOKIE, session_cookie(&token, https));
@@ -253,8 +433,8 @@ async fn log_out(
 }
 
 impl WebApp {
-    /// Deletes expired web sessions now and every hour until shutdown. Expired sessions never log
-    /// anyone in; this only keeps the table small.
+    /// Deletes expired web sessions and invites now and every hour until shutdown. Expired ones
+    /// never log anyone in; this only keeps the tables small.
     pub async fn expire_sessions(self) {
         let mut ticks = tokio::time::interval(SESSION_EXPIRY_INTERVAL);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -263,13 +443,95 @@ impl WebApp {
                 biased;
                 () = self.inner.shutdown.cancelled() => return,
                 _ = ticks.tick() => {
-                    match self.inner.store.web_sessions_expire(self.inner.clock.now()).await {
+                    let now = self.inner.clock.now();
+                    match self.inner.store.web_sessions_expire(now).await {
                         Ok(0) => {}
                         Ok(deleted) => debug!(deleted, "deleted expired web sessions"),
                         Err(error) => warn!(%error, "cannot delete expired web sessions"),
                     }
+                    match self.inner.store.user_invites_expire(now).await {
+                        Ok(0) => {}
+                        Ok(deleted) => debug!(deleted, "deleted expired invite links"),
+                        Err(error) => warn!(%error, "cannot delete expired invite links"),
+                    }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_password_form_can_sit_behind_use_a_password_instead() {
+        let page = |collapse_password, error| {
+            LoginPage {
+                options: Vec::new(),
+                password: PasswordForm {
+                    nonce: "n",
+                    username: "",
+                    plain_http: false,
+                    error,
+                },
+                passkeys: None,
+                collapse_password,
+            }
+            .render()
+            .unwrap()
+        };
+        let shown = page(false, None);
+        assert!(!shown.contains("<details"), "{shown}");
+        assert!(shown.contains("<h2>Log in with a password</h2>"), "{shown}");
+        assert!(shown.contains(r#"action="/login/password""#), "{shown}");
+
+        // Folded away, the form is the same, and a failed attempt opens it again.
+        let folded = page(true, None);
+        assert!(
+            folded.contains(r#"<details class="password-signin">"#),
+            "{folded}"
+        );
+        assert!(
+            folded.contains("<summary>Use a password instead</summary>"),
+            "{folded}"
+        );
+        assert!(folded.contains(r#"action="/login/password""#), "{folded}");
+        assert!(!folded.contains("Log in with a password"), "{folded}");
+        let failed = page(true, Some("Wrong username or password."));
+        assert!(
+            failed.contains(r#"<details class="password-signin" open>"#),
+            "{failed}"
+        );
+    }
+
+    #[test]
+    fn a_host_is_this_machine_when_it_is_loopback() {
+        for host in [
+            "localhost",
+            "LOCALHOST:8080",
+            "localhost.:80",
+            "app.localhost",
+            "127.0.0.1",
+            "127.0.0.1:8080",
+            "127.9.9.9",
+            "[::1]",
+            "[::1]:8080",
+        ] {
+            assert!(is_loopback_host(host), "{host}");
+        }
+        for host in [
+            "",
+            "doozers.lan",
+            "doozers.lan:8080",
+            "192.168.0.2",
+            "10.0.0.1:80",
+            "[2001:db8::1]:80",
+            "notlocalhost",
+            "localhost.example.com",
+            "0.0.0.0",
+        ] {
+            assert!(!is_loopback_host(host), "{host}");
         }
     }
 }

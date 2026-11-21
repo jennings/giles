@@ -2,12 +2,51 @@
 
 {% block title %}Log in - Doozers{% endblock %}
 
+{% block head %}
+{%- if passkeys.is_some() %}
+<script src="{{ crate::http::assets::passkey_script_path() }}" defer></script>
+{%- endif %}
+{% endblock %}
+
 {% block content %}
 <h1>Log in</h1>
-<p>This one-time link logs this browser in to Doozers for 30 days. It works once, until
-{{ expires }}.</p>
-<form method="post" action="/login">
-<input type="hidden" name="token" value="{{ token }}">
-<button type="submit" class="button-primary">Log in</button>
+{%- if let Some(passkeys) = passkeys %}
+<section id="passkey-signin" hidden data-nonce="{{ passkeys.nonce }}" data-origin="{{ passkeys.origin }}" data-discover-url="/login/passkey/discover" data-username-url="/login/passkey/username" data-finish-url="/login/passkey/finish">
+<p class="banner banner-error" role="alert" data-passkey-error hidden></p>
+<p class="banner banner-warn" role="alert" data-passkey-elsewhere hidden>Passkeys only work at <strong>{{ passkeys.origin }}</strong>. Open Doozers there to use one, or log in with a password.</p>
+<div data-passkey-controls>
+<form class="form form-flush" action="/login">
+<div class="field">
+<label for="passkey-username">Username</label>
+<input id="passkey-username" name="username" autocomplete="username webauthn" autocapitalize="none" spellcheck="false">
+<p class="help">Leave it empty to pick a passkey from the list your browser shows. Type your username to use a non-resident key.</p>
+</div>
+<div class="form-actions">
+<button type="button" class="button-primary" data-passkey-discover>Sign in with a passkey</button>
+<button type="submit">Continue with my username</button>
+</div>
 </form>
+</div>
+</section>
+{%- endif %}
+{%- if !options.is_empty() %}
+<p>Choose how to log in:</p>
+<ul>
+{%- for option in options %}
+<li><a href="{{ option.href }}">{{ option.label }}</a></li>
+{%- endfor %}
+</ul>
+{%- endif %}
+{%- if collapse_password %}
+<details class="password-signin"{% if password.error.is_some() %} open{% endif %}>
+<summary>Use a password instead</summary>
+{% include "web/password_form.html" %}
+</details>
+{%- else %}
+<h2>Log in with a password</h2>
+{% include "web/password_form.html" %}
+{%- endif %}
+<p>You can also open an invite or recovery link an admin sent you. If you run Doozers,
+<code>doozers admin login-link</code> makes a link that works once, for 72 hours, and keeps this
+browser logged in for 30 days.</p>
 {% endblock %}

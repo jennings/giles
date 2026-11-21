@@ -77,8 +77,8 @@ service's `Status` and `ListPlugins`. A running session keeps the tool snapshot 
 (PLAN section 6.4), so it still lists the tools of a toolset removed since, and a call to one gets
 `tool unavailable`.
 
-Nothing else changes while the core runs: the other instances and the owner are fixed until a
-restart (reload is deferred, D28). Routes are stored and change at runtime
+Nothing else changes while the core runs: the other instances are fixed until a restart (reload is
+deferred, D28). Routes and users are stored and change at runtime
 ([Identity and Routing](identity-and-routing.md#routing)).
 
 ## Built-in components

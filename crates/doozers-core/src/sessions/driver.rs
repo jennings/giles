@@ -59,6 +59,27 @@ pub(super) async fn drive(inner: Arc<Inner>, session: SessionId) {
                 return;
             }
         };
+        // Messages queued before their sender was disabled don't start turns: the router drops
+        // what arrives from a disabled user, and these arrived earlier.
+        let disabled: Vec<InboxId> = queued
+            .iter()
+            .filter(|row| {
+                row.user
+                    .as_ref()
+                    .is_some_and(|user| inner.router.is_disabled(user))
+            })
+            .map(|row| row.id)
+            .collect();
+        if !disabled.is_empty() {
+            let rows = disabled.len();
+            if let Err(error) = inner.store.inbox_discard(disabled).await {
+                error!(%session, %error, "cannot drop the queued messages of a disabled user");
+                inner.retire(session);
+                return;
+            }
+            warn!(%session, rows, "dropped queued messages of a disabled user");
+            continue;
+        }
         let holder = holder_first(queued.first().map(|row| row.received_at), hold);
         if queued.is_empty() && !holder {
             if retire(&inner, session) {

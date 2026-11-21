@@ -137,14 +137,21 @@ rules apply, and `before_migrate` receives that file's plan.
 - Row ids are opaque newtypes (`SessionId`, ...) over SQLite rowids.
 - Agent, user, channel instance, and conversation ids are stored as their string forms.
 
-## Schema (version 14)
+## Schema (version 24)
 
 The files in `crates/doozers-store/src/migrations/` are the authority. `0001_initial.sql` has every
 table but `blobs`, `routes`, `toolsets`, `workspaces`, `secrets`, `secret_key`,
-`archived_conversations`, `ssh_keys`, and `ssh_known_hosts`, which `0002_blobs.sql`,
+`archived_conversations`, `ssh_keys`, `ssh_known_hosts`, `users`, `user_identities`,
+`users_imported`, `user_invites`, `user_passwords`, `user_passkeys`, `passkey_fake_key`,
+`oidc_providers`, `user_oidc_connections`, and `user_link_codes`, which `0002_blobs.sql`,
 `0003_routes.sql`, `0004_toolsets.sql`, `0005_workspaces.sql`, `0007_secrets.sql`,
-`0009_archived_conversations.sql`, `0012_ssh_keys.sql`, and `0014_ssh_known_hosts.sql` add
-(`0013_workspace_key_user.sql` adds `workspaces.key_user`). This is their outline.
+`0009_archived_conversations.sql`, `0012_ssh_keys.sql`, `0014_ssh_known_hosts.sql`,
+`0015_users.sql`, `0018_user_invites.sql`, `0019_user_passwords.sql`, `0020_user_passkeys.sql`,
+`0021_oidc.sql`, and `0022_user_link_codes.sql` add (`0013_workspace_key_user.sql` adds
+`workspaces.key_user`, `0016_workspace_user.sql` adds `workspaces.user_id`, `0018_user_invites.sql`
+adds `web_sessions.method`, `0023_web_session_account.sql` adds `web_sessions.id`, `last_seen_at`,
+and `reverified_at`, and `0024_user_last_sign_in.sql` adds `users.last_sign_in_at`). This is their
+outline.
 
 | Table          | Columns and rules                                                                    |
 | -------------- | ------------------------------------------------------------------------------------ |
@@ -157,23 +164,32 @@ table but `blobs`, `routes`, `toolsets`, `workspaces`, `secrets`, `secret_key`,
 | `jobs`         | Runtime jobs: `agent`, `creator`, `spec` (JSON), `created_at`; ids never reused.      |
 | `job_runs`     | (`agent`, `job`) to `last_run_at`; `job` is `config:<id>` or `runtime:<jobs.id>`.      |
 | `usage`        | `at`, `provider`, `model`, `agent`, `user_id`, `session_id`, four token counts, `fallback`. |
-| `web_sessions` | `token_hash` (SHA-256 of the cookie token), `user_id`, `created_at`, `expires_at`.     |
+| `web_sessions` | `token_hash` (SHA-256 of the cookie token), `id` (random, unique: what the account page names the session by), `user_id`, `method` (how it signed in: `invite`, `recovery`, `password`, `passkey`, `oidc`), `created_at`, `expires_at`, `last_seen_at`, `reverified_at`. |
 | `blobs`        | `id` (hex SHA-256), `size`, `media_type`, `name`, `created_at`, `stored_at` (latest put). |
 | `routes`       | The ordered routing rules: `position` (dense, 0 first), `channel`, `kind` (`direct`, `group`), `conversation` (each null for any), `agent`. Ids are `AUTOINCREMENT`, never reused. |
 | `routes_imported` | One row, once the `[[routes]]` of `doozers.toml` were imported: `at`.                |
 | `toolsets`     | The MCP toolsets the web UI manages: `name` (primary key, `NOCASE`), `spec` (JSON text), `created_at`, `updated_at`. |
-| `workspaces`   | The environment workspaces: `id` (core-assigned, primary key), `environment`, the owner (`agent`, `channel`, `conversation`, or `job_session`; exactly one form), `options` (JSON), the plugin's `description`, `working_directory`, `persistence`, `state` (`creating`, `active`, `deleting`, `deleted`), `created_at`, `last_used_at`, `deleted_at`, `delete_reason`, `key_user` (the user whose SSH keys it gets, or null). Partial unique indexes allow one `creating` or `active` row per owner. See [Workspaces](#workspaces). |
+| `workspaces`   | The environment workspaces: `id` (core-assigned, primary key), `environment`, the owner (`agent`, `channel`, `conversation`, or `job_session`; exactly one form), `options` (JSON), the plugin's `description`, `working_directory`, `persistence`, `state` (`creating`, `active`, `deleting`, `deleted`), `created_at`, `last_used_at`, `deleted_at`, `delete_reason`, `user_id` (the user of a direct conversation's owner, or null), `key_user` (the user whose SSH keys it gets, or null). Partial unique indexes allow one `creating` or `active` row per owner. See [Workspaces](#workspaces). |
 | `secrets`      | The local secret store: `path` (primary key), `description`, `algorithm`, `nonce`, `ciphertext` (the sealed value), `created_at`, `created_by`, `updated_at`, `updated_by` (user ids, null when no user did it). See [Secrets](#secrets). |
 | `secret_key`   | One row, once the secret store has a data key: `source` (the key source that wrapped it), `algorithm`, `nonce`, `wrapped`, `created_at`. |
 | `archived_conversations` | The conversations their user archived: (`channel`, `conversation`) as the primary key, `archived_at`. No foreign key, since a conversation is a set of sessions. See [Conversations](#conversations). |
 | `ssh_keys`     | The metadata of users' SSH keys: `id` (`AUTOINCREMENT`, never reused), `user_id`, `label`, `algorithm`, `public_key`, `fingerprint`, `created_at`, `last_used_at`. `UNIQUE (user_id, fingerprint)`. The private keys are secrets. See [SSH keys](#ssh-keys). |
 | `ssh_known_hosts` | The SSH host keys workspaces trust, one set per environment instance: `id` (`AUTOINCREMENT`, never reused), `environment`, `host` (lowercased, no brackets or port), `port`, `key_type`, `public_key` (base64 blob), `fingerprint`, `first_seen_at`, `first_workspace`, `first_agent`, `first_user` (null for a pinned key), `added_by` (the admin who pinned it, else null), `last_used_at`. `UNIQUE (environment, host, port, public_key)`. See [Known SSH hosts](#known-ssh-hosts). |
+| `users`        | The users: `id` (opaque, never changes), `username` (unique, `NOCASE`), `display_name`, `role` (`admin`, `member`), `state` (`active`, `disabled`), `timezone` (an IANA name, or null), `default_identity` (one of the user's identities, or null), `created_at`, `updated_at`, `last_sign_in_at` (when a web session was last started for the user, or null). See [Users](#users). |
+| `user_identities` | The channel identities of users: (`namespace`, `native_id`) as the primary key, `user_id` (cascades), `verified_at`, `verification` (`link`, `admin`, `imported`), and `identity`, the generated joined `<namespace>:<native id>`, which is unique. |
+| `users_imported` | One row, once the `[owner]` of `doozers.toml` was imported: `at`.                  |
+| `user_invites` | The one-time invite and recovery links: `token_hash` (SHA-256 of the token), `user_id` (cascades), `kind` (`invite`, `recovery`), `created_by` (null for the operator, and set null when that admin is removed), `created_at`, `expires_at`, `used_at`. See [User invites](#user-invites). |
+| `user_passwords` | The passwords users sign in with: `user_id` (primary key, cascades), `hash` (an Argon2id PHC string), `changed_at`. See [User passwords](#user-passwords). |
+| `user_passkeys` | The passkeys users sign in with: `id` (`AUTOINCREMENT`, never reused), `user_id` (cascades), `credential_id` (unique across users), `credential` (the WebAuthn library's serialized credential, JSON), `kind` (`discoverable`, `non_resident`), `name`, `created_at`, `last_used_at`. See [User passkeys](#user-passkeys). |
+| `passkey_fake_key` | One row, once a sign-in page has needed it: the 32-byte key stand-in credential ids are made with. See [User passkeys](#user-passkeys). |
+| `oidc_providers` | The OpenID Connect identity providers admins configure: `id` (a slug, primary key), `display_name`, `issuer`, `client_id`, `client_secret` (the name of the secret in the secret store, or null), `scopes` (space-separated, `openid` among them), `enabled`, `created_at`, `updated_at`. See [OpenID Connect providers](#openid-connect-providers). |
+| `user_oidc_connections` | Which provider account signs in as which user: (`provider_id`, `issuer`, `subject`) as the primary key, `user_id`, `connected_at`. `UNIQUE (provider_id, user_id)`. Both foreign keys cascade. |
+| `user_link_codes` | The codes users send from a channel identity to link it: (`user_id` (cascades), `namespace`) as the primary key, `salt`, `code_hash` (SHA-256 of the salt and the code), `created_at`, `expires_at`, `attempts`. See [User link codes](#user-link-codes). |
 
-`identities` and `pairings` are deferred with multi-user support (PLAN 1.1, D49) and don't exist
-yet.
+`pairings` is deferred with multi-user support (PLAN 1.1, D49) and doesn't exist yet.
 
 Deleting a session cascades to its messages and summaries and clears `session_id` in `inbox` and
-`usage`, which keeps `doozers user forget` (PLAN 11.4) a matter of deleting rows.
+`usage`, which keeps [forgetting a user](#forgetting-a-user) (PLAN 11.4) a matter of deleting rows.
 
 ## Sessions
 
@@ -233,10 +249,12 @@ is keyed like the conversation, so it covers sessions that `/new` or an idle res
 | Method                  | Contract                                                            |
 | ----------------------- | ------------------------------------------------------------------- |
 | `channel_conversations` | A user's conversations on one instance, archived ones or the others, most recently active first (last message, else last session start), with when the first session started and the text of the first user message if it starts with a text block (filled slots skipped). |
-| `conversation_transcript` | In one read transaction: the last N transcript rows of a conversation, oldest first, each with its session (sessions in id order, then by `seq`; summarized messages included, as a transcript to show, not a prompt; empty slots as `Entry::EmptySlot`), and the `waiting` inbox rows routed to its sessions that are `queued` or `started`, oldest first. A started row's message may be in the transcript already (its turn stores it). |
+| `conversation_transcript` | In one read transaction: the last N transcript rows of a conversation's sessions that belong to the user, oldest first, each with its session (sessions in id order, then by `seq`; summarized messages included, as a transcript to show, not a prompt; empty slots as `Entry::EmptySlot`), and the `waiting` inbox rows routed to those sessions that are `queued` or `started`, oldest first. Another user's conversation reads as empty. A started row's message may be in the transcript already (its turn stores it). |
 | `conversation_archived_at` | When a conversation was archived, or `None`.                     |
+| `conversation_access`   | How a user stands to a conversation: `Unstarted` (no session), `Own` (every session, ended ones included, is the user's), or `Foreign` (any session is someone else's, or has no user). The web pages and the pump's check for web chats use it. |
+| `open_conversation_access` | The same, counting only open sessions: a conversation is free once the sessions in it have ended. The pump's check for other channels, whose conversation ids can pass from one user to another. |
 | `archive_conversation`  | Archives a user's conversation at `now`, keeping the first time if it's archived already; `false` if the user has no session in it. |
-| `unarchive_conversation` | Removes the archive row; whether there was one.                    |
+| `unarchive_conversation` | Removes the archive row of a user's conversation; whether there was one. `false`, changing nothing, if the user has no session in it. |
 | `delete_conversation`   | In one transaction: refuses (`Busy`) while an inbox row of the user's sessions in the conversation is `queued` or `started`; otherwise deletes those sessions (with their messages and summaries), their inbox rows, the outbox rows going into the conversation, and its archive row. Usage rows stay without their session. Returns the agents the sessions were with, which name the conversation's workspaces, and whether it was archived; `NotFound` if the user has no session in it. |
 
 None has an index of its own: they scan `sessions` (small: one row per conversation and reset).
@@ -246,10 +264,10 @@ None has an index of its own: they scan `sessions` (small: one row per conversat
 `search` is an FTS5 table over messages for `memory_search` (PLAN 6.7). It holds the top-level
 `Text` blocks of each message, joined by newlines; tool inputs and results, reasoning, and media are
 left out. Three triggers on `messages` maintain it on insert, on update of `content` (so a tombstone
-from `doozers user forget` replaces the old text), and on delete (including deletes that cascade
-from a session). The extraction runs in SQL (`json_each` over `content`), so no code path can forget
-to update the index. The tokenizer is `porter unicode61 remove_diacritics 2`: English stemming, case
-and accent folding.
+from [forgetting a user](#forgetting-a-user) replaces the old text), and on delete (including
+deletes that cascade from a session). The extraction runs in SQL (`json_each` over `content`), so no
+code path can forget to update the index. The tokenizer is `porter unicode61 remove_diacritics 2`:
+English stemming, case and accent folding.
 
 `Store::search(scope, query, limit)`:
 
@@ -298,7 +316,7 @@ and conversation), or nobody (`none`: a config job, which has no requester). It 
 memories too, as their author.
 
 **Visibility.** Every method takes a `MemoryViewer`: the session's owner scope (`MemoryOwner::User`,
-`Group`, or `None`) and `can_write_shared`, true for the agent owner's turns and for config jobs.
+`Group`, or `None`) and `can_write_shared`, true for admins' turns and for config jobs.
 
 - A private memory is visible to viewers whose owner scope equals its owner exactly: one user's
   sessions, or one group conversation. Two users, two groups (same conversation id on another
@@ -340,8 +358,13 @@ memories too, as their author.
   `conversation`, `memories`), ordered by instance and then conversation. Only private memories
   count: a shared memory a group authored is everyone's and doesn't list its group, and user-owned
   or ownerless memories never do. It isn't filtered by viewer; the caller restricts it (the web page
-  shows it to the agent's owner only, who then lists a group's memories with a `MemoryViewer` for
-  that group).
+  shows it to admins only, who then lists a group's memories with a `MemoryViewer` for that group).
+- `user_memories(user)` and `forget_user(user)` are for [forgetting a user](#forgetting-a-user), so
+  they take no viewer. `user_memories` counts the user's private memories. `forget_user` deletes
+  them and, in the same transaction, makes a shared memory they wrote ownerless (`owner_kind`
+  `none`, no author), since it belongs to everyone; it turns on FTS5's `secure-delete` for
+  `memory_search` first, so no word of a deleted memory stays in the index. It returns how many
+  memories were deleted and how many lost their author, and does nothing the second time.
 - `recall(viewer, query, limit)`: FTS5 over the visible memories, core ones included. The query is
   turned into FTS5 syntax as for transcript search: each word with a letter or digit becomes a
   quoted string (so `"`, `*`, `-`, `:`, `(`, `AND`, `NEAR` in the query are matched as text) and the
@@ -390,6 +413,7 @@ insert(done)                                     (dedupe key only: status events
 | `inbox_queued`               | A session's queued rows, oldest first: the next turn's messages. |
 | `inbox_sessions_with_queued` | Sessions with queued rows, by oldest row: the turns to run after a restart. |
 | `inbox_start`, `inbox_finish` | Queued to started, started to done; all rows in the batch or none (`Conflict`, `NotFound`). |
+| `inbox_discard` | Queued to done with no turn: the core drops the rows of a disabled user. |
 | `inbox_interrupt`            | Startup: every started row becomes `unknown` and is returned, so the requester can be told. |
 | `inbox_prune(before)`        | Deletes `done` and `unknown` rows received strictly before `before` (now minus 30 days). Queued and started rows are never pruned. |
 
@@ -482,8 +506,30 @@ is updated without a trigger on the column, so the search index is untouched.
 `web_sessions` backs the login cookie (PLAN 3.4). The store hashes the cookie token with SHA-256 and
 keeps only the hash, so a database copy can't be replayed as a login. The token is random with at
 least 128 bits of entropy, so a plain hash suffices. `web_session_create` (`Conflict` on a token
-collision), `web_session(token, now)` (only unexpired sessions), `web_session_delete` (logout), and
-`web_sessions_expire(now)`. The 30-day lifetime is the caller's `expires_at`.
+collision) takes the `SignInMethod` the session signed in with, which `web_session(token, now)`
+(only unexpired sessions) returns with it. Then `web_session_delete` (logout) and
+`web_sessions_expire(now)`. The 30-day lifetime is the caller's `expires_at`. `web_session_create`
+also sets `users.last_sign_in_at` to the session's creation time, in the same transaction, because a
+session is deleted by logout, revocation, and expiry and so can't say when the user last signed in.
+The router's `UserList` snapshot doesn't carry the time: the admin pages read it from the store
+(`user`, `users`), because nothing replaces the snapshot when a session starts.
+`user_logins_revoke(user)` deletes every session and every unspent invite or recovery link of a user
+in one transaction, which is what disabling one does (and enabling one again, for what a failed
+disable left). `web_session_create` refuses a disabled user (`Error::UserDisabled`) in the same
+transaction as the insert, so a sign-in that was under way when the user was disabled can't leave a
+session that is valid again once they are enabled. Sessions that existed before the column was added
+are `recovery`, since the one-time login link they came from is what a recovery link replaced.
+
+Each session also has an opaque `id`, 32 random hex digits made by the database when the row is
+inserted. It has nothing to do with the token or its hash, so the account page can list and revoke
+sessions without showing anything that could log someone in. `web_sessions_of(user, now)` lists a
+user's unexpired sessions, newest first. `web_session_revoke(user, id)` deletes by user and id
+together, so another user's id finds nothing (`false`). `web_session_seen(token, now)` sets
+`last_seen_at`; the caller decides how often, because a write for every request would be a cost for
+nothing. `web_session_reverified(token, now)` sets `reverified_at`, the time the user last proved
+who they are again in that session, which tells the caller whether the user proved it recently
+enough. The migration rebuilt the table to make `id` `NOT NULL` and `UNIQUE`, and gave every
+existing session an id.
 
 ## Routes
 
@@ -512,6 +558,283 @@ already; it returns how many it stored. If the row exists it does nothing and re
 when `routes` holds something new and even when every route has since been deleted: the marker, not
 the table being empty, says the import happened. A config with no `[[routes]]` still records the
 import.
+
+## Users
+
+`users` and `user_identities` hold who uses this Doozers and which channel identities are theirs
+(PLAN 1.1, 3.2). A user's `id` is opaque and never changes: sessions, inbox, usage, and outbox rows,
+memories, and secret paths name it, so nothing is rewritten when a username changes. The user that
+`[owner]` described keeps the id `owner`. `username` is unique without regard to ASCII case. The
+store takes the id the caller gives and forgets it when `user_delete` removes the user, so the core
+must never give a deleted user's id to another user (random ids do not) and must delete everything
+keyed by it with the user.
+
+An identity belongs to one user. `(namespace, native_id)` is the key, and `identity`, the two joined
+with `:`, is unique as well. A namespace can contain `:` (`irc:libera.chat`), so two splits of one
+string are one identity, and the unique `identity` refuses the second. The import records an
+identity's namespace as the part before its first `:`, as the import can't tell where a namespace
+ends. Matching never depends on the split: the core compares joined strings
+([Identity and routing](identity-and-routing.md#matching-identities)). `verification` says how the
+identity was established: `link` (the user sent a link code from it), `admin` (an admin or the
+operator set it, such as a proxy login identity), or `imported`.
+
+An identity is stored in its canonical form, `canonical_identity`: the domain of an `email` identity
+(first segment `email`, after the last `@`) is lowercased, as the core compares it, so one sender
+can't belong to two users by differing in the case of a domain. Other identities are exact.
+
+The store checks the shapes the schema can: ids, usernames, and identities are unique, and a default
+identity is one of the user's identities. What a username may look like, which time zones exist, and
+who may do what are for the layer above the store to decide. One rule about roles is the store's,
+because it must hold when changes race: the last active admin (role `admin`, state `active`) can't
+be disabled, demoted, or deleted. `user_set_state`, `user_set_role`, and `user_delete` check it
+inside the write transaction of the change.
+
+| Method                                  | Contract                                                         |
+| --------------------------------------- | ---------------------------------------------------------------- |
+| `users`                                 | Every user with their identities, oldest first.                  |
+| `user(id)`                              | One user, or `None`.                                             |
+| `user_create(user, identities, now)`    | Creates an active user with identities verified at `now`. `Error::UserIdTaken`, `Error::UsernameTaken`, or `Error::IdentityTaken` store nothing. The default identity must be one of the identities. |
+| `user_set_state(id, state, now)`        | Sets `active` or `disabled`; `Error::NoSuchUser` if absent. `Error::LastAdmin` for disabling the last active admin. |
+| `user_set_role(id, role, now)`          | Sets `admin` or `member`; `Error::NoSuchUser` if absent. `Error::LastAdmin` for demoting the last active admin. |
+| `user_profile_set(id, display_name, timezone, now)` | Sets the display name and time zone (an IANA name, or none) a user edits on their account page. `Error::NoSuchUser` if absent, `Error::InvalidRequest` for an empty display name. |
+| `user_details_set(id, username, display_name, timezone, now)` | Sets the username, display name, and time zone together, which an admin edits on the user's page. `Error::UsernameTaken` if another user has the username in any case (the user's own can change case), `Error::InvalidRequest` for an empty username or display name, `Error::NoSuchUser` if absent. Nothing changes when it fails. |
+| `user_delete(id)`                       | Deletes the user and, by cascade, their identities, invite links, link codes, password, passkeys, and OpenID Connect connections, clears `created_by` on the links they made, and returns the user as it was; what else the user owns (web login sessions, conversations, memories, secrets, workspaces) stays, and [forgetting the user](#forgetting-a-user) deletes it first. `Error::NoSuchUser` if absent, `Error::LastAdmin` for the last active admin. |
+| `user_identity_add(id, identity, now)`  | Adds an identity; the user's first becomes their default. `Error::IdentityTaken` if any user has it. |
+| `user_identity_remove(id, identity, now)` | Removes an identity, named as `<namespace>:<native id>`. If it was the default, the oldest one left is, or there is none. |
+| `user_default_identity_set(id, identity, now)` | Makes one of the user's identities their default. `Error::NoSuchUser` if absent, `Error::NotFound` if they don't have it. |
+| `user_proxy_identity_set(id, namespace, login, native_id, now)` | Sets the identity a trusted proxy logs the user in as, verified as `admin`, or none: it replaces the user's other identities in `namespace` except `login`, in one transaction, so a refused identity (`Error::IdentityTaken`) leaves the old one. If the user has the identity already, it is only verified as `admin`. |
+| `users_imported`                        | Whether the import below has run.                                |
+| `users_import(owner, now)`              | The one-time import, below.                                      |
+
+`users_import` is the import of the `[owner]` of `doozers.toml` (PLAN 11.2). It takes the identities
+as joined strings and splits each at its first `:`. If `users_imported` has no row it inserts one
+and creates the user, with its identities stored as `imported`, unless users exist already; it
+returns whether it created the user. If the row exists it does nothing and returns `None`, even when
+`owner` holds something new and even when every user has since been deleted: the marker, not the
+table being empty, says the import happened. A config with no `[owner]` still records the import, so
+a fresh install's first admin, made by `doozers admin login-link`, is never followed by an import.
+
+## User invites
+
+`user_invites` holds the one-time links that sign a user in: an `invite` sets up a new account, and
+a `recovery` link gets a user who lost every sign-in method back in (PLAN 3.4). Like
+[web sessions](#web-sessions), the table keeps only the SHA-256 of the 256-bit token, so a database
+copy can't be used to sign in. A link lasts until `expires_at`, which the caller sets 72 hours after
+`created_at`, and works once. A link that is spent stays in the table, with `used_at`, until it
+expires. `created_by` is the admin who made the link, and null for the operator's
+`doozers admin login-link`.
+
+| Method                                                                 | Contract                                                         |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `user_invite_create(token, user, kind, created_by, now, expires_at)`   | Stores a link. `Error::NoSuchUser` if the user or `created_by` doesn't exist, `Error::Conflict` for a token collision. |
+| `user_invite(token, now)`                                              | The link, if it exists, is unused, and hasn't expired. Doesn't use it up. |
+| `user_invite_redeem(token, now)`                                       | Marks the link used and returns it, in one statement, so of two requests with the same token one gets `None`. |
+| `user_invites_expire(now)`                                             | Deletes every expired link, used or not.                         |
+
+## User link codes
+
+`user_link_codes` holds the codes a user sends from a channel identity to prove it is theirs (PLAN
+3.2). A code is for one user and one identity namespace, and a user has one per namespace: making a
+code replaces the one they had, so the page that shows the codes has at most one row for a channel.
+The table keeps only `SHA-256(salt ‖ code)`, with a random 16-byte salt for each code, so a database
+copy can't be read for the code. That is all the hash guarantees: the code has 40 bits, so someone
+with a copy could find it by brute force in minutes, and a backup is safe because a code expires
+within 10 minutes. What protects a code is that it lives 10 minutes (`expires_at`, set by the core)
+and gets few guesses (`attempts`). A code that is used is deleted. One that expired stays, so the
+page can say so, until the core prunes it.
+
+`user_link_code_redeem` does everything one `/link <code>` message needs in a single write
+transaction. It reads the codes that haven't expired, have fewer than `max_attempts` wrong guesses,
+and belong to an active user, and finds the one whose namespace and salted hash match. If there is
+one, it adds the identity to the code's user (verified as `link`, through the same step as
+`user_identity_add`) and deletes the code. If the identity is taken, the transaction fails with
+`Error::IdentityTaken` and the code stays. If there is none, it adds one to `attempts` of every
+pending code in the sender's namespace, because a wrong code can't be told apart from a guess at any
+of them, and a code for another namespace can't be what the sender guessed at. So two messages with
+one code can't both link, and a code is never used up by a link that failed.
+
+| Method                                                                 | Contract                                                         |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `user_link_code_create(user, namespace, code, salt, now, expires_at)`  | Stores a code, replacing the user's code for the namespace. `Error::NoSuchUser`, or `Error::InvalidRequest` for an empty namespace or code or an `expires_at` that isn't after `now`. |
+| `user_link_codes(user)`                                                | The user's codes (namespace, created, expires, attempts), expired ones included, by namespace. |
+| `user_link_code_redeem(namespace, native_id, code, now, max_attempts)` | Links the identity or counts a wrong guess, as above. Returns `LinkRedeemed::Linked(user)` or `LinkRedeemed::Refused`. |
+| `user_link_codes_prune(cutoff)`                                        | Deletes the codes that expired at or before `cutoff`.            |
+
+## User passwords
+
+`user_passwords` holds the password a user signs in with: one row per user at most, with the
+Argon2id hash as a PHC string (`$argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash>`), so the salt and the
+cost parameters travel with it, and `changed_at`. It is a table and not the [secret store](#secrets)
+because a secret is a value Doozers hands back out, and nothing can recover a password from its
+hash. The row goes when the user does. The store doesn't parse or check the string, and never sees a
+password: hashing and checking belong to the caller. The web channel does them on a blocking thread
+([Passwords](web-channel.md#passwords)).
+
+| Method                                    | Contract                                                              |
+| ----------------------------------------- | --------------------------------------------------------------------- |
+| `user_password_set(user, hash, now)`      | Sets the hash, replacing the user's old one. `Error::NoSuchUser` if the user doesn't exist, `Error::InvalidRequest` for an empty string. |
+| `user_password(user)`                     | The `StoredPassword` (`hash`, `changed_at`), if the user has one.     |
+
+## User passkeys
+
+`user_passkeys` holds the passkeys users sign in with, any number per user. The row keeps the
+authenticator's `credential_id`, which is unique across all users because a sign-in finds the user
+by it, and the `credential`: the JSON the WebAuthn library serializes for a `Passkey` (public key,
+signature counter, backup flags, and the transports the browser reported). The store never parses
+it. `kind` is `discoverable` for a passkey made with "Add a passkey" and `non_resident` for one made
+with "Add a non-resident key" on the web channel's setup page. The rows go when the user does.
+
+`passkey_fake_key` is one row of 32 random bytes. The login page answers a username that has no
+passkeys, real or not, with credential ids made up from this key and the name, so the answer doesn't
+say which usernames exist. The ids must be the same after a restart, or the change would tell
+made-up ids from real ones, so the key is stored.
+
+| Method                                         | Contract                                                      |
+| ---------------------------------------------- | ------------------------------------------------------------- |
+| `user_passkey_add(new, now)`                   | Adds a passkey and returns it. `Error::NoSuchUser` if the user doesn't exist, `Error::Conflict` if any passkey has the credential id, `Error::InvalidRequest` for an empty credential id, credential, or name. |
+| `user_passkeys(user)`                          | The user's passkeys, oldest first.                            |
+| `user_passkey_by_credential(credential_id)`    | The passkey with that credential id, whoever it belongs to.   |
+| `user_passkey_used(id, credential, now)`       | Stores the new serialized credential (its counter moved) and `last_used_at`; `false` if there is no such passkey. |
+| `user_passkey_rename(user, id, name)`          | Renames the user's passkey; `false` if the user has no such passkey (another user's id is none). `Error::InvalidRequest` for an empty name. |
+| `passkey_fake_key(candidate)`                  | The stored stand-in key; if none is stored, stores `candidate` and returns it. |
+
+## OpenID Connect providers
+
+`oidc_providers` holds the identity providers an admin configures, and `user_oidc_connections` says
+which account at a provider signs in as which user. The store keeps only what the admin typed. The
+provider's endpoints, keys, and signing algorithms come from its discovery document, which the core
+fetches ([OpenID Connect](web-channel.md#openid-connect)), and the client secret is in the
+[secret store](#secrets) under the name in `client_secret`, never in this table.
+
+A connection is the account `subject` at the `issuer`, under the provider the sign-in came through.
+A sign-in is matched on exactly those three and never on an email address or a name, because the
+subject is the only stable id a provider promises. A provider's current issuer is the one looked up,
+so after an admin changes it the old connections stay in the table without matching anything, and
+match again if the issuer is changed back. A user has one account per provider: connecting another
+replaces it. Removing a provider removes its connections, and so does removing a user.
+
+| Method                                                        | Contract                                                  |
+| ------------------------------------------------------------- | --------------------------------------------------------- |
+| `OidcProviderSettings::validate()`                            | The check `add` and `update` make, for a caller that must know before it changes anything else. |
+| `oidc_provider_add(id, settings, now)`                        | Adds a provider and returns it. `Error::InvalidRequest` for an id that isn't a slug (`is_provider_id`) or settings that are blank, have control characters, or whose scopes lack `openid`; `Error::Conflict` if the id exists. |
+| `oidc_provider_update(id, settings, now)`                     | Replaces every setting; `None` if there is no such provider. |
+| `oidc_provider_set_enabled(id, enabled, now)`                 | Enables or disables; `false` if there is no such provider. |
+| `oidc_provider_remove(id)`                                    | Removes the provider and its connections; `false` if there is no such provider. |
+| `oidc_provider(id)`, `oidc_providers()`                       | One provider, or all of them by display name.             |
+| `user_oidc_connect(provider, issuer, subject, user, now)`     | Connects the account, replacing the user's connection to that provider. The same account again changes nothing. `Error::NoSuchUser`, `Error::NotFound` (the provider), `Error::Conflict` (the account is another user's), `Error::InvalidRequest` (an empty issuer or subject, or a subject over 255 characters). |
+| `user_oidc_user(provider, issuer, subject)`                   | The user the account is connected to, if any.             |
+| `user_oidc_connections(user)`                                 | The user's connections, oldest first.                     |
+| `oidc_connection_count(provider, issuer)`                     | How many accounts are connected with that issuer.         |
+| `oidc_provider_connection_count(provider)`                    | How many accounts are connected, whatever their issuer: what removing the provider forgets. |
+
+## Removing a sign-in method
+
+A user's sign-in methods are the password (`user_passwords`), their passkeys (`user_passkeys`), and
+their connections to identity providers (`user_oidc_connections`). Removing one is
+`user_sign_in_method_remove(user, method, passkeys_work)`, with a `SignInMethodRef` (`Password`,
+`Passkey(id)`, or `Oidc { provider }`). It returns `false` when the user doesn't have the method,
+and another user's passkey id is no passkey of theirs. It refuses with `Error::LastSignInMethod` to
+remove the only method that can sign the user in, and the check runs in the removal's own
+transaction, so two removals at once can't take both of the last two.
+
+A method counts when it can sign the user in now: the password always, and a connection while its
+provider is enabled and still has the issuer the connection was made under. Passkeys count only when
+the caller passes `passkeys_work`, because whether they can sign anyone in depends on the install
+(the web channel needs a `public_url` that is a domain name on a secure origin), which the store
+can't know. `user_sign_in_methods_usable(user, passkeys_work)` returns that count, so a page can say
+that a user has one way left without counting again. Removing a method that doesn't count is always
+allowed. A user with no method at all, such as one who was just invited and signs in with a link, is
+never asked to keep one. The proxy login isn't a method of the user's: an admin sets it, and it
+works only where a trusted proxy is set up, so it doesn't keep the last method from being refused.
+
+## Forgetting a user
+
+Removing a user from the web UI forgets their data (PLAN 11.4). The database's half is these store
+methods, which the core calls in an order that a failed removal can be finished from.
+
+| Method                   | Contract                                                                  |
+| ------------------------ | ------------------------------------------------------------------------- |
+| `user_data(user)`        | Counts what the next method changes, as `UserData`: one number per kind of row. The `identities` count is the user's row's to delete, not the next method's. |
+| `user_data_forget(user)` | Changes it all in one transaction, and returns `UserDataDeletion::Done` with what it counted, the group sessions whose summaries it deleted, and the (channel instance, conversation) of the deleted direct sessions, or `UserDataDeletion::Busy`, changing nothing, while an inbox row of the user's, or one routed to their sessions, is `queued` or `started`. Idempotent: a second call finds nothing. |
+| `user_session_ids(user)` | The ids of the sessions the previous method deletes, for the state in memory that is keyed by them. |
+| `user_workspaces(user)`, `workspaces_forget_user(user)` | The workspace rows, [below](#workspaces). |
+| `MemoryStore::user_memories(user)`, `MemoryStore::forget_user(user)` | The user's rows in an agent's `memory.db`, [above](#memory-database). |
+
+`user_data_forget` does this, in this order:
+
+- **Signs the user out and revokes their links.** Their link codes, invite and recovery links,
+  passkeys, password, OpenID Connect connections, and web sessions are deleted. The links they made
+  for others stay, with no creator.
+- **Deletes their work.** Their runtime jobs (the trigger deletes the `job_runs`), their `inbox`
+  rows and the inbox rows routed to their sessions, and their `outbox` rows and the ones addressed
+  to one of their identities.
+- **Handles group sessions.** A message the user sent in a `group` session (a user message whose
+  `meta.sender` is theirs) keeps its row and its place in the transcript, but its content becomes
+  one text block, `TOMBSTONE`, and its sender is removed, so an assistant message answering it still
+  follows a message. Every summary whose range covers one of those messages is deleted. Summaries
+  are cumulative (each covers everything from the first message), so that is every summary from the
+  first one that reached the message on, and the session's history is the raw messages again, which
+  may not fit a model's context. The core writes the summaries again from the tombstoned messages
+  with its usual compaction, and the sessions it must do that for are the ones returned. A summary
+  whose range stops short of those messages stays. The `search` index follows by its triggers. The
+  token usage the assistant's messages in those sessions recorded is removed (`meta.usage`): it was
+  measured against the summaries just deleted, and compaction's estimate would trust it.
+- **Deletes their sessions.** Every session of the user that isn't a group's (direct sessions, and
+  the sessions of the runs of their jobs) goes, and messages and summaries cascade. A group session
+  that names the user as its user loses only the name. The archive row of a conversation that has no
+  session left is deleted.
+- **Clears the rest.** `usage.user_id` becomes null, so the token counts stay; the SSH key rows are
+  deleted; `ssh_known_hosts.first_user` and `added_by`, and `secrets.created_by` and `updated_by`,
+  become null.
+
+FTS5 keeps a deleted row's words in the index as delete markers until its segments are merged. So
+that none of the user's words stay in the files, `user_data_forget` turns on FTS5's `secure-delete`
+option for `search` before it deletes, and `MemoryStore::forget_user` does the same for
+`memory_search`. The option is stored in the index, so it applies to every later delete too, and
+setting it again does no harm; a merge of the whole index, which would hold the only writer, isn't
+needed. Words of messages deleted before the first forget may stay in older segments until SQLite
+merges them. SQLite also keeps what a delete frees in the file until the pages are reused or the
+database is copied with `VACUUM INTO`, which `doozers backup` does, so a backup doesn't hold the
+freed pages.
+
+`doozers_core::forget::Forgetter::forget(acting, user)` runs the whole operation around those
+methods. It is made to be run again after a failure, since a removal that stops halfway leaves the
+user disabled:
+
+1. It refuses (`Busy`, nothing changed) while the user is being worked for: a turn is running that
+   they asked for or in a session of theirs, a holder (a job's turn or reply), or messages queued
+   (`DaemonUserActivity`: `Sessions::user_busy`, and `Scheduler::user_busy` for a run of a job they
+   made, an isolated run's turn included, which the session manager doesn't know; and
+   `user_data_forget`'s own check). It doesn't stop the turn: the admin has the user send `/stop`,
+   or waits. It refuses the admin's own removal (`Yourself`).
+2. It disables the user. The last-active-admin guard is this step (`LastAdmin`, nothing changed). A
+   disabled user can't sign in and their messages are dropped, so no new work starts. It looks for
+   work again; if it finds some, it makes a user who was active active again, and refuses.
+3. It calls `user_data_forget`, then denies the user's pending approvals
+   (`ApprovalBoard::forget_user`) and tells the scheduler their jobs are gone, which stops them.
+4. It deletes their workspaces through the plugins (`Workspaces::delete`, with the reason
+   `chat_deleted` for a conversation's and `job_run_ended` for a job run's), then calls
+   `workspaces_forget_user`. A plugin that can't be reached leaves the workspace `deleting`, which
+   the sweep finishes.
+5. It deletes every secret under `users/<user>/` in the secret store, SSH keys included.
+6. It deletes the user's private memories in every `agents/<agent>/memory.db`.
+7. It removes `users/<user>/`.
+8. It deletes the user (`Users::remove`), which cascades to their identities.
+9. It writes the summaries of the group sessions `user_data_forget` returned again
+   (`AgentLoop::recompact_session`). It starts right after step 3, since only that call knows which
+   sessions lost summaries, and runs in the background, so the admin doesn't wait for the model and
+   the removal's lock is released. It compacts as a turn does, outside a turn: summary requests to
+   the agent's compaction model, each rolling the previous summary and the next messages into one,
+   until the history is under the compaction threshold. The size is estimated from the messages,
+   never from recorded usage. It is best effort: a provider that can't be reached is logged, and the
+   session's next turn compacts what is left.
+
+Every step finds its work again from what is stored, so a retry skips what is done: the user row,
+which names the user until step 8, is how a retry finds them. A disabled user that is forgotten
+again is handled as any other. `trash/agents/` holds the `memory.db` of agents removed earlier,
+which Doozers doesn't read, so it isn't touched. Blobs that only deleted messages referenced are
+left to the [blob sweep](#sweep), which finds references by scanning the tables, so a message that
+is gone keeps none.
 
 ## Toolsets
 
@@ -618,15 +941,25 @@ cycle, the sweep, and the reconciliation are in [Environments](environments.md).
 `id` (`ws-` and 20 hex digits), and the plugin labels its resources with it, so a plugin's list and
 the table meet on the id alone.
 
-An owner is a conversation (`agent`, `channel`, `conversation`: the key of a session) or an isolated
-job run (`job_session`, a `sessions.id` with no foreign key, because a run that replies `NO_REPLY`
-deletes its session while the workspace may still need cleaning up). A `CHECK` allows exactly one
-form. `state` is `creating`, `active`, `deleting` (the owner's slot is free but the plugin hasn't
-confirmed the delete), or `deleted`; `deleted_at` and `delete_reason` are set exactly when the state
-is `deleting` or `deleted`, and `description`, `working_directory` and `persistence` (what the
-plugin reported) are set once it is `active`. Two partial unique indexes, over the conversation key
-and over `job_session`, allow one `creating` or `active` row per owner. Deleted rows stay so the
-model can be told when and why, and are pruned after the instance's `delete_after`.
+An owner is a conversation (`agent`, `channel`, `conversation`: the key of a session, and `user_id`
+for a direct conversation, null for a group's) or an isolated job run (`job_session`, a
+`sessions.id` with no foreign key, because a run that replies `NO_REPLY` deletes its session while
+the workspace may still need cleaning up). A `CHECK` allows exactly one form. `state` is `creating`,
+`active`, `deleting` (the owner's slot is free but the plugin hasn't confirmed the delete), or
+`deleted`; `deleted_at` and `delete_reason` are set exactly when the state is `deleting` or
+`deleted`, and `description`, `working_directory` and `persistence` (what the plugin reported) are
+set once it is `active`. Two partial unique indexes, over the conversation key and user
+(`coalesce(user_id, '')`, since NULLs are distinct in a unique index) and over `job_session`, allow
+one `creating` or `active` row per owner. Deleted rows stay so the model can be told when and why,
+and are pruned after the instance's `delete_after`.
+
+`user_id` is part of a conversation's owner. A conversation id can pass from one user to the next
+(an IRC nickname's direct conversation), so two users of one id hold workspaces of their own and
+every owner query (`workspace_current`, `workspace_last_deleted`, the delete and the activity calls)
+names the user. `workspace_owner_activity` counts only sessions of the owner's user. Migration
+`0016` gave existing conversation rows the user of their `key_user` (on an install made before users
+existed, that is the `owner`), left a group's and a job's null, and rebuilt the unique index to
+include the user. A conversation row with neither stays user-less and is treated as a group's.
 
 `key_user` is the user whose [SSH keys](ssh.md#how-a-workspace-gets-its-keys) the workspace gets, or
 null for none. The core sets it when it creates the workspace and never changes it. Migration `0013`
@@ -648,6 +981,8 @@ and left job rows null.
 | `workspaces_end_job_runs(now)`               | Every `active` job-owned row becomes `deleting` (`job_run_ended`): at startup no run is alive. |
 | `workspaces_all()`                           | Every row of every instance, in every state, oldest first: what the workspaces page shows. |
 | `workspaces_prune(environment, before)`      | Removes `deleted` rows of the instance deleted before `before`.       |
+| `user_workspaces(user)`                      | The `creating` and `active` rows that go with a user: a direct conversation's they own, and a job run's whose SSH keys are theirs. |
+| `workspaces_forget_user(user)`               | Once those are deleted: removes the user's `deleted` rows and clears them from the rest (a `deleting` row, and a shared workspace's key user); `Error::Conflict` if a live one is left. |
 | `workspace_owner_activity(owner)`            | A conversation's newest message across every session of its key, ended ones included (a session's start if it has none); `None` for a job. |
 
 Because the table is in `doozers.db`, a [backup](backups.md) holds it, but not the workspaces'
@@ -692,6 +1027,18 @@ data/blobs/sha256/
   repairs it. The reader hashes as it goes, and the read that reaches the end fails with
   `InvalidData` if the content doesn't match its id, so a consumer that reads to the end never
   accepts damaged bytes. `stat(id)` returns the metadata alone.
+- **Whose.** A blob has no owner: the same content is one file for every user who sent it.
+  `reference_of(id, user)` asks whether a message of the user's refers to it: media blocks in the
+  content of a message in one of the user's sessions (tool results included), an attachment of an
+  inbox event of theirs, or an attachment of an outbox message for them. A text search for the hash
+  finds the candidate rows; each is parsed, and only media in those places counts, never text or a
+  tool call's input. It returns the user's own `MediaRef`, whose name and media type a download
+  shows, since the blob row keeps the first sender's. Newest rows are tried first (the newest
+  session's newest message, then back), the messages are reached through the user's sessions, and
+  `0017_inbox_user.sql` indexes the sessions and the inbox by user for it, so a miss reads none of
+  other users' messages. It is how the web channel decides who may see `/blobs/<sha256>`
+  ([Web channel](web-channel.md#blobs)). The sweep's `REFERENCING_COLUMNS` is a different question
+  (does anything refer to it?) and a wider one.
 
 Concurrent puts of the same content need no lock among themselves: each writes its own temp file, a
 rename over an existing file is atomic, and the row upsert is idempotent. Hashing runs on the async

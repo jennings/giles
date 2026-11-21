@@ -53,7 +53,7 @@ token (after the socket answers, so it's the running core's). A missing socket, 
 | `RestartPlugin`   | The request names the `kind` (`InstanceKind`) and the instance: `INVALID_ARGUMENT` for `UNSPECIFIED` or a number the protocol doesn't name, before anything else is looked up. `NOT_FOUND` for an instance of that kind that `ListPlugins` doesn't list (a configured instance, or an instance the control reports, so a failed stored toolset is found; a same-named instance of another kind doesn't count, and a provider never is one); `UNAVAILABLE` without plugin supervision; `FAILED_PRECONDITION` if supervision doesn't know the instance; else `PluginControl::restart(kind, instance)`. For a failed stored toolset that is the manager's: it re-reads `secrets.toml`, validates the stored spec again, and starts it in the background (still failing, it stays `FAILED` with the new reason). |
 | `ListSessions`    | `Store::list_sessions`: newest activity first, optionally one agent's, open ones unless `include_ended`. `INVALID_ARGUMENT` for an invalid agent id. |
 | `ResetSession`    | Ends the session like `/new` (`Store::end_session` at the current time; a running turn finishes, and the conversation's next message opens a new session). `NOT_FOUND`, `FAILED_PRECONDITION` if it already ended, `INVALID_ARGUMENT` for a malformed id. |
-| `CreateLoginLink` | `LoginLinks::create_login_link(&user, now)`; `UNAVAILABLE` without the web channel. `UnknownUser` maps to `NOT_FOUND`, `Refused` to `FAILED_PRECONDITION`. |
+| `CreateLoginLink` | A recovery link: `Users::login_user` picks the user (and creates the first admin on a fresh install), `Users::create_invite(user, Recovery, None, now)` stores the link for 72 hours, and `InviteLinks::invite_url(token)` gives its URL; `UNAVAILABLE` without the web channel, checked first. `NeedUser` maps to `INVALID_ARGUMENT`, `NoSuchUser` to `NOT_FOUND`, and `Disabled` and `WebIdentityTaken` to `FAILED_PRECONDITION`. See [Invite and recovery links](web-channel.md#invite-and-recovery-links). |
 | `UsageReport`     | `Store::usage_by_model(since, until)`: one row per agent, provider instance, and model. |
 | `Backup`          | `backup::create` into `dir` (absolute, existing): `VACUUM INTO` plus a tar of the files; answers the two paths written. See [Backups](backups.md). |
 | `ListToolsets`    | `ToolsetAdmin::list`: every stored toolset and every toolset of `doozers.toml`, ordered by name ignoring case. See [Toolset RPCs](#toolset-rpcs). |
@@ -63,6 +63,25 @@ token (after the socket answers, so it's the running core's). A missing socket, 
 | `RenameToolset`   | `ToolsetAdmin::rename`: renames a stored toolset and the globs of the agents that name its tools, with no restart. Answers the toolset under its new name (its `failure` says why it didn't start under it) and the agents whose globs were rewritten, each with its `tools` and `ask` globs before and after. See [Toolset RPCs](#toolset-rpcs). |
 
 Store failures are logged and answered with `INTERNAL`.
+
+### Users and the operator
+
+The admin socket is the operator's (mode 0600, behind the token), not a user's, so no RPC is scoped
+to a user: whoever holds the token administers every user's data, as they can read the data root.
+The multi-user audit ([Whose data is whose](web-channel.md#whose-data-is-whose)) went through each:
+
+- `ListSessions` and `ResetSession` list and end any user's sessions, by session id. The listing
+  doesn't say whose a session is yet.
+- `CreateLoginLink` makes a recovery link that signs in as any active user, and says which user in
+  its request; an empty `user` picks the only user and is refused when there are several. It keeps
+  every way the user can already sign in.
+- `UsageReport` sums usage over every user: its rows have a user, and no RPC groups by it.
+- `Backup` copies every user's data.
+- The remaining RPCs (`Status`, the plugin and toolset RPCs) are about the instance, and have no
+  per-user data. Toolsets and their client secrets are global; only a user's tokens are theirs.
+
+The web admin pages call the same service for an admin only
+([Admin pages](web-channel.md#admin-pages)), so a member never reaches it.
 
 ### Toolset RPCs
 
@@ -174,10 +193,9 @@ pub struct PluginRuntime {
     pub tool_count: Option<u32>, // toolsets only
 }
 
-pub trait LoginLinks: Send + Sync {
-    fn create_login_link(&self, user: &UserId, now: Timestamp)
-        -> Result<LoginLink, LoginLinkError>; // LoginLink { url, expires_at }
-}                                             // LoginLinkError::{UnknownUser, Refused}(message)
+pub trait InviteLinks: Send + Sync {
+    fn invite_url(&self, token: &str) -> String; // `<link base>/invite/<token>`
+}
 
 pub trait ToolsetAdmin: Send + Sync {          // async, through `async_trait`
     async fn list(&self) -> Result<Vec<ToolsetView>, ToolsetManagerError>;
@@ -190,13 +208,14 @@ pub trait ToolsetAdmin: Send + Sync {          // async, through `async_trait`
 }                                              // Implemented by `ToolsetManager`.
 ```
 
-The built-in web channel implements `LoginLinks` (its `UnknownUser` becomes `UnknownUser`,
-`NoWebIdentity` becomes `Refused`); `serve` passes `registry.web_channel()`, so without a
-`[channel.web]` instance `CreateLoginLink` answers `UNAVAILABLE`. The plugin host implements
-`PluginControl` ([Plugin Host](plugin-host.md#status)): `plugins()` maps each `PluginStatus` field
-for field (a remote plugin runs with no pid, and the version and `requested_grants` come from the
-live or cached `Describe` answer), and `restart` stops and launches the channel again (`false` for
-any other kind, since the host supervises channels only). So does the toolset host
+The built-in web channel implements `InviteLinks`, so links point at its public URL or the address
+`serve` bound; `serve` passes `registry.web_channel()`, so without a `[channel.web]` instance
+`CreateLoginLink` answers `UNAVAILABLE`. The links themselves are rows `Users` stores, not something
+the channel holds. The plugin host implements `PluginControl`
+([Plugin Host](plugin-host.md#status)): `plugins()` maps each `PluginStatus` field for field (a
+remote plugin runs with no pid, and the version and `requested_grants` come from the live or cached
+`Describe` answer), and `restart` stops and launches the channel again (`false` for any other kind,
+since the host supervises channels only). So does the toolset host
 ([Toolsets](toolsets.md#lifecycle)): each supervisor's report becomes a `PluginRuntime` (state,
 restarts, last error, the binary found, the server's version from `initialize`, and `tool_count`;
 `pid` and `requested_grants` stay unset), and `restart` (for `Kind::Toolset` only) is

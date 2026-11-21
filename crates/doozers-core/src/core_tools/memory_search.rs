@@ -21,6 +21,7 @@ use crate::agent_loop::ToolOutput;
 use crate::agent_loop::history::{message_timezone, strip_time_prefix, time_prefix};
 use crate::agent_loop::prompt::memory_user;
 use crate::config::LiveConfig;
+use crate::users::UserList;
 
 /// The tool's name.
 pub const MEMORY_SEARCH: &str = "memory_search";
@@ -39,12 +40,18 @@ pub const NO_MATCHES: &str = "No matches.";
 pub struct MemorySearchTool {
     store: Store,
     config: LiveConfig,
+    users: UserList,
 }
 
 impl MemorySearchTool {
-    /// Searches `store`, showing times in the zone `config` gives each agent's messages.
-    pub fn new(store: Store, config: LiveConfig) -> Self {
-        Self { store, config }
+    /// Searches `store`, showing times in the zone of the requester, else the agent's, as
+    /// `config` and `users` give them.
+    pub fn new(store: Store, config: LiveConfig, users: UserList) -> Self {
+        Self {
+            store,
+            config,
+            users,
+        }
     }
 }
 
@@ -168,7 +175,7 @@ impl CoreTool for MemorySearchTool {
             Ok(hits) => ToolOutput {
                 content: vec![Block::text(render(
                     &hits,
-                    &message_timezone(&config, agent_config),
+                    &message_timezone(&self.users, call.context.requester.as_ref(), agent_config),
                 ))],
                 is_error: false,
             },

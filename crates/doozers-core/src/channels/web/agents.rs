@@ -1,6 +1,6 @@
 //! The agent pages: every agent, one agent's configuration and files, and the
 //! forms that create and edit an agent and the page that removes one while the core runs. Next to
-//! the admin pages (`admin.rs`) and like them: behind the login, the owner only, every answer
+//! the admin pages (`admin.rs`) and like them: behind the login, admins only, every answer
 //! `no-store`, the form post CSRF-checked.
 //!
 //! The pages call the core's agent management ([`crate::agents`]) in-process. File contents are

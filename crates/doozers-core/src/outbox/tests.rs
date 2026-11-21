@@ -17,6 +17,7 @@ use tokio::time::Instant;
 use super::*;
 use crate::config::{Config, LoadOptions};
 use crate::paths::DataRoot;
+use crate::users::User;
 
 const OWNER_DEFAULT: &str = "whatsapp:+15551234567";
 
@@ -142,7 +143,6 @@ struct Harness {
     db: std::path::PathBuf,
     registry: Arc<Registry>,
     outbox: Outbox,
-    config: Arc<Config>,
     start: Instant,
     shutdown: CancellationToken,
 }
@@ -166,6 +166,9 @@ impl Harness {
         let db = dir.path().join("doozers.db");
         let store = Store::open(db.clone()).await.unwrap();
         let registry = Arc::new(Registry::new(root, config.clone()));
+        registry
+            .users()
+            .set(crate::users::legacy_owner_users(&config));
         let start = Instant::now();
         let outbox = Outbox::new(
             store.clone(),
@@ -177,7 +180,6 @@ impl Harness {
             db,
             registry,
             outbox,
-            config,
             start,
             shutdown: CancellationToken::new(),
         }
@@ -258,7 +260,14 @@ impl Harness {
     }
 
     fn job(&self, markdown: &str) -> OutboxItem {
-        OutboxItem::to_owner(&self.config.owner, OutboxKind::JobReply, markdown)
+        self.to_owner(OutboxKind::JobReply, markdown)
+    }
+
+    /// `markdown` to the owner's default identity.
+    fn to_owner(&self, kind: OutboxKind, markdown: &str) -> OutboxItem {
+        let users = self.registry.users().get();
+        let owner = users.user(&crate::identity::owner()).unwrap();
+        OutboxItem::to_user(owner, kind, markdown).unwrap()
     }
 
     fn to(identity: &str, kind: OutboxKind, markdown: &str) -> OutboxItem {
@@ -301,6 +310,22 @@ fn ms(after: Duration) -> i64 {
 
 fn unavailable() -> Error {
     Error::unavailable("not connected")
+}
+
+#[test]
+fn an_item_for_a_user_goes_to_their_default_identity() {
+    let mut ann = User::member(
+        "ann",
+        &["whatsapp:+15557654321", "irc:libera.chat:account:ann"],
+    );
+    assert!(OutboxItem::to_user(&ann, OutboxKind::JobReply, "x").is_none());
+    ann.default_identity = Some(Identity::new("irc:libera.chat:account:ann").unwrap());
+    let item = OutboxItem::to_user(&ann, OutboxKind::JobReply, "x").unwrap();
+    assert_eq!(item.user, Some(UserId::new("ann").unwrap()));
+    assert_eq!(
+        item.to,
+        Destination::Identity(Identity::new("irc:libera.chat:account:ann").unwrap())
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -568,8 +593,7 @@ async fn rows_expire_at_their_deadline() {
         .outbox
         .enqueue(OutboxItem {
             expires_at: Some(deadline),
-            ..OutboxItem::to_owner(
-                &harness.config.owner,
+            ..harness.to_owner(
                 OutboxKind::ApprovalPrompt,
                 "Allow `x`? Reply `yes 1234` or `no 1234`.",
             )
@@ -611,7 +635,7 @@ async fn enqueue_checks_the_expiry() {
     let harness = Harness::new().await;
     harness.register("phone", "whatsapp", true);
     for kind in [OutboxKind::ApprovalPrompt, OutboxKind::LoginCode] {
-        let item = OutboxItem::to_owner(&harness.config.owner, kind, "x");
+        let item = harness.to_owner(kind, "x");
         assert!(matches!(
             harness.outbox.enqueue(item).await,
             Err(OutboxError::MissingExpiry(k)) if k == kind
@@ -633,7 +657,7 @@ async fn startup_drops_the_approval_prompts_of_the_previous_process() {
     let harness = Harness::new().await;
     let prompt = OutboxItem {
         expires_at: Some(base().checked_add(secs(600)).unwrap()),
-        ..OutboxItem::to_owner(&harness.config.owner, OutboxKind::ApprovalPrompt, "Allow?")
+        ..harness.to_owner(OutboxKind::ApprovalPrompt, "Allow?")
     };
     // Enqueued before the sender starts, as if left by the previous process.
     harness.outbox.enqueue(prompt).await.unwrap();
@@ -652,7 +676,7 @@ async fn a_removed_prompt_is_never_sent() {
     harness.start().await;
     let prompt = OutboxItem {
         expires_at: Some(base().checked_add(secs(600)).unwrap()),
-        ..OutboxItem::to_owner(&harness.config.owner, OutboxKind::ApprovalPrompt, "Allow?")
+        ..harness.to_owner(OutboxKind::ApprovalPrompt, "Allow?")
     };
     let id = harness.outbox.enqueue(prompt).await.unwrap();
     tokio::time::sleep(secs(2)).await;

@@ -5,9 +5,6 @@ The IRC channel plugin, `doozers-channel-irc`, lets you talk to the agent on an 
 Each instance of component `irc` connects to one network. For two networks, add two instances.
 
 ```toml
-[owner]
-identities = ["irc:libera.chat:account:stephen"]
-
 [channel.libera]
 component = "irc"
 
@@ -19,8 +16,8 @@ sasl = { password = { secret = "libera" } }
 ```
 
 Talk to the agent in a private message (a query) to its nick. Doozers only accepts messages from a
-nick that's logged in to a services account listed in `[owner] identities`. See
-[Identities](#identities) for how to write them.
+nick that's logged in to a services account that is one of your identities, such as
+`irc:libera.chat:account:stephen`. See [Identities](#identities) for how to write them.
 
 ## Settings
 
@@ -107,8 +104,14 @@ Write account names and nicks the way the server case-folds them, or they never 
 - `ascii` folds only letters.
 - Networks that allow non-ASCII nicks use other mappings, which also lowercase those letters.
 
+Add yours on the [**Identities** page](web.md#identities) of the web chat. Choose the network, such
+as `irc:libera.chat`, make a code, and send `/link` and the code to Doozers' nick in a private
+message while you're logged in to services. Doozers replies when it has added the identity. An
+install upgraded from a version without users keeps the identities of
+[`[owner]`](configuration.md#owner), which Doozers imported once.
+
 A dropped message is logged (`dropped inbound message`) with the sender's identity in exactly the
-form to list.
+form to use.
 
 ### Mask identities
 
@@ -120,7 +123,7 @@ lowercase, and the user name is kept as is. For example, `Stephen!~sj@203.0.113.
 `irc:example:mask:stephen!~sj@203.0.113.7`.
 
 If the server also tags the message with an account, the account stays the identity and the mask is
-an alias. You can list either in `[owner] identities`.
+an alias. Either one can be your identity.
 
 **Masks are risky.** A mask is only as trustworthy as its parts:
 

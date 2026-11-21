@@ -11,8 +11,7 @@ use doozers_types::{AgentId, ConversationId};
 
 use crate::config::is_valid_name;
 
-/// The web channel's component name, and the identity namespace of web senders (`web:<id>` in
-/// `[owner]`).
+/// The web channel's component name, and the identity namespace of web senders (`web:<id>`).
 pub const COMPONENT: &str = "web";
 
 /// `bytes` random bytes from the OS, as lowercase hex.

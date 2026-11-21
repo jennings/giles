@@ -77,9 +77,9 @@ impl FileKind {
         }
     }
 
-    /// Whether `viewer` may see a file of this kind. The one place that decides it: v1 has one
-    /// user, the owner, who is the only one who can open an agent's page and sees every file.
-    /// With several users (PLAN section 3.1), a check for files that are one user's own goes here.
+    /// Whether `viewer` may see a file of this kind. The one place that decides it: only admins
+    /// can open an agent's page, and they see every file. A check for files that are one user's
+    /// own goes here.
     pub fn visible_to(&self, viewer: &UserId) -> bool {
         let _ = viewer;
         true
@@ -409,7 +409,7 @@ mod tests {
         }
         assert_eq!(FileKind::Other.label(), None);
         assert_eq!(FileKind::Soul.label().as_deref(), Some("Who the agent is"));
-        // v1: the owner sees everything.
+        // Every file is visible to whoever can open the page: an admin.
         assert!(FileKind::Other.visible_to(&crate::identity::owner()));
     }
 

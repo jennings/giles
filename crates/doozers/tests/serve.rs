@@ -333,7 +333,7 @@ fn missing_config_creates_the_layout_then_fails() {
 }
 
 #[test]
-fn invalid_config_fails_with_the_file_and_key() {
+fn an_invalid_owner_fails_the_first_start_with_the_file_and_key() {
     // A typo next to the wrong-typed key doesn't change the error.
     let env = Env::new();
     let home = env.path("home");
@@ -344,8 +344,9 @@ fn invalid_config_fails_with_the_file_and_key() {
     let output = output_within_timeout(env.command(&["serve", "--home", home.to_str().unwrap()]));
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // `[owner]` is checked by its one-time import.
     let expected = format!(
-        "{}:2:14: owner.identities: invalid type",
+        "{}: owner: invalid type",
         home.join("doozers.toml").display()
     );
     assert!(stderr.contains(&expected), "{stderr}");
@@ -681,13 +682,14 @@ fn status_usage_and_login_link_ask_the_running_daemon() {
     assert!(!ok && stderr.contains("doozers is not running"), "{stderr}");
 }
 
-/// `POST <path>` with the urlencoded `form` to `addr`; the whole response.
+/// `POST <path>` with the urlencoded `form` and the `headers` (each ending in `\r\n`) to `addr`;
+/// the whole response.
 #[cfg(feature = "channel-web")]
-fn http_post_form(addr: SocketAddr, path: &str, form: &str) -> String {
+fn http_post_form(addr: SocketAddr, path: &str, headers: &str, form: &str) -> String {
     let mut stream = TcpStream::connect(addr).unwrap();
     write!(
         stream,
-        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n{headers}\
          Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{form}",
         form.len()
     )
@@ -697,9 +699,30 @@ fn http_post_form(addr: SocketAddr, path: &str, form: &str) -> String {
     response
 }
 
+/// Opens the invite page of `token` on `addr`, as a browser does, and posts its form: the whole
+/// response of the page, and of the post. The post carries the nonce the page set. A link that is
+/// dead has a page without one, so the post makes one up.
+#[cfg(feature = "channel-web")]
+fn spend_link(addr: SocketAddr, token: &str) -> (String, String) {
+    let page = http_request(
+        TcpStream::connect(addr).unwrap(),
+        &format!("/invite/{token}"),
+        "",
+    );
+    let nonce = if page.starts_with("HTTP/1.1 200 OK\r\n") {
+        cookie_of(&page)
+    } else {
+        "doozers_login_nonce=0123456789abcdef0123456789abcdef".to_owned()
+    };
+    let value = nonce.split_once('=').unwrap().1.to_owned();
+    let form = format!("token={token}&nonce={value}");
+    let posted = http_post_form(addr, "/invite", &format!("cookie: {nonce}\r\n"), &form);
+    (page, posted)
+}
+
 #[cfg(feature = "channel-web")]
 #[test]
-fn admin_login_link_prints_a_url_that_logs_in_once() {
+fn admin_login_link_prints_a_url_that_signs_in_once() {
     let env = Env::new();
     let home = env.path("home");
     let home_arg = home.to_str().unwrap();
@@ -715,29 +738,25 @@ fn admin_login_link_prints_a_url_that_logs_in_once() {
     assert!(ok, "{stderr}");
     assert!(stderr.contains("The link works once, until"), "{stderr}");
     let url = stdout.trim();
-    let prefix = format!("http://{addr}/login/");
+    let prefix = format!("http://{addr}/invite/");
     let token = url
         .strip_prefix(&prefix)
         .unwrap_or_else(|| panic!("{url} doesn't start with {prefix}"));
 
-    // Opening the link shows the login page; posting its form logs in, once.
-    let page = http_request(
-        TcpStream::connect(addr).unwrap(),
-        &format!("/login/{token}"),
-        "",
-    );
-    assert!(page.starts_with("HTTP/1.1 200 OK\r\n"), "{page}");
-    let form = format!("token={token}");
-    let first = http_post_form(addr, "/login", &form);
+    // Opening the link shows a page; posting its form signs in, once.
+    let (_, first) = spend_link(addr, token);
     assert!(first.starts_with("HTTP/1.1 303 "), "{first}");
     assert!(
-        first.to_ascii_lowercase().contains("\r\nset-cookie: "),
+        first
+            .to_ascii_lowercase()
+            .contains("\r\nset-cookie: doozers_session="),
         "{first}"
     );
-    let again = http_post_form(addr, "/login", &form);
-    assert!(!again.starts_with("HTTP/1.1 303 "), "{again}");
+    let (page, again) = spend_link(addr, token);
+    assert!(page.starts_with("HTTP/1.1 410 "), "{page}");
+    assert!(again.starts_with("HTTP/1.1 410 "), "{again}");
 
-    // v1 has one user.
+    // Only users that exist get links.
     let (ok, stdout, stderr) = run_cli(
         &env,
         &[
@@ -754,6 +773,85 @@ fn admin_login_link_prints_a_url_that_logs_in_once() {
 
     let (status, log) = daemon.stop("TERM");
     assert!(status.success(), "{status}\n{log}");
+}
+
+/// The value of the `Set-Cookie` header of `response`, without its attributes.
+#[cfg(feature = "channel-web")]
+fn cookie_of(response: &str) -> String {
+    response
+        .lines()
+        .find(|line| line.to_ascii_lowercase().starts_with("set-cookie: "))
+        .and_then(|line| line["set-cookie: ".len()..].split(';').next())
+        .unwrap_or_else(|| panic!("no cookie in {response}"))
+        .to_owned()
+}
+
+#[cfg(feature = "channel-web")]
+#[test]
+fn a_fresh_install_without_an_owner_gets_its_first_admin_from_login_link() {
+    let env = Env::new();
+    let home = env.path("home");
+    let home_arg = home.to_str().unwrap();
+    // No `[owner]`: nothing identifies anyone yet.
+    write_config(
+        &home,
+        "[core]\nhttp_listen = \"127.0.0.1:0\"\n\n[channel.web]\n",
+    );
+    let daemon = Daemon::start(env.command(&["serve", "--home", home_arg]));
+    let addr = http_addr(&daemon.log);
+
+    // The login page works for nobody until there's a link.
+    let response = http_request(TcpStream::connect(addr).unwrap(), "/", "");
+    assert!(response.starts_with("HTTP/1.1 401 "), "{response}");
+
+    let (ok, stdout, stderr_of_first) = run_cli(&env, &["admin", "login-link", "--home", home_arg]);
+    assert!(ok, "{stderr_of_first}");
+    let url = stdout.trim().to_owned();
+    let token = url
+        .strip_prefix(&format!("http://{addr}/invite/"))
+        .unwrap_or_else(|| panic!("{url}"))
+        .to_owned();
+    let (_, login) = spend_link(addr, &token);
+    assert!(login.starts_with("HTTP/1.1 303 "), "{login}");
+    // The first admin is a working user: the cookie opens the chat list, and the admin pages.
+    let cookie = format!("cookie: {}\r\n", cookie_of(&login));
+    let chats = http_request(TcpStream::connect(addr).unwrap(), "/", &cookie);
+    assert!(chats.starts_with("HTTP/1.1 200 OK\r\n"), "{chats}");
+    let admin = http_request(TcpStream::connect(addr).unwrap(), "/admin", &cookie);
+    assert!(admin.starts_with("HTTP/1.1 200 OK\r\n"), "{admin}");
+
+    assert!(
+        stderr_of_first.contains("logs in admin (id owner)"),
+        "{stderr_of_first}"
+    );
+
+    // With one user, a link needs no name, and `--user` names the same user.
+    let (ok, stdout, stderr) = run_cli(&env, &["admin", "login-link", "--home", home_arg]);
+    assert!(ok && stdout.starts_with("http://"), "{stdout}{stderr}");
+    let (ok, _, stderr) = run_cli(
+        &env,
+        &["admin", "login-link", "--home", home_arg, "--user", "owner"],
+    );
+    assert!(ok, "{stderr}");
+
+    let (status, log) = daemon.stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+
+    // The user is stored: a restart keeps it, and a `[owner]` added now is ignored with a warning.
+    write_config(
+        &home,
+        "[core]\nhttp_listen = \"127.0.0.1:0\"\n\n[owner]\nidentities = [\"web:other\"]\n\n\
+         [channel.web]\n",
+    );
+    let daemon = Daemon::start(env.command(&["serve", "--home", home_arg]));
+    let (ok, stdout, stderr) = run_cli(&env, &["admin", "login-link", "--home", home_arg]);
+    assert!(ok && stderr.contains("id owner"), "{stdout}{stderr}");
+    let (status, log) = daemon.stop("TERM");
+    assert!(status.success(), "{status}\n{log}");
+    assert!(
+        log.contains("doozers.toml has [owner], which is ignored"),
+        "{log}"
+    );
 }
 
 #[test]
@@ -1358,7 +1456,7 @@ fn the_web_channel_replaces_the_home_page_and_trusts_only_the_proxy_socket() {
     // The chat list needs a login, and the main listener ignores the identity header.
     let response = http_request(TcpStream::connect(addr).unwrap(), "/", "x-user: owner\r\n");
     assert!(response.starts_with("HTTP/1.1 401 "), "{response}");
-    assert!(response.contains("doozers admin login-link"), "{response}");
+    assert!(response.contains(r#"<a href="/login">"#), "{response}");
 
     // The proxy socket believes it.
     let response = http_request(

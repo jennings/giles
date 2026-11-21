@@ -6,14 +6,18 @@ use std::fmt;
 use std::sync::Arc;
 
 use doozers_store::SessionKey;
-use doozers_types::{AgentId, ConversationKind, ConversationRef, EventId, InboundMessage, UserId};
+use doozers_types::{
+    AgentId, ConversationId, ConversationKind, ConversationRef, EventId, InboundMessage, NativeId,
+    UserId,
+};
 
 use crate::channels::chat_ids;
 use crate::commands::{self, CoreCommand, PendingApprovals};
-use crate::config::{InstanceName, OwnerConfig};
-use crate::identity::{self, NamespaceError, OwnerIdentities};
+use crate::config::InstanceName;
+use crate::identity::{self, NamespaceError};
 use crate::routes::RouteList;
 use crate::sessions::AgentPolicies;
+use crate::users::UserList;
 
 /// The channel instance an event came from.
 #[derive(Debug, Clone, Copy)]
@@ -31,8 +35,37 @@ pub struct ChannelSource<'a> {
 pub struct Routed {
     /// The session key: the routed agent, the channel instance, and the conversation.
     pub session: SessionKey,
-    /// The sender, who becomes the turn's requester: always [`identity::OWNER`] in v1.
+    /// The sender, who becomes the turn's requester: the user who has the sender's identity.
     pub user: UserId,
+}
+
+/// A `/link` message: someone asks to prove that the identity they write from is a user's, by the
+/// code the web page showed (PLAN section 3.2). It reaches no session and no agent.
+#[derive(Clone, PartialEq, Eq)]
+pub struct LinkRequest {
+    /// The identity namespace of the channel it came from.
+    pub namespace: String,
+    /// The sender's id in that namespace: the identity that would be linked.
+    pub sender: NativeId,
+    /// The conversation the answer goes to.
+    pub conversation: ConversationId,
+    /// The code as typed; `None` for `/link` alone.
+    pub code: Option<String>,
+    /// Whether the sender (or an alias) is the identity of a user already.
+    pub linked: bool,
+}
+
+/// Never shows the code: nothing that logs a request may keep a code that works.
+impl fmt::Debug for LinkRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LinkRequest")
+            .field("namespace", &self.namespace)
+            .field("sender", &self.sender)
+            .field("conversation", &self.conversation)
+            .field("code", &self.code.as_ref().map(|_| "<code>"))
+            .field("linked", &self.linked)
+            .finish()
+    }
 }
 
 /// What to do with an inbound message.
@@ -50,6 +83,9 @@ pub enum Inbound {
     },
     /// An ordinary message for the session `to`.
     Message(Routed),
+    /// `/link`, from a sender who may have no user: the core answers it on the channel. It is
+    /// never stored and never reaches an agent, and no session is made for the sender.
+    Link(LinkRequest),
 }
 
 /// Why an inbound message was dropped, in the order the checks run.
@@ -63,8 +99,10 @@ pub enum DropReason {
     GroupConversation,
     /// The channel didn't verify the sender (`sender_authenticated` is false).
     Unauthenticated,
-    /// Neither the sender nor any alias is an `[owner]` identity.
+    /// Neither the sender nor any alias is the identity of a user.
     UnknownSender,
+    /// The sender is a disabled user.
+    DisabledUser(UserId),
     /// No route matches the conversation.
     NoRoute,
     /// A web chat started with an agent that isn't configured (any more).
@@ -77,7 +115,8 @@ impl fmt::Display for DropReason {
             DropReason::InvalidNamespace(err) => write!(f, "invalid channel: {err}"),
             DropReason::GroupConversation => f.write_str("group conversations are not supported"),
             DropReason::Unauthenticated => f.write_str("sender not authenticated"),
-            DropReason::UnknownSender => f.write_str("sender is not an [owner] identity"),
+            DropReason::UnknownSender => f.write_str("sender is not the identity of any user"),
+            DropReason::DisabledUser(user) => write!(f, "user `{user}` is disabled"),
             DropReason::NoRoute => f.write_str("no route matches the conversation"),
             DropReason::UnknownAgent(agent) => {
                 write!(f, "the chat's agent `{agent}` isn't configured")
@@ -86,10 +125,10 @@ impl fmt::Display for DropReason {
     }
 }
 
-/// The owner's identities, the ordered routes, and the agents that exist now.
+/// The users and their identities, the ordered routes, and the agents that exist now.
 #[derive(Clone)]
 pub struct Router {
-    owner: OwnerIdentities,
+    users: UserList,
     routes: RouteList,
     agents: Arc<dyn AgentPolicies>,
 }
@@ -97,23 +136,32 @@ pub struct Router {
 impl fmt::Debug for Router {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Router")
-            .field("owner", &self.owner)
+            .field("users", &self.users)
             .field("routes", &self.routes)
             .finish_non_exhaustive()
     }
 }
 
 impl Router {
-    /// A router for `[owner]` (`Config::owner`) and `routes`, which it reads for every message, so
-    /// a change to the list applies to the next one. `agents` says which agents exist now, for web
-    /// chats started with a chosen agent (in the daemon, the running configuration, so an agent
-    /// created in the web UI is reachable at once).
-    pub fn new(owner: &OwnerConfig, routes: RouteList, agents: Arc<dyn AgentPolicies>) -> Self {
+    /// A router for `users` and `routes`, which it reads for every message, so a change to either
+    /// list applies to the next one. `agents` says which agents exist now, for web chats started
+    /// with a chosen agent (in the daemon, the running configuration, so an agent created in the
+    /// web UI is reachable at once).
+    pub fn new(users: UserList, routes: RouteList, agents: Arc<dyn AgentPolicies>) -> Self {
         Self {
-            owner: OwnerIdentities::new(owner),
+            users,
             routes,
             agents,
         }
+    }
+
+    /// Whether `user` is a user who is disabled now. A user who isn't in the list (removed) isn't:
+    /// what removing deletes is gone with them.
+    pub fn is_disabled(&self, user: &UserId) -> bool {
+        self.users
+            .get()
+            .user(user)
+            .is_some_and(|known| !known.is_active())
     }
 
     /// The agent for a conversation on `instance`: the first route whose every set key (`channel`,
@@ -131,8 +179,10 @@ impl Router {
     }
 
     /// Decides what to do with `message`, event `event` from `source`. Checks, in order: the
-    /// channel's identity namespace, the conversation kind, sender authentication, the owner's
-    /// identities, then the agent: a web chat started with a chosen agent
+    /// channel's identity namespace, the conversation kind, sender authentication, then, for a
+    /// message with no attachments that is `/link` from a channel other than the web chat, the
+    /// answer [`Inbound::Link`] whether or not the sender has a user (a disabled user's is
+    /// dropped), and the users' identities, that the user isn't disabled, then the agent: a web chat started with a chosen agent
     /// ([`chat_ids::chat_agent`]) goes to that agent if it exists, ahead of every route; any
     /// other conversation goes to its [route](Self::route). A routed message is then a core
     /// command if it has no attachments and parses as one ([`commands::parse`]), with `pending`
@@ -148,7 +198,8 @@ impl Router {
         pending: &dyn PendingApprovals,
     ) -> Inbound {
         let reason = match self.check(source, message) {
-            Ok(to) => {
+            Ok(Checked::Link(request)) => return Inbound::Link(request),
+            Ok(Checked::Routed(to)) => {
                 let command = if message.attachments.is_empty() {
                     commands::parse(&message.text, |code| pending.is_pending(&to, code))
                 } else {
@@ -169,7 +220,7 @@ impl Router {
         &self,
         source: &ChannelSource<'_>,
         message: &InboundMessage,
-    ) -> Result<Routed, DropReason> {
+    ) -> Result<Checked, DropReason> {
         identity::validate_namespace(source.component, source.identity_namespace)
             .map_err(DropReason::InvalidNamespace)?;
         if message.conversation.kind != ConversationKind::Direct {
@@ -178,8 +229,33 @@ impl Router {
         if !message.sender_authenticated {
             return Err(DropReason::Unauthenticated);
         }
-        if !self.owner.is_owner(source.identity_namespace, message) {
+        let directory = self.users.get();
+        let user = directory.resolve_sender(source.identity_namespace, message);
+        // `/link` is how a sender with no user proves an identity, so it passes before the user
+        // is required, and only here: after authentication, in a direct conversation. The web chat
+        // is left out: its senders are logged in already, and its identities aren't linked.
+        if source.component != chat_ids::COMPONENT
+            && message.attachments.is_empty()
+            && let Some(code) = commands::parse_link(&message.text)
+        {
+            if let Some(user) = user
+                && !user.is_active()
+            {
+                return Err(DropReason::DisabledUser(user.id.clone()));
+            }
+            return Ok(Checked::Link(LinkRequest {
+                namespace: source.identity_namespace.to_owned(),
+                sender: message.sender.clone(),
+                conversation: message.conversation.id.clone(),
+                code: code.map(str::to_owned),
+                linked: user.is_some(),
+            }));
+        }
+        let Some(user) = user else {
             return Err(DropReason::UnknownSender);
+        };
+        if !user.is_active() {
+            return Err(DropReason::DisabledUser(user.id.clone()));
         }
         let chosen = (source.component == chat_ids::COMPONENT)
             .then(|| chat_ids::chat_agent(message.conversation.id.as_str()))
@@ -191,15 +267,21 @@ impl Router {
                 .route(source.instance, &message.conversation)
                 .ok_or(DropReason::NoRoute)?,
         };
-        Ok(Routed {
+        Ok(Checked::Routed(Routed {
             session: SessionKey {
                 agent,
                 channel: source.instance.to_string(),
                 conversation: message.conversation.id.clone(),
             },
-            user: identity::owner(),
-        })
+            user: user.id.clone(),
+        }))
     }
+}
+
+/// What the checks found: a message for a session, or a `/link`.
+enum Checked {
+    Routed(Routed),
+    Link(LinkRequest),
 }
 
 fn log_drop(
@@ -225,7 +307,7 @@ fn log_drop(
         DropReason::GroupConversation => {
             tracing::debug!(instance, %event, %reason, "dropped inbound message");
         }
-        DropReason::UnknownSender => tracing::info!(
+        DropReason::UnknownSender | DropReason::DisabledUser(_) => tracing::info!(
             instance,
             %event,
             sender = format_args!("{namespace}:{sender}"),
@@ -252,9 +334,10 @@ mod tests {
 
     use super::*;
     use crate::commands::{Answer, ApprovalReply, NoPendingApprovals};
-    use crate::config::Identity;
     use crate::routes::Route;
     use crate::sessions::AgentPolicy;
+    use crate::users::User;
+    use doozers_store::UserState;
 
     /// No agents: the routes alone decide.
     fn no_agents() -> Arc<dyn AgentPolicies> {
@@ -265,16 +348,8 @@ mod tests {
         InstanceName::new(name).unwrap()
     }
 
-    fn owner_config(identities: &[&str]) -> OwnerConfig {
-        let identities: Vec<Identity> = identities
-            .iter()
-            .map(|i| Identity::new(*i).unwrap())
-            .collect();
-        OwnerConfig {
-            default: identities[0].clone(),
-            identities,
-            timezone: None,
-        }
+    fn owner_config(identities: &[&str]) -> UserList {
+        UserList::owner(identities, None)
     }
 
     fn route(
@@ -292,12 +367,8 @@ mod tests {
     }
 
     /// A router over the fixed `routes`.
-    fn with_routes(
-        owner: &OwnerConfig,
-        routes: &[Route],
-        agents: Arc<dyn AgentPolicies>,
-    ) -> Router {
-        Router::new(owner, RouteList::new(routes.to_vec()), agents)
+    fn with_routes(users: UserList, routes: &[Route], agents: Arc<dyn AgentPolicies>) -> Router {
+        Router::new(users, RouteList::new(routes.to_vec()), agents)
     }
 
     fn message(sender: &str, text: &str) -> InboundMessage {
@@ -322,7 +393,7 @@ mod tests {
     /// The owner on WhatsApp and IRC, one route for `#giles` on IRC, and a catch-all.
     fn router() -> Router {
         with_routes(
-            &owner_config(&["whatsapp:+15551234567", "irc:libera.chat:account:stephen"]),
+            owner_config(&["whatsapp:+15551234567", "irc:libera.chat:account:stephen"]),
             &[
                 route(Some("irc-libera"), None, Some("#giles"), "butler"),
                 route(None, None, None, "jeeves"),
@@ -378,6 +449,107 @@ mod tests {
     }
 
     #[test]
+    fn each_message_is_routed_as_the_user_who_has_the_senders_identity() {
+        let router = with_routes(
+            UserList::new(vec![
+                User::member("owner", &["whatsapp:+15551234567"]),
+                User::member(
+                    "ann",
+                    &["whatsapp:+15557654321", "irc:libera.chat:account:ann"],
+                ),
+            ]),
+            &[route(None, None, None, "jeeves")],
+            no_agents(),
+        );
+        let ann = |conversation: &str| Routed {
+            user: UserId::new("ann").unwrap(),
+            ..routed("jeeves", "whatsapp", conversation)
+        };
+        assert_eq!(
+            classify(
+                &router,
+                WHATSAPP,
+                &message("+15557654321", "hi"),
+                &NoPendingApprovals
+            ),
+            Inbound::Message(ann("+15557654321"))
+        );
+        assert_eq!(
+            classify(
+                &router,
+                WHATSAPP,
+                &message(OWNER_PHONE, "hi"),
+                &NoPendingApprovals
+            ),
+            Inbound::Message(routed("jeeves", "whatsapp", OWNER_PHONE))
+        );
+        // A command is addressed to the user who sent it, too.
+        assert_eq!(
+            classify(
+                &router,
+                WHATSAPP,
+                &message("+15557654321", "/new"),
+                &NoPendingApprovals
+            ),
+            Inbound::Command {
+                to: ann("+15557654321"),
+                command: CoreCommand::New
+            }
+        );
+        let irc = ("irc-libera", "irc", "irc:libera.chat");
+        let m = message("account:ann", "hi");
+        assert_eq!(
+            classify(&router, irc, &m, &NoPendingApprovals),
+            Inbound::Message(Routed {
+                user: UserId::new("ann").unwrap(),
+                ..routed("jeeves", "irc-libera", "account:ann")
+            })
+        );
+    }
+
+    #[test]
+    fn a_disabled_users_messages_are_dropped_until_they_are_enabled() {
+        let users = UserList::new(vec![
+            User::member("owner", &["whatsapp:+15551234567"]),
+            User::member("ann", &["whatsapp:+15557654321"]),
+        ]);
+        let router = with_routes(
+            users.clone(),
+            &[route(None, None, None, "jeeves")],
+            no_agents(),
+        );
+        let ann = || message("+15557654321", "hi");
+        let drop = || Inbound::Drop(DropReason::DisabledUser(UserId::new("ann").unwrap()));
+        let set_ann = |state| {
+            let mut all = users.get().users().to_vec();
+            all[1].state = state;
+            users.set(all);
+        };
+        set_ann(UserState::Disabled);
+        // Commands and ordinary messages alike; the owner is unaffected.
+        for text in ["hi", "/new", "/stop"] {
+            let mut m = ann();
+            m.text = text.to_owned();
+            assert_eq!(classify(&router, WHATSAPP, &m, &NoPendingApprovals), drop());
+        }
+        assert_eq!(
+            classify(
+                &router,
+                WHATSAPP,
+                &message(OWNER_PHONE, "hi"),
+                &NoPendingApprovals
+            ),
+            Inbound::Message(routed("jeeves", "whatsapp", OWNER_PHONE))
+        );
+        // The next message after a change sees the change.
+        set_ann(UserState::Active);
+        assert!(matches!(
+            classify(&router, WHATSAPP, &ann(), &NoPendingApprovals),
+            Inbound::Message(_)
+        ));
+    }
+
+    #[test]
     fn drop_rules_and_their_order() {
         let base = message(OWNER_PHONE, "/new");
         let unauthenticated = |m: &mut InboundMessage| m.sender_authenticated = false;
@@ -423,7 +595,7 @@ mod tests {
     #[test]
     fn unrouted_conversations_are_dropped_even_for_commands() {
         let router = with_routes(
-            &owner_config(&["whatsapp:+15551234567"]),
+            owner_config(&["whatsapp:+15551234567"]),
             &[route(Some("irc-libera"), None, None, "jeeves")],
             no_agents(),
         );
@@ -441,7 +613,7 @@ mod tests {
     #[test]
     fn aliases_identify_the_owner() {
         let router = with_routes(
-            &owner_config(&["whatsapp:123456789@lid"]),
+            owner_config(&["whatsapp:123456789@lid"]),
             &[route(None, None, None, "jeeves")],
             no_agents(),
         );
@@ -479,7 +651,7 @@ mod tests {
     #[test]
     fn route_precedence() {
         let router = with_routes(
-            &owner_config(&["web:owner"]),
+            owner_config(&["web:owner"]),
             &[
                 route(Some("web"), None, Some("chat-1"), "first"),
                 route(Some("web"), Some(ConversationKind::Group), None, "groups"),
@@ -530,7 +702,7 @@ mod tests {
                 "{inst} {conversation:?}"
             );
         }
-        let none = with_routes(&owner_config(&["web:owner"]), &[], no_agents());
+        let none = with_routes(owner_config(&["web:owner"]), &[], no_agents());
         assert_eq!(none.route(&web, &conv("chat-1", direct)), None);
     }
 
@@ -538,7 +710,7 @@ mod tests {
     fn a_web_chat_started_with_an_agent_goes_to_it_ahead_of_routes() {
         let agents = HashMap::from([(AgentId::new("bunter").unwrap(), AgentPolicy::default())]);
         let router = with_routes(
-            &owner_config(&["web:owner", "whatsapp:+15551234567"]),
+            owner_config(&["web:owner", "whatsapp:+15551234567"]),
             &[route(None, None, None, "jeeves")],
             Arc::new(agents),
         );
@@ -713,11 +885,166 @@ mod tests {
         );
     }
 
+    fn link_request(sender: &str, code: Option<&str>, linked: bool) -> Inbound {
+        Inbound::Link(LinkRequest {
+            namespace: "whatsapp".to_owned(),
+            sender: NativeId::new(sender).unwrap(),
+            conversation: ConversationId::new(sender).unwrap(),
+            code: code.map(str::to_owned),
+            linked,
+        })
+    }
+
+    #[test]
+    fn link_passes_for_an_unknown_sender_after_authentication_and_nowhere_else() {
+        const STRANGER: &str = "+15559998888";
+        // No route matches and no agent exists: `/link` is for no session.
+        let router = with_routes(owner_config(&["whatsapp:+15551234567"]), &[], no_agents());
+        let from_stranger = |text: &str| {
+            classify(
+                &router,
+                WHATSAPP,
+                &message(STRANGER, text),
+                &NoPendingApprovals,
+            )
+        };
+        assert_eq!(
+            from_stranger("/link ABCD2345"),
+            link_request(STRANGER, Some("ABCD2345"), false)
+        );
+        // The code goes on as typed, and case and spaces around the command don't matter.
+        assert_eq!(
+            from_stranger("  /LINK abcd2345 \n"),
+            link_request(STRANGER, Some("abcd2345"), false)
+        );
+        assert_eq!(from_stranger("/link"), link_request(STRANGER, None, false));
+
+        // Nothing else gets through the same door.
+        let unknown = Inbound::Drop(DropReason::UnknownSender);
+        for text in [
+            "/new",
+            "/stop",
+            "hi",
+            "/link A B",
+            "/linked ABCD2345",
+            "yes",
+        ] {
+            assert_eq!(from_stranger(text), unknown, "{text:?}");
+        }
+        let mut with_attachment = message(STRANGER, "/link ABCD2345");
+        with_attachment.attachments.push(MediaRef {
+            id: MediaId::from_digest([7; 32]),
+            media_type: "image/png".into(),
+            size: 1,
+            name: None,
+        });
+        assert_eq!(
+            classify(&router, WHATSAPP, &with_attachment, &NoPendingApprovals),
+            unknown
+        );
+
+        // Unauthenticated senders, groups, and channels that lie about their namespace are
+        // dropped first, as for any message.
+        let mut forged = message(STRANGER, "/link ABCD2345");
+        forged.sender_authenticated = false;
+        assert_eq!(
+            classify(&router, WHATSAPP, &forged, &NoPendingApprovals),
+            Inbound::Drop(DropReason::Unauthenticated)
+        );
+        let mut group = message(STRANGER, "/link ABCD2345");
+        group.conversation.kind = ConversationKind::Group;
+        assert_eq!(
+            classify(&router, WHATSAPP, &group, &NoPendingApprovals),
+            Inbound::Drop(DropReason::GroupConversation)
+        );
+        let lying: Source = ("whatsapp", "whatsapp", "irc:libera.chat");
+        assert_eq!(
+            classify(
+                &router,
+                lying,
+                &message(STRANGER, "/link ABCD2345"),
+                &NoPendingApprovals
+            ),
+            Inbound::Drop(invalid_ns())
+        );
+    }
+
+    #[test]
+    fn link_from_a_known_sender_is_marked_and_a_disabled_users_is_dropped() {
+        let users = UserList::new(vec![
+            User::member("owner", &["whatsapp:+15551234567", "whatsapp:100@lid"]),
+            User::member("ann", &["whatsapp:+15557654321"]),
+        ]);
+        let router = with_routes(
+            users.clone(),
+            &[route(None, None, None, "jeeves")],
+            no_agents(),
+        );
+        assert_eq!(
+            classify(
+                &router,
+                WHATSAPP,
+                &message(OWNER_PHONE, "/link ABCD2345"),
+                &NoPendingApprovals
+            ),
+            link_request(OWNER_PHONE, Some("ABCD2345"), true)
+        );
+        // An alias is the sender's identity too.
+        let mut by_lid = message("+15550000000", "/link ABCD2345");
+        by_lid.sender_aliases = vec![NativeId::new("100@lid").unwrap()];
+        assert_eq!(
+            classify(&router, WHATSAPP, &by_lid, &NoPendingApprovals),
+            link_request("+15550000000", Some("ABCD2345"), true)
+        );
+        let mut all = users.get().users().to_vec();
+        all[1].state = UserState::Disabled;
+        users.set(all);
+        assert_eq!(
+            classify(
+                &router,
+                WHATSAPP,
+                &message("+15557654321", "/link ABCD2345"),
+                &NoPendingApprovals
+            ),
+            Inbound::Drop(DropReason::DisabledUser(UserId::new("ann").unwrap()))
+        );
+    }
+
+    #[test]
+    fn link_in_the_web_chat_is_an_ordinary_message() {
+        let router = with_routes(
+            owner_config(&["web:owner"]),
+            &[route(None, None, None, "jeeves")],
+            no_agents(),
+        );
+        let web: Source = ("chat", chat_ids::COMPONENT, "web");
+        let mut m = message("owner", "/link ABCD2345");
+        m.conversation.id = ConversationId::new("0123456789abcdef0123456789abcdef").unwrap();
+        assert!(matches!(
+            classify(&router, web, &m, &NoPendingApprovals),
+            Inbound::Message(_)
+        ));
+    }
+
+    #[test]
+    fn a_link_request_never_shows_its_code() {
+        let Inbound::Link(request) = link_request("+15551234567", Some("ABCD2345"), false) else {
+            unreachable!()
+        };
+        let shown = format!("{request:?}");
+        assert!(!shown.contains("ABCD2345"), "{shown}");
+        assert!(shown.contains("+15551234567"));
+    }
+
     #[test]
     fn drop_reasons_display() {
         assert_eq!(
             DropReason::UnknownSender.to_string(),
-            "sender is not an [owner] identity"
+            "sender is not the identity of any user"
+        );
+        assert_eq!(
+            DropReason::DisabledUser(UserId::new("ann").unwrap()).to_string(),
+            "user `ann` is disabled"
         );
         assert_eq!(
             invalid_ns().to_string(),

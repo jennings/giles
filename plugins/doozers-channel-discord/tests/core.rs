@@ -78,7 +78,6 @@ impl TurnRunner for Turns {
 /// A core whose `[owner]` is `discord:<USER>` and whose one channel is the plugin in `served`.
 struct Core {
     runtime: Runtime,
-    config: Arc<Config>,
     turns: Arc<Turns>,
     host: Arc<PluginHost>,
     shutdown: CancellationToken,
@@ -155,7 +154,6 @@ impl Core {
         .await;
         Self {
             runtime,
-            config,
             turns,
             host,
             shutdown,
@@ -214,9 +212,9 @@ async fn the_owners_dm_passes_the_core_as_discord_and_the_user_id() {
     assert_eq!(delivered[0].text, "hello");
     // The plugin's sender is the native id; the core's namespace makes it `discord:<USER>`.
     assert_eq!(delivered[0].sender.as_str(), USER.to_string());
-    let owner = doozers_core::identity::OwnerIdentities::new(&core.config.owner);
-    assert!(owner.is_owner("discord", &delivered[0]));
-    assert!(owner.contains("discord", &delivered[0].sender));
+    let users = core.runtime.registry.users().get();
+    assert!(users.resolve_sender("discord", &delivered[0]).is_some());
+    assert!(users.resolve("discord", &delivered[0].sender).is_some());
 
     // And the reply went back to the conversation.
     let reply = wait_until("a message to Discord", || {
@@ -232,17 +230,12 @@ async fn a_proactive_send_reaches_the_plugin_without_the_namespace() {
     let served = Served::start().await;
     let core = Core::start(&served).await;
 
-    // `[owner] default` is `discord:<USER>`; the outbox hands `Send` the part after the
+    // The owner's default identity is `discord:<USER>`; the outbox hands `Send` the part after the
     // namespace, and the plugin opens the DM with that user.
-    core.runtime
-        .outbox
-        .enqueue(OutboxItem::to_owner(
-            &core.config.owner,
-            OutboxKind::Notice,
-            "reminder",
-        ))
-        .await
-        .unwrap();
+    let users = core.runtime.registry.users().get();
+    let owner = users.user(&doozers_core::identity::owner()).unwrap();
+    let reminder = OutboxItem::to_user(owner, OutboxKind::Notice, "reminder").unwrap();
+    core.runtime.outbox.enqueue(reminder).await.unwrap();
 
     let sent = wait_until("a message to Discord", || {
         served.client.messages().into_iter().next()

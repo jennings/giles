@@ -61,12 +61,8 @@ doozers serve
 
 `doozers serve` runs in the foreground and logs to standard error. It reads its
 [configuration](configuration.md) from `doozers.toml` and every `agents/<agent>/agent.toml`. The
-smallest valid `doozers.toml` declares the owner:
-
-```toml
-[owner]
-identities = ["web:owner"]
-```
+smallest valid `doozers.toml` is an empty file. To talk to the agents in a browser, add a
+[web channel](web.md) and run `doozers admin login-link`.
 
 Doozers doesn't start if the configuration is missing or invalid. When a provider or channel rejects
 its `config`, the error names the file, line, and key.

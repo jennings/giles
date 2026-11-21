@@ -11,7 +11,7 @@
 </nav>
 <div class="account">
 <span class="avatar" aria-hidden="true">{{ shell.initial }}</span>
-<span class="user-name"><span class="sr-only">Signed in as </span>{{ shell.user }}</span>
+<span class="user-name"><span class="sr-only">Signed in as </span>{{ shell.name }}</span>
 {%- if let Some(csrf) = shell.logout_csrf %}
 <form method="post" action="/logout">
 <input type="hidden" name="csrf" value="{{ csrf }}">

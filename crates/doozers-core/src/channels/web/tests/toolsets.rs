@@ -24,7 +24,7 @@ const XSS: &str = "<script>alert(1)</script>";
 /// A remote toolset that never answers: nothing listens on the port.
 const BOX: &str = r#"{ "url": "http://127.0.0.1:9/mcp" }"#;
 
-fn spec(json: &str) -> ToolsetSpec {
+pub(super) fn spec(json: &str) -> ToolsetSpec {
     ToolsetSpec::from_json(json).unwrap_or_else(|e| panic!("{e}"))
 }
 
@@ -84,18 +84,18 @@ fn plugin(
 }
 
 /// The toolset pages over a registry of their own, so a test can change `doozers.toml` first.
-struct Toolsets {
+pub(super) struct Toolsets {
     app: WebApp,
     registry: Arc<Registry>,
-    manager: Arc<ToolsetManager>,
-    secrets: Arc<dyn crate::secrets::SecretProvider>,
+    pub(super) manager: Arc<ToolsetManager>,
+    pub(super) secrets: Arc<dyn crate::secrets::SecretProvider>,
     admin: Arc<FakeAdmin>,
 }
 
 impl Env {
     /// The toolset pages of this environment's configuration, plus an agent `wooster` that lists
     /// tools of a toolset `box` and `core` (TOML) appended to `doozers.toml`.
-    async fn toolsets(&self, core: &str) -> Toolsets {
+    pub(super) async fn toolsets(&self, core: &str) -> Toolsets {
         let root = self.root();
         let wooster = root.agents_dir().join("wooster");
         std::fs::create_dir_all(&wooster).unwrap();
@@ -169,7 +169,7 @@ impl Env {
 }
 
 impl Toolsets {
-    fn router(&self, user: Option<WebUser>) -> axum::Router {
+    pub(super) fn router(&self, user: Option<WebUser>) -> axum::Router {
         let builder = self.app.install(RouterBuilder::new());
         let builder = self.app.install_connections(builder, self.manager.clone());
         let app = self
@@ -277,7 +277,7 @@ fn remote_form(name: &str) -> Vec<(&str, &str)> {
 }
 
 #[tokio::test]
-async fn only_the_owner_gets_the_toolset_pages() {
+async fn only_an_admin_gets_the_toolset_pages() {
     let env = env().await;
     let t = env.toolsets("").await;
     t.manager.add("box", &spec(BOX)).await.unwrap();

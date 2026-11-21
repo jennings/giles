@@ -1,0 +1,22 @@
+{% extends "web/app.html" %}
+
+{% block title %}Remove a way to sign in - Account - Doozers{% endblock %}
+
+{% block content %}
+<a class="back" href="/account">Account</a>
+<section class="card confirm">
+<h1>Remove {{ label }}?</h1>
+<ul>
+<li>{{ consequence }}</li>
+<li>Your other ways to sign in stay. Doozers won't remove your last one.</li>
+</ul>
+<div class="form-actions">
+<form method="post" action="/account/sign-in/remove">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="method" value="{{ method }}">
+<button type="submit" class="button-danger-solid">Remove</button>
+</form>
+<a class="button button-quiet" href="/account">Cancel</a>
+</div>
+</section>
+{% endblock %}

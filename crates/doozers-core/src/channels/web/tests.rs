@@ -16,7 +16,8 @@ use axum::http::header::{
 use axum::http::{Method, Request, StatusCode};
 use axum::response::Response;
 use doozers_store::{
-    BlobMeta, BlobStore, InboxState, NewInboxEvent, SessionKey, SessionKind, Store,
+    BlobMeta, BlobStore, InboxState, InviteKind, NewInboxEvent, NewUser, SessionKey, SessionKind,
+    SignInMethod, Store,
 };
 use doozers_types::{
     AgentId, Block, Channel, ChannelEvent, ChannelStatus, ConversationId, Error, MediaRef, Message,
@@ -31,7 +32,6 @@ use tower::ServiceExt;
 use super::pages::MAX_MESSAGE_BYTES;
 use super::*;
 use crate::commands::NoPendingApprovals;
-use crate::config::{Identity, OwnerConfig};
 use crate::http::RouterBuilder;
 use crate::router::Router as MessageRouter;
 use crate::routes::{Route, RouteList};
@@ -39,20 +39,33 @@ use crate::sessions::{
     AgentPolicies, AgentPolicy, ChannelLookup, Sessions, SessionsOptions, SystemClock, Turn,
     TurnOutcome, TurnRunner,
 };
+use crate::users::{INVITE_TTL, User, UserList, Users};
 
+mod account;
 mod admin;
+mod admin_user_manage;
+mod admin_users;
 mod agent_edit;
 mod agent_environments;
 mod agent_remove;
 mod agents;
 mod chat_actions;
+mod fake_oidc;
+mod identities;
 mod jobs;
 mod memory;
+mod oidc;
+mod passkeys;
+mod passwords;
+mod reverify;
 mod routes;
 mod ssh_hosts;
 mod ssh_keys;
 mod toolsets;
+mod users;
 mod workspaces;
+
+use admin::open_users;
 
 const INSTANCE: &str = "web";
 const CSRF: &str = "csrf-token-for-tests";
@@ -83,16 +96,8 @@ async fn env() -> Env {
 }
 
 /// The owner, with `identities`.
-fn owner_config(identities: &[&str]) -> OwnerConfig {
-    let identities: Vec<Identity> = identities
-        .iter()
-        .map(|id| Identity::new(*id).unwrap())
-        .collect();
-    OwnerConfig {
-        default: identities[0].clone(),
-        identities,
-        timezone: None,
-    }
+fn owner_config(identities: &[&str]) -> UserList {
+    UserList::owner(identities, None)
 }
 
 /// The agents every test configuration has: `jeeves` (named "Jeeves", with a job whose prompt is
@@ -161,7 +166,7 @@ async fn env_with_toml(config: WebConfig, identities: &[&str], extra: &str) -> E
     let channel = Arc::new(WebChannel::new(
         InstanceName::new(INSTANCE).unwrap(),
         config,
-        &owner_config(identities),
+        owner_config(identities),
         "0.0.0.0:8080".parse().unwrap(),
     ));
     let shutdown = CancellationToken::new();
@@ -198,8 +203,10 @@ async fn env_with_toml(config: WebConfig, identities: &[&str], extra: &str) -> E
 fn owner() -> WebUser {
     WebUser {
         user: identity::owner(),
+        role: doozers_store::Role::Admin,
         sender: NativeId::new("owner").unwrap(),
         csrf: CSRF.into(),
+        display_name: "Test user".into(),
         login: auth::Login::Test,
     }
 }
@@ -446,7 +453,7 @@ async fn every_page_needs_a_login() {
             "{method} {path}"
         );
         let html = body_text(response).await;
-        assert!(html.contains("doozers admin login-link"), "{html}");
+        assert!(html.contains(r#"<a href="/login">"#), "{html}");
     }
     assert!(env.pending_texts().await.is_empty());
 }
@@ -1037,7 +1044,7 @@ async fn approval_buttons_answer_with_the_code() {
 }
 
 #[tokio::test]
-async fn blobs_are_served_safely_to_the_owner() {
+async fn blobs_are_served_safely_to_the_user_whose_message_refers_to_them() {
     let env = env().await;
     let now = Timestamp::now();
     let png = env
@@ -1061,6 +1068,37 @@ async fn blobs_are_served_safely_to_the_owner() {
             BlobMeta {
                 media_type: "text/html".into(),
                 name: Some("evil page.html".into()),
+            },
+            now,
+        )
+        .await
+        .unwrap();
+
+    // The owner's chat refers to both; nothing refers to the third.
+    store_chat(
+        &env,
+        &chat(),
+        INSTANCE,
+        vec![
+            stored(Role::User, vec![Block::Image { media: png.clone() }]),
+            stored(
+                Role::Assistant,
+                vec![Block::Document {
+                    media: page.clone(),
+                    name: None,
+                }],
+            ),
+        ],
+    )
+    .await;
+    let unreferenced = env
+        .blobs
+        .put(
+            &b"nobody's"[..],
+            1024,
+            BlobMeta {
+                media_type: "image/png".into(),
+                name: None,
             },
             now,
         )
@@ -1091,21 +1129,34 @@ async fn blobs_are_served_safely_to_the_owner() {
     let response = env.get(&format!("/blobs/{missing}")).await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
-    // Only the owner may see blobs (v1 has no other user).
-    let stranger = WebUser {
-        user: UserId::new("someone").unwrap(),
-        ..owner()
-    };
-    let response = env
-        .request(
-            Some(stranger),
-            Method::GET,
-            &format!("/blobs/{}", png.id),
-            &[],
-            None,
-        )
-        .await;
+    // A blob no message of the user's refers to is not found, however it is stored.
+    let response = env.get(&format!("/blobs/{}", unreferenced.id)).await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    // Another user, an admin included, doesn't get the owner's blobs: they are no admin page's.
+    for (user, role) in [
+        ("someone", doozers_store::Role::Member),
+        ("root", doozers_store::Role::Admin),
+    ] {
+        let stranger = WebUser {
+            user: UserId::new(user).unwrap(),
+            role,
+            ..owner()
+        };
+        for id in [&png.id, &page.id] {
+            let response = env
+                .request(
+                    Some(stranger.clone()),
+                    Method::GET,
+                    &format!("/blobs/{id}"),
+                    &[],
+                    None,
+                )
+                .await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{user} {id}");
+            assert!(body_text(response).await.contains("Not found"));
+        }
+    }
 }
 
 /// Finds the web channel for its instance.
@@ -1148,17 +1199,12 @@ impl TurnRunner for EchoRunner {
 #[tokio::test]
 async fn a_posted_message_reaches_the_agent_and_the_reply_reaches_the_page() {
     let env = env().await;
-    let owner_identity = Identity::new("web:owner").unwrap();
     let agents: Arc<dyn AgentPolicies> = Arc::new(HashMap::from([(
         AgentId::new("jeeves").unwrap(),
         AgentPolicy::default(),
     )]));
     let router = MessageRouter::new(
-        &OwnerConfig {
-            identities: vec![owner_identity.clone()],
-            default: owner_identity,
-            timezone: None,
-        },
+        owner_config(&["web:owner"]),
         RouteList::new(vec![Route {
             channel: None,
             kind: None,
@@ -1178,6 +1224,7 @@ async fn a_posted_message_reaches_the_agent_and_the_reply_reaches_the_page() {
             }),
             approvals: Arc::new(NoPendingApprovals),
             env_resets: Arc::new(crate::sessions::NoEnvResets),
+            links: Arc::new(crate::sessions::NoLinks),
             clock: Arc::new(SystemClock),
         },
         env.shutdown.clone(),
@@ -1262,24 +1309,33 @@ fn cookie_token(set_cookie: &str) -> String {
     value.split(';').next().unwrap().to_owned()
 }
 
-/// The token of a login link URL.
-fn link_token(link: &LoginLink) -> &str {
-    link.url.rsplit('/').next().unwrap()
+/// A nonce for the sign-in POSTs of tests, sent as the nonce cookie and as the form's field.
+const NONCE: &str = "0123456789abcdef0123456789abcdef";
+
+/// A one-time `kind` link for `user`, made now: its token.
+async fn invite_token(env: &Env, user: &UserId, kind: InviteKind) -> String {
+    open_users(env)
+        .await
+        .create_invite(user, kind, None, Timestamp::now())
+        .await
+        .unwrap()
+        .token
 }
 
-/// Uses `link` on `app` with `headers`.
-async fn redeem(app: axum::Router, link: &LoginLink, headers: &[(&str, &str)]) -> Response {
-    let form = format!("token={}", link_token(link));
-    call(app, Method::POST, "/login", headers, Some(&form)).await
+/// Spends the link `token` on `app` with `headers`, as a browser does: with the nonce of the form
+/// it opened in its cookie and in the form.
+async fn redeem(app: axum::Router, token: &str, headers: &[(&str, &str)]) -> Response {
+    let cookie = format!("{NONCE_COOKIE}={NONCE}");
+    let form = format!("token={token}&nonce={NONCE}");
+    let mut sent = vec![("cookie", cookie.as_str())];
+    sent.extend_from_slice(headers);
+    call(app, Method::POST, "/invite", &sent, Some(&form)).await
 }
 
-/// Logs the owner in with a fresh link on the main listener; the session token.
+/// Logs the owner in with a recovery link on the main listener; the session token.
 async fn log_in(env: &Env) -> String {
-    let link = env
-        .channel
-        .create_login_link(&identity::owner(), Timestamp::now())
-        .unwrap();
-    let response = redeem(env.main_app(), &link, &[]).await;
+    let token = invite_token(env, &identity::owner(), InviteKind::Recovery).await;
+    let response = redeem(env.main_app(), &token, &[]).await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     cookie_token(set_cookie(&response))
 }
@@ -1288,20 +1344,50 @@ fn proxy_config(proxy: serde_json::Value) -> WebConfig {
     WebConfig::from_json(&serde_json::json!({ "proxy": proxy })).unwrap()
 }
 
+/// Creates the active user `id` with no identity and the role `role`; their id.
+async fn add_user(users: &Users, id: &str, role: doozers_store::Role) -> UserId {
+    let new = NewUser {
+        id: UserId::new(id).unwrap(),
+        username: id.to_owned(),
+        display_name: id.to_uppercase(),
+        role,
+        timezone: None,
+        default_identity: None,
+    };
+    users
+        .create(new, vec![], Timestamp::now())
+        .await
+        .unwrap()
+        .id
+}
+
+/// The nonce a `Set-Cookie` for the nonce cookie sets.
+fn nonce_of(set_cookie: &str) -> String {
+    let value = set_cookie
+        .strip_prefix(&format!("{NONCE_COOKIE}="))
+        .unwrap_or_else(|| panic!("{set_cookie}"));
+    value.split(';').next().unwrap().to_owned()
+}
+
+/// Every `Set-Cookie` of a response.
+fn set_cookies(response: &Response) -> Vec<&str> {
+    response
+        .headers()
+        .get_all(SET_COOKIE)
+        .iter()
+        .map(|value| value.to_str().unwrap())
+        .collect()
+}
+
 #[tokio::test]
-async fn login_links_use_the_bound_address_unless_a_public_url_is_set() {
+async fn invite_links_use_the_bound_address_unless_a_public_url_is_set() {
     let env = env().await;
     // `http_listen = "...:0"`: `serve` passes the address the listener actually bound.
     env.channel
         .set_listen_addr("0.0.0.0:41234".parse().unwrap());
-    let link = env
-        .channel
-        .create_login_link(&identity::owner(), Timestamp::now())
-        .unwrap();
-    assert!(
-        link.url.starts_with("http://127.0.0.1:41234/login/"),
-        "{}",
-        link.url
+    assert_eq!(
+        env.channel.invite_url("abc"),
+        "http://127.0.0.1:41234/invite/abc"
     );
 
     let config =
@@ -1310,50 +1396,81 @@ async fn login_links_use_the_bound_address_unless_a_public_url_is_set() {
     let env = env_with(config, &["web:owner"]).await;
     env.channel
         .set_listen_addr("127.0.0.1:41234".parse().unwrap());
-    let link = env
-        .channel
-        .create_login_link(&identity::owner(), Timestamp::now())
-        .unwrap();
-    assert!(
-        link.url.starts_with("https://doozers.example.com/login/"),
-        "{}",
-        link.url
+    assert_eq!(
+        env.channel.invite_url("abc"),
+        "https://doozers.example.com/invite/abc"
     );
 }
 
 #[tokio::test]
-async fn a_login_link_logs_in_once_with_a_30_day_cookie() {
+async fn an_invite_sets_up_a_new_user_once() {
     let env = env().await;
-    let link = env
-        .channel
-        .create_login_link(&identity::owner(), Timestamp::now())
+    let users = open_users(&env).await;
+    let newbie = add_user(&users, "newbie", doozers_store::Role::Member).await;
+    let invite = users
+        .create_invite(
+            &newbie,
+            InviteKind::Invite,
+            Some(&identity::owner()),
+            Timestamp::now(),
+        )
+        .await
         .unwrap();
+    let url = env.channel.invite_url(&invite.token);
     // `0.0.0.0:8080` becomes loopback.
-    let path = link.url.strip_prefix("http://127.0.0.1:8080").unwrap();
-    assert!(path.starts_with("/login/"), "{path}");
+    let path = url.strip_prefix("http://127.0.0.1:8080").unwrap();
+    assert_eq!(path, format!("/invite/{}", invite.token));
 
-    // Opening it (twice: a link preview, then the person) only shows a button.
+    // Opening it (twice: a link preview, then the person) only shows a button, and hands the
+    // browser the nonce its form carries.
+    let mut nonce = String::new();
     for _ in 0..2 {
         let response = call(env.main_app(), Method::GET, path, &[], None).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
+        let cookie = set_cookie(&response).to_owned();
+        assert!(
+            cookie.ends_with("; Path=/; Max-Age=900; HttpOnly; SameSite=Strict"),
+            "{cookie}"
+        );
+        nonce = nonce_of(&cookie);
         let html = body_text(response).await;
         assert!(
-            html.contains(r#"<form method="post" action="/login">"#),
+            html.contains(r#"<form method="post" action="/invite">"#),
             "{html}"
         );
-        assert!(html.contains(link_token(&link)), "{html}");
+        assert!(html.contains(&invite.token), "{html}");
+        assert!(
+            html.contains(&format!(r#"name="nonce" value="{nonce}""#)),
+            "{html}"
+        );
+        assert!(html.contains("NEWBIE, you're invited"), "{html}");
     }
 
-    let response = redeem(env.main_app(), &link, &[]).await;
+    let cookie = format!("{NONCE_COOKIE}={nonce}");
+    let form = format!("token={}&nonce={nonce}", invite.token);
+    let response = call(
+        env.main_app(),
+        Method::POST,
+        "/invite",
+        &[("cookie", &cookie)],
+        Some(&form),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert_eq!(response.headers()[LOCATION], "/");
-    let cookie = set_cookie(&response);
+    assert_eq!(response.headers()[LOCATION], "/setup");
+    assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
+    let cookies = set_cookies(&response);
+    assert_eq!(cookies.len(), 2, "{cookies:?}");
     assert!(
-        cookie.ends_with("; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax"),
-        "{cookie}"
+        cookies[0].ends_with("; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax"),
+        "{cookies:?}"
     );
-    let token = cookie_token(cookie);
+    assert_eq!(
+        cookies[1],
+        format!("{NONCE_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict")
+    );
+    let token = cookie_token(cookies[0]);
     assert_eq!(token.len(), 64);
     let stored = env
         .store
@@ -1361,71 +1478,316 @@ async fn a_login_link_logs_in_once_with_a_30_day_cookie() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(stored.user, identity::owner());
+    assert_eq!(stored.user, newbie);
+    assert_eq!(stored.method, SignInMethod::Invite);
     assert_eq!(
         stored.expires_at.as_millisecond() - stored.created_at.as_millisecond(),
         30 * 24 * 60 * 60 * 1000
     );
+    // The user is signed in as `web:newbie`, the identity the invite gave them.
+    let directory = env.channel.users().get();
+    let found = directory.resolve("web", &NativeId::new("newbie").unwrap());
+    assert_eq!(found.map(|user| &user.id), Some(&newbie));
 
-    // The cookie logs in, and the chat list offers to log out.
+    // The cookie logs in, and the setup page is where they land. It offers a password.
     let response = call(
         env.main_app(),
         Method::GET,
-        "/",
+        "/setup",
         &[("cookie", &session(&token))],
         None,
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_text(response).await;
-    assert!(html.contains(r#"action="/logout""#), "{html}");
+    assert!(html.contains("Set up how you sign in"), "{html}");
+    assert!(html.contains("You're signed in as NEWBIE"), "{html}");
+    assert!(
+        html.contains(r#"<a href="/setup/password">Password</a>"#),
+        "{html}"
+    );
 
-    // Single use.
-    let response = redeem(env.main_app(), &link, &[]).await;
+    // Single use, however it is asked.
+    let response = call(
+        env.main_app(),
+        Method::POST,
+        "/invite",
+        &[("cookie", &cookie)],
+        Some(&form),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::GONE);
     assert!(!response.headers().contains_key(SET_COOKIE));
     let response = call(env.main_app(), Method::GET, path, &[], None).await;
     assert_eq!(response.status(), StatusCode::GONE);
+    let html = body_text(response).await;
+    assert!(html.contains("expired or was already used"), "{html}");
+    assert!(html.contains("doozers admin login-link"), "{html}");
 }
 
 #[tokio::test]
-async fn expired_unknown_and_refused_links_log_nobody_in() {
+async fn the_login_page_offers_a_password_and_says_how_to_get_a_link_and_sends_a_logged_in_browser_home()
+ {
     let env = env().await;
-    let created = Timestamp::now().checked_sub(LOGIN_LINK_TTL).unwrap();
-    let expired = env
-        .channel
-        .create_login_link(&identity::owner(), created)
+    let response = call(env.main_app(), Method::GET, "/login", &[], None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
+    let html = body_text(response).await;
+    assert!(html.contains("<h1>Log in</h1>"), "{html}");
+    assert!(html.contains("invite or recovery link"), "{html}");
+    assert!(html.contains("doozers admin login-link"), "{html}");
+    // The only method besides links, a password, has its form on the page, so no list of
+    // options precedes it.
+    assert!(!html.contains("Choose how to log in"), "{html}");
+    assert!(html.contains("Log in with a password"), "{html}");
+
+    let token = log_in(&env).await;
+    let response = call(
+        env.main_app(),
+        Method::GET,
+        "/login",
+        &[("cookie", &session(&token))],
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.headers()[LOCATION], "/");
+}
+
+#[tokio::test]
+async fn the_setup_page_needs_a_login() {
+    let env = env().await;
+    let response = call(env.main_app(), Method::GET, "/setup", &[], None).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_recovery_link_signs_a_user_in_and_keeps_every_way_they_had() {
+    let env = env().await;
+    let users = open_users(&env).await;
+    let owner = identity::owner();
+    // The owner has a session from some other way of signing in, and identities.
+    let older = "d".repeat(64);
+    let now = Timestamp::now();
+    env.store
+        .web_session_create(
+            &older,
+            owner.clone(),
+            SignInMethod::Password,
+            now,
+            now.checked_add(WEB_SESSION_TTL).unwrap(),
+        )
+        .await
         .unwrap();
-    let response = redeem(env.main_app(), &expired, &[]).await;
+    let before = users.list().get().user(&owner).unwrap().identities.clone();
+
+    let token = invite_token(&env, &owner, InviteKind::Recovery).await;
+    let path = format!("/invite/{token}");
+    let response = call(env.main_app(), Method::GET, &path, &[], None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_text(response).await;
+    assert!(html.contains("Recover your account"), "{html}");
+    assert!(
+        html.contains("keeps every way you can already sign in"),
+        "{html}"
+    );
+
+    let response = redeem(env.main_app(), &token, &[]).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.headers()[LOCATION], "/setup");
+    let new = cookie_token(set_cookie(&response));
+    let stored = env
+        .store
+        .web_session(&new, Timestamp::now())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (stored.user, stored.method),
+        (owner.clone(), SignInMethod::Recovery)
+    );
+
+    // The recovered session reaches the setup page, to add a method. Nothing the user had is gone:
+    // the identities, and the session of another method.
+    let response = call(
+        env.main_app(),
+        Method::GET,
+        "/setup",
+        &[("cookie", &session(&new))],
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(users.list().get().user(&owner).unwrap().identities, before);
+    let still = env
+        .store
+        .web_session(&older, Timestamp::now())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(still.method, SignInMethod::Password);
+}
+
+#[tokio::test]
+async fn a_new_session_replaces_the_browsers_old_cookie_session() {
+    let env = env().await;
+    let old = log_in(&env).await;
+    let token = invite_token(&env, &identity::owner(), InviteKind::Recovery).await;
+    let response = redeem(env.main_app(), &token, &[("cookie", &session(&old))]).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        env.store.web_session(&old, Timestamp::now()).await.unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn expired_and_unknown_links_log_nobody_in() {
+    let env = env().await;
+    let users = open_users(&env).await;
+    let created = Timestamp::now()
+        .checked_sub(INVITE_TTL + Duration::from_secs(1))
+        .unwrap();
+    let expired = users
+        .create_invite(&identity::owner(), InviteKind::Invite, None, created)
+        .await
+        .unwrap();
+    assert!(expired.expires_at < Timestamp::now());
+    let response = redeem(env.main_app(), &expired.token, &[]).await;
     assert_eq!(response.status(), StatusCode::GONE);
     assert!(!response.headers().contains_key(SET_COOKIE));
-    let path = format!("/login/{}", link_token(&expired));
+    let path = format!("/invite/{}", expired.token);
     let response = call(env.main_app(), Method::GET, &path, &[], None).await;
     assert_eq!(response.status(), StatusCode::GONE);
+    assert!(!response.headers().contains_key(SET_COOKIE));
     let html = body_text(response).await;
     assert!(html.contains("doozers admin login-link"), "{html}");
 
     for token in ["nope", &"0".repeat(64)] {
-        let path = format!("/login/{token}");
+        let path = format!("/invite/{token}");
         let response = call(env.main_app(), Method::GET, &path, &[], None).await;
         assert_eq!(response.status(), StatusCode::GONE, "{token}");
-        let form = format!("token={token}");
-        let response = call(env.main_app(), Method::POST, "/login", &[], Some(&form)).await;
+        let response = redeem(env.main_app(), token, &[]).await;
         assert_eq!(response.status(), StatusCode::GONE, "{token}");
     }
+}
 
-    let someone = UserId::new("someone").unwrap();
-    assert_eq!(
-        env.channel.create_login_link(&someone, Timestamp::now()),
-        Err(LoginLinkError::UnknownUser(someone))
-    );
-    let no_web = env_with(WebConfig::default(), &["irc:libera.chat:owner"]).await;
-    assert_eq!(
-        no_web
-            .channel
-            .create_login_link(&identity::owner(), Timestamp::now()),
-        Err(LoginLinkError::NoWebIdentity(identity::owner()))
-    );
+#[tokio::test]
+async fn a_sign_in_post_needs_the_nonce_of_its_browsers_form() {
+    let env = env().await;
+    let token = invite_token(&env, &identity::owner(), InviteKind::Recovery).await;
+    let nonce = NONCE;
+    let other = nonce.replace('0', "f");
+    let cookie = format!("{NONCE_COOKIE}={nonce}");
+    let wrong_cookie = format!("{NONCE_COOKIE}={other}");
+    let with_field = format!("token={token}&nonce={nonce}");
+    let without_field = format!("token={token}");
+    let other_field = format!("token={token}&nonce={other}");
+    let empty_field = format!("token={token}&nonce=");
+    let cases = [
+        ("no cookie", vec![], &with_field),
+        (
+            "no field",
+            vec![("cookie", cookie.as_str())],
+            &without_field,
+        ),
+        (
+            "another field",
+            vec![("cookie", cookie.as_str())],
+            &other_field,
+        ),
+        (
+            "another cookie",
+            vec![("cookie", wrong_cookie.as_str())],
+            &with_field,
+        ),
+        // Other cookies are no nonce.
+        (
+            "no nonce cookie",
+            vec![("cookie", "theme=dark")],
+            &with_field,
+        ),
+        (
+            "an empty nonce",
+            vec![("cookie", cookie.as_str())],
+            &empty_field,
+        ),
+    ];
+    for (what, headers, form) in cases {
+        let response = call(
+            env.main_app(),
+            Method::POST,
+            "/invite",
+            &headers,
+            Some(form.as_str()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{what}");
+        assert!(!response.headers().contains_key(SET_COOKIE), "{what}");
+    }
+    // Nobody was signed in, and the link wasn't spent by the refusals.
+    let now = Timestamp::now();
+    assert!(env.store.user_invite(&token, now).await.unwrap().is_some());
+    let response = redeem(env.main_app(), &token, &[]).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+}
+
+#[tokio::test]
+async fn a_page_reuses_the_nonce_a_browser_already_has() {
+    let env = env().await;
+    let token = invite_token(&env, &identity::owner(), InviteKind::Recovery).await;
+    let path = format!("/invite/{token}");
+    let cookie = format!("{NONCE_COOKIE}={NONCE}");
+    // A second tab opened before the first is submitted keeps the first's form working.
+    let response = call(
+        env.main_app(),
+        Method::GET,
+        &path,
+        &[("cookie", &cookie)],
+        None,
+    )
+    .await;
+    assert_eq!(nonce_of(set_cookie(&response)), NONCE);
+    // A cookie that isn't a nonce is replaced.
+    let response = call(
+        env.main_app(),
+        Method::GET,
+        &path,
+        &[("cookie", "doozers_login_nonce=short")],
+        None,
+    )
+    .await;
+    let made = nonce_of(set_cookie(&response));
+    assert_eq!(made.len(), 32);
+    assert_ne!(made, "short");
+}
+
+#[tokio::test]
+async fn a_link_for_a_user_who_cant_sign_in_is_refused_and_not_spent() {
+    let env = env().await;
+    let users = open_users(&env).await;
+    let ann = add_user(&users, "ann", doozers_store::Role::Member).await;
+    let token = invite_token(&env, &ann, InviteKind::Invite).await;
+    users
+        .set_state(&ann, doozers_store::UserState::Disabled, Timestamp::now())
+        .await
+        .unwrap();
+    let response = redeem(env.main_app(), &token, &[]).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(!response.headers().contains_key(SET_COOKIE));
+    let found = env
+        .store
+        .user_invite(&token, Timestamp::now())
+        .await
+        .unwrap();
+    assert!(found.is_some(), "not spent");
+    // Enabled again, the same link works.
+    users
+        .set_state(&ann, doozers_store::UserState::Active, Timestamp::now())
+        .await
+        .unwrap();
+    let response = redeem(env.main_app(), &token, &[]).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
 }
 
 #[tokio::test]
@@ -1439,6 +1801,7 @@ async fn expired_unknown_and_orphaned_sessions_are_logged_out() {
         .web_session_create(
             &expired,
             identity::owner(),
+            SignInMethod::Recovery,
             long_ago,
             long_ago.checked_add(WEB_SESSION_TTL).unwrap(),
         )
@@ -1460,7 +1823,7 @@ async fn expired_unknown_and_orphaned_sessions_are_logged_out() {
         );
     }
 
-    // A live session whose `web:<user>` identity was removed from `[owner]` logs nobody in.
+    // A live session whose `web:<user>` identity is gone logs nobody in.
     let token = log_in(&env).await;
     let moved = env_with(WebConfig::default(), &["irc:libera.chat:owner"]).await;
     let now = Timestamp::now();
@@ -1469,6 +1832,7 @@ async fn expired_unknown_and_orphaned_sessions_are_logged_out() {
         .web_session_create(
             &token,
             identity::owner(),
+            SignInMethod::Recovery,
             now,
             now.checked_add(WEB_SESSION_TTL).unwrap(),
         )
@@ -1496,6 +1860,7 @@ async fn expired_sessions_are_deleted_until_shutdown() {
         .web_session_create(
             &expired,
             identity::owner(),
+            SignInMethod::Recovery,
             long_ago,
             long_ago.checked_add(WEB_SESSION_TTL).unwrap(),
         )
@@ -1628,22 +1993,37 @@ async fn a_cookie_login_posts_with_its_csrf_token() {
 }
 
 #[tokio::test]
-async fn an_https_public_url_makes_the_cookie_secure() {
+async fn an_https_public_url_makes_the_cookies_secure() {
     let config =
         WebConfig::from_json(&serde_json::json!({"public_url": "https://doozers.example.com"}))
             .unwrap();
     let env = env_with(config, &["web:owner"]).await;
-    let link = env
-        .channel
-        .create_login_link(&identity::owner(), Timestamp::now())
-        .unwrap();
+    let token = invite_token(&env, &identity::owner(), InviteKind::Recovery).await;
+    let url = env.channel.invite_url(&token);
     assert!(
-        link.url.starts_with("https://doozers.example.com/login/"),
-        "{}",
-        link.url
+        url.starts_with("https://doozers.example.com/invite/"),
+        "{url}"
     );
-    let response = redeem(env.main_app(), &link, &[]).await;
-    assert!(set_cookie(&response).ends_with("; SameSite=Lax; Secure"));
+    let response = call(
+        env.main_app(),
+        Method::GET,
+        &format!("/invite/{token}"),
+        &[],
+        None,
+    )
+    .await;
+    assert!(set_cookie(&response).ends_with("; SameSite=Strict; Secure"));
+    let response = redeem(env.main_app(), &token, &[]).await;
+    let cookies = set_cookies(&response);
+    assert_eq!(cookies.len(), 2, "{cookies:?}");
+    assert!(
+        cookies[0].ends_with("; SameSite=Lax; Secure"),
+        "{cookies:?}"
+    );
+    assert!(
+        cookies[1].ends_with("; SameSite=Strict; Secure"),
+        "{cookies:?}"
+    );
 }
 
 #[tokio::test]
@@ -1664,7 +2044,7 @@ async fn the_identity_header_counts_only_on_the_proxy_listener() {
     let html = body_text(response).await;
     assert!(!html.contains("/logout"), "nothing to log out of: {html}");
 
-    // Someone the owner config doesn't list is refused.
+    // Someone no user has the identity of is refused.
     let mallory = [("x-user", "mallory@example.com")];
     let response = call(env.proxy_app(), Method::GET, "/", &mallory, None).await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
@@ -1703,18 +2083,125 @@ async fn the_identity_header_counts_only_on_the_proxy_listener() {
 
     // `X-Forwarded-Proto` too is believed only from the proxy.
     let https = [("x-forwarded-proto", "https")];
-    let link = env
-        .channel
-        .create_login_link(&identity::owner(), Timestamp::now())
-        .unwrap();
-    let response = redeem(env.main_app(), &link, &https).await;
-    assert!(!set_cookie(&response).contains("Secure"));
-    let link = env
-        .channel
-        .create_login_link(&identity::owner(), Timestamp::now())
-        .unwrap();
-    let response = redeem(env.proxy_app(), &link, &https).await;
-    assert!(set_cookie(&response).ends_with("; Secure"));
+    let token = invite_token(&env, &identity::owner(), InviteKind::Recovery).await;
+    let response = redeem(env.main_app(), &token, &https).await;
+    assert!(set_cookies(&response).iter().all(|c| !c.contains("Secure")));
+    let token = invite_token(&env, &identity::owner(), InviteKind::Recovery).await;
+    let response = redeem(env.proxy_app(), &token, &https).await;
+    assert!(
+        set_cookies(&response)
+            .iter()
+            .all(|c| c.ends_with("; Secure"))
+    );
+}
+
+/// The owner, `ann` (a member with the `web` identity `ann@example.com`, and `web:ann`), and
+/// `away`, who is disabled (`away@example.com`, and `web:away`).
+fn several_users() -> UserList {
+    let mut users = vec![User::member("owner", &["web:owner"])];
+    users.push(User::member("ann", &["web:ann@example.com", "web:ann"]));
+    let mut away = User::member("away", &["web:away@example.com", "web:away"]);
+    away.state = doozers_store::UserState::Disabled;
+    users.push(away);
+    UserList::new(users)
+}
+
+#[tokio::test]
+async fn the_identity_header_logs_in_the_user_who_has_that_identity() {
+    let env = env_with(
+        proxy_config(serde_json::json!({"identity_header": "x-user"})),
+        &["web:owner"],
+    )
+    .await;
+    env.channel
+        .users()
+        .set(several_users().get().users().to_vec());
+
+    let ann = [("x-user", "ann@example.com")];
+    let response = call(env.proxy_app(), Method::GET, "/", &ann, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    // The login is ann's, and what she posts is from `web:ann@example.com`, which the router
+    // resolves to her.
+    let sender = NativeId::new("ann@example.com").unwrap();
+    let csrf = auth::proxy_csrf(&env.channel.proxy_key, &sender);
+    let path = format!("/chats/{}", chat());
+    let response = call(
+        env.proxy_app(),
+        Method::POST,
+        &format!("{path}/messages"),
+        &[ann[0], ("x-csrf-token", &csrf)],
+        Some("text=hi"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let directory = env.channel.users().get();
+    assert_eq!(
+        directory.resolve("web", &sender).unwrap().id,
+        UserId::new("ann").unwrap()
+    );
+    // A disabled user is refused, and so is an identity nobody has.
+    for header in ["away@example.com", "mallory@example.com"] {
+        let response = call(
+            env.proxy_app(),
+            Method::GET,
+            "/",
+            &[("x-user", header)],
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{header}");
+    }
+}
+
+#[tokio::test]
+async fn a_cookie_session_ends_when_its_user_is_disabled_or_gone() {
+    let env = env().await;
+    env.channel
+        .users()
+        .set(several_users().get().users().to_vec());
+    let now = Timestamp::now();
+    let expires = now.checked_add(WEB_SESSION_TTL).unwrap();
+    let cookie = |user: &str| {
+        let token = user.repeat(64)[..64].to_owned();
+        (token, UserId::new(user).unwrap())
+    };
+    for (user, status) in [
+        ("ann", StatusCode::OK),
+        ("away", StatusCode::UNAUTHORIZED),
+        ("gone", StatusCode::UNAUTHORIZED),
+    ] {
+        let (token, id) = cookie(user);
+        env.store
+            .web_session_create(&token, id, SignInMethod::Recovery, now, expires)
+            .await
+            .unwrap();
+        let response = call(
+            env.main_app(),
+            Method::GET,
+            "/",
+            &[("cookie", &session(&token))],
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), status, "{user}");
+    }
+}
+
+#[tokio::test]
+async fn a_link_is_for_the_user_it_was_made_for() {
+    let env = env().await;
+    let users = open_users(&env).await;
+    let ann = add_user(&users, "ann", doozers_store::Role::Member).await;
+    let bob = add_user(&users, "bob", doozers_store::Role::Member).await;
+    let for_ann = invite_token(&env, &ann, InviteKind::Invite).await;
+    let for_bob = invite_token(&env, &bob, InviteKind::Invite).await;
+    let now = Timestamp::now();
+    for (token, user) in [(for_bob, bob), (for_ann, ann)] {
+        let response = redeem(env.main_app(), &token, &[]).await;
+        let session = cookie_token(set_cookie(&response));
+        let stored = env.store.web_session(&session, now).await.unwrap().unwrap();
+        assert_eq!(stored.user, user);
+    }
 }
 
 #[tokio::test]
@@ -2288,11 +2775,13 @@ async fn a_chat_can_be_started_with_any_agent_and_keeps_it() {
     // Only the message to Jeeves is waiting.
     assert_eq!(env.pending_texts().await, ["hello"]);
 
-    // Someone other than the owner is offered no agent and can't pick one.
+    // A member is offered every agent and can pick one, like an admin.
     let guest = WebUser {
         user: UserId::new("guest").unwrap(),
+        role: doozers_store::Role::Member,
         sender: NativeId::new("guest").unwrap(),
         csrf: CSRF.into(),
+        display_name: "Test user".into(),
         login: auth::Login::Test,
     };
     let list = body_text(
@@ -2300,15 +2789,27 @@ async fn a_chat_can_be_started_with_any_agent_and_keeps_it() {
             .await,
     )
     .await;
-    assert!(!list.contains("agent-picker"), "{list}");
+    assert!(list.contains("agent-picker"), "{list}");
+    for agent in ["jeeves", "bunter"] {
+        assert!(
+            list.contains(&format!(r#"<option value="{agent}">"#)),
+            "{list}"
+        );
+    }
     let response = env
         .request(
-            Some(guest),
+            Some(guest.clone()),
             Method::GET,
             "/chats/new?agent=jeeves",
             &[],
             None,
         )
         .await;
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let chat = response.headers()[LOCATION].to_str().unwrap().to_owned();
+    assert!(chat.starts_with("/chats/jeeves."), "{chat}");
+    let response = env
+        .request(Some(guest), Method::GET, &chat, &[], None)
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
 }

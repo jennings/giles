@@ -617,3 +617,22 @@ async fn the_channel_presenter_gives_web_chats_buttons_and_others_text() {
         .unwrap_err();
     assert!(error.to_string().contains("not available"), "{error}");
 }
+
+#[tokio::test(start_paused = true)]
+async fn forgetting_a_user_denies_what_waits_for_them_and_forgets_their_closed_codes() {
+    let s = Setup::new();
+    let approvals = s.turn(true);
+    let waiting = ask(&approvals, "ask__run");
+    settle().await;
+    let code = code_of(&s.sent());
+    assert_eq!(s.board.pending_for(&owner()), 1);
+    assert_eq!(s.board.pending_for(&UserId::new("guest").unwrap()), 0);
+
+    assert_eq!(s.board.forget_user(&owner(), &[SessionId::new(1)]), 1);
+    assert_eq!(waiting.await.unwrap(), Err(DENIED_RESULT.to_owned()));
+    assert_eq!(s.outcomes(), [(code.clone(), ApprovalOutcome::Denied)]);
+    assert_eq!(s.board.pending_for(&owner()), 0);
+    // The code isn't remembered: a late reply is an ordinary message.
+    assert!(!s.board.is_pending(&routed("owner", "owner"), Some(&code)));
+    assert_eq!(s.board.forget_user(&owner(), &[]), 0);
+}

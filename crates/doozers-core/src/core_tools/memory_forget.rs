@@ -17,6 +17,7 @@ use crate::agent_loop::ToolOutput;
 use crate::config::LiveConfig;
 use crate::memory_dbs::MemoryDbs;
 use crate::sessions::Clock;
+use crate::users::UserList;
 
 /// The tool's name.
 pub const MEMORY_FORGET: &str = "memory_forget";
@@ -29,11 +30,11 @@ pub struct MemoryForgetTool {
 
 impl MemoryForgetTool {
     /// Deletes from the memory databases in `dbs`, with each agent's `memory_cap` from `config`
-    /// (for the usage a result shows). `clock` is the one the other memory tools share; deleting
-    /// reads no time.
-    pub fn new(dbs: MemoryDbs, config: LiveConfig, clock: Arc<dyn Clock>) -> Self {
+    /// (for the usage a result shows). `users` gives the requester's time zone, as for the other
+    /// memory tools. `clock` is the one they share; deleting reads no time.
+    pub fn new(dbs: MemoryDbs, config: LiveConfig, users: UserList, clock: Arc<dyn Clock>) -> Self {
         Self {
-            env: MemoryEnv::new(dbs, config, clock),
+            env: MemoryEnv::new(dbs, config, users, clock),
         }
     }
 }
@@ -98,7 +99,8 @@ pub(super) fn spec() -> ToolSpec {
         description: "Delete a memory by its id. It is gone for good: nothing keeps its earlier \
                       text. Use it for what is wrong, outdated, or no longer worth keeping, and to \
                       make room when a scope's core memories are full. Forgetting a shared memory \
-                      is only for your owner's turns and scheduled jobs. An id you can't see \
+                      is only for admins' turns, their scheduled jobs, and jobs from \
+                      agent.toml. An id you can't see \
                       reads as no such memory.\n\n\
                       The prompt is a snapshot taken when the conversation started and doesn't \
                       change while it runs: the result of this tool shows what you forgot."

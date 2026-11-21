@@ -107,12 +107,11 @@ fn minimal_config_gets_defaults() {
     let config = Home::new(MINIMAL).load_ok();
     assert_eq!(config.core.http_listen, DEFAULT_HTTP_LISTEN);
     assert_eq!(config.core.http_listen.to_string(), "127.0.0.1:8080");
+    // `[owner]` is kept as written for the one-time import, which validates it.
     assert_eq!(
-        config.owner.identities,
-        [Identity::new("web:owner").unwrap()]
+        config.legacy_owner.as_ref().unwrap()["identities"][0].as_str(),
+        Some("web:owner")
     );
-    assert_eq!(config.owner.default.as_str(), "web:owner");
-    assert!(config.owner.timezone.is_none());
     assert!(config.providers.is_empty());
     assert!(config.channels.is_empty());
     assert!(config.toolsets.is_empty());
@@ -285,22 +284,10 @@ fn journal_modes_that_risk_corruption_or_do_not_exist_are_refused() {
 fn errors_found_after_parsing_have_positions() {
     let pos = |line, column| Some(Position { line, column });
     // A key that's present: its position.
-    let home = Home::new(
-        "[owner]\nidentities = [\"a:b\", \"c:d\"]\n  default = \"e:f\"\n\n\
-         [[routes]]\nagent = \"jeeves\"\n",
-    );
+    let home = Home::new("[core]\n  journal_mode = \"nope\"\n");
     let err = home.load().unwrap_err();
-    assert_eq!(err.key.to_string(), "owner.default");
-    assert_eq!(err.position, pos(3, 3), "{err}");
-    // An array item.
-    home.write("doozers.toml", "[owner]\nidentities = [\"a:b\", \"a:b\"]\n");
-    let err = home.load().unwrap_err();
-    assert_eq!(err.position, pos(2, 22), "{err}");
-    // A missing key: the deepest part of its path that's there.
-    home.write("doozers.toml", "[owner]\nidentities = [\"a:b\", \"c:d\"]\n");
-    let err = home.load().unwrap_err();
-    assert_eq!(err.key.to_string(), "owner.default");
-    assert_eq!(err.position, pos(1, 2), "{err}");
+    assert_eq!(err.key.to_string(), "core.journal_mode");
+    assert_eq!(err.position, pos(2, 3), "{err}");
     // In agent.toml too.
     let home = with_provider();
     home.agent(
@@ -310,56 +297,6 @@ fn errors_found_after_parsing_have_positions() {
     let err = home.load().unwrap_err();
     assert_eq!(err.key.to_string(), "jobs[0].cron");
     assert_eq!(err.position, pos(4, 1), "{err}");
-}
-
-#[test]
-fn owner_rules() {
-    let cases = [
-        ("", "owner", "missing"),
-        (
-            "[owner]\nidentities = []",
-            "owner.identities",
-            "at least one",
-        ),
-        (
-            "[owner]\nidentities = [\"whatsapp\"]",
-            "owner.identities[0]",
-            "<namespace>:<native id>",
-        ),
-        (
-            "[owner]\nidentities = [\"a:b\", \"a:b\"]",
-            "owner.identities[1]",
-            "listed twice",
-        ),
-        (
-            "[owner]\nidentities = [\"a:b\", \"c:d\"]",
-            "owner.default",
-            "missing",
-        ),
-        (
-            "[owner]\nidentities = [\"a:b\", \"c:d\"]\ndefault = \"e:f\"",
-            "owner.default",
-            "not one of",
-        ),
-        (
-            "[owner]\nidentities = [\"a:b\"]\ntimezone = \"PST\"",
-            "owner.timezone",
-            "unknown time zone",
-        ),
-    ];
-    for (toml, key, reason) in cases {
-        assert_error(&Home::new(toml), "doozers.toml", key, reason);
-    }
-
-    let config = Home::new(
-        "[owner]\nidentities = [\"whatsapp:+1555\", \"irc:libera.chat:account:me\"]\n\
-         default = \"irc:libera.chat:account:me\"\ntimezone = \"America/Los_Angeles\"",
-    )
-    .load_ok();
-    assert_eq!(config.owner.identities.len(), 2);
-    assert_eq!(config.owner.default.as_str(), "irc:libera.chat:account:me");
-    let tz = config.owner.timezone.unwrap();
-    assert_eq!(tz.iana_name(), Some("America/Los_Angeles"));
 }
 
 /// The unknown keys of a loaded configuration, as key paths, sorted.
@@ -411,8 +348,8 @@ bogus = true
     );
     let config = home.load_ok();
     // Each unknown key once, at its full path; nothing inside an unknown table, nothing inside an
-    // ignored toolset table (one with `url`), and nothing for the keys of a `[[routes]]` rule,
-    // which the one-time import handles.
+    // ignored toolset table (one with `url`), and nothing for the keys of `[owner]` or a
+    // `[[routes]]` rule, which the one-time imports handle.
     assert_eq!(
         unknown_keys(&config),
         [
@@ -421,7 +358,6 @@ bogus = true
             "channel.y.auth.oauth.scope",
             "core.http",
             "cores",
-            "owner.nmae",
             "provider.anthropic.api_key",
             "toolset.files.config",
             "toolset.files.max_blob",
@@ -437,23 +373,23 @@ bogus = true
     assert!(lines.is_sorted(), "{lines:?}");
     assert_eq!(config.legacy_routes.len(), 1);
     // What is recognized loads as usual.
-    assert_eq!(config.owner.identities.len(), 1);
+    assert!(config.legacy_owner.is_some());
     assert!(matches!(
         &config.toolsets["files"].transport,
         ToolsetTransport::Stdio(stdio) if stdio.command == "/x"
     ));
 
-    let owner = config
+    let typo = config
         .unknown_keys
         .iter()
-        .find(|k| k.key.to_string() == "owner.nmae")
+        .find(|k| k.key.to_string() == "typo")
         .unwrap();
-    assert_eq!(owner.file, home.path("doozers.toml"));
-    assert_eq!(owner.position, Some(Position { line: 6, column: 1 }));
+    assert_eq!(typo.file, home.path("doozers.toml"));
+    assert_eq!(typo.position, Some(Position { line: 1, column: 1 }));
     assert_eq!(
-        owner.to_string(),
+        typo.to_string(),
         format!(
-            "{}:6:1: unknown key `owner.nmae` (ignored)",
+            "{}:1:1: unknown key `typo` (ignored)",
             home.path("doozers.toml").display()
         )
     );
@@ -471,21 +407,6 @@ fn a_known_key_with_the_wrong_type_still_fails_whatever_else_is_wrong() {
         (
             "[core]\njournal_mode = true\nx = 1",
             "core.journal_mode",
-            "invalid type",
-        ),
-        (
-            "[owner]\nidentities = \"web:owner\"\nnmae = 1",
-            "owner.identities",
-            "invalid type",
-        ),
-        (
-            "[owner]\nidentities = [\"web:owner\"]\nnmae = 1\ntimezone = 5",
-            "owner.timezone",
-            "invalid type",
-        ),
-        (
-            "[[owner]]\nnmae = 1\nidentities = [\"web:owner\"]",
-            "owner[0]",
             "invalid type",
         ),
         (

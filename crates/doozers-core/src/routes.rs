@@ -941,11 +941,7 @@ mod tests {
         /// The agent the router would choose for a direct conversation.
         fn pick(&self, channel: &str, conversation: &str) -> Option<String> {
             let router = Router::new(
-                &crate::config::OwnerConfig {
-                    identities: vec![crate::config::Identity::new("web:owner").unwrap()],
-                    default: crate::config::Identity::new("web:owner").unwrap(),
-                    timezone: None,
-                },
+                crate::users::UserList::owner(&["web:owner"], None),
                 self.routes.list(),
                 Arc::new(std::collections::HashMap::<AgentId, AgentPolicy>::new()),
             );

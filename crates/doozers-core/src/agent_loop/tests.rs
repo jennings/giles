@@ -28,8 +28,10 @@ use super::*;
 use crate::approvals::ApprovalBoard;
 use crate::config::test_toolsets::add_toolsets;
 use crate::config::{BusyMode, Config, InstanceName, LoadOptions};
+use crate::identity;
 use crate::paths::DataRoot;
 use crate::sessions::{Reply, Steering};
+use crate::users::UserList;
 
 const AGENT: &str = "jeeves";
 const SECRET: &str = "sk-very-secret-value";
@@ -349,7 +351,11 @@ impl Harness {
             [("github", "url = \"https://example.com/mcp\"\n")],
         );
         let memory_dbs = MemoryDbs::new(root.clone(), JournalMode::Wal);
-        let registry = Arc::new(Registry::new(root, Arc::new(config)));
+        let config = Arc::new(config);
+        let registry = Arc::new(Registry::new(root, config.clone()));
+        registry
+            .users()
+            .set(crate::users::legacy_owner_users(&config));
         let provider = Arc::new(FakeProvider::default());
         registry
             .register_provider(&name("anthropic"), provider.clone())
@@ -1076,15 +1082,26 @@ async fn the_owner_timezone_falls_back_to_the_agent_timezone() {
             .await;
     let config = h.registry.config();
     let agent = &config.agents[&AgentId::new(AGENT).unwrap()];
-    // The owner's zone wins.
+    let owner = identity::owner();
+    // The user's zone wins, for a config job (no user) as the owner.
+    let users = h.registry.users();
     assert_eq!(
-        history::message_timezone(&config, agent).iana_name(),
+        history::message_timezone(&users, Some(&owner), agent).iana_name(),
         Some("America/Los_Angeles")
     );
-    let mut without_owner = (*config).clone();
-    without_owner.owner.timezone = None;
     assert_eq!(
-        history::message_timezone(&without_owner, agent).iana_name(),
+        history::message_timezone(&users, None, agent).iana_name(),
+        Some("America/Los_Angeles")
+    );
+    // Without one, the agent's applies, and so it does for a user who isn't known.
+    let without_owner = UserList::owner(&["web:owner"], None);
+    assert_eq!(
+        history::message_timezone(&without_owner, Some(&owner), agent).iana_name(),
+        Some("Asia/Tokyo")
+    );
+    let stranger = UserId::new("stranger").unwrap();
+    assert_eq!(
+        history::message_timezone(&users, Some(&stranger), agent).iana_name(),
         Some("Asia/Tokyo")
     );
 
@@ -2077,6 +2094,90 @@ async fn a_failed_summary_is_logged_and_the_turn_goes_on_without_compacting() {
     let requests = h.provider.requests();
     assert_eq!(requests[4].model, "summarizer");
     assert_eq!(requests[5].messages[0].content, summary_message("Summary."));
+}
+
+/// `count` messages of about 1,000 tokens each in the harness's session, from the user and the
+/// assistant in turn, none summarized.
+async fn long_history(h: &Harness, count: usize) {
+    let at = Timestamp::from_second(1_800_000_000).unwrap();
+    let messages = (0..count)
+        .map(|n| Message {
+            role: if n % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            },
+            content: vec![Block::text(format!("{n} {}", "x".repeat(3_000)))],
+            meta: {
+                // The replies recorded the size of a prompt that had a summary, now deleted.
+                let mut meta = doozers_types::MessageMeta::new(at);
+                if n % 2 == 1 {
+                    meta.usage = Some(Usage {
+                        input_tokens: 100,
+                        output_tokens: 5,
+                        cache_read_tokens: 0,
+                        cache_write_tokens: 0,
+                    });
+                }
+                meta
+            },
+        })
+        .collect();
+    h.store
+        .append_messages(h.session.id, messages)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_session_whose_summaries_were_deleted_is_compacted_again_outside_a_turn() {
+    let h = compacting_harness().await;
+    let agent_loop = h.ticking_agent_loop();
+    // About 5,000 tokens against the 1,600 threshold: all but the newest message is summarized,
+    // which is the kept 25% of the window or less.
+    long_history(&h, 5).await;
+    h.provider.push(text("The summary."));
+
+    assert!(agent_loop.recompact_session(h.session.id).await);
+    let requests = h.provider.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].model, "summarizer");
+    assert!(request_text(&requests[0]).starts_with("<conversation>\nUser:\n0 xxx"));
+    let history = h.store.load_history(h.session.id).await.unwrap();
+    let summary = history.summary.unwrap();
+    assert_eq!(summary.content, "The summary.");
+    assert_eq!(
+        (summary.from_seq, summary.through_seq),
+        (1, 4),
+        "a summary covers everything from the first message"
+    );
+    assert_eq!(history.messages.len(), 1);
+    // The summary's usage is recorded, without a user.
+    let usage = h.store.usage_by_model(None, None).await.unwrap();
+    assert_eq!(usage.iter().map(|u| u.requests).sum::<u64>(), 1);
+
+    // Nothing to do for a history that fits.
+    assert!(agent_loop.recompact_session(h.session.id).await);
+    assert_eq!(h.provider.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn recompacting_leaves_what_is_left_to_the_next_turn_when_the_model_fails() {
+    let h = compacting_harness().await;
+    let agent_loop = h.ticking_agent_loop();
+    long_history(&h, 5).await;
+    h.provider
+        .push(Script::Refuse(Error::unavailable("overloaded")));
+    assert!(!agent_loop.recompact_session(h.session.id).await);
+    assert!(
+        h.store
+            .load_history(h.session.id)
+            .await
+            .unwrap()
+            .summary
+            .is_none()
+    );
+    assert!(!agent_loop.recompact_session(SessionId::new(999)).await);
 }
 
 #[tokio::test]

@@ -1,6 +1,6 @@
 //! The web channel's HTTP side: the chat list, chat pages, posting, approval buttons, the event
 //! streams, and `/blobs/<sha256>`. The login pages and the authentication middleware are in
-//! [`login`](super::login).
+//! [`login`](super::login) and [`invite`](super::invite).
 
 use std::convert::Infallible;
 use std::fmt;
@@ -18,7 +18,7 @@ use axum::middleware::from_fn_with_state;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
-use doozers_store::{BlobStore, Store};
+use doozers_store::{BlobStore, ConversationAccess, Store};
 use doozers_types::{AgentId, ConversationId, MediaId};
 use futures::{Stream, StreamExt, stream};
 use serde::Deserialize;
@@ -28,7 +28,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::error;
 
 use super::auth::{WebUser, check_csrf};
+use super::chat_actions::no_such_chat;
 use super::hub::{Event, Subscription};
+use super::limits::LoginLimits;
+use super::passkey::Passkeys;
+use super::password::Passwords;
 use super::shell::{Nav, Shell};
 use super::{
     ApprovalAnswer, Busy, WebChannel, chat_agent, is_approval_code, is_chat_id, new_agent_chat_id,
@@ -37,7 +41,6 @@ use super::{
 use crate::agent_loop::history;
 use crate::config::{Config, LiveConfig};
 use crate::http::{self, RouterBuilder};
-use crate::identity;
 use crate::runtime::Runtime;
 use crate::scheduler::JobChanges;
 use crate::sessions::{Clock, SystemClock};
@@ -69,6 +72,14 @@ pub(super) struct Inner {
     pub(super) clock: Arc<dyn Clock>,
     /// Tells the scheduler when the jobs page changes a runtime job.
     pub(super) jobs: JobChanges,
+    /// Hashes and checks passwords, a few at a time.
+    pub(super) passwords: Passwords,
+    /// Counts password attempts per username and per client address.
+    pub(super) logins: LoginLimits,
+    /// Counts the sign-ins a client address starts with a passkey.
+    pub(super) passkey_starts: LoginLimits,
+    /// The relying party, if passkeys can be offered, and the ceremonies in flight.
+    pub(super) passkeys: Passkeys,
     pub(super) shutdown: CancellationToken,
 }
 
@@ -113,6 +124,7 @@ impl WebApp {
         clock: Arc<dyn Clock>,
         shutdown: CancellationToken,
     ) -> Self {
+        let passkeys = Passkeys::new(channel.config().public_url.as_deref());
         Self {
             inner: Arc::new(Inner {
                 channel,
@@ -121,6 +133,14 @@ impl WebApp {
                 agents,
                 clock,
                 jobs,
+                passwords: Passwords::default(),
+                logins: LoginLimits::default(),
+                passkey_starts: LoginLimits::new(
+                    u32::MAX,
+                    super::passkey_signin::START_ATTEMPTS,
+                    super::limits::WINDOW,
+                ),
+                passkeys,
                 shutdown,
             }),
         }
@@ -168,6 +188,11 @@ impl WebApp {
             .merge(super::chat_actions::routes())
             .merge(super::jobs::routes())
             .merge(super::login::routes())
+            .merge(super::invite::routes())
+            .merge(super::password_pages::routes())
+            .merge(super::passkey_pages::routes())
+            .merge(super::passkey_signin::routes())
+            .merge(super::reverify::routes())
             .with_state(self.clone())
     }
 }
@@ -182,6 +207,35 @@ struct ErrorPage<'a> {
 /// A page saying what went wrong, with `status`.
 pub(super) fn error_page(status: StatusCode, title: &str, message: &str) -> Response {
     let mut response = http::render(&ErrorPage { title, message });
+    if response.status().is_success() {
+        *response.status_mut() = status;
+    }
+    response
+}
+
+#[derive(Template)]
+#[template(path = "web/error_back.html")]
+struct ErrorBackPage<'a> {
+    title: &'a str,
+    message: &'a str,
+    back_href: &'a str,
+    back_label: &'a str,
+}
+
+/// [`error_page`] with a link back to `back_href`, called `back_label`, besides the one to the chats.
+pub(super) fn error_page_back(
+    status: StatusCode,
+    title: &str,
+    message: &str,
+    back_href: &str,
+    back_label: &str,
+) -> Response {
+    let mut response = http::render(&ErrorBackPage {
+        title,
+        message,
+        back_href,
+        back_label,
+    });
     if response.status().is_success() {
         *response.status_mut() = status;
     }
@@ -235,6 +289,30 @@ pub(super) fn chat_id(raw: &str) -> Option<ConversationId> {
         .flatten()
 }
 
+/// Checks that chat `chat` is the user's to use: a chat of theirs, or one nobody has started. A
+/// chat that has a session of another user's, or a message from another sender waiting for the
+/// core, answers 404 like a chat that doesn't exist, so the page doesn't say whose it is. Every
+/// handler that takes a chat id calls this before it reads or changes anything of the chat,
+/// the live state in its hub included.
+pub(super) async fn own_chat(
+    app: &WebApp,
+    user: &WebUser,
+    chat: &ConversationId,
+) -> Result<(), Box<Response>> {
+    let channel = &app.inner.channel;
+    match app
+        .inner
+        .store
+        .conversation_access(channel.instance().as_str(), chat, &user.user)
+        .await
+    {
+        Ok(ConversationAccess::Own) => Ok(()),
+        Ok(ConversationAccess::Unstarted) if !channel.posted_by_other(chat, &user.user) => Ok(()),
+        Ok(_) => Err(Box::new(no_such_chat())),
+        Err(err) => Err(Box::new(internal_error("cannot check a web chat", &err))),
+    }
+}
+
 /// Whether htmx sent the request (as opposed to a plain form post).
 fn is_htmx(headers: &HeaderMap) -> bool {
     headers.get("hx-request").is_some_and(|v| v == "true")
@@ -271,12 +349,9 @@ pub(super) struct AgentChoice {
     pub(super) label: String,
 }
 
-/// The agents `user` may start a chat with, by id. v1 has one user, the owner, who may use every
-/// agent; with roles (PLAN section 3.1) this is where a member's `agents` globs apply.
-pub(super) fn agent_choices(config: &Config, user: &WebUser) -> Vec<AgentChoice> {
-    if user.user != identity::owner() {
-        return Vec::new();
-    }
+/// The agents a user may start a chat with, by id: every configured agent, for every user (a member
+/// may use any agent; per-user allowlists would apply here).
+pub(super) fn agent_choices(config: &Config) -> Vec<AgentChoice> {
     config
         .agents
         .keys()
@@ -336,7 +411,7 @@ impl ChatList {
             .collect();
         Ok(Self {
             chats,
-            agents: agent_choices(&config, user),
+            agents: agent_choices(&config),
             archived,
         })
     }
@@ -390,14 +465,14 @@ struct NewChatQuery {
 /// is stored until the first message.
 async fn new_chat(
     State(app): State<WebApp>,
-    user: WebUser,
+    _: WebUser,
     Query(query): Query<NewChatQuery>,
 ) -> Response {
     let Some(agent) = query.agent.filter(|a| !a.is_empty()) else {
         return Redirect::to(&format!("/chats/{}", new_chat_id())).into_response();
     };
     let config = app.inner.agents.get();
-    let Some(choice) = agent_choices(&config, &user)
+    let Some(choice) = agent_choices(&config)
         .into_iter()
         .find(|choice| choice.id == agent)
     else {
@@ -407,7 +482,7 @@ async fn new_chat(
     Redirect::to(&format!("/chats/{}", new_agent_chat_id(&agent))).into_response()
 }
 
-/// 404 for a chat with an agent that isn't configured (or that the user may not use).
+/// 404 for a chat with an agent that isn't configured.
 fn no_such_agent(agent: &str) -> Response {
     error_page(
         StatusCode::NOT_FOUND,
@@ -416,18 +491,14 @@ fn no_such_agent(agent: &str) -> Response {
     )
 }
 
-/// For a chat started with an agent: the agent's label, or the agent as the error if `user` may
-/// not use it (it isn't configured). `Ok(None)` for a chat routed by the stored routes.
-fn chosen_agent(
-    app: &WebApp,
-    user: &WebUser,
-    chat: &ConversationId,
-) -> Result<Option<String>, AgentId> {
+/// For a chat started with an agent: the agent's label, or the agent as the error if it isn't
+/// configured. `Ok(None)` for a chat routed by the stored routes.
+fn chosen_agent(app: &WebApp, chat: &ConversationId) -> Result<Option<String>, AgentId> {
     let Some(agent) = chat_agent(chat.as_str()) else {
         return Ok(None);
     };
     let config = app.inner.agents.get();
-    agent_choices(&config, user)
+    agent_choices(&config)
         .into_iter()
         .find(|choice| choice.id == agent.as_str())
         .map(|choice| Some(choice.label))
@@ -469,7 +540,10 @@ async fn chat_page(State(app): State<WebApp>, user: WebUser, Path(chat): Path<St
     let Some(chat) = chat_id(&chat) else {
         return not_found();
     };
-    let agent = match chosen_agent(&app, &user, &chat) {
+    if let Err(response) = own_chat(&app, &user, &chat).await {
+        return *response;
+    }
+    let agent = match chosen_agent(&app, &chat) {
         Ok(agent) => agent,
         Err(agent) => return no_such_agent(agent.as_str()),
     };
@@ -480,7 +554,12 @@ async fn chat_page(State(app): State<WebApp>, user: WebUser, Path(chat): Path<St
     let transcript = match app
         .inner
         .store
-        .conversation_transcript(channel.instance().as_str(), &chat, HISTORY_LIMIT)
+        .conversation_transcript(
+            channel.instance().as_str(),
+            &chat,
+            &user.user,
+            HISTORY_LIMIT,
+        )
         .await
     {
         Ok(transcript) => transcript,
@@ -566,7 +645,10 @@ async fn post_message(
     let Some(chat) = chat_id(&chat) else {
         return not_found();
     };
-    if let Err(agent) = chosen_agent(&app, &user, &chat) {
+    if let Err(response) = own_chat(&app, &user, &chat).await {
+        return *response;
+    }
+    if let Err(agent) = chosen_agent(&app, &chat) {
         return no_such_agent(agent.as_str());
     }
     if let Err(rejected) = check_csrf(&user, &headers, form.csrf.as_deref()) {
@@ -597,7 +679,12 @@ async fn post_message(
         );
     }
     let channel = app.inner.channel.instance().as_str();
-    if let Err(err) = app.inner.store.unarchive_conversation(channel, &chat).await {
+    if let Err(err) = app
+        .inner
+        .store
+        .unarchive_conversation(channel, &chat, &user.user)
+        .await
+    {
         return internal_error("cannot unarchive a web chat", &err);
     }
     let now = app.inner.clock.now();
@@ -631,7 +718,10 @@ async fn post_approval(
     let Some(chat) = chat_id(&chat) else {
         return not_found();
     };
-    if let Err(agent) = chosen_agent(&app, &user, &chat) {
+    if let Err(response) = own_chat(&app, &user, &chat).await {
+        return *response;
+    }
+    if let Err(agent) = chosen_agent(&app, &chat) {
         return no_such_agent(agent.as_str());
     }
     if let Err(rejected) = check_csrf(&user, &headers, form.csrf.as_deref()) {
@@ -679,10 +769,11 @@ enum Item {
 
 /// `GET /chats/<id>/events`: server-sent events, each an HTML fragment for the message list
 /// (event name `message`), starting after `Last-Event-ID` or `?after=`. Ends when the daemon
-/// shuts down.
+/// shuts down, or when the login ends ([`WebApp::login_ended`]): its session, or its right to log
+/// its user in.
 async fn events(
     State(app): State<WebApp>,
-    _: WebUser,
+    user: WebUser,
     Path(chat): Path<String>,
     Query(query): Query<EventsQuery>,
     headers: HeaderMap,
@@ -690,6 +781,9 @@ async fn events(
     let Some(chat) = chat_id(&chat) else {
         return not_found();
     };
+    if let Err(response) = own_chat(&app, &user, &chat).await {
+        return *response;
+    }
     let channel = app.inner.channel.clone();
     let cursor = headers
         .get("last-event-id")
@@ -698,7 +792,8 @@ async fn events(
     let subscription = channel.hub(&chat).subscribe(channel.hubs.after(cursor));
     let stream = event_stream(subscription)
         .map(move |item| Ok::<_, Infallible>(sse_event(&channel, item)))
-        .take_until(app.inner.shutdown.clone().cancelled_owned());
+        .take_until(app.inner.shutdown.clone().cancelled_owned())
+        .take_until(app.clone().login_ended(user.user, user.sender, user.login));
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response()
@@ -746,13 +841,6 @@ fn sse_event(channel: &WebChannel, item: Item) -> SseEvent {
     }
 }
 
-/// Whether `user` may see blobs. v1 has one user, the owner, and every blob belongs to the
-/// owner's conversations and jobs, so only the owner may; per-blob checks come with multi-user
-/// support.
-fn may_see_blobs(user: &WebUser) -> bool {
-    user.user == identity::owner()
-}
-
 /// `filename*=` of `Content-Disposition` (RFC 6266, RFC 8187): UTF-8, percent-encoded.
 fn encoded_filename(name: &str) -> String {
     let mut out = String::from("UTF-8''");
@@ -766,36 +854,41 @@ fn encoded_filename(name: &str) -> String {
     out
 }
 
-/// `GET /blobs/<sha256>`: an attachment, for the logged-in user. Served with its stored media
-/// type, `nosniff` (from the security headers), and `Content-Security-Policy: sandbox`, and as a
-/// download unless it's a raster image, so a stored HTML or SVG blob can never run in Doozers'
-/// origin.
+/// `GET /blobs/<sha256>`: an attachment, for a user who owns a message that refers to it
+/// ([`BlobStore::reference_of`]; 404 for anyone else, an admin included, and for a blob that
+/// isn't stored, so the answer doesn't say which). Served with the media type and name of the
+/// user's own reference to it, `nosniff`
+/// (from the security headers), and `Content-Security-Policy: sandbox`, and as a download unless
+/// it's a raster image, so a stored HTML or SVG blob can never run in Doozers' origin.
 async fn blob(State(app): State<WebApp>, user: WebUser, Path(id): Path<String>) -> Response {
     let Ok(id) = id.parse::<MediaId>() else {
         return not_found();
     };
-    if !may_see_blobs(&user) {
-        return not_found();
-    }
+    // The type and name are the user's own reference's: the blob row keeps the first sender's.
+    let shown = match app.inner.blobs.reference_of(&id, &user.user).await {
+        Ok(Some(shown)) => shown,
+        Ok(None) => return not_found(),
+        Err(err) => return internal_error("cannot look up a blob's messages", &err),
+    };
     let blob = match app.inner.blobs.get(&id).await {
         Ok(Some(blob)) => blob,
         Ok(None) => return not_found(),
         Err(err) => return internal_error("cannot read a blob", &err),
     };
-    let media = blob.media;
-    let content_type = HeaderValue::from_str(&media.media_type)
+    let size = blob.media.size;
+    let content_type = HeaderValue::from_str(&shown.media_type)
         .unwrap_or(HeaderValue::from_static("application/octet-stream"));
-    let disposition = if render::is_inline_image(&media.media_type) {
+    let disposition = if render::is_inline_image(&shown.media_type) {
         HeaderValue::from_static("inline")
     } else {
-        let name = media.name.as_deref().unwrap_or(media.id.as_str());
+        let name = shown.name.as_deref().unwrap_or(shown.id.as_str());
         HeaderValue::from_str(&format!("attachment; filename*={}", encoded_filename(name)))
             .unwrap_or(HeaderValue::from_static("attachment"))
     };
     let mut response = Response::new(Body::from_stream(ReaderStream::new(blob.reader)));
     let headers = response.headers_mut();
     headers.insert(CONTENT_TYPE, content_type);
-    headers.insert(CONTENT_LENGTH, HeaderValue::from(media.size));
+    headers.insert(CONTENT_LENGTH, HeaderValue::from(size));
     headers.insert(CONTENT_DISPOSITION, disposition);
     headers.insert(CONTENT_SECURITY_POLICY, HeaderValue::from_static("sandbox"));
     headers.insert(CACHE_CONTROL, HeaderValue::from_static(BLOB_CACHE_CONTROL));

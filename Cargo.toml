@@ -91,3 +91,11 @@ opt-level = 3
 
 [profile.dev.package.rsa]
 opt-level = 3
+
+# Password hashing (`doozers_core::channels::web`) takes seconds unoptimized, which every web sign-in
+# test would pay for each password it hashes or checks.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

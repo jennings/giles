@@ -115,7 +115,7 @@ fn route_form(channel: &str, conversation: &str, agent: &str) -> String {
 }
 
 #[tokio::test]
-async fn only_the_owner_gets_the_route_pages() {
+async fn only_an_admin_gets_the_route_pages() {
     let env = env().await;
     let routes = env.routes().await;
     routes

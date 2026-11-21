@@ -326,7 +326,7 @@ async fn load_memory(
     session: &Session,
 ) -> Result<Vec<MemorySection>, PromptError> {
     let cap = agent.memory_cap as usize;
-    let viewer = memory::prompt_viewer(session);
+    let viewer = memory::prompt_viewer(session, &registry.users().get());
     let core = memory_dbs
         .get(&agent.id)
         .await?

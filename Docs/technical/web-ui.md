@@ -32,7 +32,10 @@ The implementation differs from the boards on purpose in four ways:
   `light-dark()`, `color-mix()`, `<dialog>` with `closedby`, `command` and `commandfor`, and
   `popover`. Don't add fallbacks for old browsers.
 - **Script is the last resort.** A page must work with no script except where it streams (the chat
-  page). The small per-form scripts only add conveniences, such as filling an id from a name.
+  page) and where the browser offers nothing else: WebAuthn can be called only from script, so
+  `passkey.js` is the one stated exception, and the pages that add a passkey or sign in with one
+  need it. Where it doesn't run, the passkey buttons stay hidden and a password is the way in. The
+  small per-form scripts only add conveniences, such as filling an id from a name.
 - **Quiet and dense.** Dark surfaces a step apart, thin borders, one accent color, and text that
   tells the owner what each control does.
 
@@ -123,8 +126,8 @@ Every page for a signed-in user has two columns: the sidebar and the content.
 - Content doesn't center. It starts at the sidebar's edge, and long text and forms have a maximum
   width instead.
 
-The login, login-required, error, and not-found pages have no sidebar. They center one card on the
-page.
+The login, login-required, invite, setup, error, and not-found pages have no sidebar. They center
+one card on the page.
 
 ### Sidebar
 
@@ -135,12 +138,12 @@ From top to bottom:
 2. Navigation groups. Each has a label (11 px, uppercase, 0.08em tracking, faint) and links 40 px
    tall with 12 px side padding and radius 8 px. The current page's link has the "nav current" fill,
    white text, weight 600, and `aria-current="page"`. The others are secondary text with no fill.
-   - **You**: Chats, Scheduled jobs, Connections, SSH keys.
-   - **Admin (owner only)**: Status, Plugins, Agents, Routes, MCP servers, Workspaces, SSH keys,
-     Known SSH hosts. It's shown only to a user who may administer.
-3. The user footer, pushed to the bottom with a top border: a 30 px initial badge, the user's id,
-   and **Log out**. Log out appears only for a cookie login, since a proxy login can't log out.
-   Today the id is always `owner`. This is where user information goes once there are other users.
+   - **You**: Chats, Scheduled jobs, Connections, SSH keys, Account.
+   - **Admin**: Status, Plugins, Agents, Routes, MCP servers, Workspaces, SSH keys, Known SSH hosts,
+     Identity providers. It's shown only to admins.
+3. The user footer, pushed to the bottom with a top border: a 30 px initial badge, the user's
+   display name, and **Log out**. Log out appears only for a cookie login, since a proxy login can't
+   log out. The initial is the first letter of the display name.
 
 Pages below a link in the sidebar mark that link current: the job form marks Scheduled jobs, and an
 agent's edit page marks Agents.
@@ -369,6 +372,7 @@ view, except the chat page's approvals. Inside a table, every action is a `butto
 ### Fields
 
 - `.form` is a form card (24 px padding, at most 680 px wide). `.form-wide` widens it to 760 px.
+  `.form-flush` removes the padding, for a form inside a card, such as the login forms.
   `.form-sections` is a long form's stack of cards and fieldsets, at most 820 px wide.
 - `.field` is a column: the `<label>` (13 px, 600, secondary), the control, then `.help` (13 px,
   muted). A value that can't be edited here uses `<span class="field-label">` and

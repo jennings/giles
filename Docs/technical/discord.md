@@ -230,16 +230,16 @@ and it is checked only against documentation, so the plugin guards it cheaply:
 ## Identity
 
 - Identity `discord:<user id>`: the author's snowflake from the Gateway event, immutable, unlike the
-  username, global name, and the retired discriminator. The owner lists `discord:<id>` in
-  `[owner] identities`. `sender_display_name` is `global_name`, falling back to `username`; it is
-  display only and never used for routing.
+  username, global name, and the retired discriminator. A user has `discord:<id>` as an identity.
+  `sender_display_name` is `global_name`, falling back to `username`; it is display only and never
+  used for routing.
 - **The plugin deals in native ids, the core in identities.** `InboundMessage.sender` is the bare
   user id (`82198898841029460`), as the WhatsApp plugin sends `+15551234567` and not
   `whatsapp:+15551234567`. The core joins it to the namespace `Configure` returned (`discord`) to
-  get the identity it matches against `[owner] identities` (`OwnerIdentities::contains`), and strips
-  the namespace from an identity before it hands a proactive send's `recipient` to `Send`
-  (`outbox::route`). A plugin that put `discord:` in the sender would arrive as
-  `discord:discord:<id>` and be dropped as not the owner (issue #22). The same holds in the other
+  get the identity it matches against the users' identities (`UserDirectory::resolve` over
+  `Registry::users`), and strips the namespace from an identity before it hands a proactive send's
+  `recipient` to `Send` (`outbox::route`). A plugin that put `discord:` in the sender would arrive
+  as `discord:discord:<id>` and be dropped as not the owner (issue #22). The same holds in the other
   direction: the `recipient` is the bare user id too.
 - **`sender_authenticated = true`.** The author id is set by Discord, not by the sender: it arrives
   on the Gateway connection that the bot authenticated with its token over TLS, and in a DM the
@@ -385,7 +385,7 @@ fetches it again.
   edits are ignored; **messages from a user the plugin has never seen, sent while it was down, if
   that user sends nothing afterwards** (the plugin can't list DM channels, and a first live message
   is what reveals the channel). A `users` config key that opens the owner's DM channel at start
-  would close that last gap; it needs ids the plugin doesn't have (`[owner] identities` is the
+  would close that last gap; it needs ids the plugin doesn't have (the users' identities are the
   core's), so it isn't in v1.
 - Messages the bot sent while it was offline can't exist; the plugin's own messages in a page are
   dropped by the author check.

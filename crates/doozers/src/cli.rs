@@ -79,16 +79,18 @@ pub struct AdminArgs {
 /// The `doozers admin` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum AdminCommand {
-    /// Print a one-time login URL for the web chat.
+    /// Print a one-time recovery URL that signs a user in to the web chat. With no users yet, it
+    /// creates the first admin.
     LoginLink(LoginLinkArgs),
 }
 
 /// Arguments to `doozers admin login-link`.
 #[derive(Debug, Args)]
 pub struct LoginLinkArgs {
-    /// The user to log in, e.g. "owner".
+    /// The id of the user to log in, e.g. "owner". Leave it out on a fresh install, which has no
+    /// users, to create the first admin.
     #[arg(long, value_name = "USER")]
-    pub user: String,
+    pub user: Option<String>,
 }
 
 /// Arguments to `doozers toolset`.
@@ -290,14 +292,21 @@ mod tests {
         else {
             panic!("{:?}", cli.command);
         };
-        assert_eq!(args.user, "owner");
+        assert_eq!(args.user.as_deref(), Some("owner"));
 
         assert!(matches!(
             Cli::try_parse_from(["doozers", "status"]).unwrap().command,
             Command::Status(_)
         ));
-        // The user is required.
-        assert!(Cli::try_parse_from(["doozers", "admin", "login-link"]).is_err());
+        // Without a user, a fresh install makes its first admin.
+        let cli = Cli::try_parse_from(["doozers", "admin", "login-link"]).unwrap();
+        let Command::Admin(AdminArgs {
+            command: AdminCommand::LoginLink(args),
+        }) = cli.command
+        else {
+            panic!("{:?}", cli.command);
+        };
+        assert_eq!(args.user, None);
     }
 
     #[test]

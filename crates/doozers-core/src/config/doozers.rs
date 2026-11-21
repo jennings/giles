@@ -1,7 +1,7 @@
-//! `doozers.toml`: `[core]`, `[owner]`, the instance tables, and `[[routes]]` (PLAN sections 1.1,
-//! 6.1, 11.2).
+//! `doozers.toml`: `[core]`, the instance tables, and the `[owner]` and `[[routes]]` that are only
+//! imported (PLAN sections 1.1, 6.1, 11.2).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
@@ -36,20 +36,6 @@ pub struct CoreConfig {
 /// or `<root>/secret.key` if unset.
 pub fn resolve_secret_key_file(root: &DataRoot, configured: Option<&Path>) -> PathBuf {
     configured.map_or_else(|| root.secret_key_file(), |path| root.root().join(path))
-}
-
-/// `[owner]`: the one user of v1 (PLAN section 1.1).
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub struct OwnerConfig {
-    /// The owner's identities, `<namespace>:<native id>`, e.g. `whatsapp:+15551234567`. Messages
-    /// from any other identity are dropped.
-    pub identities: Vec<Identity>,
-    /// The identity jobs and proactive messages go to; one of `identities`.
-    pub default: Identity,
-    /// The owner's time zone, for message time prefixes and job schedules. `None`: the agent's
-    /// `timezone`, else the system time zone.
-    pub timezone: Option<TimeZone>,
 }
 
 /// An identity, `<namespace>:<native id>` (PLAN section 3.2). The namespace may itself contain
@@ -97,7 +83,9 @@ impl std::fmt::Display for Identity {
 pub(crate) struct RawDoozers {
     #[serde(default)]
     core: RawCore,
-    owner: Option<RawOwner>,
+    /// `[owner]` as written: the first start imports it into the database, and it is never
+    /// read again.
+    pub owner: Option<toml::Value>,
     #[serde(default)]
     pub provider: BTreeMap<String, RawProvider>,
     #[serde(default)]
@@ -119,13 +107,6 @@ struct RawCore {
     http_listen: Option<SocketAddr>,
     journal_mode: Option<String>,
     secret_key_file: Option<PathBuf>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawOwner {
-    identities: Vec<String>,
-    default: Option<String>,
-    timezone: Option<String>,
 }
 
 impl RawDoozers {
@@ -154,64 +135,6 @@ impl RawDoozers {
             http_listen: self.core.http_listen.unwrap_or(DEFAULT_HTTP_LISTEN),
             journal_mode,
             secret_key_file,
-        })
-    }
-
-    pub(crate) fn owner(&self, file: &Path) -> Result<OwnerConfig, ConfigError> {
-        let path = KeyPath::root().key("owner");
-        let err = |path: KeyPath, reason: String| ConfigError::at(file, path, reason);
-        let Some(raw) = &self.owner else {
-            return Err(err(
-                path,
-                "missing: declare the owner's identities, e.g. \
-                 `[owner] identities = [\"whatsapp:+15551234567\"]`"
-                    .to_owned(),
-            ));
-        };
-        if raw.identities.is_empty() {
-            return Err(err(
-                path.key("identities"),
-                "must list at least one identity".into(),
-            ));
-        }
-        let mut identities = Vec::with_capacity(raw.identities.len());
-        let mut seen = BTreeSet::new();
-        for (i, text) in raw.identities.iter().enumerate() {
-            let at = path.key("identities").index(i);
-            let identity = Identity::new(text.as_str()).map_err(|r| err(at.clone(), r))?;
-            if !seen.insert(identity.clone()) {
-                return Err(err(at, format!("{identity} is listed twice")));
-            }
-            identities.push(identity);
-        }
-        let default = match &raw.default {
-            Some(text) => {
-                let at = path.key("default");
-                let identity = Identity::new(text.as_str()).map_err(|r| err(at.clone(), r))?;
-                if !seen.contains(&identity) {
-                    return Err(err(at, format!("{identity} is not one of `identities`")));
-                }
-                identity
-            }
-            None if identities.len() == 1 => identities[0].clone(),
-            None => {
-                return Err(err(
-                    path.key("default"),
-                    "missing: with several identities, name the one jobs and proactive \
-                     messages go to"
-                        .into(),
-                ));
-            }
-        };
-        let timezone = raw
-            .timezone
-            .as_deref()
-            .map(|name| parse_timezone(name).map_err(|r| err(path.key("timezone"), r)))
-            .transpose()?;
-        Ok(OwnerConfig {
-            identities,
-            default,
-            timezone,
         })
     }
 }

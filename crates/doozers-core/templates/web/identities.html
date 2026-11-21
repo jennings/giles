@@ -1,0 +1,98 @@
+{% extends "web/app.html" %}
+
+{% block title %}Identities - Doozers{% endblock %}
+
+{% block head %}
+<script src="{{ crate::http::assets::copy_script_path() }}" defer></script>
+{% endblock %}
+
+{% block content %}
+<a class="back" href="/account">Account</a>
+<h1>Identities</h1>
+{%- if let Some(notice) = notice %}
+<p class="banner banner-info" role="status">{{ notice }}</p>
+{%- endif %}
+{%- if let Some(error) = error %}
+<p class="banner banner-error" role="alert">{{ error }}</p>
+{%- endif %}
+<p class="lede">An identity is one of your accounts on a channel, such as your phone number on WhatsApp. Doozers answers messages from your identities as you, and drops messages from any other account. To add one, make a code here and send it from that account.</p>
+{%- if let Some(code) = new_code %}
+<section class="card" id="new-code" aria-labelledby="new-code-heading">
+<h2 id="new-code-heading">Send this from your {{ code.namespace }} account</h2>
+<div class="field">
+<label for="link-command">Message</label>
+<div class="input-group">
+<input id="link-command" class="mono" readonly value="{{ code.command }}">
+<button type="button" class="input-group-button" data-copy-from="link-command" aria-label="Copy message" title="Copy message" hidden><svg class="icon-copy" aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg><svg class="icon-copied" aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg></button>
+</div>
+</div>
+<p>Send it to Doozers in a direct message, from the account you want to add. The code works until {{ code.expires }}, once. Doozers shows it only now, so make a new one if you lose it.</p>
+</section>
+{%- endif %}
+
+<h2>Your identities</h2>
+{%- if identities.is_empty() %}
+<p>You have no identities.</p>
+{%- else %}
+<div class="table-wrap">
+<table class="table">
+<thead><tr><th>Identity</th><th>Added</th><th><span class="sr-only">Actions</span></th></tr></thead>
+<tbody>
+{%- for identity in identities %}
+<tr>
+<td data-label="Identity" class="m-title"><code>{{ identity.text }}</code>{% if identity.is_default %} <span class="pill pill-ok">default</span>{% endif %}<br><span class="meta">{{ identity.how }}</span></td>
+<td data-label="Added" class="secondary m-meta m-label">{{ identity.added }}</td>
+<td class="row-actions">
+{%- if !identity.is_default %}
+<form method="post" action="/account/identities/default"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="identity" value="{{ identity.text }}"><button type="submit" class="button-small" aria-label="Make {{ identity.text }} the default">Make default</button></form>
+{%- endif %}
+{%- if identity.removable %}
+<a class="button button-small button-danger" href="/account/identities/remove?identity={{ identity.query }}" aria-label="Remove {{ identity.text }}">Remove</a>
+{%- endif %}
+</td>
+</tr>
+{%- endfor %}
+</tbody>
+</table>
+</div>
+<p class="help">The default identity is where Doozers sends what you didn't start: a scheduled job's reply, or an approval it needs. Your web sign-in can't be removed here.</p>
+{%- endif %}
+
+<h2>Add an identity</h2>
+{%- if namespaces.is_empty() %}
+<p>No channel besides the web chat is running, so there is nothing to add. Set up a channel first.</p>
+{%- else %}
+<form class="card form" method="post" action="/account/identities/link">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="field">
+<label for="link-namespace">Channel</label>
+<select id="link-namespace" name="namespace">
+{%- for namespace in namespaces %}
+<option value="{{ namespace }}"{% if *namespace == selected %} selected{% endif %}>{{ namespace }}</option>
+{%- endfor %}
+</select>
+<p class="help">Choose the channel the account is on. Doozers shows a code that works for 10 minutes. Send <code>/link</code> and the code from the account to add, and Doozers adds it here.</p>
+</div>
+<div class="form-actions">
+<button type="submit" class="button-primary">Make a code</button>
+</div>
+</form>
+{%- endif %}
+
+{%- if !codes.is_empty() %}
+<h2>Codes</h2>
+<div class="table-wrap">
+<table class="table">
+<thead><tr><th>Channel</th><th>State</th></tr></thead>
+<tbody>
+{%- for code in codes %}
+<tr>
+<td data-label="Channel" class="m-title"><code>{{ code.namespace }}</code></td>
+<td data-label="State" class="m-split"><span class="pill {{ code.pill }} m-aside">{{ code.state }}</span> <span class="muted m-body">{{ code.detail }}</span></td>
+</tr>
+{%- endfor %}
+</tbody>
+</table>
+</div>
+{%- endif %}
+{% endblock %}

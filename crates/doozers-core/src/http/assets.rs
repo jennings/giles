@@ -1,5 +1,6 @@
 //! Static assets compiled into the binary: the vendored `htmx` and its SSE extension, the
-//! stylesheet, and the scripts of the new-agent form, the MCP server form, and the SSH keys page.
+//! stylesheet, and the scripts of the new-agent form, the MCP server form, the SSH keys page, and the
+//! passkey pages.
 //!
 //! Every asset's path changes whenever its content does (a version for the vendored files, a
 //! content hash for our own), so all of them are served as `immutable` for a year. Pages link them
@@ -127,8 +128,29 @@ pub fn copy_script() -> Asset {
     }
 }
 
+const PASSKEY_SCRIPT_BODY: &[u8] = include_bytes!("../../assets/passkey.js");
+
+static PASSKEY_SCRIPT_PATH: LazyLock<String> =
+    LazyLock::new(|| hashed_path("passkey", PASSKEY_SCRIPT_BODY, "js"));
+
+/// The URL path of the passkey script: `/static/passkey-<hash>.js`.
+pub fn passkey_script_path() -> &'static str {
+    PASSKEY_SCRIPT_PATH.as_str()
+}
+
+/// The passkey script, at [`passkey_script_path`]: it calls the browser's WebAuthn API on the pages
+/// that add a passkey. Unlike the other scripts it isn't a convenience: WebAuthn works only from
+/// script.
+pub fn passkey_script() -> Asset {
+    Asset {
+        path: passkey_script_path(),
+        content_type: JAVASCRIPT,
+        body: PASSKEY_SCRIPT_BODY,
+    }
+}
+
 /// Every asset.
-pub fn all() -> [Asset; 6] {
+pub fn all() -> [Asset; 7] {
     [
         HTMX,
         HTMX_SSE,
@@ -136,6 +158,7 @@ pub fn all() -> [Asset; 6] {
         agent_form_script(),
         mcp_server_form_script(),
         copy_script(),
+        passkey_script(),
     ]
 }
 

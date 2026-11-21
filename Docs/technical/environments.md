@@ -12,21 +12,31 @@ table is described in [Storage](storage.md#workspaces).
 
 A workspace has one owner, and an owner has at most one workspace:
 
-- A **conversation**: the key of a session, (agent, channel instance, conversation id). The agent is
-  part of the key, so changing the route of a chat can't hand one agent's files to another. `/new`
-  and an idle reset start a new session with the same key, so the workspace carries over.
+- A **conversation**: the key of a session, (agent, channel instance, conversation id), and for a
+  direct conversation its user. The agent is part of the key, so changing the route of a chat can't
+  hand one agent's files to another. The user is part of it because a conversation id can pass from
+  one user to the next (an IRC direct conversation is the sender's nickname, so a member who takes a
+  nickname inherits its conversation once the earlier user's session has ended): two users never
+  share a workspace, whatever the conversation id. A group conversation's owner has no user, since
+  every member shares it. `/new` and an idle reset start a new session with the same key and user,
+  so the workspace carries over; the next user of the nickname starts with no workspace, and the
+  first user's is still theirs if they come back to the conversation.
 - An **isolated job run**: its job session. A `dm` job runs in the DM's session, so it uses the DM's
   workspace and doesn't delete it.
 
 `WorkspaceOwner::of_session(&Session)` derives the owner from a turn's session: a keyed session is a
-conversation, a job session is a job. The core assigns the workspace id (`ws-` and 20 random hex
-digits) and the plugin labels its resources with it, so reconciliation needs no handle but the id.
+conversation (with the session's user if it is `direct`), a job session is a job. Every workspace
+call takes the owner of the calling turn's own session, so a turn that is still running when its
+conversation changes hands keeps using its own user's workspace, and nothing replaces, deletes, or
+reads another user's. The core assigns the workspace id (`ws-` and 20 random hex digits) and the
+plugin labels its resources with it, so reconciliation needs no handle but the id.
 
 A workspace also has a **key user**, the user whose [SSH keys](ssh.md#how-a-workspace-gets-its-keys)
 its agent offers, or none. `workspaces::key_user(&Session, requester)` decides it from the turn that
 creates the workspace: a direct conversation's workspace gets the session's user, an isolated job
 run's gets the turn's requester (the creator of a runtime job, nobody for a config job), and a group
-conversation's gets none. It is stored in `workspaces.key_user` and never changes.
+conversation's gets none. It is stored in `workspaces.key_user` and never changes. For a direct
+conversation it is always the owner's user ([SSH](ssh.md#whose-workspace-it-is)).
 
 ## States
 
@@ -118,11 +128,13 @@ environment instance it:
    connected;
 2. if the plugin is connected, reconciles (below), then looks at every `active` workspace that no
    turn has leased. Its **owner activity** is the later of the workspace's `last_used_at` and, for a
-   conversation, the newest message across every session of its key, ended ones included. If the
-   owner has been inactive for longer than `delete_after`, the row becomes `deleting` (`inactive`)
-   and the plugin deletes the workspace. Otherwise, if `last_used_at` is more than `stop_after` ago
-   and the plugin lists the workspace as running, the plugin stops it, after ending its relay. A
-   stopped workspace stays `active` and `open` starts it again.
+   conversation, the newest message across every session of its key that belongs to the owner's user
+   (a group's: every session), ended ones included, so another user's messages in the same
+   conversation id don't keep a workspace alive. If the owner has been inactive for longer than
+   `delete_after`, the row becomes `deleting` (`inactive`) and the plugin deletes the workspace.
+   Otherwise, if `last_used_at` is more than `stop_after` ago and the plugin lists the workspace as
+   running, the plugin stops it, after ending its relay. A stopped workspace stays `active` and
+   `open` starts it again.
 
 While an instance's plugin is away, the sweep only prunes its rows: nothing is stopped or deleted
 (the plugin couldn't be told), and the delete of a `deleting` row waits for the connection. An
@@ -206,8 +218,10 @@ run killed with the process is settled by `recover` at the next start.
 `workspaces.environment` is the environment instance and `workspaces.channel` the channel of a
 conversation's owner, so `doozers environment rename` and `doozers channel rename` move them with
 the other rows ([Instance rename](instance-rename.md)); a renamed instance keeps its workspaces, in
-every state, so a pending cleanup still finds its plugin. There is no agent rename to cover: the
-agent in an owner is the agent's id.
+every state, so a pending cleanup still finds its plugin. The owner's user (`workspaces.user_id`)
+isn't an instance name, so a rename leaves it as it is and the renamed channel's conversations keep
+their per-user workspaces. There is no agent rename to cover: the agent in an owner is the agent's
+id.
 
 ## Workspace tools
 
@@ -312,16 +326,19 @@ and the lifecycle tools run alone.
 
 `workspaces/tests.rs` runs the service against an in-process environment (`workspaces/fake.rs`, with
 a manual clock) and a real store: ids and one workspace per owner, refused and failed creations,
-deleting with the plugin away and cleaning up on reconnect, the key user and its survival of a
-reset, the relay (opened on first use, replaced after a start or a recreate, opened again after it
-ended or failed to open, ended by each way a workspace stops or is deleted, never opened for an
-environment that can't relay, and agents that offer a workspace's key user's keys and nobody else's
-for conversations and job runs), opening (start notices, a lost workspace, a plugin that is away,
-waiting for a sweep), leases against the sweep, stopping after `stop_after`, deleting after
-`delete_after` with conversation activity keeping a workspace alive, pruning, each reconciliation
-rule and the grace period, startup recovery, the schedule and the connection watcher.
-`scheduler/tests.rs` covers the isolated run's deletion and a `dm` job's workspace staying;
-`doozers-store`'s tests cover the table, and the rename tests cover the rows moving.
+deleting with the plugin away and cleaning up on reconnect, two users of one conversation id over
+time holding workspaces of their own (each one's reset, delete, relay keys, and last-deleted
+history, and a turn that outlives the handover keeping its own workspace), the key user and its
+survival of a reset, the relay (opened on first use, replaced after a start or a recreate, opened
+again after it ended or failed to open, ended by each way a workspace stops or is deleted, never
+opened for an environment that can't relay, and agents that offer a workspace's key user's keys and
+nobody else's for conversations and job runs), opening (start notices, a lost workspace, a plugin
+that is away, waiting for a sweep), leases against the sweep, stopping after `stop_after`, deleting
+after `delete_after` with conversation activity keeping a workspace alive, pruning, each
+reconciliation rule and the grace period, startup recovery, the schedule and the connection watcher.
+`scheduler/tests.rs` covers the isolated run's deletion, a `dm` job's workspace staying, and a job
+in a conversation another user holds not running in it; `doozers-store`'s tests cover the table, and
+the rename tests cover the rows moving.
 
 `core_tools/environment/tests.rs` runs each workspace tool against the same in-process environment
 (its `exec` streams scripted events, or hangs and records that its stream was dropped, and it keeps

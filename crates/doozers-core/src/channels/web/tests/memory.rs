@@ -13,7 +13,7 @@ use crate::agents::AgentManager;
 
 const XSS: &str = "<script>alert(1)</script>";
 const XSS_ESCAPED: &str = "&#60;script&#62;alert(1)&#60;/script&#62;";
-const MEMORY: &str = "/admin/agents/jeeves/memory";
+pub(super) const MEMORY: &str = "/admin/agents/jeeves/memory";
 const CAP: usize = 2200;
 
 fn jeeves() -> AgentId {
@@ -24,7 +24,7 @@ fn ts(text: &str) -> Timestamp {
     text.parse().unwrap()
 }
 
-fn owner_viewer() -> MemoryViewer {
+pub(super) fn owner_viewer() -> MemoryViewer {
     MemoryViewer::new(MemoryOwner::User(identity::owner()), true)
 }
 
@@ -127,12 +127,12 @@ fn item(html: &str, id: MemoryId) -> &str {
 }
 
 impl Env {
-    async fn memory_store(&self) -> MemoryStore {
+    pub(super) async fn memory_store(&self) -> MemoryStore {
         self.memory_dbs.get(&jeeves()).await.unwrap()
     }
 
     /// Adds a memory to the database as `viewer` at `at`.
-    async fn seed(
+    pub(super) async fn seed(
         &self,
         viewer: &MemoryViewer,
         content: &str,
@@ -1020,7 +1020,7 @@ async fn unknown_and_invisible_ids_are_refused_alike() {
 }
 
 #[tokio::test]
-async fn the_owner_gets_a_section_for_each_group_with_memories_and_edits_them() {
+async fn an_admin_gets_a_section_for_each_group_with_memories_and_edits_them() {
     let env = env().await;
     let manager = env.manager().await;
     let libera = group_of("libera", "#giles");
@@ -1090,7 +1090,7 @@ async fn the_owner_gets_a_section_for_each_group_with_memories_and_edits_them() 
         "{libera_section}"
     );
     assert!(
-        libera_section.contains("which only you, the owner, can see here"),
+        libera_section.contains("which only admins can see here"),
         "{libera_section}"
     );
     // Each of the group's forms names the group, and offers *shared* with the owner's right.
@@ -1200,7 +1200,7 @@ async fn the_owner_gets_a_section_for_each_group_with_memories_and_edits_them() 
 }
 
 #[tokio::test]
-async fn only_the_owner_can_reach_a_groups_memories() {
+async fn only_an_admin_can_reach_a_groups_memories() {
     let env = env().await;
     let manager = env.manager().await;
     let group = env
@@ -1242,7 +1242,7 @@ async fn only_the_owner_can_reach_a_groups_memories() {
             .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{sub}");
         assert!(
-            html.contains("Only the owner can see or change a group"),
+            html.contains("Only an admin can see or change a group"),
             "{html}"
         );
         assert!(!html.contains("Group secret"), "{html}");
@@ -1273,7 +1273,90 @@ async fn only_the_owner_can_reach_a_groups_memories() {
 }
 
 #[tokio::test]
-async fn a_user_who_is_not_the_owner_writes_only_private_memories() {
+async fn a_second_admin_has_the_owners_rights_on_the_memory_page() {
+    let env = env().await;
+    let manager = env.manager().await;
+    let root = WebUser {
+        user: UserId::new("root").unwrap(),
+        role: doozers_store::Role::Admin,
+        ..owner()
+    };
+    let rule = env
+        .seed(
+            &owner_viewer(),
+            "House rule.",
+            false,
+            true,
+            "2026-03-01T00:00:00Z",
+        )
+        .await;
+    let group = env
+        .seed(
+            &group_of("libera", "#giles"),
+            "Group note",
+            false,
+            false,
+            "2026-03-01T00:00:00Z",
+        )
+        .await;
+
+    // The page offers the *shared* box, the edit forms of a shared memory, and the group's section.
+    let (status, html, _) = env
+        .memory_call(&manager, Some(root.clone()), Method::GET, MEMORY, None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains(r#"name="shared""#), "{html}");
+    assert!(item(&html, rule.id).contains("memory/edit"), "{html}");
+    assert!(html.contains("Group note"), "{html}");
+
+    // They write shared memories and change the owner's, and change the group's.
+    let (status, _, _) = env
+        .memory_post(
+            &manager,
+            root.clone(),
+            MEMORY,
+            &post(&add_fields("Shoes off.", false, true)),
+        )
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let (status, _, _) = env
+        .memory_post(
+            &manager,
+            root.clone(),
+            &format!("{MEMORY}/forget"),
+            &post(&[
+                ("id", rule.id.to_string().as_str()),
+                (
+                    "updated",
+                    rule.updated_at.as_millisecond().to_string().as_str(),
+                ),
+            ]),
+        )
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let (status, _, _) = env
+        .memory_post(
+            &manager,
+            root,
+            &format!("{MEMORY}/forget"),
+            &post(&[
+                ("id", group.id.to_string().as_str()),
+                (
+                    "updated",
+                    group.updated_at.as_millisecond().to_string().as_str(),
+                ),
+                ("group_instance", "libera"),
+                ("group_conversation", "#giles"),
+            ]),
+        )
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let left: Vec<_> = env.rows().into_iter().map(|row| row.1).collect();
+    assert_eq!(left, ["Shoes off."]);
+}
+
+#[tokio::test]
+async fn a_member_writes_only_private_memories() {
     let env = env().await;
     let manager = env.manager().await;
     let shared = env
@@ -1315,7 +1398,7 @@ async fn a_user_who_is_not_the_owner_writes_only_private_memories() {
     assert!(!html.contains(r#"name="shared""#), "{html}");
     let shared_item = item(&html, shared.id);
     assert!(
-        shared_item.contains("Only the owner can change shared memories."),
+        shared_item.contains("Only an admin can change shared memories."),
         "{shared_item}"
     );
     assert!(!shared_item.contains("memory/edit") && !shared_item.contains("memory/forget"));
@@ -1335,7 +1418,7 @@ async fn a_user_who_is_not_the_owner_writes_only_private_memories() {
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert!(
-        html.contains("Only the owner can create, change, share, or forget shared memories."),
+        html.contains("Only an admin can create, change, share, or forget shared memories."),
         "{html}"
     );
     let (status, _, _) = env
@@ -1605,7 +1688,7 @@ fn the_viewer_comes_from_the_signed_in_user() {
     assert!(group.can_write_shared);
     assert_eq!(
         group_viewer(&guest(), "libera", "#giles"),
-        Err(ScopeError::NotOwner)
+        Err(ScopeError::NotAdmin)
     );
     assert_eq!(
         group_viewer(&owner(), "", "#giles"),

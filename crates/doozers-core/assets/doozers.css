@@ -738,6 +738,11 @@ dialog.confirm {
   background: var(--surface);
 }
 
+/* A table that sits among forms is as wide as they are. */
+.table-wrap.table-form {
+  max-width: 680px;
+}
+
 .table {
   width: 100%;
   min-width: 600px;
@@ -1152,6 +1157,12 @@ input.mono {
 
 .form-wide {
   max-width: 760px;
+}
+
+/* A form with no padding of its own, for one that sits in a card already, such as the login forms on
+   the standalone card, so that it lines up with the heading above it. */
+.form-flush {
+  padding: 0;
 }
 
 /* A long form: a stack of cards and fieldsets. */

@@ -77,7 +77,7 @@ fn jeeves() -> AgentId {
 }
 
 #[tokio::test]
-async fn only_the_owner_gets_the_removal_pages_and_a_post_needs_the_csrf_token() {
+async fn only_an_admin_gets_the_removal_pages_and_a_post_needs_the_csrf_token() {
     let env = env().await;
     let manager = env.manager().await;
     for method in [Method::GET, Method::POST] {

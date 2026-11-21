@@ -158,7 +158,8 @@ async fn drive(agent_loop: &AgentLoop, turn: &Turn) -> Result<TurnOutcome, TurnE
         .ok_or_else(|| TurnError::UnknownAgent(session.agent.to_string()))?;
 
     // The messages (a job run's prompt) are part of the transcript however the turn ends.
-    let tz = history::message_timezone(&config, agent);
+    let tz =
+        history::message_timezone(&agent_loop.registry.users(), turn.requester.as_ref(), agent);
     let messages = match &turn.job {
         Some(job) => vec![job.prompt.clone()],
         None => turn

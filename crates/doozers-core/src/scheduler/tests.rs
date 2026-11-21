@@ -253,6 +253,9 @@ impl Harness {
         let config = Arc::new(config);
         let registry = Arc::new(Registry::new(root, config.clone()));
         registry
+            .users()
+            .set(crate::users::legacy_owner_users(&config));
+        registry
             .register_channel(
                 &InstanceName::new("fake").unwrap(),
                 Arc::new(FakeChannel {
@@ -299,7 +302,7 @@ impl Harness {
             SessionsOptions {
                 store: store.clone(),
                 router: Router::new(
-                    &config.owner,
+                    registry.users(),
                     RouteList::default(),
                     Arc::new(registry.live_config().clone()),
                 ),
@@ -308,6 +311,7 @@ impl Harness {
                 runner: runner.clone(),
                 approvals: Arc::new(NoPendingApprovals),
                 env_resets: Arc::new(crate::sessions::NoEnvResets),
+                links: Arc::new(crate::sessions::NoLinks),
                 clock: clock.clone(),
             },
             shutdown.clone(),
@@ -956,6 +960,91 @@ async fn a_dm_runtime_job_runs_in_the_conversation_it_was_scheduled_in() {
     h.stop().await;
 }
 
+/// Bob holds `other_key()` with a short exchange in it, as a nickname's DM an earlier user of the
+/// nickname left.
+async fn bob_holds_the_conversation(h: &Harness) -> Session {
+    let (session, _) = h
+        .store
+        .open_session(
+            other_key(),
+            SessionKind::Direct,
+            Some(UserId::new("bob").unwrap()),
+            h.now(),
+        )
+        .await
+        .unwrap();
+    let message = |role, text: &str| Message {
+        role,
+        content: vec![Block::text(text)],
+        meta: MessageMeta::new(h.now()),
+    };
+    h.store
+        .append_messages(
+            session.id,
+            vec![
+                message(Role::User, "Bob's secret"),
+                message(Role::Assistant, "Noted."),
+            ],
+        )
+        .await
+        .unwrap();
+    session
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_dm_runtime_job_in_a_conversation_another_user_holds_runs_in_the_users_own_dm() {
+    let mut h = Harness::new("", &[]).await;
+    *h.replies.workspaces.lock().unwrap() = Some(h.workspaces.clone());
+    let dm = h.dm(&["Hi", "Hello."]).await;
+    let bobs = bob_holds_the_conversation(&h).await;
+    h.start().await;
+    job_in_conversation(&h, "other", "dm").await;
+
+    // The job uses the owner's own DM, as if its conversation were gone, and not Bob's session,
+    // with his workspace and SSH keys.
+    let ran = h.ran().await;
+    assert_eq!(ran.session.id, dm.id);
+    assert_eq!(h.delivered(1).await[0].conversation, None);
+    h.settle().await;
+    assert_eq!(h.texts(bobs.id).await, ["Bob's secret", "Noted."]);
+    let open = h
+        .store
+        .find_open_session(other_key())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(open.id, bobs.id);
+    assert_eq!(open.user, Some(UserId::new("bob").unwrap()));
+    let rows = h.store.workspaces_of("box").await.unwrap();
+    assert!(
+        rows.iter()
+            .all(|row| row.owner == WorkspaceOwner::of_session(&dm))
+    );
+    h.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_isolated_runtime_job_in_a_conversation_another_user_holds_delivers_to_its_user() {
+    let mut h = Harness::new("", &[]).await;
+    let dm = h.dm(&["Hi", "Hello."]).await;
+    let bobs = bob_holds_the_conversation(&h).await;
+    h.start().await;
+    job_in_conversation(&h, "other", "isolated").await;
+
+    // The reply is queued for the owner's default identity, not into Bob's conversation, and
+    // nothing is appended to Bob's transcript.
+    let ran = h.ran().await;
+    assert_eq!(ran.session.kind, SessionKind::Job);
+    assert_eq!(ran.session.user, Some(owner()));
+    let delivered = h.delivered(1).await;
+    assert_eq!(delivered[0].markdown, "Report.");
+    assert_eq!(delivered[0].conversation, None);
+    h.settle().await;
+    assert_eq!(h.texts(bobs.id).await, ["Bob's secret", "Noted."]);
+    assert_eq!(h.texts(dm.id).await, ["Hi", "Hello.", "Report."]);
+    h.stop().await;
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_runtime_job_whose_conversations_channel_is_gone_uses_the_default_identity() {
     let mut h = Harness::new("", &[]).await;
@@ -1342,5 +1431,145 @@ async fn an_agent_is_busy_for_as_long_as_one_of_its_job_runs_is() {
         "idle again once the run is over"
     );
     assert!(!crate::agents::AgentActivity::is_busy(&activity, &agent).await);
+    h.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_user_is_busy_for_as_long_as_a_run_of_a_job_they_made_is() {
+    let mut h = Harness::new("", &[]).await;
+    let gate = Arc::new(tokio::sync::Notify::new());
+    *h.replies.gate.lock().unwrap() = Some(gate.clone());
+    h.start().await;
+    let scheduler = h.scheduler.clone().unwrap();
+    h.store
+        .job_create(
+            AgentId::new(AGENT).unwrap(),
+            owner(),
+            json!({"at": "2026-10-22T15:00:00Z", "prompt": "Tea time."}),
+            h.now(),
+        )
+        .await
+        .unwrap();
+    h.changes.notify();
+    h.settle().await;
+    assert!(!scheduler.user_busy(&owner()));
+
+    // The isolated run's turn waits at the gate. The session manager knows nothing of it, so only
+    // the scheduler says the user is busy, and the daemon's check asks both.
+    h.advance_to(ts("2026-10-22T15:00:01Z")).await;
+    assert!(scheduler.user_busy(&owner()));
+    assert!(!scheduler.user_busy(&UserId::new("someone").unwrap()));
+    assert!(!h.sessions.user_busy(&owner()).await);
+    let activity = crate::forget::DaemonUserActivity {
+        sessions: h.sessions.clone(),
+        scheduler: scheduler.clone(),
+    };
+    assert!(crate::forget::UserActivity::is_busy(&activity, &owner()).await);
+
+    gate.notify_one();
+    h.ran().await;
+    h.delivered(1).await;
+    h.settle().await;
+    assert!(!scheduler.user_busy(&owner()));
+    assert!(!crate::forget::UserActivity::is_busy(&activity, &owner()).await);
+    h.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_job_whose_creator_is_no_longer_active_does_not_run() {
+    let mut h = Harness::new("", &[]).await;
+    h.start().await;
+    h.store
+        .job_create(
+            AgentId::new(AGENT).unwrap(),
+            owner(),
+            json!({"at": "2026-10-22T15:00:00Z", "prompt": "Tea time."}),
+            h.now(),
+        )
+        .await
+        .unwrap();
+    h.changes.notify();
+    h.settle().await;
+    // The creator is removed (or disabled) before the time comes.
+    h.registry.users().set(Vec::new());
+    h.advance_to(ts("2026-10-22T15:00:01Z")).await;
+    h.assert_nothing_ran().await;
+    h.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_jobs_of_a_disabled_creator_wait_and_resume_when_they_are_active_again() {
+    let mut h = Harness::new("", &[]).await;
+    h.start().await;
+    let once = h
+        .store
+        .job_create(
+            AgentId::new(AGENT).unwrap(),
+            owner(),
+            json!({"at": "2026-10-22T15:00:00Z", "prompt": "Tea time."}),
+            h.now(),
+        )
+        .await
+        .unwrap();
+    h.store
+        .job_create(
+            AgentId::new(AGENT).unwrap(),
+            owner(),
+            json!({"cron": "0 * * * *", "prompt": "Hourly."}),
+            h.now(),
+        )
+        .await
+        .unwrap();
+    h.changes.notify();
+    h.settle().await;
+
+    // The creator is disabled: neither job runs at its time.
+    let active = h.registry.users().get().users().to_vec();
+    let mut disabled = active.clone();
+    for user in &mut disabled {
+        user.state = doozers_store::UserState::Disabled;
+    }
+    let disabled_users = disabled.clone();
+    h.registry.users().set(disabled);
+    h.advance_to(ts("2026-10-22T15:00:01Z")).await;
+    h.assert_nothing_ran().await;
+    h.advance_to(ts("2026-10-22T16:00:01Z")).await;
+    h.assert_nothing_ran().await;
+    // The one-shot job keeps its row, which is what lets it run later. The hourly job's other
+    // times are for after they are enabled.
+    let kept = h.store.jobs(None, None).await.unwrap();
+    assert!(kept.iter().any(|job| job.id == once.id), "{kept:?}");
+
+    // An unrelated change to the jobs, and to the users that leaves the creator disabled, start no
+    // run either, and the job is still there.
+    h.changes.notify();
+    h.settle().await;
+    h.registry.users().set(disabled_users);
+    h.settle().await;
+    h.assert_nothing_ran().await;
+    let kept = h.store.jobs(None, None).await.unwrap();
+    assert!(kept.iter().any(|job| job.id == once.id), "{kept:?}");
+
+    // Enabled again, through the users and without a word to the jobs: the one-shot job, whose
+    // time passed, runs at once, and the hourly job at its next time. The hours that passed while
+    // disabled aren't made up.
+    h.registry.users().set(active);
+    h.settle().await;
+    let first = h.ran().await;
+    assert!(first.at >= ts("2026-10-22T16:00:01Z"), "{:?}", first.at);
+    assert!(first.at < ts("2026-10-22T17:00:00Z"), "{:?}", first.at);
+    assert!(first.prompt.ends_with("Tea time."), "{}", first.prompt);
+    h.assert_nothing_ran().await;
+    assert!(
+        h.store
+            .jobs(None, None)
+            .await
+            .unwrap()
+            .iter()
+            .all(|job| job.id != once.id),
+        "the one-shot job is deleted once it has run"
+    );
+    h.advance_to(ts("2026-10-22T17:00:00Z")).await;
+    assert_eq!(h.ran().await.at, ts("2026-10-22T17:00:00Z"));
     h.stop().await;
 }

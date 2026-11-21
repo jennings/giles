@@ -28,15 +28,15 @@ impl ChatActivity for FakeActivity {
     }
 }
 
-struct Chats {
-    env: Env,
+pub(super) struct Chats {
+    pub(super) env: Env,
     activity: Arc<FakeActivity>,
     workspaces: Workspaces,
     fake: Arc<Fake>,
 }
 
 impl Chats {
-    async fn new() -> Self {
+    pub(super) async fn new() -> Self {
         let env = env_with_toml(WebConfig::default(), &["web:owner"], ENVIRONMENT).await;
         let clock = TestClock::new();
         let fake = Fake::new(clock.clone());
@@ -61,7 +61,7 @@ impl Chats {
         }
     }
 
-    fn router(&self, user: Option<WebUser>) -> axum::Router {
+    pub(super) fn router(&self, user: Option<WebUser>) -> axum::Router {
         let app = self
             .env
             .app
@@ -116,6 +116,7 @@ fn workspace_owner(chat: &ConversationId) -> WorkspaceOwner {
         agent: AgentId::new("jeeves").unwrap(),
         channel: INSTANCE.into(),
         conversation: chat.clone(),
+        user: Some(identity::owner()),
     }
 }
 

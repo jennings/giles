@@ -39,6 +39,7 @@ free space unknown
 {%- if let Some((agent_id, agent_label, exists)) = workspace.owner.agent %}
 {%- if exists %}<a href="/admin/agents/{{ agent_id }}">{{ agent_label }}</a>{% else %}<code>{{ agent_id }}</code>{% endif %} in {{ workspace.owner.channel }},
 {%- if let Some(chat) = workspace.owner.chat %} <a href="{{ chat }}">conversation <code>{{ workspace.owner.conversation }}</code></a>{% else %} conversation <code>{{ workspace.owner.conversation }}</code>{% endif %}
+{%- if let Some(user) = workspace.owner.user %}, for <code>{{ user }}</code>{% endif %}
 {%- else if let Some(job) = workspace.owner.job %}
 job run (session {{ job }})
 {%- endif %}

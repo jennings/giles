@@ -48,7 +48,7 @@
 <section class="section memory-section">
 <h2>{{ section.title }}</h2>
 {%- if section.group.is_some() %}
-<p class="help">The private memories of this group conversation, which only you, the owner, can see here. Its participants have no page.</p>
+<p class="help">The private memories of this group conversation, which only admins can see here. Its participants have no page.</p>
 {%- endif %}
 {%- for usage in section.usages %}
 <p class="help">{{ usage.title }}: <code>{{ usage.header }}</code></p>
@@ -120,7 +120,7 @@
 </form>
 </div>
 {%- else %}
-<p class="help">Only the owner can change shared memories.</p>
+<p class="help">Only an admin can change shared memories.</p>
 {%- endif %}
 </div>
 {%- endfor %}

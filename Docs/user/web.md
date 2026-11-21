@@ -3,13 +3,9 @@
 The built-in web channel lets you talk to your agents in a browser. It runs on
 [the same web server](running.md#the-web-interface) as the rest of Doozers.
 
-To turn it on, add a `[channel.web]` table to `doozers.toml`. `[owner] identities` must list
-`web:owner`, which is the identity you use in the browser.
+To turn it on, add a `[channel.web]` table to `doozers.toml`:
 
 ```toml
-[owner]
-identities = ["web:owner"]
-
 [channel.web]
 ```
 
@@ -18,18 +14,34 @@ can have only one web channel.
 
 ## Logging in
 
-Every page needs a login. You log in with a one-time link, or through a trusted reverse proxy.
+Every page needs a login. You log in with a passkey, a password, an identity provider, a one-time
+link, or through a trusted reverse proxy. A page that needs a login points you to `/login`, which
+lists the ways to log in.
 
-### Login links
+### Invite and recovery links
 
-Run this to get a login link:
+An invite link sets up a new user. A recovery link signs in a user who has lost every other way to
+sign in, and it keeps every way the user can already sign in. Both work once, within 72 hours.
+
+Run this to make a recovery link:
 
 ```sh
-doozers admin login-link --user owner
+doozers admin login-link
 ```
 
-Open the link and press **Log in** to log that browser in for 30 days. The link works once, and only
-for 10 minutes. **Log out** at the bottom of the sidebar ends the login. See [Command line](cli.md).
+On a fresh install, this creates the first admin. With one user, the link is for that user. With
+several, name the user with `--user <id>`, such as `--user owner` for the owner you imported from
+[`[owner]`](configuration.md#owner). The command prints whose link it is. It works for any active
+user, including one who has never signed in.
+
+Open the link and press the button on the page to log that browser in for 30 days. A chat app or
+mail client that fetches the link to show a preview doesn't use it up. The next page,
+**Set up how you sign in**, lists the ways you can add, such as a [password](#passwords). Until you
+add one, the link is the only way to sign in, so ask for a new one when this login ends. **Log out**
+at the bottom of the sidebar ends the login. See [Command line](cli.md).
+
+An admin makes an invite link when [inviting a user](#inviting-a-user), and a recovery link on the
+user's page.
 
 The link starts with the address Doozers listens on. If you reach Doozers at another address, such
 as through a reverse proxy, set `public_url`:
@@ -40,6 +52,155 @@ public_url = "https://doozers.example.com"
 ```
 
 Give only the scheme, host, and optional port. Doozers is always served at the root of that address.
+
+### Passwords
+
+A password lets you log in at `/login` with your username and password, without a link.
+
+To set a password, open an invite or recovery link, then choose **Password** on the page that
+follows, or use **Set a password** on your [account](#ways-to-sign-in). To set or change it later,
+[confirm it's you](#confirming-its-you) first. A login that came from a password can't change it
+without that.
+
+A password has 15 to 128 characters. Spaces and any other characters are fine, and nothing else is
+required, so a few random words make a good password. It can't be one character repeated, or contain
+your username or the word Doozers.
+
+Nobody can read a password back, including an admin. If you forget it, set a new one with a recovery
+link.
+
+**A password sent over plain HTTP can be read by anyone on the network.** When the address starts
+with `http://` and isn't `localhost` or another address on your own machine, the login page and the
+page that sets a password say so. Reach Doozers over HTTPS, and set
+[`public_url`](#invite-and-recovery-links) to the `https` address.
+
+Doozers allows 10 wrong passwords for a username and 30 from one address in 15 minutes. After that
+you wait for the rest of the 15 minutes. While a username is waiting, even its right password
+doesn't log in, so use a recovery link instead.
+
+Doozers forgets these counts when it restarts.
+
+A disabled user can't log in with a password.
+
+If a reverse proxy on the same machine reaches Doozers at `core.http_listen`, only the limit per
+username applies, because every visitor looks like the proxy. Use the
+[proxy listener](#a-trusted-reverse-proxy) to get the limit per address too, and have the proxy add
+the visitor's address to the `X-Forwarded-For` header. Without that header, Doozers counts every
+visitor through the proxy as one address.
+
+### Confirming it's you
+
+Adding, changing, or removing a way to sign in needs more than a login, so someone who got hold of
+your browser's login can't take over your account. Doozers asks you to confirm it's you with a way
+you already use: your password, a passkey, or the identity provider you connected. A login that came
+from an invite or recovery link doesn't need to confirm for its first 30 minutes, because that link
+is how you proved who you are. So finish setting up soon after you open the link. After that,
+confirm it's you like any other login, or ask for a new link if you have nothing to confirm with.
+
+When you open a page that needs it, Doozers shows **Confirm it's you first** with a button that
+leads to **Confirm it's you**. Choose a way, and Doozers takes you back to the page you came from.
+The confirmation lasts 10 minutes and applies only to this login, not to your other browsers.
+
+Confirming with a password counts as a login attempt of yours: the limits on wrong
+[passwords](#passwords) apply to it. If you have no password, passkey, or connected provider, ask
+for a recovery link. A login through a [trusted proxy](#a-trusted-reverse-proxy) can't confirm, so
+it can't change how you sign in.
+
+### Passkeys
+
+A passkey lets you log in with your fingerprint, face, PIN, or screen lock, using your phone,
+laptop, password manager, or a security key. Nobody can read it back, and it only works at your
+Doozers' address.
+
+Passkeys need an address that browsers trust, so set `public_url` to the `https` address you open
+Doozers at, or to `localhost` when you run it on your own machine:
+
+```toml
+[channel.web.config]
+public_url = "https://doozers.example.com"
+```
+
+Without a `public_url`, or with one that starts with `http://` and isn't `localhost`, or that is an
+IP address, the page that adds a passkey says why you can't.
+**Changing the host of `public_url` breaks every passkey**, because a passkey belongs to that host.
+Users then log in with a [password](#passwords) or a recovery link and add their passkeys again.
+
+To add a passkey, open an invite or recovery link and choose **Passkey** on the page that follows,
+or use **Add a passkey** on your [account](#ways-to-sign-in). Then use one of the two buttons:
+
+- **Add a passkey** is for nearly everyone. Use it for the passkey on your phone, laptop, or
+  password manager, or on a security key that has room for it.
+- **Add a non-resident key** is only for a hardware security key with few slots for passkeys. It
+  uses no slot, but you type your username before you use it. Older keys (CTAP 2.0) can't delete a
+  single passkey without a factory reset that erases everything on the key.
+
+Name each one, so you can tell them apart. You can add as many as you like, such as one per device.
+
+A login that didn't come from a link [confirms it's you](#confirming-its-you) first.
+
+To log in with a passkey, open the login page at your `public_url`. Choose the username field, and
+your browser offers your passkeys. You can also press **Sign in with a passkey**. If you added a
+non-resident key, type your username and press **Continue with my username** first. Everything else
+you can do on the login page, such as a password, is under **Use a password instead**.
+
+Doozers asks for your fingerprint, face, PIN, or screen lock every time, because a passkey alone
+isn't enough. A disabled user can't log in with a passkey.
+
+When someone types a username that has no passkeys, Doozers answers with made-up credential ids, so
+that a stranger can't tell a real username from the answer alone. That makes guessing usernames
+harder, but it doesn't hide which usernames exist from someone who is determined: the made-up ids
+don't fully match real ones. If a key's counter goes backwards, which can mean it was copied,
+Doozers refuses it and records a warning in the log.
+
+### Identity providers
+
+An identity provider lets your users log in with an account they already have, such as Google,
+Authentik, or Keycloak, using OpenID Connect. An admin adds each provider, and each user connects
+one account at it. Doozers refuses an account nobody connected, because a provider never creates
+users.
+
+Doozers needs the provider's **issuer**, a **client id**, and usually a **client secret**. You get
+the client id and secret by registering Doozers at the provider as an application, which the steps
+below cover.
+
+To add a provider:
+
+1. Open **Identity providers** in the admin part of the sidebar, then **New identity provider**.
+2. Choose an **Id**, such as `google`. It is part of the redirect URI and can't change.
+3. Register Doozers at the provider as an application, with this redirect URI and your id in place
+   of `<id>`: `https://doozers.example.com/auth/oidc/<id>/callback`. It starts with your
+   `public_url`. The page shows the exact address for each provider. The provider gives you a client
+   id and usually a client secret.
+4. Fill in the name users see, the issuer URL, the client id, and the client secret. Leave the
+   secret empty for a client that has none. The default scopes are all Doozers needs.
+5. Press **Add**.
+
+Doozers reads the provider's settings from `<issuer>/.well-known/openid-configuration` when you
+save, and tells you what is wrong if it can't use the provider. The issuer must be an `https`
+address. A provider on your own machine can use `http://localhost`. Doozers keeps the secret in its
+secret store and never shows it again. To change it, type a new one when you edit the provider.
+Leave the field empty to keep the one stored.
+
+A provider works if it supports PKCE and signs its ID tokens with RSA, ECDSA (P-256 or P-384), or
+EdDSA. Microsoft's `common` endpoint doesn't work, because its issuer differs for each tenant. Use
+your tenant's issuer instead.
+
+**Disable** hides a provider from the login page and stops sign-ins through it, and **Enable** turns
+it back on. **Remove** deletes the provider, every account connected to it, and its secret. Changing
+a provider's issuer disconnects its accounts, because an account belongs to an issuer.
+
+Browsers that are already logged in through a provider stay logged in after you disable or remove
+it, for up to 30 days. To end a user's logins, disable the user.
+
+To connect an account, a user opens an invite or recovery link, then chooses the provider on the
+page that follows, or uses **Connect** on their [account](#ways-to-sign-in). The provider asks them
+to log in, and Doozers connects that account to them. Choosing the provider again connects a
+different account in place of the first. A login that came from a password, a passkey, or a provider
+[confirms it's you](#confirming-its-you) first.
+
+To log in later, the user chooses **Sign in with** the provider's name on the login page. Doozers
+matches the account the provider vouches for, never its email address or name. A user an admin
+disabled can't log in, and the page says nothing about whether the account was connected.
 
 ### A trusted reverse proxy
 
@@ -59,8 +220,11 @@ Doozers runs as can connect to it, so run the proxy as that user and point it at
 data root's path is too long for a socket, Doozers puts it under `$TMPDIR` instead and logs where,
 in the line `trusted-proxy listener open`.
 
-The header's value is your identity in the `web` namespace. List it in `[owner] identities`, such as
-`"web:alice@example.com"`.
+The header's value is your identity in the `web` namespace, such as `web:alice@example.com`. Doozers
+logs you in as the user who has that identity. A header value that no user has, or one of a disabled
+user, gets a "Not allowed" page, and the log shows the value. An admin sets a user's proxy identity
+on the [user's page](#a-users-page). The [`[owner]` import](configuration.md#owner) can list one
+too. A user can't add it on the **Identities** page, because the proxy is the admin's own.
 
 If the proxy can't use a Unix socket, give the listener a TCP address and a shared secret. The proxy
 must send the secret in a header with every request:
@@ -129,7 +293,7 @@ The buttons send [the same replies](commands.md) you could type, and typing them
 ## Scheduled jobs
 
 **Scheduled jobs** in the sidebar shows your jobs with every agent in one table. It lists the jobs
-you scheduled here and the ones an agent scheduled when you asked it. The owner also sees the
+you scheduled here and the ones an agent scheduled when you asked it. The user `owner` also sees the
 [`[[jobs]]`](configuration.md#jobs) of every agent, marked `agent.toml`.
 
 Each row shows the agent, the job, its schedule, and its next and last run, soonest next run first.
@@ -169,7 +333,10 @@ The `[[jobs]]` from `agent.toml` can't be changed here. Edit `agent.toml` to cha
 
 ## Admin pages
 
-The **Admin** group in the sidebar opens the admin pages. Only the owner sees it and can open them.
+The **Admin** group in the sidebar opens the admin pages. Only admins see it and can open them. A
+user is an admin or a member. All admins are equal. The user imported from
+[`[owner]`](configuration.md#owner) and the first user `doozers admin login-link` creates are
+admins.
 
 `/admin` shows what [`doozers status`](cli.md) shows, including each channel's last status.
 
@@ -188,6 +355,111 @@ needs on the status page:
   when it rejects the bot token.
 
 The page reloads itself until the channel connects, so it always shows the newest code.
+
+## Users
+
+**Users** under **Admin** lists everyone who uses Doozers with their username, display name, role
+(admin or member), state (active or disabled), and when they last signed in. A user who hasn't
+signed in shows **Never**, and so does one who only logs in through a
+[trusted proxy](#a-trusted-reverse-proxy). **Manage** opens a user's page, **Remove** opens the page
+that removes them, and **Invite a user** adds a new one. Only an admin can open the pages.
+
+### Inviting a user
+
+**Invite a user** opens a form with the new user's username, display name, and role. A username has
+1 to 64 letters, digits, `.`, `_`, or `-`, and no other user may have it, whatever the case.
+Pressing **Create user and link** creates the user and shows their invite link once. Copy it and
+send it over a channel only they read. Make a recovery link from the user's page if you lose it.
+
+The link works once, within 72 hours. The user opens it and chooses how to sign in, as
+[Invite and recovery links](#invite-and-recovery-links) describes.
+
+### A user's page
+
+**Manage** opens a page with the user's username, id, role, state, and last sign-in, and a form for
+each thing you can change:
+
+- **Details**: the username, display name, and time zone. A new username applies at once, to the
+  user's next password sign-in. Their chats and other data stay, because Doozers keeps them under
+  the user's id and not under the username. An empty time zone uses the agent's.
+- **Role**: **Member** or **Admin**. Doozers always keeps one active admin, so it refuses to demote
+  the last one. You can demote yourself while another active admin remains, and you lose the admin
+  pages at once.
+- **Proxy identity**: the identity a [trusted proxy](#a-trusted-reverse-proxy) sends for the user,
+  such as `alice@example.com` for `web:alice@example.com`. The page shows the one they have. Save an
+  empty field to remove it. Enter what the proxy sends, without `web:`. A user has at most one, and
+  no two users can have the same one.
+- **Access**: **Disable** or **Enable**, as [Disabling a user](#disabling-a-user) describes.
+- **Recovery link**: **Make a recovery link** shows a link like the one `doozers admin login-link`
+  makes. It signs in whoever opens it first, once, within 72 hours, and keeps every way the user can
+  already sign in. A disabled user can't have one.
+- **Remove**: opens the [page that removes the user](#removing-a-user).
+
+A form that Doozers refuses, such as a username another user has, shows the page again with the
+reason and what you typed.
+
+### Disabling a user
+
+**Disable** keeps a user out until you press **Enable**. It does this:
+
+- Ends every login they have, so their open chats stop updating, and cancels the invite and recovery
+  links they haven't used.
+- Blocks sign-in with every method, and a login through a trusted proxy.
+- Drops the messages that arrive from their channel identities, and the ones of theirs that were
+  waiting for a turn. Only a turn that is already running finishes.
+- Pauses their scheduled jobs. A job that repeats skips the times that pass while they are disabled,
+  and runs at its next time after you enable them. A job that runs once waits, and runs as soon as
+  you enable them.
+
+Everything they own stays. **Enable** lets them sign in again with a password, a passkey, an
+identity provider, or a new link that you make on their page, and starts their jobs again. Their
+ended logins and cancelled links don't come back. Jobs that repeat skip the times that passed, and
+reminders that run once, which waited, run as soon as you enable them.
+
+Doozers refuses to disable the last active admin. It also refuses to disable your own account. Ask
+another admin to do it.
+
+### Removing a user
+
+**Remove** opens a page that lists what removing the user deletes, with a count for each kind.
+Nothing happens until you press **Remove user**. Removing a user deletes everything Doozers keeps
+about them, at once, and **can't be undone**:
+
+- Their chats and scheduled job runs, with every message and summary in them.
+- Their private memories in every agent, and their profile, `USER.md`, with the rest of
+  `users/<id>/` in the data root.
+- Their channel identities and pending link codes, their password, passkeys, and identity provider
+  connections, their logins, and invite or recovery links.
+- The jobs they scheduled, which stop, and the messages Doozers received from them or waits to send
+  them.
+- Their SSH keys, and every secret in their space of the secret store.
+- Their workspaces, with everything in them. The page lists each one and the environment that holds
+  it.
+- Approvals waiting for their answer, which are denied.
+
+In a group chat, the messages they sent are replaced with a note that the message was removed, and
+the summaries that covered them are written again.
+
+These stay:
+
+- The usage records, with their token counts and without the user.
+- The invite and recovery links they made for other people, without a creator.
+- A shared memory they wrote, which belongs to everyone, without an author.
+
+Pictures and files that only their messages used are deleted by Doozers' regular clean-up of unused
+files. Doozers doesn't touch `trash/agents/`, where the files of agents you removed earlier are, so
+delete a removed agent's `memory.db` yourself if it has memories of the user.
+
+Doozers refuses to remove a user in two cases. The page says which one.
+
+- **It's you.** Ask another admin to remove your account.
+- **They are working right now.** A chat turn or one of their jobs is running, or messages of theirs
+  are waiting. Have them stop the chat with `/stop`, or wait, then try again. Doozers doesn't stop
+  it for you.
+
+If something fails in the middle, such as an environment or the secret store that can't be reached,
+the page says so and the user stays disabled. Open their **Remove** page and press the button again
+to finish.
 
 ## Agents
 
@@ -293,13 +565,13 @@ Doozers refuses to remove an agent in two cases:
 [How memory works](skills-and-memory.md#memory) is explained on its own page.
 
 You see your own private memories and the shared ones, newest change first. Other users' private
-memories are never shown, not even to the owner. The page lists the newest 200, and search finds the
+memories are never shown, not even to an admin. The page lists the newest 200, and search finds the
 rest. Search works like the agent's `memory_recall` tool.
 
 - **Add** a memory with its text. Tick **Core** to load it into every prompt that can see it. Other
   memories are only found by search.
-- **Shared** makes a memory visible to every user and group of the agent. Only the owner sees this
-  box, and only the owner can change or forget a shared memory.
+- **Shared** makes a memory visible to every user and group of the agent. Only an admin sees this
+  box, and only an admin can change or forget a shared memory.
 - **Edit** changes a memory's text and flags.
 - **Forget** deletes a memory, without asking first.
 
@@ -313,7 +585,7 @@ refused. The page shows what you typed and what the memory says now, so you can 
 A change to a core memory reaches a running chat after it compacts, or in a new chat or job run.
 `memory_recall` finds the change at once.
 
-Below your own memories, the owner sees a section for each group conversation that has private
+Below your own memories, an admin sees a section for each group conversation that has private
 memories. Nobody else can see or change a group's memories.
 
 ## Routes
@@ -402,7 +674,7 @@ the sign-in of the person who asked.
 
 The server shows as failed until someone signs in. Once you sign in, your conversations get the
 tools your own account offers. If you reach Doozers through a domain name or a reverse proxy, set
-[`public_url`](#login-links) so the callback URL is the one your browser can open.
+[`public_url`](#invite-and-recovery-links) so the callback URL is the one your browser can open.
 
 The form has more settings, all optional:
 
@@ -469,9 +741,117 @@ You can't rename a server that you configure in `doozers.toml` here. Stop Doozer
 ## SSH keys
 
 **SSH keys** in the sidebar lists your own SSH keys, with the forms to generate or upload one, a
-button to copy each public key, and **Rename** and **Delete**. The owner also has **SSH keys** under
+button to copy each public key, and **Rename** and **Delete**. An admin also has **SSH keys** under
 **Admin**, which lists every user's keys. [SSH keys](ssh.md) covers the page and how to add a public
 key to GitHub.
+
+## Account
+
+**Account** in the sidebar is where you manage yourself. It has your profile, the ways you sign in,
+a summary of your channel identities, and your logins.
+
+Your profile is your display name and time zone.
+
+The display name is what Doozers shows for you, such as at the bottom of the sidebar.
+
+The time zone sets the times agents see in your messages and when your
+[scheduled jobs](#scheduled-jobs) run. Use an IANA name, such as `America/Los_Angeles`. Leave it
+empty to use the agent's time zone, or else the server's.
+
+The page also shows your username, which you log in with, and your role. You can't change them here.
+
+### Ways to sign in
+
+**Ways to sign in** lists your [password](#passwords), your [passkeys](#passkeys), and the
+[identity providers](#identity-providers) you connected an account at.
+
+- **Set a password** or **Change your password** opens the page that sets it.
+- **Add a passkey** opens the page with the two buttons. Each passkey shows when you added it and
+  last used it, and **Rename** changes its name.
+- **Connect** sends you to the provider to log in, and **Connect another account** replaces the
+  account you connected.
+- **Remove** and **Disconnect** ask first, then remove that way to sign in.
+
+A connection says when an admin turned its provider off, or changed the provider so that the account
+no longer signs you in. Connect it again after the change.
+
+Doozers won't remove the last way you can sign in. Add another way first, then remove the one you
+don't want. A passkey counts only where [passkeys work](#passkeys), and a connection counts only
+while an admin has the provider turned on. A login through a
+[trusted proxy](#a-trusted-reverse-proxy) doesn't count as a way to sign in, because an admin sets
+it up.
+
+You can add or remove a way to sign in, or change your password, only after you
+[confirm it's you](#confirming-its-you), which the page asks for with **Confirm it's you**. A login
+that came from an invite or recovery link doesn't need to for its first 30 minutes. Renaming a
+passkey doesn't need it.
+
+### Channel identities
+
+**Channel identities** lists your accounts on channels. **Manage identities** opens the
+**Identities** page.
+
+### Logins
+
+**Logins** lists the browsers you are logged in on. Each shows how you signed in (an invite or
+recovery link, a password, a passkey, or an identity provider), when the login started, when it was
+last used, and when it ends. **this login** marks the one you are using.
+
+Choose **End** to log a browser out, such as one you don't recognize or on a device you no longer
+use. The browser's open chat pages stop updating within a few seconds. **Log out** on your own row
+ends this login. Ending a login needs no confirmation.
+
+A login through a [trusted proxy](#a-trusted-reverse-proxy) isn't kept by Doozers, so it isn't
+listed.
+
+## Identities
+
+The **Identities** page, from **Account** in the sidebar, lists your channel identities and adds new
+ones. An identity is your account on a channel, such as `whatsapp:+15551234567` or
+`irc:libera.chat:account:stephen`. Doozers answers messages from your identities as you, and drops
+messages from every other account.
+
+For each identity the page shows when you added it and how: **Linked by you** with a code,
+**Set by an admin**, or **Imported from doozers.toml**. It marks your default identity, which is
+where Doozers sends what you didn't start, such as a scheduled job's reply or an approval it needs.
+**Make default** changes it. **Remove** asks first, and then Doozers drops messages from that
+account. If you remove the default, your oldest identity becomes the default. You can't remove your
+web sign-in here.
+
+### Add an identity
+
+1. Choose the channel the account is on under **Add an identity**, such as `whatsapp`, `discord`,
+   `email`, or `irc:libera.chat`, and choose **Make a code**. The list has only the channels that
+   are running.
+2. The page shows a message such as `/link ABCD2345`. Send it to Doozers in a direct message, from
+   the account you want to add, within 10 minutes. Each channel's guide says where to send it:
+   [WhatsApp](whatsapp.md#identities), [Discord](discord.md#add-your-identity),
+   [email](email.md#adding-an-instance), or [IRC](irc.md#identities).
+3. Doozers replies on the channel, and the identity is on the page. Messages from it are yours from
+   then on.
+
+Doozers shows the code only once, and it works once. Making another code for the same channel
+replaces the first. If you lose it or it runs out of time, make a new one.
+
+Doozers takes the identity from the message you send, so you don't type it. A channel that is not in
+the list isn't running. An admin can see why on the [status page](#admin-pages).
+
+### When a code doesn't work
+
+The **Codes** list shows each code you made that wasn't used, as **Pending** until a time,
+**Expired**, or **Cancelled**. Make a new code for an expired or cancelled one.
+
+Doozers answers a wrong code the same way whether or not you have a code, and counts it:
+
+- After five wrong codes from one account, Doozers says it locked `/link` for that account and then
+  ignores the account's `/link` for an hour.
+- A code is cancelled after 20 wrong codes from anyone while it is pending.
+- A code works only for the channel you chose, and only for 10 minutes.
+
+An account that belongs to a user already can't be linked again, to the same user or another.
+Doozers says so. To move an account to another user, remove it from the first user's **Identities**
+page, then link it again with the other user's code. `/link` works only in direct conversations, not
+in a group, and only from a sender the channel has verified.
 
 ## Known SSH hosts
 
@@ -479,17 +859,18 @@ key to GitHub.
 each environment, with each key's type and fingerprint, when and by whom it was first recorded, and
 when it was last used. **Delete** forgets a key after a confirmation, and **Add** trusts a key you
 paste before any workspace connects. [SSH keys](ssh.md#known-ssh-hosts) covers what a host's first
-connection does and when to delete or add a key. Only the owner can open the page.
+connection does and when to delete or add a key. Only an admin can open the page.
 
 ## Workspaces
 
 **Workspaces** in the sidebar lists the [workspaces](environments.md) your agents have, so you can
-see what they use and stop or delete one. Only the owner can open it.
+see what they use and stop or delete one. Only an admin can open it.
 
 Each workspace shows:
 
 - **Environment** and **Owner**: the agent and the conversation, which links to the web chat when it
-  is one, or the job run.
+  is one, and the user whose conversation it is (two users who held one IRC nickname at different
+  times have workspaces of their own), or the job run.
 - **Created** and **Last used**.
 - **In use**: whether a running turn is using it now.
 - **SSH keys**: the user whose [SSH keys](ssh.md#use-ssh-in-a-workspace) the workspace gets, or

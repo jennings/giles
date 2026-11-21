@@ -2,25 +2,28 @@
 
 Every message a channel receives passes one pure decision before anything is stored: drop it, handle
 it as a core command, or hand it to an agent's session ([Plan](../PLAN.md) §1.1, §3.2, §3.3,
-§6.1–§6.4). Three modules of `doozers-core` implement it; the inbox and sessions code calls
+§6.1–§6.4). Five modules of `doozers-core` implement it; the inbox and sessions code calls
 `Router::classify` for every `ChannelEvent::Message`. The user-facing side is in
 [Configuration](../user/configuration.md) and [Chat commands](../user/commands.md).
 
 | Module     | Contents                                                                    |
 | ---------- | --------------------------------------------------------------------------- |
-| `identity` | `OWNER`, `owner()`, `validate_namespace`, `NamespaceError`, `OwnerIdentities` |
-| `commands` | `CoreCommand`, `ApprovalReply`, `Answer`, `parse`, `PendingApprovals`, `NoPendingApprovals` |
-| `router`   | `Router`, `ChannelSource`, `Routed`, `Inbound`, `DropReason`                |
+| `identity` | `OWNER`, `owner()`, `validate_namespace`, `NamespaceError`                  |
+| `users`    | `User`, `UserIdentity`, `UserList`, `UserDirectory`, `Users`, `UsersError`, `UserError`, `LoginUserError` |
+| `commands` | `CoreCommand`, `ApprovalReply`, `Answer`, `parse`, `parse_link`, `PendingApprovals`, `NoPendingApprovals` |
+| `router`   | `Router`, `ChannelSource`, `Routed`, `LinkRequest`, `Inbound`, `DropReason` |
+| `links`    | `Links`, `NewLinkCode`, `LinkCodeInfo`, `CodeState`, `LinkError`, `ChannelNamespaces`, and the limits |
 | `routes`   | `Route`, `RouteList`                                                        |
 
 ## The decision
 
 ```rust
-let router = Router::new(&config.owner, RouteList::new(config.routes.clone()), agents);
+let router = Router::new(registry.users(), RouteList::new(routes), agents);
 let source = ChannelSource { instance, component, identity_namespace };
 match router.classify(&source, &event_id, &message, &pending_approvals) {
     Inbound::Drop(reason) => { /* already logged; ack the event and forget it */ }
     Inbound::Command { to, command } => { /* /new, /stop, /env reset, or an approval reply */ }
+    Inbound::Link(request) => { /* /link: answer on the channel; no session, no inbox row */ }
     Inbound::Message(to) => { /* store in the inbox for the session to.session */ }
 }
 ```
@@ -34,14 +37,29 @@ match router.classify(&source, &event_id, &message, &pending_approvals) {
    at `debug`, not `warn`.
 3. `Unauthenticated`: `sender_authenticated` is false. This runs before any identity lookup, so a
    forged sender learns nothing (§3.3).
-4. `UnknownSender`: neither `sender` nor any `sender_aliases` entry is an `[owner]` identity.
-5. `UnknownAgent`: a web chat started with a chosen agent names one that isn't configured (see
+4. `/link`: a message with no attachments whose text is `/link` or `/link <word>`
+   (`commands::parse_link`), from a channel other than the web chat, is `Inbound::Link` whether or
+   not the sender has a user, and the checks below don't apply to it, except that a disabled user's
+   is dropped (`DisabledUser`). Steps 1 to 3 have already run, so it passes only in a direct
+   conversation from a sender the channel verified. See [Linking an identity](#linking-an-identity).
+5. `UnknownSender`: neither `sender` nor any `sender_aliases` entry is the identity of a user.
+6. `DisabledUser`: the user the sender resolves to is `disabled`. Their messages, commands included,
+   are dropped until an admin enables them again.
+7. `UnknownAgent`: a web chat started with a chosen agent names one that isn't configured (see
    [Routing](#routing)).
-6. `NoRoute`: no route matches.
+8. `NoRoute`: no route matches.
 
-A message that passes is `Routed { session: SessionKey { agent, channel, conversation }, user }`. If
-it has no attachments and `commands::parse` recognizes its text, it's `Inbound::Command`; otherwise
+A message that passes is `Routed { session: SessionKey { agent, channel, conversation }, user }`,
+where `user` is the id of the user the sender resolved to: the turn's requester. If it has no
+attachments and `commands::parse` recognizes its text, it's `Inbound::Command`; otherwise
 `Inbound::Message`.
+
+The router reads no sessions, so one more check follows it: a conversation is held by one user at a
+time. The [session pump](sessions.md#the-inbound-pipeline) drops a routed message or command when a
+session of its channel instance and conversation belongs to another user: for good on the web, and
+only while the session is open on a channel whose conversation ids can change hands, like an IRC
+nickname. The session key has no user, and without that check a second user in the conversation
+would run in the first one's session.
 
 Core commands are recognized after routing, not before it: `/new`, `/stop`, `/env reset`, and
 approvals all act on a session, and the session key includes the routed agent. They still never
@@ -50,20 +68,131 @@ message.
 
 ### Logging
 
-`classify` logs every drop with the instance, the event id, and the reason, never the text. Levels:
-`warn` for an invalid namespace and for unauthenticated senders (a misbehaving channel or a forgery
-attempt), `info` for unknown senders (with `<namespace>:<sender>` and the alias count, so the
-operator can add a missing identity) and for unrouted conversations and chats with an unknown agent
-(with the conversation id), and `debug` for group conversations, which an IRC channel can produce on
-every line.
+`classify` logs every drop with the instance, the event id, and the reason, never the text. A
+`LinkRequest` prints without its code. Levels: `warn` for an invalid namespace and for
+unauthenticated senders (a misbehaving channel or a forgery attempt), `info` for unknown senders
+(with `<namespace>:<sender>` and the alias count, so the operator can see the identity the channel
+reported), for disabled users, and for unrouted conversations and chats with an unknown agent (with
+the conversation id), and `debug` for group conversations, which an IRC channel can produce on every
+line.
 
-## The owner
+## Users
 
-v1 has one implicit user, the owner (§1.1). `identity::OWNER` is its user id, `"owner"`, and
-`identity::owner()` returns it as a `UserId`. Everything keyed by user uses it: `Routed::user` (the
-turn's requester), session rows, inbox and usage rows, per-user files (`users/owner/USER.md`), and
-the owner of a user's memories (below). With no roles in v1, routes have no `user` key: every routed
-message is from the owner.
+A user is a row of the `users` table with their identities in `user_identities`
+(`Docs/technical/storage.md`): an opaque id, a username, a display name, a role (`admin` or
+`member`), a state (`active` or `disabled`), a time zone, a default identity, and the identities
+that act as the user, each with when and how it was verified. `users::User` is that row in memory.
+Everything keyed by user uses the id: `Routed::user` (the turn's requester), session rows, inbox and
+usage rows, per-user files (`users/<id>/USER.md`), and the owner of a user's memories (below).
+
+The user v1 began with, the owner, has the id `identity::OWNER`, `"owner"`, and `identity::owner()`
+returns it as a `UserId`. The import (below) gives that id to the user `[owner]` described, so
+nothing keyed by it is rewritten. The id marks data, not privilege: no check compares a user to it
+(config jobs, which run as the user `owner` until runtime jobs replace them, are the one place that
+still keys on it). A second user can be created through `Users::create`, but nothing in the product
+does yet. Routes have no `user` key.
+
+### Roles
+
+A user is an `admin` or a `member`. All admins are equal; members use every agent. One test decides
+privilege, `User::is_admin`: the role is `admin` **and** the state is `active`. It is read from the
+current snapshot (`UserDirectory::is_admin(id)`, `UserList::is_admin(id)`), never cached past a
+request or a call, so a demotion or a disabling applies to the next one. A user the list doesn't
+know is no admin. What it admits:
+
+| Where                                                    | How it asks                                               |
+| -------------------------------------------------------- | --------------------------------------------------------- |
+| Web admin pages and their buttons (`may_administer`)     | `WebUser::role`, set when the request is authenticated    |
+| Admin calls of `SshKeys` (`all_keys`, `any_key`, `delete_any`) | `SshKeys::may_administer`, over the shared `UserList` |
+| Shared-memory writes in a tool call (`memory::viewer`)   | `UserDirectory::is_admin(requester)`                      |
+| Shared-memory writes shown in the prompt (`memory::prompt_viewer`) | the same, for the session's user                |
+| Shared-memory writes, group memories, and the *shared* box on the memory page | `WebUser::role`                      |
+
+What is not a role check: the web chat's agent picker lists every agent for every user,
+`GET /blobs/<sha256>` follows who owns a message that refers to the blob (an admin has no wider
+access), and every other per-user page and operation belongs to the user who owns the object,
+whatever their role ([Whose data is whose](web-channel.md#whose-data-is-whose)). A config job runs
+as the user `owner` and, with no requester, writes shared memories; the web jobs page shows config
+jobs to that user, since they are that user's data; approvals go to the turn's requester (the
+delivery user for a job), and no role changes that.
+
+The last active admin can't be removed, disabled, or demoted; see
+[the last active admin](#stored-users).
+
+### Stored users
+
+`users::Users` (one per core, `Runtime::users`) owns the users and keeps the snapshot the router
+reads:
+
+- **Liveness.** `Registry::users()` is the `UserList` the router, the web login, and the lookups
+  below share, in the `RouteList` pattern: a snapshot (`UserDirectory`) that every successful change
+  replaces as a whole, so the next message is resolved against the new users and nothing restarts.
+  `classify` stays synchronous and off the database, including for messages it drops. One async lock
+  spans read, validate, write, and replace, so concurrent changes serialize and the snapshot always
+  equals what is stored. Only this process changes the tables. `UserList::subscribe` wakes a
+  receiver after a replacement (several close together may wake it once, so it reads the users
+  again), which is how the scheduler learns that a user was enabled.
+- **Operations.** `create(user, identities, now)`, `set_state(id, state, now)`,
+  `set_role(id, role, now)`, `set_profile(id, display_name, timezone, now)`,
+  `set_details(id, username, display_name, timezone, now)`, `remove(id)`,
+  `add_identity(id, namespace, native_id, verification, now)`, `remove_identity(id, identity, now)`,
+  `set_default_identity(id, identity, now)`, `set_proxy_identity(id, native_id, now)`,
+  `redeem_link_code(namespace, native_id, code, now, max_attempts)`, and
+  `login_user(requested, now)`. A username is 1 to 64 letters, digits, `.`, `_`, and `-`; the store
+  compares it ignoring ASCII case. An identity belongs to one user (`IdentityTaken`). `set_profile`
+  is how a user changes their own display name and time zone; it checks both as `create` does (a
+  time zone as one in `doozers.toml`) before it writes. `set_details` is what an admin does on a
+  user's page: it changes the username, display name, and time zone together, checking the username
+  as `create` does. It refuses another user's username in any case and allows the user's own in
+  another case. The id never changes, so nothing else follows a new username. `User::proxy_identity`
+  reads the identity a trusted proxy logs the user in as from their identities.
+- **The last active admin.** `set_state` to `disabled`, `set_role` to `member`, and `remove` refuse
+  (`LastAdmin`) when the user is the only active admin; a disabled admin doesn't count as one to
+  keep. The store makes the check inside the write transaction of the change (`user_set_state`,
+  `user_set_role`, `user_delete`), so the check and the change can't be split by another one, and
+  the users lock above serializes the callers besides. `remove` deletes the account and its
+  identities and nothing else; [forgetting a user](storage.md#forgetting-a-user) deletes the rest of
+  their data first and calls it last.
+- **Import.** `doozers.toml`'s `[owner]` stays in `Config::legacy_owner`, as written. `Users::open`
+  runs at `Runtime::start`: if the database hasn't recorded the import (`users_imported`), it
+  validates `[owner]` as `doozers.toml` always did (at least one identity, no identity written
+  twice, a `default` that is one of them and required when there are several, a known `timezone`),
+  except that identities differing only in the case of an email domain, which the old exact
+  comparison accepted as two, are one: the first is kept and a `warn` names the others. It creates
+  the user `owner` (username `owner`, display name `Owner`, role `admin`) with its identities stored
+  as `imported`, its default identity and its time zone, and records the import, all or nothing. An
+  invalid `[owner]` fails startup with `<path to doozers.toml>: owner.<key>: <reason>`. A config
+  with no `[owner]` still records the import, so a fresh install's first admin, made by
+  `login_user`, is never followed by an import. So does an import that finds users stored already.
+  After that `[owner]` is never read: not when it changes, not when it has become invalid, not when
+  every user is gone. While the file still has `[owner]`, startup logs `info` on the importing start
+  and `warn` on every later one, saying it is ignored and to remove it.
+- **The first admin.** `login_user(None, now)` is `doozers admin login-link` with no `--user`. With
+  no users it creates the first admin, with the id `owner` (the user config jobs run as, so a fresh
+  install and an imported one agree until runtime jobs replace them), the username `admin`, and the
+  identity `web:owner`, and returns it. With exactly one user it is that user, so an install that
+  has only its owner keeps working with no arguments. With several it asks for one (`NeedUser`,
+  whose message lists their ids and usernames). The admin service reports the user it chose, and the
+  CLI prints the id and username with the link. `login_user(Some(id), now)` requires an active user.
+  The admin service calls it, then `create_invite`, only if the web channel is running, so a daemon
+  that can't make a link makes no user.
+- **Invites and recovery links.** `create_invite(user, kind, created_by, now)` stores a one-time
+  link for an active user (`InviteKind::Invite` or `Recovery`, valid `INVITE_TTL`, 72 hours) and
+  returns its token and expiry ([web channel](web-channel.md#invite-and-recovery-links)). It gives
+  the user the identity `web:<id>`, verified as `admin`, if they lack it: a web sign-in sends as
+  `web:<id>`, so without it the router would drop their messages. If another user has `web:<id>` it
+  refuses (`WebIdentityTaken`). It takes nothing away from the user.
+- **Proxy identity.** `set_proxy_identity(id, Some(native_id), now)` is what an admin does on a
+  user's page for a trusted proxy ([web channel](web-channel.md#the-trusted-proxy-listener)): the
+  user's identity `web:<native_id>`, verified as `admin`, with no link code, because the proxy is
+  the admin's own infrastructure. It replaces the user's other `web` identities except `web:<id>`,
+  the one a link sign-in acts as, in one store transaction (`user_proxy_identity_set`), so a refused
+  identity (another user's, or `web:<id>` itself) leaves the one the user had. `None` clears it.
+- **Time zone and default identity.** `agent_loop::history::message_timezone(users, user, agent)` is
+  the user's time zone, else the agent's, else the system's; a config job has no user and runs as
+  `owner`. Jobs and proactive messages go to the user's default identity (`OutboxItem::to_user`); a
+  user without one gets none. The user's first identity is the default, and `set_default_identity`
+  changes it to another of theirs.
 
 ### Identity in memory
 
@@ -71,20 +200,103 @@ Memory ([Skills and Memory](skills-and-memory.md#memory)) uses identity in three
 `doozers_core::memory`:
 
 - **A user's memories belong to the internal user id**, not to a channel identity. They follow the
-  user's direct and job sessions with the agent on every channel (v1: `owner`), as `memory_search`'s
-  scope does.
-- **Shared memories are written by the agent owner only.** `memory::viewer` gives a tool call
-  `can_write_shared` when the turn's requester is `identity::owner()`, and a config job (no
-  requester) too; a runtime job runs as its creator and has that creator's right. Shared memories
-  reach every prompt, including the owner's tool-enabled DMs, so a guest or a group must not be able
-  to plant one. The check is made again in the memory store's write transaction, so a tool can't
-  skip it. In v1 every requester is the owner, so the rule matters once there are guests.
+  user's direct and job sessions with the agent on every channel, as `memory_search`'s scope does.
+- **Shared memories are written by admins only.** `memory::viewer` gives a tool call
+  `can_write_shared` when the turn's requester is an active admin (`UserDirectory::is_admin`), and a
+  config job (no requester) too; a runtime job runs as its creator and has that creator's right.
+  Shared memories reach every prompt, including the tool-enabled DMs of admins, so a member or a
+  group must not be able to plant one. The store checks the flag again in its write transaction, so
+  a tool can't skip it; it trusts the flag, because the memory database knows no users, and the core
+  decides it from the role at the time of the call.
 - **A group's private scope is keyed by channel instance and conversation**
   (`MemoryOwner::Group { instance, conversation }`), taken from the session, not from whoever
   speaks: every participant shares it, and none of their own memories is in it. The conversation id
   alone isn't enough, since the same id can exist on two instances; `doozers channel rename`
   rewrites the instance part of these keys ([Instance rename](instance-rename.md)). v1 drops group
   messages at `classify` (above), so no group session exists yet.
+
+## Linking an identity
+
+A user adds a channel identity to their own account by proving they control it: the web page makes a
+code, and the user sends `/link <code>` from the identity (§3.2). `links::Links`, one per core
+(`Runtime::links`), does it, over `Users` and the `user_link_codes` table
+([storage](storage.md#user-link-codes)).
+
+### The flow
+
+1. `Links::start(user, namespace)` makes a code for a signed-in, active user and returns it, the one
+   time it is known. The namespace must be one a running channel reports (below), and not the web
+   chat's. The code replaces the user's earlier code for that namespace, and expired codes older
+   than a day are pruned.
+2. The user sends `/link <code>` from the account to add. [`classify`](#the-decision) returns
+   `Inbound::Link(LinkRequest)`: the channel's namespace, the sender's native id, the conversation,
+   the code as typed, and whether the sender is a user's identity already (`linked`). It is the only
+   message that passes without a user, and only after the namespace, conversation, and
+   authentication checks, so a group message, a sender the channel didn't verify, and an invalid
+   namespace are dropped as they are for any message.
+3. The [session pump](sessions.md#the-inbound-pipeline) calls `Linker::link` (implemented by
+   `Links`), acks the event, and sends the answer in the conversation. The message is never stored:
+   an inbox row would keep a code that works until it is used, and it would make a session for
+   nobody. No session is made for the sender, and the message never reaches an agent. The event is
+   acked after the call, so a database failure leaves it for the channel to resend; a redelivery
+   after a link finds a sender that has a user and is answered as one.
+4. `Links::link` calls `Users::redeem_link_code`, which takes the users lock, runs
+   `user_link_code_redeem` (one store transaction that adds the identity, verified as `link`, and
+   deletes the code), and replaces the router's snapshot, so the next message from the identity is
+   the user's. The first identity of a user becomes their default identity.
+
+### The code and its limits
+
+A code is 8 characters of the RFC 4648 base32 alphabet (40 bits) from the OS random number
+generator, typed in either case. The numbers are constants of `links`:
+
+| Constant            | Value      | What it limits                                                     |
+| ------------------- | ---------- | ------------------------------------------------------------------ |
+| `CODE_TTL`          | 10 minutes | How long a code works                                              |
+| `SENDER_ATTEMPTS`   | 5          | Wrong codes one sender may send per window before it is locked out |
+| `SENDER_WINDOW`     | 1 hour     | How long a sender's wrong codes are counted, from the first        |
+| `LOCKOUT`           | 1 hour     | How long a sender that used up its tries is locked out             |
+| `CODE_ATTEMPTS`     | 20         | Wrong codes, from anyone, a pending code survives                  |
+| `EXPIRED_KEPT`      | 1 day      | How long an expired code stays listed on the page                  |
+
+PLAN §3.2 says 5 wrong attempts "from a sender, or against a code" invalidate the code and lock the
+sender out. The two limits differ here. A wrong code can't be attributed to a code (the store only
+sees hashes, and a wrong code matches none), so each wrong code counts against every pending code of
+the sender's namespace. With 5 for codes, any stranger could cancel everyone's pending codes with
+five messages, so a code survives 20: guessing 40 bits is out of reach at 20 tries in the code's 10
+minutes (about 2^-35), and cancelling the codes takes four identities. The sender's limit is the
+plan's 5 and is kept in memory (`SenderLimits`, at most 10,000 senders, never evicting a lock, and
+treating a sender it has no room for as locked while every entry is a lock, so a restart forgets
+it). The code's count is in the table, so a restart doesn't.
+
+The answer to a wrong code is one text for every failure: no code pending, a wrong code, an expired
+or cancelled one, one for another namespace, a malformed code, and a sender or code that was refused
+for a reason the sender can't act on. It says how many tries the sender has left. The try that locks
+the sender out says so. While the lock holds, `/link` from the sender is dropped with no answer
+(logged at `info`), so a locked sender can't make Doozers send messages. A success clears the
+sender's count.
+
+### A sender who has a user already
+
+`/link` from an identity that is a user's already, whoever's, is refused with an answer that says so
+(`LinkRequest::linked`), counts nothing, and doesn't look at the code. This includes a sender whose
+alias is a user's identity. So a code never moves an identity from one user to another. To link an
+identity to another user, the first user removes it on the web page (`Links::remove_identity`), and
+then it is unlinked. If the identity was taken between the router's look and the redeem, the answer
+is the generic failure and the code stays.
+
+The web chat is left out: its senders are logged in, and `web` identities aren't linked from a
+channel. `/link` in a web chat is an ordinary message, and `Links::start` refuses the `web`
+namespace. A user can't remove their `web` identities on the page either (`Links::remove_identity`):
+`web:<id>` is how they sign in, and an admin sets the identity of a trusted proxy.
+
+### Namespaces that exist
+
+`Links::start` refuses a namespace that no registered channel reports
+(`LinkError::UnknownNamespace`, which carries the namespaces that exist and renders them as a hint),
+so a mistake like `discord:discord`, the instance name written twice, can't be made into an
+identity. `ChannelNamespaces` says which exist; the registry's is every registered channel's
+`identity_namespace`, so a plugin that isn't up has none, and the web page offers only these.
 
 ## Identity namespaces
 
@@ -101,22 +313,27 @@ decision is complete on its own.
 
 ## Matching identities
 
-An identity is `<namespace>:<native id>` (§3.2). `OwnerIdentities::contains(namespace, id)` compares
-that string to each `[owner]` identity without building it: the configured identity must start with
-the namespace and `:`, and the remainder must equal the native id. Because a namespace may contain
-`:`, this is exactly a comparison of the joined strings; it never splits a configured identity on
-its own.
+An identity is `<namespace>:<native id>` (§3.2). `UserDirectory::resolve(namespace, id)` joins the
+two and looks the string up in an index of every user's identities, built when the directory is
+made. Because a namespace may contain `:`, this is exactly a comparison of the joined strings; it
+never splits an identity on its own. `resolve_sender` tries the message's `sender` and then each
+alias in order, and the first that is anyone's identity names the user.
 
 Comparison is exact and case-sensitive, with one exception: in the `email` namespace (first segment
 `email`), the domain after the last `@` is compared ASCII case-insensitively, as DNS names are. The
 local part stays case-sensitive: RFC 5321 lets a mail server treat it so, and folding it could match
-a different mailbox. This fails closed: an owner whose mail arrives as `Me@…` lists that spelling.
-Other namespaces rely on the channel to report a stable form (the IRC services account name, the
-WhatsApp number in E.164); the operator writes the identity the way the channel reports it, which
-the `info` log of an unknown sender shows.
+a different mailbox. This fails closed: a user whose mail arrives as `Me@…` has that spelling. Other
+namespaces rely on the channel to report a stable form (the IRC services account name, the WhatsApp
+number in E.164); the identity is written the way the channel reports it, which the `info` log of an
+unknown sender shows.
 
-The owner list is tiny, so a linear scan over it, for the sender and then each alias, is cheaper
-than building and hashing the joined strings.
+The store splits an imported identity at its first `:`, since `[owner]` can't say where a namespace
+such as `irc:libera.chat` ends: lookups never depend on the split.
+
+The index holds each identity in its canonical form, `doozers_store::canonical_identity`: the joined
+identity with the domain of an `email` identity lowercased. The store keeps identities in that form
+too, so one sender can't belong to two users by differing in the case of an email domain, and a
+lookup builds the same key, so the comparison above is one hash lookup per sender or alias.
 
 ## Routing
 
@@ -176,8 +393,9 @@ conversation id, is then `<agent>.<32 hex digits>` instead of 32 hex digits (`ch
 running `LiveConfig`) has it; otherwise the message is dropped as `UnknownAgent`, never sent to a
 routed agent instead. The rule is only for the web component: on any other channel such an id is an
 ordinary conversation id. Because `agents` is the running configuration, an agent created in the web
-UI is reachable at once, with no route for it. Only the owner gets past the sender check, and the
-web pages offer only the agents the user may use (v1: the owner may use all of them).
+UI is reachable at once, with no route for it. Only a user whose identity matches gets past the
+sender check, and the web pages offer only the agents the user may use (every user may use all of
+them for now).
 
 ## Core commands
 
@@ -193,9 +411,9 @@ trimming whitespace, with words compared ASCII case-insensitively (phones capita
 | `yes 4821`, `yes! 4821`, `no 4821`         | `Approval { code: Some("4821") }`, if that code is pending |
 
 Anything else is ordinary text, including `/new please`, `/new@doozers`, `/env`, `/env reset now`,
-`/link` (no self-linking in v1), unknown `/words`, `yes please`, and a `yes`/`no` the lookup doesn't
-claim. Codes are a single token of ASCII letters and digits, passed to the lookup as typed. A
-message with attachments is never a command, so an attachment can't be silently lost.
+unknown `/words`, `yes please`, and a `yes`/`no` the lookup doesn't claim. Codes are a single token
+of ASCII letters and digits, passed to the lookup as typed. A message with attachments is never a
+command, so an attachment can't be silently lost.
 
 Whether `yes` is an approval reply depends on state the approvals code owns, so it's an input: the
 `PendingApprovals` trait, `is_pending(to: &Routed, code: Option<&str>) -> bool`. It's implemented
@@ -204,6 +422,11 @@ for closures of that shape, by `NoPendingApprovals`, and (through `sessions::App
 `to.session`, and a reply naming one of theirs that closed recently ([Approvals](approvals.md)).
 With nothing pending, `yes` and `no` are ordinary messages, so they can answer the agent's own
 questions.
+
+`/link` is the exception to "after routing": `commands::parse_link(text)` takes `/link` and at most
+one more word, the code, and the router asks it before it resolves the sender, because the sender
+may have no user ([Linking an identity](#linking-an-identity)). It isn't a `CoreCommand`: it acts on
+no session.
 
 The commands' effects belong to the inbox and sessions code (`/new`, `/env reset`), turn control
 (`/stop`), and approvals (replies); [Sessions and turns](sessions.md) records each command's event

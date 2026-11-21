@@ -34,12 +34,14 @@ The steps:
    `toml::Value`s too (`RawDoozers.toolset`): one with `url` is set aside
    ([Ignored toolset tables](#ignored-toolset-tables)), and each other one is then deserialized into
    a `ToolsetSpec` the same lenient way, its unknown keys and errors at their full key path.
-2. Validate `[core]` and `[owner]`. `core.journal_mode` is parsed with
-   `doozers_store::JournalMode::from_str` (case-insensitive; `memory` and `off` and anything unknown
-   are errors at `core.journal_mode`) and defaults to WAL ([Storage](storage.md#journal-modes));
-   `Runtime::start` passes it to the store. `core.secret_key_file` is joined onto the data root (an
-   absolute path replaces it), defaults to `DataRoot::secret_key_file()`, and may not be empty. It's
-   the [secret store](secret-store.md#key-file)'s key file.
+2. Validate `[core]`. `[owner]` is kept as a `toml::Value` too (`Config::legacy_owner`), because it
+   is only imported ([Identity and routing](identity-and-routing.md#stored-users)) and then never
+   read. `core.journal_mode` is parsed with `doozers_store::JournalMode::from_str`
+   (case-insensitive; `memory` and `off` and anything unknown are errors at `core.journal_mode`) and
+   defaults to WAL ([Storage](storage.md#journal-modes)); `Runtime::start` passes it to the store.
+   `core.secret_key_file` is joined onto the data root (an absolute path replaces it), defaults to
+   `DataRoot::secret_key_file()`, and may not be empty. It's the
+   [secret store](secret-store.md#key-file)'s key file.
 3. Load `secrets.toml` ([Secrets](#secrets)).
 4. Check that instance names are unique within each kind, ignoring ASCII case (macOS file systems
    are case-insensitive by default, so `Libera` and `libera` would share a directory). A provider, a
@@ -96,8 +98,8 @@ error in a file, wherever it is, wins over any number of unknown keys, so a typo
 wrong-typed key doesn't change the error.
 
 `serde_ignored` reports a key when the derived `Deserialize` skips it, so it covers every typed
-table (`[core]`, `[owner]`, instance tables and their `sandbox` tables, `agent.toml` and its
-`[[jobs]]`) and recognizes exactly what the `Raw*` structs declare. No configuration struct uses
+table (`[core]`, instance tables and their `sandbox` tables, `agent.toml` and its `[[jobs]]`) and
+recognizes exactly what the `Raw*` structs declare. No configuration struct uses
 `deny_unknown_fields`. A table serde skips as a whole is one entry (`[cores]` is `cores`, not
 `cores.x`). Hand-checked tables report theirs through `Ctx::unknown`: the keys of an `auth` table
 next to its method, and of an `oauth` table. An `auth` table with no `bearer` or `oauth` is still an
@@ -415,8 +417,10 @@ computed independently from this table, guard the algorithm; changing it needs a
 
 ## v1 choices
 
-- `[owner]` replaces users and roles (PLAN section 1.1): there is no `[roles]`, no `users/`, no
+- Users are stored in the database (PLAN section 1.1): there is no `[roles]`, no `users/`, no
   `unknown_senders`, no route `user`, and no job `deliver_to` (every job delivers to the owner);
   those keys are rejected as unknown. `ask_to = "deliver_to"` keeps PLAN's spelling and means the
-  owner. The owner's time zone is `[owner] timezone`, which stands in for `user.toml`'s.
+  owner. `[owner]` is not part of the loaded configuration: `Config::legacy_owner` holds it as
+  written until `Users::open` imports it once, and an `[owner]` problem is an import error, not a
+  config error.
 - `prompt_file` must exist at startup, so a typo shows up then rather than at the first run.

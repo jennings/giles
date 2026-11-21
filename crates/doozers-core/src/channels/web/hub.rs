@@ -389,6 +389,13 @@ impl Hubs {
         Some(hub.clone())
     }
 
+    /// Drops the hub of `chat`, if it has one: its ring, live messages, and prompts are gone, and
+    /// the streams open on it end once nothing else holds the hub. For a chat that was deleted,
+    /// whose history a later poster of its id mustn't be able to replay.
+    pub(super) fn remove(&self, chat: &ConversationId) {
+        lock(&self.hubs).remove(chat);
+    }
+
     /// The cursor naming event `seq` of this run: `<epoch>-<seq>`. Also the SSE event id, so a
     /// reconnecting `EventSource` resumes with `Last-Event-ID`.
     pub(super) fn cursor(&self, seq: u64) -> String {

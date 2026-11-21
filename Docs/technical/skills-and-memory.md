@@ -194,17 +194,19 @@ drops it.
   it writes has no owner and is shared.
 - Shared memories (`shared = true`) are visible in every session of the agent, whoever wrote them.
 
-`memory::viewer(session, requester)` is for a tool call. With no requester (a config job) it gives
-`MemoryOwner::None` with `can_write_shared` true. Otherwise the owner scope is the session's, and
-`can_write_shared` is true when the requester is the agent owner (`identity::owner()`). In a direct
-or job session, a requester who isn't the session's user gets the error
-`not permitted for <requester>: this conversation's private memories belong to <user>`; any
+`memory::viewer(session, requester, users)` is for a tool call. With no requester (a config job) it
+gives `MemoryOwner::None` with `can_write_shared` true. Otherwise the owner scope is the session's,
+and `can_write_shared` is true when the requester is an admin (`UserDirectory::is_admin`: role
+`admin` and state `active`, in the users as they are at that call; the tools take them from
+`UserList`). A second admin writes shared memories like the first; a demoted or disabled one stops
+with the next call. In a direct or job session, a requester who isn't the session's user gets the
+error `not permitted for <requester>: this conversation's private memories belong to <user>`; any
 participant may use a group's scope.
 
-`memory::prompt_viewer(session)` is for the prompt snapshot. No requester is known when the prompt
-is built (once per session), so it assumes the session's own user: the same owner scope, and
-`can_write_shared` true only in a direct or job session of the agent owner. In a group it is false:
-who may write shared memories there depends on who speaks, so the prompt treats them as read-only.
+`memory::prompt_viewer(session, users)` is for the prompt snapshot. No requester is known when the
+prompt is built (once per session), so it assumes the session's own user: the same owner scope, and
+`can_write_shared` true only in a direct or job session of an admin. In a group it is false: who may
+write shared memories there depends on who speaks, so the prompt treats them as read-only.
 
 **Known difference for config jobs.** The prompt can't tell a config job's session from a runtime
 job's, since both are the user's DM or a job session owned by them. A config job's prompt therefore
@@ -217,14 +219,14 @@ The rules are enforced in three places:
 | Rule                                                                                              | Enforced by                                                           |
 | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
 | Private memories are visible only to their owner scope, shared ones to all; an invisible id reads as unknown | Store (`MemoryViewer::sees`, checked before any permission) |
-| Creating, sharing, editing, un-sharing, or forgetting a shared memory needs `can_write_shared`    | Store, inside the write transaction (`Error::SharedWriteForbidden`)   |
+| Creating, sharing, editing, un-sharing, or forgetting a shared memory needs `can_write_shared`    | Store, inside the write transaction (`Error::SharedWriteForbidden`); the memory database knows no users, so it trusts the flag the core set from the role |
 | A memory with no owner must be shared; un-sharing makes a memory private to the viewer who did it | Store                                                                 |
 | At most 1,000 characters per memory; the `memory_cap` limit on each scope's core memories         | Store, inside the write transaction                                   |
-| Which viewer a turn is: the requester against the session's user, shared writes for the agent owner only | `memory::viewer`, used by the tools                            |
+| Which viewer a turn is: the requester against the session's user, shared writes for admins only | `memory::viewer`, used by the tools                            |
 | What the prompt lists, and whether it shows a usage header for a scope                            | `memory::prompt_viewer` and `prompt::load_memory`                     |
 
-So a guest or a group can't plant a shared memory (shared memories reach every prompt, including the
-owner's tool-enabled DMs), and a bug in a tool can't skip the check: the store refuses it.
+So a member or a group can't plant a shared memory (shared memories reach every prompt, including
+the tool-enabled DMs of admins), and a bug in a tool can't skip the check: the store refuses it.
 
 ### The limits
 
@@ -288,7 +290,7 @@ and the cap, that a memory is private by default, who may share, and that the pr
 | Cause                                          | Message                                                                                  |
 | ---------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | Unknown or invisible id                        | `no memory #<id>` (the same text for both)                                               |
-| Shared write without permission                | `shared memories can be created, shared, changed, or forgotten only in the owner's turns and in config jobs; private memories aren't affected` |
+| Shared write without permission                | `shared memories can be created, shared, changed, or forgotten only in admins' turns, their scheduled jobs, and jobs from agent.toml; private memories aren't affected` |
 | Over 1,000 characters                          | `the memory is <n> characters; the limit is 1000. Shorten it, or split it into several memories` |
 | Over the core cap                              | `not saved: <scope> would use <n>/<cap> characters, <overflow> over the cap; nothing was changed. ...`, then the scope's usage line and each of its core memories with its line and length (`(none)` if there are none). It says to shorten, forget, or demote with `core=false`, and that a memory too long for the cap can only be saved without `core` |
 | Bad input                                      | `invalid input: ...`: an unknown or missing field, empty content or query, an edit giving none of `content`, `core`, `shared`, an edit that changes nothing, a private memory with no owner |

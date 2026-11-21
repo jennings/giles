@@ -23,6 +23,7 @@ use crate::agent_loop::history::message_timezone;
 use crate::config::{JobPrompt, JobSession, LiveConfig, parse_cron};
 use crate::scheduler::{JobChanges, JobConversation, RuntimeSpec, When};
 use crate::sessions::Clock;
+use crate::users::UserList;
 
 /// The tool's name.
 pub const SCHEDULE: &str = "schedule";
@@ -41,6 +42,7 @@ const TIME_FORMAT: &str = "%a %Y-%m-%d %H:%M %Z";
 pub struct ScheduleTool {
     store: Store,
     config: LiveConfig,
+    users: UserList,
     changes: JobChanges,
     clock: Arc<dyn Clock>,
 }
@@ -54,17 +56,19 @@ impl std::fmt::Debug for ScheduleTool {
 }
 
 impl ScheduleTool {
-    /// Keeps runtime jobs in `store`, reading times in the zones `config` gives each agent, and
-    /// tells the scheduler through `changes`.
+    /// Keeps runtime jobs in `store`, reading times in the requester's zone, else the one `config`
+    /// gives the agent, and tells the scheduler through `changes`.
     pub fn new(
         store: Store,
         config: LiveConfig,
+        users: UserList,
         changes: JobChanges,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             store,
             config,
+            users,
             changes,
             clock,
         }
@@ -387,8 +391,8 @@ impl CoreTool for ScheduleTool {
         let Some(agent_config) = config.agents.get(agent) else {
             return ToolOutput::error(format!("agent `{agent}` is not configured"));
         };
-        // Runtime jobs run as the requester, in their time zone (v1: the owner's).
-        let tz = message_timezone(&config, agent_config);
+        // Runtime jobs run as the requester, in their time zone.
+        let tz = message_timezone(&self.users, call.context.requester.as_ref(), agent_config);
         let request = match parse_input(call.input, self.clock.now(), &tz) {
             Ok(request) => request,
             Err(error) => return ToolOutput::error(error),

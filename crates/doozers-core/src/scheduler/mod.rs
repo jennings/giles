@@ -35,11 +35,11 @@ pub use run::{JobReply, NO_REPLY, job_reply};
 pub use schedule::{When, in_active_hours};
 
 use crate::agent_loop::history::message_timezone;
-use crate::config::{Job, OwnerConfig};
-use crate::identity;
+use crate::config::Job;
 use crate::outbox::{Destination, Outbox, OutboxItem, OutboxKind};
 use crate::registry::Registry;
 use crate::sessions::{Clock, Sessions, TurnRunner};
+use crate::users::UserList;
 use crate::workspaces::Workspaces;
 
 /// The longest the scheduler sleeps before looking at the clock again, so a wall clock that
@@ -90,18 +90,19 @@ pub trait JobDelivery: Send + Sync {
     async fn remove(&self, id: OutboxId);
 }
 
-/// The daemon's [`JobDelivery`]: the outbox, into the job's conversation, or else to the owner's
-/// default identity (v1's only user with identities).
+/// The daemon's [`JobDelivery`]: the outbox, into the job's conversation, or else to the user's
+/// default identity.
 #[derive(Debug, Clone)]
 pub struct OutboxDelivery {
     outbox: Outbox,
-    owner: OwnerConfig,
+    users: UserList,
 }
 
 impl OutboxDelivery {
-    /// Sends through `outbox`, to `owner`'s default identity when there's no conversation.
-    pub fn new(outbox: Outbox, owner: OwnerConfig) -> Self {
-        Self { outbox, owner }
+    /// Sends through `outbox`, to the default identity of the delivery's user in `users` when
+    /// there's no conversation.
+    pub fn new(outbox: Outbox, users: UserList) -> Self {
+        Self { outbox, users }
     }
 }
 
@@ -124,10 +125,13 @@ impl JobDelivery for OutboxDelivery {
                     delivery.markdown,
                 )
             },
-            None if delivery.user != identity::owner() => {
-                return Err(format!("user {} has no identity", delivery.user));
+            None => {
+                let directory = self.users.get();
+                directory
+                    .user(&delivery.user)
+                    .and_then(|user| OutboxItem::to_user(user, kind, delivery.markdown))
+                    .ok_or_else(|| format!("user {} has no identity", delivery.user))?
             }
-            None => OutboxItem::to_owner(&self.owner, kind, delivery.markdown),
         };
         item.expires_at = delivery.expires_at;
         self.outbox
@@ -203,30 +207,49 @@ pub struct Scheduler {
     running: JobsRunning,
 }
 
-/// The job runs in progress, per agent: from the moment a job's time comes until its run is over
-/// (waiting for a busy DM and the turn included). The web UI won't remove an agent that has one
-/// ([`Scheduler::agent_busy`]).
+/// The job runs in progress, per agent and per creator: from the moment a job's time comes until
+/// its run is over (waiting for a busy DM and the turn included). The web UI won't remove an
+/// agent that has one ([`Scheduler::agent_busy`]), or a user whose job has ([`Scheduler::user_busy`]).
 #[derive(Debug, Clone, Default)]
-pub(crate) struct JobsRunning(Arc<Mutex<HashMap<AgentId, usize>>>);
+pub(crate) struct JobsRunning(Arc<Mutex<Counts>>);
+
+#[derive(Debug, Default)]
+struct Counts {
+    agents: HashMap<AgentId, usize>,
+    creators: HashMap<UserId, usize>,
+}
 
 /// One job run in progress; dropping it ends the count.
 pub(crate) struct RunningJob {
     running: JobsRunning,
     agent: AgentId,
+    creator: Option<UserId>,
+}
+
+fn decrement<K: std::hash::Hash + Eq>(counts: &mut HashMap<K, usize>, key: &K) {
+    if let Some(count) = counts.get_mut(key) {
+        *count -= 1;
+        if *count == 0 {
+            counts.remove(key);
+        }
+    }
 }
 
 impl JobsRunning {
-    /// Counts a run of a job of `agent` until the result is dropped.
-    pub(crate) fn begin(&self, agent: &AgentId) -> RunningJob {
-        *self
-            .0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .entry(agent.clone())
-            .or_default() += 1;
+    /// Counts a run of a job of `agent`, made by `creator` if a runtime job, until the result is
+    /// dropped.
+    pub(crate) fn begin(&self, agent: &AgentId, creator: Option<&UserId>) -> RunningJob {
+        {
+            let mut counts = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            *counts.agents.entry(agent.clone()).or_default() += 1;
+            if let Some(creator) = creator {
+                *counts.creators.entry(creator.clone()).or_default() += 1;
+            }
+        }
         RunningJob {
             running: self.clone(),
             agent: agent.clone(),
+            creator: creator.cloned(),
         }
     }
 
@@ -234,7 +257,16 @@ impl JobsRunning {
         self.0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .agents
             .contains_key(agent)
+    }
+
+    fn is_running_for(&self, user: &UserId) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .creators
+            .contains_key(user)
     }
 }
 
@@ -245,11 +277,9 @@ impl Drop for RunningJob {
             .0
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some(count) = counts.get_mut(&self.agent) {
-            *count -= 1;
-            if *count == 0 {
-                counts.remove(&self.agent);
-            }
+        decrement(&mut counts.agents, &self.agent);
+        if let Some(creator) = &self.creator {
+            decrement(&mut counts.creators, creator);
         }
     }
 }
@@ -270,7 +300,8 @@ pub(crate) struct Context {
 impl Scheduler {
     /// Starts a task per config job of every agent and per runtime job in the store, and keeps
     /// them in step with the running configuration (config jobs, as agents are edited and
-    /// removed) and [`JobChanges`] (runtime jobs). Start it after the session manager.
+    /// removed), and [`JobChanges`] and the users ([`UserList::subscribe`]) (runtime jobs). Start
+    /// it after the session manager.
     /// Everything stops when `shutdown` is cancelled; a running job turn is cancelled with it.
     pub fn start(options: SchedulerOptions, shutdown: CancellationToken) -> Self {
         let tasks = TaskTracker::new();
@@ -296,7 +327,8 @@ impl Scheduler {
             running,
         ));
         let changes = options.changes.subscribe();
-        tasks.spawn(runtime_jobs(context, changes, tasks.clone()));
+        let users = context.registry.users().subscribe();
+        tasks.spawn(runtime_jobs(context, changes, users, tasks.clone()));
         Self {
             tasks,
             running: in_progress,
@@ -309,6 +341,14 @@ impl Scheduler {
     /// configuration, so a run that read it before the agent was taken out is counted.
     pub fn agent_busy(&self, agent: &AgentId) -> bool {
         self.running.is_running(agent)
+    }
+
+    /// Whether a run of a runtime job `user` made is in progress now, an isolated run's turn
+    /// included, which the session manager doesn't know. The count starts before the run checks
+    /// that its creator is still active, so a run that began before the user was disabled is
+    /// counted.
+    pub fn user_busy(&self, user: &UserId) -> bool {
+        self.running.is_running_for(user)
     }
 
     /// Waits until every task has stopped. Call it after cancelling the shutdown token.
@@ -392,18 +432,20 @@ async fn config_jobs(
 }
 
 /// Keeps a task running for each enabled runtime job in the store: reads them at startup and
-/// again at each change, starting tasks for new jobs, stopping the tasks of deleted and disabled
-/// ones, and restarting the task of a job whose spec changed (an edit), so it runs on its new
-/// schedule.
+/// again at each change of the jobs ([`JobChanges`]) and of the users ([`UserList::subscribe`]),
+/// starting tasks for new jobs, stopping the tasks of deleted and disabled ones, and restarting the
+/// task of a job whose spec changed (an edit), so it runs on its new schedule.
 async fn runtime_jobs(
     context: Arc<Context>,
     mut changes: watch::Receiver<u64>,
+    mut users: watch::Receiver<u64>,
     tasks: TaskTracker,
 ) {
     // Each task with the spec it was started from.
     let mut running: HashMap<RuntimeJobId, (serde_json::Value, CancellationToken)> = HashMap::new();
     loop {
         changes.borrow_and_update();
+        users.borrow_and_update();
         let retry = match context.store.jobs(None, None).await {
             Ok(jobs) => {
                 running.retain(|id, (spec, stop)| {
@@ -448,6 +490,11 @@ async fn runtime_jobs(
                     return;
                 }
             }
+            changed = users.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+            }
             () = sleep_or_forever(retry) => {}
         }
     }
@@ -471,7 +518,7 @@ async fn job_task(context: Arc<Context>, job: JobDef, stop: CancellationToken) {
         warn!(job = %label, agent = %job.agent, "job of an agent that isn't configured; skipped");
         return;
     };
-    let mut tz = message_timezone(&config, agent);
+    let mut tz = message_timezone(&context.registry.users(), job.creator.as_ref(), agent);
     let last = match context
         .store
         .job_last_run(job.agent.clone(), job.key.clone())
@@ -496,15 +543,39 @@ async fn job_task(context: Arc<Context>, job: JobDef, stop: CancellationToken) {
         }
         // Before the agent is read, so that removing the agent (which takes it out of the
         // configuration and then looks here) sees every run that read it.
-        let _running = context.running.begin(&job.agent);
+        let _running = context.running.begin(&job.agent, job.creator.as_ref());
         let config = context.registry.config();
         let Some(agent) = config.agents.get(&job.agent) else {
             info!(job = %label, agent = %job.agent, "the job's agent was removed; the job stops");
             return;
         };
-        tz = message_timezone(&config, agent);
+        tz = message_timezone(&context.registry.users(), job.creator.as_ref(), agent);
         let now = context.clock.now();
-        if in_active_hours(job.active_hours.as_ref(), &tz, now) {
+        // A job of a user who was disabled (or removed) doesn't run: checked once the run is
+        // counted, so removing the user, which disables them and then looks for runs, sees it.
+        // A recurring job misses this time and resumes at its next one.
+        let creator_active = job.creator.as_ref().is_none_or(|creator| {
+            context
+                .registry
+                .users()
+                .get()
+                .user(creator)
+                .is_some_and(crate::users::User::is_active)
+        });
+        if !creator_active {
+            if job.is_one_shot() {
+                // Its time won't come again, and deleting the job would make disabling a user
+                // destroy their reminders. It stays in the store and runs when its creator is
+                // active again, as a job that came due while Doozers was down does
+                // (`first_fire`): the task ends, and its cancelled token has the next read of
+                // the runtime jobs start it. A change to the users, which enabling one is, starts
+                // that read.
+                debug!(job = %label, "the job's creator isn't active; the job waits for them");
+                stop.cancel();
+                return;
+            }
+            debug!(job = %label, "the job's creator isn't active; skipped");
+        } else if in_active_hours(job.active_hours.as_ref(), &tz, now) {
             if !run::run(&context, &job, agent, &stop).await {
                 return;
             }

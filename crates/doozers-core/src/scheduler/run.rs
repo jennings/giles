@@ -149,7 +149,7 @@ pub(super) async fn run(
     }
     let now = context.clock.now();
     // The wait may have run past the end of the job's hours.
-    let tz = message_timezone(&context.registry.config(), agent);
+    let tz = message_timezone(&context.registry.users(), Some(&user), agent);
     if !in_active_hours(job.active_hours.as_ref(), &tz, now) {
         debug!(job = %label, "the DM went quiet after the job's active hours; skipped");
         return true;
@@ -243,18 +243,33 @@ async fn home(
         {
             let key = conversation.key(&job.agent);
             let session = context.store.find_open_session(key.clone()).await?;
-            return Ok(Some(Home {
-                key,
-                session,
-                conversation: Some(conversation.clone()),
-            }));
+            // Another user may hold a conversation whose id can change hands (an IRC nickname's).
+            // Its transcript, and a reply or approval prompt queued into it, are not this job's:
+            // the job uses the user's own DM, as if the conversation were gone.
+            let held_by_another = session
+                .as_ref()
+                .is_some_and(|open| open.user.as_ref() != Some(user));
+            if !held_by_another {
+                return Ok(Some(Home {
+                    key,
+                    session,
+                    conversation: Some(conversation.clone()),
+                }));
+            }
+            warn!(
+                job = %job.label(),
+                channel = conversation.channel,
+                "the job's conversation is held by another user; it uses the user's default \
+                 identity",
+            );
+        } else {
+            warn!(
+                job = %job.label(),
+                channel = conversation.channel,
+                "the job's conversation is on a channel instance that is no longer configured; \
+                 it delivers to the user's default identity",
+            );
         }
-        warn!(
-            job = %job.label(),
-            channel = conversation.channel,
-            "the job's conversation is on a channel instance that is no longer configured; \
-             it delivers to the user's default identity",
-        );
     }
     Ok(latest_dm(context, &job.agent, user)
         .await?
@@ -269,19 +284,24 @@ async fn home(
 
 /// The user's DM with `agent` on their default identity: the direct session with the newest
 /// activity on a channel instance that owns the identity, open or ended. `None` if they have
-/// none yet, or no identity (v1 has only the owner's).
+/// none yet, or no default identity.
 async fn latest_dm(
     context: &Context,
     agent: &doozers_types::AgentId,
     user: &UserId,
 ) -> Result<Option<Session>, doozers_store::Error> {
-    if *user != identity::owner() {
+    let Some(identity) = context
+        .registry
+        .users()
+        .get()
+        .user(user)
+        .and_then(|user| user.default_identity.clone())
+    else {
         return Ok(None);
-    }
+    };
     let config = context.registry.config();
-    let identity = config.owner.default.as_str();
     let instances = owning_instances(
-        identity,
+        identity.as_str(),
         config.channels.iter().map(|(name, channel)| {
             let info = context
                 .registry
@@ -350,8 +370,11 @@ impl Run<'_> {
         }
         text.push_str("\n\n");
         text.push_str(self.prompt.trim());
-        let config = self.context.registry.config();
-        let tz = message_timezone(&config, self.agent);
+        let tz = message_timezone(
+            &self.context.registry.users(),
+            self.job.creator.as_ref(),
+            self.agent,
+        );
         job_message(
             &text,
             self.context.clock.now(),
@@ -498,8 +521,18 @@ impl Run<'_> {
             .await
         {
             Ok(session) => session,
+            // Another user holds the conversation, which `home` checked a moment ago: never run
+            // or append in their session, with their transcript, workspace, and SSH keys.
+            Err(doozers_store::Error::Conflict(reason)) if until_stopped => {
+                info!(job = %self.label(), %reason, "another user holds the conversation; the run is skipped");
+                return None;
+            }
+            Err(doozers_store::Error::Conflict(reason)) => {
+                info!(job = %self.label(), %reason, "another user holds the conversation; the reply was delivered but not appended to it");
+                return None;
+            }
             Err(error) => {
-                error!(job = %self.label(), %error, "cannot open the user's DM session");
+                error!(job = %self.label(), %error, "cannot open the user's DM session; skipped");
                 return None;
             }
         };

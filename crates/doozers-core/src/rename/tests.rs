@@ -583,6 +583,7 @@ async fn seed_workspace(home: &Home, environment: &str, channel: &str) {
                 agent: AgentId::new("jeeves").unwrap(),
                 channel: channel.to_owned(),
                 conversation: ConversationId::new("#giles").unwrap(),
+                user: Some(UserId::new("owner").unwrap()),
             },
             options: json!({"image": "alpine"}),
             key_user: None,
@@ -631,6 +632,7 @@ async fn renaming_a_channel_keeps_the_workspaces_of_its_conversations_attached()
         agent: AgentId::new("jeeves").unwrap(),
         channel: "libera-chat".to_owned(),
         conversation: ConversationId::new("#giles").unwrap(),
+        user: Some(UserId::new("owner").unwrap()),
     };
     let current = home.store.workspace_current(&owner).await.unwrap().unwrap();
     assert_eq!(current.environment, "docker");

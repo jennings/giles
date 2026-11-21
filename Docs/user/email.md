@@ -10,9 +10,6 @@ Give Doozers a mailbox of its own. It reads every new message in the folder it w
 [Install the plugin](configuration.md#instances) and add an instance:
 
 ```toml
-[owner]
-identities = ["email:me@example.com"]
-
 [channel.mail]
 component = "email"
 
@@ -33,8 +30,15 @@ password = { secret = "mail" }
 ```
 
 Email senders are identities of the form `email:<address>`. Every email instance shares this
-namespace, so `email:me@example.com` in `[owner] identities` covers all of them. The domain of an
-address ignores case, but the part before the `@` doesn't.
+namespace, so your identity `email:me@example.com` covers all of them. The domain of an address
+ignores case, but the part before the `@` doesn't.
+
+Add your address on the [**Identities** page](web.md#identities) of the web chat. Choose `email`,
+make a code, and email `/link` and the code, as the whole text of the message, to Doozers' address
+from the address to add. The message must pass the
+[check of who can write to Doozers](#who-can-write-to-doozers), like any other. Doozers replies by
+email when it has added the identity. An install upgraded from a version without users keeps the
+identities of [`[owner]`](configuration.md#owner), which Doozers imported once.
 
 ## Settings
 

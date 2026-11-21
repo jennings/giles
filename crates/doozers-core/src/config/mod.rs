@@ -46,9 +46,8 @@ pub use agent::{
     DEFAULT_MAX_ITERATIONS_JOBS, DEFAULT_MEMORY_CAP, Job, JobPrompt, JobSession, parse_cron,
 };
 pub use discovery::{discover_plugin, find_program};
-pub use doozers::{
-    CoreConfig, DEFAULT_HTTP_LISTEN, Identity, OwnerConfig, resolve_secret_key_file,
-};
+pub(crate) use doozers::parse_timezone;
+pub use doozers::{CoreConfig, DEFAULT_HTTP_LISTEN, Identity, resolve_secret_key_file};
 pub use doozers_types::Kind;
 pub use error::{ConfigError, IgnoredToolsetTable, KeyPath, Position, Segment, UnknownKey};
 pub use hash::ConfigHash;
@@ -103,8 +102,6 @@ fn process_env(name: &str) -> Option<OsString> {
 pub struct Config {
     /// `[core]`.
     pub core: CoreConfig,
-    /// `[owner]`.
-    pub owner: OwnerConfig,
     /// `[provider.<instance>]`, by instance name.
     pub providers: BTreeMap<InstanceName, ProviderInstance>,
     /// `[channel.<instance>]`, by instance name.
@@ -124,6 +121,10 @@ pub struct Config {
     /// database; these are imported once by [`Routes::open`](crate::routes::Routes::open) and then
     /// only reported.
     pub legacy_routes: Vec<toml::Value>,
+    /// `[owner]` as written, unvalidated. Users and their identities are stored in the database;
+    /// this is imported once by [`Users::open`](crate::users::Users::open) and then only
+    /// reported.
+    pub legacy_owner: Option<toml::Value>,
     /// Every `agents/<agent>/agent.toml`, by agent id.
     pub agents: BTreeMap<AgentId, AgentConfig>,
 }
@@ -177,7 +178,6 @@ impl Config {
             ConfigHash::of(table.unwrap_or(&toml::Table::new()))
         };
         let core = raw.core(file, root)?;
-        let owner = raw.owner(file)?;
         // A table with `url` is a remote toolset, which is stored in the database now: the table
         // is ignored whatever else it holds. The others are stdio servers.
         let mut ignored_toolsets = Vec::new();
@@ -292,7 +292,6 @@ impl Config {
 
         Ok(Self {
             core,
-            owner,
             providers,
             channels,
             environments,
@@ -300,6 +299,7 @@ impl Config {
             ignored_toolsets,
             unknown_keys,
             legacy_routes: std::mem::take(&mut raw.routes),
+            legacy_owner: raw.owner.take(),
             agents,
         })
     }

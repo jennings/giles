@@ -17,8 +17,10 @@ const XSS: &str = "<script>alert(1)</script>";
 pub(super) fn guest() -> WebUser {
     WebUser {
         user: UserId::new("guest").unwrap(),
+        role: doozers_store::Role::Member,
         sender: NativeId::new("guest").unwrap(),
         csrf: CSRF.into(),
+        display_name: "Test user".into(),
         login: auth::Login::Test,
     }
 }
@@ -143,7 +145,7 @@ fn form(id: &str, model: &str, extra: &str) -> String {
 }
 
 #[tokio::test]
-async fn only_the_owner_gets_the_agent_pages() {
+async fn only_an_admin_gets_the_agent_pages() {
     let env = env().await;
     let manager = env.manager().await;
     let cases = [

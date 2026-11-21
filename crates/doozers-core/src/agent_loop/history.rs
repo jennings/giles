@@ -5,9 +5,11 @@ use doozers_store::{Entry, History};
 use doozers_types::{Block, Message, MessageMeta, Role, Timestamp, UserId};
 use jiff::tz::TimeZone;
 
-use crate::config::{AgentConfig, Config};
+use crate::config::AgentConfig;
+use crate::identity;
 use crate::media;
 use crate::sessions::{INTERRUPTED_RESULT, TurnMessage};
+use crate::users::UserList;
 
 /// How the time prefix is formatted (`jiff` strftime): `[Thu 2026-10-22 14:03 PDT]`.
 const PREFIX_FORMAT: &str = "%a %Y-%m-%d %H:%M %Z";
@@ -15,14 +17,13 @@ const PREFIX_FORMAT: &str = "%a %Y-%m-%d %H:%M %Z";
 /// What introduces a compaction summary at the start of the history.
 pub const SUMMARY_INTRO: &str = "Summary of the earlier conversation:";
 
-/// The time zone message times are shown in: the owner's (`[owner] timezone`, standing in for
-/// the user's), else the agent's, else the system's (PLAN section 6.7; v1's only user is the
-/// owner).
-pub fn message_timezone(config: &Config, agent: &AgentConfig) -> TimeZone {
-    config
-        .owner
-        .timezone
-        .clone()
+/// The time zone message times are shown in: `user`'s, if they set one, else the agent's, else
+/// the system's (PLAN section 6.7). A config job has no user (`None`) and runs as the `owner`
+/// user.
+pub fn message_timezone(users: &UserList, user: Option<&UserId>, agent: &AgentConfig) -> TimeZone {
+    let owner = identity::owner();
+    users
+        .timezone(user.unwrap_or(&owner))
         .or_else(|| agent.timezone.clone())
         .unwrap_or_else(TimeZone::system)
 }

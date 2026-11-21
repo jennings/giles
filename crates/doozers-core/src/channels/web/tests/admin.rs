@@ -7,9 +7,11 @@ use doozers_proto::admin::v1::admin_service_server::AdminService as AdminRpc;
 use doozers_proto::channel::v1::channel_status::State;
 use doozers_proto::channel::v1::needs_auth::Challenge;
 use doozers_proto::channel::v1::{ChannelStatus as PbStatus, Connected, NeedsAuth};
+use doozers_store::{NewIdentity, NewUser, Role as UserRole, UserState, Verification};
 use tonic::{Request, Response as RpcResponse, Status};
 
 use super::*;
+use crate::users::{UserError, Users};
 
 /// The admin service's answers, from a state the test sets. `RestartPlugin` records the kind and
 /// instance as `<kind>/<instance>` (`NOT_FOUND` for one `Status` doesn't list, and
@@ -264,8 +266,10 @@ fn state() -> pb::StatusResponse {
 fn guest() -> WebUser {
     WebUser {
         user: UserId::new("guest").unwrap(),
+        role: doozers_store::Role::Member,
         sender: NativeId::new("guest").unwrap(),
         csrf: CSRF.into(),
+        display_name: "Test user".into(),
         login: auth::Login::Test,
     }
 }
@@ -299,7 +303,7 @@ impl Env {
 }
 
 #[tokio::test]
-async fn only_the_owner_gets_the_admin_pages() {
+async fn only_an_admin_gets_the_admin_pages() {
     let env = env().await;
     let admin = Arc::new(FakeAdmin {
         status: Mutex::new(state()),
@@ -330,6 +334,140 @@ async fn only_the_owner_gets_the_admin_pages() {
         }
     }
     assert!(admin.restarted().is_empty());
+}
+
+/// Opens the stored users of `env`, which imports the owner of the test configuration (an admin)
+/// the first time. The channel's user list follows them.
+pub(super) async fn open_users(env: &Env) -> Users {
+    Users::open(
+        env.store.clone(),
+        env.channel.users().clone(),
+        &env.registry.config(),
+        &env._dir.path().join("doozers.toml"),
+    )
+    .await
+    .unwrap()
+}
+
+/// The stored users of `env` ([`open_users`]), and a second admin `root` and a member `mia`, each
+/// with the `web:<id>` identity a login signs in as.
+pub(super) async fn stored_users(env: &Env) -> Arc<Users> {
+    let users = open_users(env).await;
+    for (id, role) in [("root", UserRole::Admin), ("mia", UserRole::Member)] {
+        let new = NewUser {
+            id: UserId::new(id).unwrap(),
+            username: id.to_owned(),
+            display_name: id.to_uppercase(),
+            role,
+            timezone: None,
+            default_identity: Some(format!("web:{id}")),
+        };
+        let web = NewIdentity {
+            namespace: "web".to_owned(),
+            native_id: id.to_owned(),
+            verification: Verification::Admin,
+        };
+        users
+            .create(new, vec![web], Timestamp::now())
+            .await
+            .unwrap();
+    }
+    Arc::new(users)
+}
+
+/// Logs `user` in with a recovery link on the main listener; the session token.
+pub(super) async fn session_of(env: &Env, user: &str) -> String {
+    let token = invite_token(env, &UserId::new(user).unwrap(), InviteKind::Recovery).await;
+    let response = redeem(env.main_app(), &token, &[]).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER, "{user}");
+    cookie_token(set_cookie(&response))
+}
+
+impl Env {
+    /// `method path` with the session `token`, a CSRF token for a post, and no injected user: the
+    /// request is authenticated as a browser's is, so the user's role is read from the stored
+    /// users.
+    async fn as_session(
+        &self,
+        admin: &Arc<FakeAdmin>,
+        token: &str,
+        method: Method,
+        path: &str,
+    ) -> StatusCode {
+        let csrf = auth::cookie_csrf(token);
+        let cookie = session(token);
+        let form = format!("csrf={csrf}");
+        let response = call(
+            self.admin_router(admin, None),
+            method.clone(),
+            path,
+            &[("cookie", &cookie), ("x-csrf-token", &csrf)],
+            (method == Method::POST).then_some(form.as_str()),
+        )
+        .await;
+        response.status()
+    }
+}
+
+#[tokio::test]
+async fn the_admin_role_decides_who_gets_the_admin_pages() {
+    let env = env().await;
+    let users = stored_users(&env).await;
+    let admin = Arc::new(FakeAdmin {
+        status: Mutex::new(state()),
+        ..FakeAdmin::default()
+    });
+    let owner_session = session_of(&env, "owner").await;
+    let root = session_of(&env, "root").await;
+    let mia = session_of(&env, "mia").await;
+    let cases = [
+        (Method::GET, "/admin"),
+        (Method::GET, "/admin/plugins"),
+        (Method::POST, "/admin/plugins/channel/libera/restart"),
+    ];
+    let try_all = async |token: &str| {
+        let mut statuses = Vec::new();
+        for (method, path) in &cases {
+            statuses.push(env.as_session(&admin, token, method.clone(), path).await);
+        }
+        statuses
+    };
+    let allowed = [StatusCode::OK, StatusCode::OK, StatusCode::SEE_OTHER];
+    let refused = [StatusCode::FORBIDDEN; 3];
+
+    // The imported owner and a second admin can do the same, and a member can do none of it.
+    assert_eq!(try_all(&owner_session).await, allowed);
+    assert_eq!(try_all(&root).await, allowed);
+    assert_eq!(admin.restarted().len(), 2);
+    assert_eq!(try_all(&mia).await, refused);
+    assert_eq!(admin.restarted().len(), 2, "the member restarted nothing");
+
+    // A change of role applies to the next request on the same session.
+    let now = Timestamp::now();
+    users
+        .set_role(&UserId::new("root").unwrap(), UserRole::Member, now)
+        .await
+        .unwrap();
+    users
+        .set_role(&UserId::new("mia").unwrap(), UserRole::Admin, now)
+        .await
+        .unwrap();
+    assert_eq!(try_all(&root).await, refused);
+    assert_eq!(try_all(&mia).await, allowed);
+
+    // A disabled admin is signed out. The last active admin can't be demoted, so the pages stay
+    // reachable.
+    users
+        .set_state(&UserId::new("mia").unwrap(), UserState::Disabled, now)
+        .await
+        .unwrap();
+    assert_eq!(try_all(&mia).await, [StatusCode::UNAUTHORIZED; 3]);
+    let err = users
+        .set_role(&UserId::new("owner").unwrap(), UserRole::Member, now)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, UserError::LastAdmin), "{err}");
+    assert_eq!(try_all(&owner_session).await, allowed);
 }
 
 #[tokio::test]

@@ -3,8 +3,8 @@
 //!
 //! The pages are clients of the admin service, like `doozers status`: they call the same
 //! [`AdminService`](crate::admin::AdminService) in-process through its RPC trait, so they show
-//! exactly what the CLI shows. Only the owner may see them (v1 has no other users; the `admin`
-//! role comes with multi-user support), and the restart button is a CSRF-checked form post.
+//! exactly what the CLI shows. Only an admin may see them, and the restart button is a CSRF-checked
+//! form post.
 //! Everything a plugin reports (errors, versions, codes, URLs) is escaped by the templates; a QR
 //! payload is only ever encoded into the code ([`qr`](super::qr)).
 
@@ -24,6 +24,7 @@ use doozers_proto::channel::v1::channel_status::State as ChannelState;
 use doozers_proto::channel::v1::needs_auth::Challenge;
 use doozers_proto::channel::v1::{ChannelStatus, NeedsAuth};
 use doozers_proto::plugin::v1::SandboxGrants;
+use doozers_store::Role;
 use serde::Deserialize;
 use tonic::{Code, Request};
 use tracing::error;
@@ -33,7 +34,6 @@ use super::pages::{WebApp, error_page, no_store};
 use super::qr;
 use super::shell::{Nav, Shell};
 use crate::http::{self, RouterBuilder};
-use crate::identity;
 
 /// How often the status page reloads itself while a channel needs linking, in seconds, so it
 /// shows the newest QR code (WhatsApp replaces its code about every 20 seconds).
@@ -66,17 +66,18 @@ impl WebApp {
     }
 }
 
-/// Whether `user` may see the admin pages (the agent pages too) and use their buttons: the owner
-/// only.
+/// Whether `user` may see the admin pages (the agent pages too) and use their buttons: admins
+/// only. The role is the one the request was authenticated with ([`WebUser::role`]), so a change
+/// of role applies to the next request.
 pub(super) fn may_administer(user: &WebUser) -> bool {
-    user.user == identity::owner()
+    user.role == Role::Admin
 }
 
 pub(super) fn forbidden() -> Response {
     error_page(
         StatusCode::FORBIDDEN,
         "Not allowed",
-        "Only the owner can see the admin pages.",
+        "Only an admin can see the admin pages.",
     )
 }
 

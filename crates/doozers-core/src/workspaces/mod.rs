@@ -8,7 +8,11 @@
 //! Docs/technical/environments.md describes the whole life cycle.
 //!
 //! A workspace has one owner: a conversation (agent, channel instance, conversation id, the key
-//! of a session) or an isolated job run ([`WorkspaceOwner::of_session`]). The core assigns the
+//! of a session, and for a direct conversation its user) or an isolated job run
+//! ([`WorkspaceOwner::of_session`]). The user is part of the owner because a conversation id can
+//! pass from one user to the next (an IRC nickname's direct conversation): two users never share
+//! a workspace, so one's files and SSH keys are never reachable from the other's turns, and a turn
+//! that outlives the handover keeps using its own user's workspace. The core assigns the
 //! workspace id and the plugin labels its resources with it, so nothing but the id ties the
 //! table to the plugin.
 //!

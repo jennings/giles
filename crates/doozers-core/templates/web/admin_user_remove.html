@@ -1,0 +1,53 @@
+{% extends "web/app.html" %}
+
+{% block title %}Remove {{ username }} - Users - Doozers{% endblock %}
+
+{% block content %}
+<a class="back" href="/admin/users#user-{{ id }}">Users</a>
+<section class="card confirm">
+<h1>Remove {{ display_name }}?</h1>
+<dl class="facts">
+<dt>Username</dt>
+<dd><code>{{ username }}</code></dd>
+<dt>Id</dt>
+<dd><code>{{ id }}</code></dd>
+</dl>
+{%- if let Some(refusal) = refusal %}
+<p class="banner banner-error" role="alert">{{ refusal }}</p>
+{%- endif %}
+{%- if busy %}
+<p class="banner banner-error" role="alert">This user has a chat or a scheduled job running, or messages waiting. Have them stop the chat with <code>/stop</code>, or wait until it's done, then come back.</p>
+{%- endif %}
+<p>Removing the user <strong>deletes everything Doozers keeps about them, at once. This can't be undone.</strong> It deletes:</p>
+<ul>
+{%- for line in deletes %}
+<li>{{ line }}</li>
+{%- endfor %}
+</ul>
+{%- if !workspaces.is_empty() %}
+<p>The workspaces:</p>
+<ul>
+{%- for line in workspaces %}
+<li>{{ line }}</li>
+{%- endfor %}
+</ul>
+{%- endif %}
+<p>What stays:</p>
+<ul>
+{%- for line in stays %}
+<li>{{ line }}</li>
+{%- endfor %}
+</ul>
+<div class="form-actions">
+{%- if refusal.is_some() || busy %}
+<a class="button" href="/admin/users">Back to the users</a>
+{%- else %}
+<form method="post" action="/admin/users/{{ id }}/remove">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button type="submit" class="button-danger-solid">Remove user</button>
+</form>
+<a class="button button-quiet" href="/admin/users#user-{{ id }}">Cancel</a>
+{%- endif %}
+</div>
+</section>
+{% endblock %}

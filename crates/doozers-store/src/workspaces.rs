@@ -17,14 +17,17 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::time::to_millis;
 use crate::{
-    Error, Result, Session, SessionId, Store, get_opt_time, get_time, parse_id, query_all,
+    Error, Result, Session, SessionId, SessionKind, Store, get_opt_time, get_time, parse_id,
+    query_all,
 };
 
-/// Who a workspace belongs to. A conversation owns at most one workspace at a time, and so does
-/// an isolated job run.
+/// Who a workspace belongs to. A conversation owns at most one workspace at a time per user, and
+/// so does an isolated job run.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum WorkspaceOwner {
-    /// A conversation with an agent: the key of a session (PLAN 6.2).
+    /// A conversation with an agent: the key of a session (PLAN 6.2) and, for a direct
+    /// conversation, its user. A conversation id can pass from one user to the next (an IRC
+    /// nickname's), so the user is part of the owner: two users never share a workspace.
     Conversation {
         /// The agent.
         agent: AgentId,
@@ -32,6 +35,8 @@ pub enum WorkspaceOwner {
         channel: String,
         /// The conversation on that channel.
         conversation: ConversationId,
+        /// The user of a direct conversation; `None` for a group's, which every member shares.
+        user: Option<UserId>,
     },
     /// An isolated job run, by its job session. Nothing else uses the workspace.
     Job {
@@ -47,7 +52,14 @@ impl fmt::Display for WorkspaceOwner {
                 agent,
                 channel,
                 conversation,
+                user: None,
             } => write!(f, "{agent} in {channel}/{conversation}"),
+            Self::Conversation {
+                agent,
+                channel,
+                conversation,
+                user: Some(user),
+            } => write!(f, "{agent} in {channel}/{conversation} for {user}"),
             Self::Job { session } => write!(f, "job session {session}"),
         }
     }
@@ -55,14 +67,19 @@ impl fmt::Display for WorkspaceOwner {
 
 impl WorkspaceOwner {
     /// The owner of the workspace a turn in `session` uses: the session's key (agent, channel
-    /// instance, conversation id) for a conversation, whether it is a person's turn or a `dm`
-    /// job's, and the session itself for an isolated job run.
+    /// instance, conversation id) and, for a direct session, its user, whether it is a person's
+    /// turn or a `dm` job's; and the session itself for an isolated job run.
     pub fn of_session(session: &Session) -> Self {
         match session.key() {
             Some(key) => Self::Conversation {
                 agent: key.agent,
                 channel: key.channel,
                 conversation: key.conversation,
+                user: match session.kind {
+                    SessionKind::Direct => session.user.clone(),
+                    // A group's workspace is the group's: every member shares it.
+                    _ => None,
+                },
             },
             None => Self::Job {
                 session: session.id,
@@ -71,12 +88,13 @@ impl WorkspaceOwner {
     }
 }
 
-/// The columns an owner is stored in: agent, channel, conversation, job session.
+/// The columns an owner is stored in: agent, channel, conversation, job session, user.
 type OwnerColumns<'a> = (
     Option<&'a str>,
     Option<&'a str>,
     Option<&'a str>,
     Option<i64>,
+    Option<&'a str>,
 );
 
 impl WorkspaceOwner {
@@ -86,13 +104,15 @@ impl WorkspaceOwner {
                 agent,
                 channel,
                 conversation,
+                user,
             } => (
                 Some(agent.as_str()),
                 Some(channel),
                 Some(conversation.as_str()),
                 None,
+                user.as_ref().map(UserId::as_str),
             ),
-            Self::Job { session } => (None, None, None, Some(session.get())),
+            Self::Job { session } => (None, None, None, Some(session.get()), None),
         }
     }
 }
@@ -229,7 +249,7 @@ pub struct WorkspaceRecord {
     /// What survives a stop and a recreate; `None` until it was created.
     pub persistence: Option<String>,
     /// The user whose SSH keys the workspace gets, or `None` for no keys. Set when the workspace is
-    /// created and kept for its life.
+    /// created and kept for its life. A direct conversation's is the owner's user.
     pub key_user: Option<UserId>,
     /// Where it is in its life.
     pub state: WorkspaceState,
@@ -263,12 +283,17 @@ pub struct NewWorkspace {
 
 const COLUMNS: &str = "id, environment, agent, channel, conversation, job_session, options, \
                        description, working_directory, persistence, state, created_at, \
-                       last_used_at, deleted_at, delete_reason, key_user";
+                       last_used_at, deleted_at, delete_reason, key_user, user_id";
 
-const OWNER_IS: &str = "agent IS ?1 AND channel IS ?2 AND conversation IS ?3 AND job_session IS ?4";
+/// The workspaces a user owns (`?1`): a direct conversation's, or a job run's with their keys.
+const USER_OWNS: &str = "(user_id = ?1 OR (job_session IS NOT NULL AND key_user = ?1))";
+
+const OWNER_IS: &str = "agent IS ?1 AND channel IS ?2 AND conversation IS ?3 AND job_session IS ?4 \
+                        AND user_id IS ?5";
 
 fn from_row(row: &Row<'_>) -> Result<WorkspaceRecord> {
     let job_session: Option<i64> = row.get(5)?;
+    let user: Option<String> = row.get(16)?;
     let owner = match job_session {
         Some(session) => WorkspaceOwner::Job {
             session: SessionId::new(session),
@@ -277,6 +302,7 @@ fn from_row(row: &Row<'_>) -> Result<WorkspaceRecord> {
             agent: parse_id(row.get(2)?, AgentId::new)?,
             channel: row.get(3)?,
             conversation: parse_id(row.get(4)?, ConversationId::new)?,
+            user: user.map(|user| parse_id(user, UserId::new)).transpose()?,
         },
     };
     let reason: Option<String> = row.get(14)?;
@@ -313,12 +339,12 @@ fn require(conn: &Connection, id: &WorkspaceId) -> Result<WorkspaceRecord> {
 }
 
 fn current(conn: &Connection, owner: &WorkspaceOwner) -> Result<Option<WorkspaceRecord>> {
-    let (agent, channel, conversation, job) = owner.columns();
+    let (agent, channel, conversation, job, user) = owner.columns();
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT {COLUMNS} FROM workspaces
          WHERE {OWNER_IS} AND state IN ('creating', 'active')"
     ))?;
-    stmt.query_row(params![agent, channel, conversation, job], |row| {
+    stmt.query_row(params![agent, channel, conversation, job, user], |row| {
         Ok(from_row(row))
     })
     .optional()?
@@ -363,12 +389,12 @@ impl Store {
             if find(conn, &new.id)?.is_some() {
                 return Err(Error::conflict(format!("workspace id {} is taken", new.id)));
             }
-            let (agent, channel, conversation, job) = new.owner.columns();
+            let (agent, channel, conversation, job, user) = new.owner.columns();
             let now = to_millis(new.now);
             conn.prepare_cached(
                 "INSERT INTO workspaces (id, environment, agent, channel, conversation,
-                     job_session, options, key_user, state, created_at, last_used_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?9, 'creating', ?8, ?8)",
+                     job_session, user_id, options, key_user, state, created_at, last_used_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?10, ?7, ?9, 'creating', ?8, ?8)",
             )?
             .execute(params![
                 new.id.as_str(),
@@ -379,7 +405,8 @@ impl Store {
                 job,
                 options,
                 now,
-                new.key_user.as_ref().map(UserId::as_str)
+                new.key_user.as_ref().map(UserId::as_str),
+                user,
             ])?;
             require(conn, &new.id)
         })
@@ -453,14 +480,14 @@ impl Store {
     ) -> Result<Option<WorkspaceRecord>> {
         let owner = owner.clone();
         self.read(move |conn| {
-            let (agent, channel, conversation, job) = owner.columns();
+            let (agent, channel, conversation, job, user) = owner.columns();
             let mut stmt = conn.prepare_cached(&format!(
                 "SELECT {COLUMNS} FROM workspaces
                  WHERE {OWNER_IS} AND state IN ('deleting', 'deleted')
                    AND delete_reason <> 'creation_failed'
                  ORDER BY deleted_at DESC, created_at DESC LIMIT 1"
             ))?;
-            stmt.query_row(params![agent, channel, conversation, job], |row| {
+            stmt.query_row(params![agent, channel, conversation, job, user], |row| {
                 Ok(from_row(row))
             })
             .optional()?
@@ -490,6 +517,63 @@ impl Store {
                 "SELECT {COLUMNS} FROM workspaces ORDER BY created_at, id"
             ))?;
             query_all(&mut stmt, [], from_row)
+        })
+        .await
+    }
+
+    /// The `creating` and `active` workspaces that go with `user`: a direct conversation's, which
+    /// the user owns, and a job run's whose SSH keys are the user's. Forgetting the user deletes
+    /// these through their plugins first ([`workspaces_forget_user`](Self::workspaces_forget_user)).
+    /// Oldest first.
+    pub async fn user_workspaces(&self, user: &UserId) -> Result<Vec<WorkspaceRecord>> {
+        let user = user.to_string();
+        self.read(move |conn| {
+            let mut stmt = conn.prepare_cached(&format!(
+                "SELECT {COLUMNS} FROM workspaces
+                 WHERE state IN ('creating', 'active') AND {USER_OWNS}
+                 ORDER BY created_at, id"
+            ))?;
+            query_all(&mut stmt, [user], from_row)
+        })
+        .await
+    }
+
+    /// Removes `user` from the workspace rows once their live workspaces are deleted: `deleted`
+    /// rows that name them are removed, and the user is cleared from the others (a `deleting` row
+    /// the plugin hasn't confirmed yet, which the sweep finishes, and a shared workspace that has
+    /// the user as its key user). Returns how many rows were removed. Idempotent.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Conflict`], changing nothing, if a workspace the user owns is still `creating` or
+    /// `active`.
+    pub async fn workspaces_forget_user(&self, user: &UserId) -> Result<u64> {
+        let user = user.to_string();
+        self.write(move |conn| {
+            let live: bool = conn
+                .prepare_cached(&format!(
+                    "SELECT EXISTS (SELECT 1 FROM workspaces
+                     WHERE state IN ('creating', 'active') AND {USER_OWNS})"
+                ))?
+                .query_row([&user], |row| row.get(0))?;
+            if live {
+                return Err(Error::conflict(format!(
+                    "{user} still owns a live workspace"
+                )));
+            }
+            let removed = conn
+                .prepare_cached(
+                    "DELETE FROM workspaces
+                     WHERE state = 'deleted' AND (user_id = ?1 OR key_user = ?1)",
+                )?
+                .execute([&user])?;
+            conn.prepare_cached(
+                "UPDATE workspaces SET user_id = NULL WHERE user_id = ?1 AND state = 'deleting'",
+            )?
+            .execute([&user])?;
+            conn.prepare_cached("UPDATE workspaces SET key_user = NULL WHERE key_user = ?1")?
+                .execute([&user])?;
+            Ok(removed as u64)
         })
         .await
     }
@@ -624,9 +708,10 @@ impl Store {
     }
 
     /// When the owner last did anything: for a conversation, the newest message across every
-    /// session of its key, ended ones included, or when the newest session started if it has no
-    /// messages. `None` for a job (it has no history of its own to speak of) and for a
-    /// conversation with no session.
+    /// session of its key that belongs to the owner's user (every session of a group's), ended
+    /// ones included, or when the newest session started if it has no messages. Another user's
+    /// sessions of the same conversation id don't count. `None` for a job (it has no history of
+    /// its own to speak of) and for a conversation with no session.
     pub async fn workspace_owner_activity(
         &self,
         owner: &WorkspaceOwner,
@@ -635,12 +720,17 @@ impl Store {
             agent,
             channel,
             conversation,
+            user,
         } = owner
         else {
             return Ok(None);
         };
-        let (agent, channel, conversation) =
-            (agent.to_string(), channel.clone(), conversation.to_string());
+        let (agent, channel, conversation, user) = (
+            agent.to_string(),
+            channel.clone(),
+            conversation.to_string(),
+            user.as_ref().map(ToString::to_string),
+        );
         self.read(move |conn| {
             let millis: Option<i64> = conn
                 .prepare_cached(
@@ -649,9 +739,12 @@ impl Store {
                           WHERE m.session_id = s.id ORDER BY m.seq DESC LIMIT 1),
                          s.started_at))
                      FROM sessions s
-                     WHERE s.agent = ?1 AND s.channel = ?2 AND s.conversation = ?3",
+                     WHERE s.agent = ?1 AND s.channel = ?2 AND s.conversation = ?3
+                       AND s.user_id IS ?4",
                 )?
-                .query_row([agent, channel, conversation], |row| row.get(0))?;
+                .query_row(params![agent, channel, conversation, user], |row| {
+                    row.get(0)
+                })?;
             millis.map(crate::time::from_millis).transpose()
         })
         .await
@@ -667,11 +760,16 @@ mod tests {
     use crate::sessions::tests::{at, key, store};
 
     fn conversation(name: &str) -> WorkspaceOwner {
+        conversation_of(name, None)
+    }
+
+    fn conversation_of(name: &str, user: Option<&str>) -> WorkspaceOwner {
         let key = key(name);
         WorkspaceOwner::Conversation {
             agent: key.agent,
             channel: key.channel,
             conversation: key.conversation,
+            user: user.map(|user| UserId::new(user).unwrap()),
         }
     }
 
@@ -773,6 +871,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn users_of_one_conversation_id_hold_workspaces_of_their_own() {
+        let (_dir, store) = store().await;
+        let alice = conversation_of("c1", Some("alice"));
+        let bob = conversation_of("c1", Some("bob"));
+        let group = conversation("c1");
+        active(&store, "ws-alice", alice.clone(), 0).await;
+        // Bob names the same conversation id, and neither sees nor blocks Alice's workspace.
+        assert_eq!(store.workspace_current(&bob).await.unwrap(), None);
+        active(&store, "ws-bob", bob.clone(), 1).await;
+        active(&store, "ws-group", group.clone(), 2).await;
+        for (owner, held) in [(&alice, "ws-alice"), (&bob, "ws-bob"), (&group, "ws-group")] {
+            let current = store.workspace_current(owner).await.unwrap().unwrap();
+            assert_eq!(current.id, id(held));
+            assert_eq!(&current.owner, owner);
+        }
+        // Each still holds only one.
+        let err = store
+            .workspace_insert(new("ws-alice-2", alice.clone(), 3))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::Conflict(m) if m.contains("ws-alice") && m.contains("alice")),
+            "{err}"
+        );
+        let err = store
+            .workspace_insert(new("ws-group-2", group.clone(), 3))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Conflict(_)), "{err}");
+
+        // Deleting one user's workspace leaves the others', and its history is its own.
+        store
+            .workspace_begin_delete_for(&alice, DeleteReason::UserReset, at(5))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(store.workspace_current(&alice).await.unwrap(), None);
+        assert!(store.workspace_current(&bob).await.unwrap().is_some());
+        assert_eq!(
+            store
+                .workspace_last_deleted(&alice)
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            id("ws-alice")
+        );
+        assert_eq!(store.workspace_last_deleted(&bob).await.unwrap(), None);
+    }
+
+    #[tokio::test]
     async fn an_owner_holds_one_workspace_until_it_is_deleted() {
         let (_dir, store) = store().await;
         let owner = conversation("c1");
@@ -804,6 +953,7 @@ mod tests {
             agent: AgentId::new("bunter").unwrap(),
             channel: "whatsapp".into(),
             conversation: ConversationId::new("c1").unwrap(),
+            user: None,
         };
         store
             .workspace_insert(new("ws-6", other_agent, 1))
@@ -1094,6 +1244,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn activity_counts_only_the_owners_users_sessions() {
+        let (_dir, store) = store().await;
+        let alice = UserId::new("alice").unwrap();
+        let bob = UserId::new("bob").unwrap();
+        let (first, _) = store
+            .open_session(key("c1"), SessionKind::Direct, Some(alice), at(10))
+            .await
+            .unwrap();
+        store.end_session(first.id, at(20)).await.unwrap();
+        store
+            .open_session(key("c1"), SessionKind::Direct, Some(bob), at(50))
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .workspace_owner_activity(&conversation_of("c1", Some("alice")))
+                .await
+                .unwrap(),
+            Some(at(10))
+        );
+        assert_eq!(
+            store
+                .workspace_owner_activity(&conversation_of("c1", Some("bob")))
+                .await
+                .unwrap(),
+            Some(at(50))
+        );
+        assert_eq!(
+            store
+                .workspace_owner_activity(&conversation_of("c1", Some("carol")))
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
     async fn a_workspace_keeps_the_user_whose_keys_it_gets() {
         let (_dir, store) = store().await;
         let owner = UserId::new("owner").unwrap();
@@ -1130,6 +1317,72 @@ mod tests {
                 .key_user,
             None
         );
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_user_clears_their_workspace_rows_once_the_live_ones_are_deleted() {
+        let (_dir, store) = store().await;
+        let ann = UserId::new("ann").unwrap();
+        let mut keyed = new("ws-job", job(7), 1);
+        keyed.key_user = Some(ann.clone());
+        store.workspace_insert(keyed).await.unwrap();
+        store
+            .workspace_activate(&id("ws-job"), "alpine", "/work", "files persist")
+            .await
+            .unwrap();
+        active(&store, "ws-ann", conversation_of("c1", Some("ann")), 2).await;
+        active(&store, "ws-ann-2", conversation_of("c2", Some("ann")), 3).await;
+        active(&store, "ws-bob", conversation_of("c1", Some("bob")), 4).await;
+        // A shared workspace that has ann's keys, and one that is somebody else's.
+        let mut shared = new("ws-shared", conversation("room"), 5);
+        shared.key_user = Some(ann.clone());
+        store.workspace_insert(shared).await.unwrap();
+        store
+            .workspace_activate(&id("ws-shared"), "alpine", "/work", "files persist")
+            .await
+            .unwrap();
+
+        let live: Vec<_> = store
+            .user_workspaces(&ann)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|w| w.id.to_string())
+            .collect();
+        assert_eq!(live, ["ws-job", "ws-ann", "ws-ann-2"]);
+        assert!(matches!(
+            store.workspaces_forget_user(&ann).await,
+            Err(Error::Conflict(_))
+        ));
+
+        // The core deletes them through their plugins: one confirmed, one not yet.
+        for ws in ["ws-job", "ws-ann", "ws-ann-2"] {
+            store
+                .workspace_begin_delete(&id(ws), DeleteReason::ChatDeleted, at(10))
+                .await
+                .unwrap();
+        }
+        store.workspace_finish_delete(&id("ws-job")).await.unwrap();
+        store.workspace_finish_delete(&id("ws-ann")).await.unwrap();
+        assert_eq!(store.workspaces_forget_user(&ann).await.unwrap(), 2);
+
+        let rows: Vec<_> = store
+            .workspaces_all()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|w| (w.id.to_string(), w.state, w.key_user, w.owner))
+            .collect();
+        assert_eq!(rows.len(), 3);
+        let by_id = |name: &str| rows.iter().find(|row| row.0 == name).unwrap();
+        // Still deleting: the row stays for the sweep, with no user.
+        assert_eq!(by_id("ws-ann-2").1, WorkspaceState::Deleting);
+        assert_eq!(by_id("ws-ann-2").3, conversation("c2"));
+        // Shared: stays, without the key user.
+        assert_eq!(by_id("ws-shared").2, None);
+        // Bob's is untouched.
+        assert_eq!(by_id("ws-bob").3, conversation_of("c1", Some("bob")));
+        assert_eq!(store.workspaces_forget_user(&ann).await.unwrap(), 0);
     }
 
     #[tokio::test]

@@ -30,7 +30,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, ready};
 
-use doozers_types::{MediaId, MediaRef, Timestamp};
+use doozers_types::{Block, ChannelEvent, MediaId, MediaRef, OutboundMessage, Timestamp, UserId};
 use rusqlite::{OptionalExtension, params};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf};
@@ -372,6 +372,82 @@ impl BlobStore {
             media,
         }))
     }
+
+    /// The media of the blob `id` as `user` has it, or `None` if no message of theirs refers to
+    /// it. A message refers to it by an attachment or result media of a message in one of the
+    /// user's sessions, an attachment of an inbound event of theirs still in the inbox, or an
+    /// attachment of an outbound message for them still in the outbox. Blobs are shared by content
+    /// across users and keep the type and name of the first put, so what a user is shown (the
+    /// file name, the media type) is their own reference's, not the blob row's.
+    ///
+    /// Only structure counts. A tool call's input and any text are not looked at: the model fills
+    /// the first and the user the second, so either could repeat the hash of a file somebody else
+    /// has. A search for the hash narrows the rows, driven from the user's own sessions (the
+    /// `sessions_user` index, so other users' messages are never read) and newest first so a
+    /// recent attachment is found at once, and each candidate is parsed.
+    pub async fn reference_of(&self, id: &MediaId, user: &UserId) -> Result<Option<MediaRef>> {
+        let (id, user) = (id.clone(), user.to_string());
+        self.db
+            .read(move |conn| {
+                let mut stmt = conn.prepare_cached(MESSAGE_REFERENCES)?;
+                let mut rows = stmt.query(params![user, id.as_str()])?;
+                while let Some(row) = rows.next()? {
+                    let content: String = row.get(0)?;
+                    if let Ok(blocks) = serde_json::from_str::<Vec<Block>>(&content)
+                        && let Some(media) = media_in(&blocks, &id)
+                    {
+                        return Ok(Some(media));
+                    }
+                }
+                let mut stmt = conn.prepare_cached(
+                    "SELECT payload FROM inbox WHERE user_id = ?1 AND instr(payload, ?2) > 0
+                     ORDER BY id DESC",
+                )?;
+                let mut rows = stmt.query(params![user, id.as_str()])?;
+                while let Some(row) = rows.next()? {
+                    let payload: String = row.get(0)?;
+                    if let Ok(ChannelEvent::Message { message, .. }) =
+                        serde_json::from_str(&payload)
+                        && let Some(media) = message.attachments.into_iter().find(|m| m.id == id)
+                    {
+                        return Ok(Some(media));
+                    }
+                }
+                let mut stmt = conn.prepare_cached(
+                    "SELECT payload FROM outbox WHERE user_id = ?1 AND instr(payload, ?2) > 0
+                     ORDER BY id DESC",
+                )?;
+                let mut rows = stmt.query(params![user, id.as_str()])?;
+                while let Some(row) = rows.next()? {
+                    let payload: String = row.get(0)?;
+                    if let Ok(sent) = serde_json::from_str::<OutboundMessage>(&payload)
+                        && let Some(media) = sent.attachments.into_iter().find(|m| m.id == id)
+                    {
+                        return Ok(Some(media));
+                    }
+                }
+                Ok(None)
+            })
+            .await
+    }
+}
+
+/// The candidate messages of [`BlobStore::reference_of`]: the content of the user's messages (`?1`)
+/// that contain the blob's hash (`?2`), through their sessions and newest first.
+const MESSAGE_REFERENCES: &str =
+    "SELECT m.content FROM sessions s JOIN messages m ON m.session_id = s.id
+     WHERE s.user_id = ?1 AND instr(m.content, ?2) > 0
+     ORDER BY s.id DESC, m.seq DESC";
+
+/// The media `id` among `blocks` (an image, audio, or document, or one in a tool result).
+fn media_in(blocks: &[Block], id: &MediaId) -> Option<MediaRef> {
+    blocks.iter().find_map(|block| match block {
+        Block::Image { media } | Block::Audio { media } | Block::Document { media, .. } => {
+            (media.id == *id).then(|| media.clone())
+        }
+        Block::ToolResult { content, .. } => media_in(content, id),
+        _ => None,
+    })
 }
 
 #[cfg(test)]
@@ -708,5 +784,193 @@ mod tests {
         assert_eq!(mode(&blobs.root), 0o700);
         assert_eq!(mode(&blobs.shard_dir(&media.id)), 0o700);
         assert_eq!(mode(&blobs.blob_path(&media.id)), 0o600);
+    }
+
+    /// Puts `bytes` as an image blob.
+    async fn put_image(blobs: &BlobStore, bytes: &'static [u8]) -> MediaRef {
+        blobs
+            .put(bytes, 1024, meta("image/png", None), at(0))
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_blob_is_a_users_when_their_own_message_refers_to_it() {
+        use doozers_types::{
+            ChannelEvent, ConversationId, ConversationKind, ConversationRef, EventId,
+            InboundMessage, Message, MessageMeta, NativeId, Role, SendTarget,
+        };
+        use serde_json::json;
+
+        use crate::{InboxState, NewInboxEvent, NewOutbox, OutboxTarget, SessionKey, SessionKind};
+
+        let (_dir, store, blobs) = open().await;
+        let ann = UserId::new("ann").unwrap();
+        let bob = UserId::new("bob").unwrap();
+        let in_message = put_image(&blobs, b"in a message").await;
+        let in_result = put_image(&blobs, b"in a tool result").await;
+        let in_inbox = put_image(&blobs, b"in the inbox").await;
+        let in_outbox = put_image(&blobs, b"in the outbox").await;
+        let in_text = put_image(&blobs, b"only in text and a tool input").await;
+        let nowhere = put_image(&blobs, b"nowhere").await;
+
+        let (session, _) = store
+            .open_session(
+                SessionKey {
+                    agent: doozers_types::AgentId::new("jeeves").unwrap(),
+                    channel: "web".into(),
+                    conversation: ConversationId::new("a").unwrap(),
+                },
+                SessionKind::Direct,
+                Some(ann.clone()),
+                at(0),
+            )
+            .await
+            .unwrap();
+        let message = |role, content| Message {
+            role,
+            content,
+            meta: MessageMeta::new(at(1)),
+        };
+        let appended = store
+            .append_messages(
+                session.id,
+                vec![
+                    message(
+                        Role::User,
+                        vec![Block::Image {
+                            media: in_message.clone(),
+                        }],
+                    ),
+                    message(
+                        Role::Assistant,
+                        vec![Block::ToolUse {
+                            id: "t1".into(),
+                            name: "screenshot".into(),
+                            // The model fills a tool's input, so a hash in it proves nothing.
+                            input: json!({
+                                "media": {"id": in_text.id, "media_type": "image/png"},
+                                "note": in_text.id,
+                            }),
+                        }],
+                    ),
+                    message(
+                        Role::User,
+                        vec![Block::Text {
+                            text: format!("look at {} and {}", in_text.id, nowhere.id),
+                        }],
+                    ),
+                ],
+            )
+            .await
+            .unwrap();
+        store
+            .fill_slot(
+                appended[1].slots[0].id,
+                vec![Block::Image {
+                    media: in_result.clone(),
+                }],
+                false,
+                at(2),
+            )
+            .await
+            .unwrap();
+        let event = ChannelEvent::Message {
+            id: EventId::new("e1").unwrap(),
+            message: InboundMessage {
+                conversation: ConversationRef {
+                    id: ConversationId::new("a").unwrap(),
+                    kind: ConversationKind::Direct,
+                    title: None,
+                },
+                sender: NativeId::new("ann").unwrap(),
+                sender_aliases: Vec::new(),
+                sender_authenticated: true,
+                sender_display_name: Some(in_text.id.to_string()),
+                text: in_text.id.to_string(),
+                attachments: vec![in_inbox.clone()],
+                message_id: None,
+                reply_to: None,
+                sent_at: None,
+            },
+        };
+        store
+            .inbox_insert(NewInboxEvent {
+                instance: "web".into(),
+                event_id: EventId::new("e1").unwrap(),
+                session: Some(session.id),
+                user: Some(ann.clone()),
+                payload: serde_json::to_value(&event).unwrap(),
+                state: InboxState::Queued,
+                received_at: at(2),
+            })
+            .await
+            .unwrap();
+        store
+            .outbox_enqueue(NewOutbox {
+                instance: "web".into(),
+                target: OutboxTarget::Conversation(ConversationId::new("a").unwrap()),
+                kind: "job_reply".into(),
+                user: Some(ann.clone()),
+                payload: serde_json::to_value(doozers_types::OutboundMessage {
+                    target: SendTarget::Conversation(ConversationId::new("a").unwrap()),
+                    markdown: "done".into(),
+                    attachments: vec![in_outbox.clone()],
+                    reply_to: None,
+                })
+                .unwrap(),
+                created_at: at(3),
+                expires_at: at(4),
+            })
+            .await
+            .unwrap();
+
+        for (media, name) in [
+            (&in_message, "a message"),
+            (&in_result, "a tool result"),
+            (&in_inbox, "the inbox"),
+            (&in_outbox, "the outbox"),
+        ] {
+            assert!(
+                blobs.reference_of(&media.id, &ann).await.unwrap().as_ref() == Some(media),
+                "{name}: ann's"
+            );
+            assert!(
+                blobs.reference_of(&media.id, &bob).await.unwrap().is_none(),
+                "{name}: not bob's"
+            );
+        }
+        // Text and a tool call's input never make a blob a user's, nor does no reference.
+        for (media, name) in [(&in_text, "text and tool input"), (&nowhere, "nowhere")] {
+            for user in [&ann, &bob] {
+                assert!(
+                    blobs.reference_of(&media.id, user).await.unwrap().is_none(),
+                    "{name}: {user}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_message_search_runs_through_the_users_sessions_and_their_indexes() {
+        let (_dir, store, _blobs) = open().await;
+        let plan: Vec<String> = store
+            .read(|conn| {
+                let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {MESSAGE_REFERENCES}"))?;
+                let rows = stmt
+                    .query_map(rusqlite::params!["ann", "sha256-of-something"], |row| {
+                        row.get::<_, String>(3)
+                    })?;
+                Ok(rows.collect::<rusqlite::Result<_>>()?)
+            })
+            .await
+            .unwrap();
+        let plan = plan.join("\n");
+        // Other users' messages are never read, and no sort follows the search.
+        assert!(plan.contains("SEARCH s USING"), "{plan}");
+        assert!(plan.contains("sessions_user"), "{plan}");
+        assert!(plan.contains("SEARCH m USING"), "{plan}");
+        assert!(!plan.contains("SCAN"), "{plan}");
+        assert!(!plan.contains("TEMP B-TREE"), "{plan}");
     }
 }

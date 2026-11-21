@@ -99,7 +99,7 @@ pub(super) fn jeeves_fields(version: &str, name: &str, models: &str, rest: &str)
 }
 
 #[tokio::test]
-async fn only_the_owner_gets_the_edit_page_and_saves() {
+async fn only_an_admin_gets_the_edit_page_and_saves() {
     let env = env().await;
     let manager = env.manager().await;
     for method in [Method::GET, Method::POST] {

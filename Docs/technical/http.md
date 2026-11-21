@@ -2,9 +2,9 @@
 
 The core runs one HTTP server (PLAN section 9) for web chat, the admin pages, and the login flow. It
 lives in `doozers_core::http`, is built on `axum`, renders pages with `askama` templates compiled
-into the binary, and ships its JavaScript (`htmx`, its SSE extension, and one small script of our
-own for the new-agent form) inside the binary too. There is no build step. TLS is terminated by a
-reverse proxy, never by Doozers.
+into the binary, and ships its JavaScript (`htmx`, its SSE extension, and a few small scripts of our
+own) inside the binary too. There is no build step. TLS is terminated by a reverse proxy, never by
+Doozers.
 
 ## Lifecycle
 
@@ -14,16 +14,25 @@ reverse proxy, never by Doozers.
    busy or forbidden address is a startup error: `cannot listen for HTTP on <addr>` with the OS
    error as the cause (`http::BindError { addr, source }`).
 2. `http::RouterBuilder::new().build()` assembles the application, and
-   `http::serve(listener, app, shutdown)` runs on its own task. `serve` takes any
-   `axum::serve::Listener`: the TCP listener here, or a `tokio::net::UnixListener` (the web
-   channel's trusted-proxy socket). The `doozers started` line carries `http=http://<addr>/` (the
-   bound address, so port `0` shows the port the OS picked).
+   `http::serve(listener, app, shutdown)` runs on its own task. `serve` takes a
+   `tokio::net::TcpListener`, as here, or a `tokio::net::UnixListener` (the web channel's
+   trusted-proxy socket). The `doozers started` line carries `http=http://<addr>/` (the bound
+   address, so port `0` shows the port the OS picked).
 3. When the shutdown token is cancelled, the server stops accepting connections, closes idle
    keep-alive connections, and waits for in-flight requests, for at most `http::DRAIN_TIMEOUT` (5
    s). Requests still open then are dropped with a warning, and `serve` returns; the runtime
    shutting down cancels their tasks. `serve` awaits the server before logging `doozers stopped`.
 4. If the server task ends before shutdown (it shouldn't: accept errors are retried), `serve`
    cancels the token and exits with an error instead of running on without its web interface.
+
+`serve` adds the peer of each connection to every request as the extension
+`ConnectInfo<http::PeerAddr>`. `PeerAddr(Some(ip))` is the IP address of the socket's peer (an
+IPv4-mapped IPv6 address is reported as the IPv4 address), and `PeerAddr(None)` is a Unix socket's
+peer, which has none. Only `serve` adds it, so a client can't send one. A handler reads it with
+`Option<Extension<ConnectInfo<PeerAddr>>>`, which is `None` in a test that calls the router without
+a server. Behind a reverse proxy the peer is the proxy. The web channel believes the proxy's
+`X-Forwarded-For` only on the trusted-proxy listener, as it does the identity header, and its
+[rate limits](web-channel.md#rate-limits) count by it.
 
 Long-lived responses must end by themselves when the daemon stops: an SSE stream should finish on
 the shutdown token (`stream.take_until(token.cancelled_owned())`). The drain deadline is only a
@@ -105,14 +114,15 @@ The home page (`index.html`) shows the version; it's `/` only when no web channe
 | `/static/agent-form-<hash>.js`       | `assets/agent-form.js`                        | `text/javascript; charset=utf-8` |
 | `/static/mcp-server-form-<hash>.js`  | `assets/mcp-server-form.js`                   | `text/javascript; charset=utf-8` |
 | `/static/copy-button-<hash>.js`      | `assets/copy-button.js`                       | `text/javascript; charset=utf-8` |
+| `/static/passkey-<hash>.js`          | `assets/passkey.js`                           | `text/javascript; charset=utf-8` |
 
 Each path changes whenever its content does: the vendored files carry their version, and our own
 files carry the first 16 hex digits of their SHA-256 (`assets::stylesheet_path()`,
-`assets::agent_form_script_path()`, `assets::mcp_server_form_script_path()`, and
-`assets::copy_script_path()`, computed once). So every asset is served with
-`Cache-Control: public, max-age=31536000, immutable`, and a browser never revalidates or keeps a
-stale copy across an upgrade. `HEAD` works on every asset; any other method is a 405, and an unknown
-path under `/static/` gets the 404 page.
+`assets::agent_form_script_path()`, `assets::mcp_server_form_script_path()`,
+`assets::copy_script_path()`, and `assets::passkey_script_path()`, computed once). So every asset is
+served with `Cache-Control: public, max-age=31536000, immutable`, and a browser never revalidates or
+keeps a stale copy across an upgrade. `HEAD` works on every asset; any other method is a 405, and an
+unknown path under `/static/` gets the 404 page.
 
 ### Vendored files
 
@@ -170,12 +180,15 @@ Why each part:
   URLs, the two kinds the renderer keeps.
 - `script-src 'self'` and `style-src 'self'`, no `'unsafe-inline'` or `'unsafe-eval'`: the only
   scripts are the two vendored files, `agent-form.js` (only the new-agent form loads it),
-  `mcp-server-form.js` (only the MCP server form loads it), and `copy-button.js` (only the SSH keys
-  page loads it), each through the layout's `head` block, and the only stylesheet is `doozers.css`.
-  Any injected `<script>`, `on*=` handler, or `javascript:` URL is inert even if it got past the
-  renderer. This also blocks inline `style="..."` attributes, so pages style with classes. Note for
-  2.22: `pulldown-cmark` writes table column alignment as `style="text-align: ..."`, which browsers
-  drop (and log as a violation) under this policy; tables still render, unaligned.
+  `mcp-server-form.js` (only the MCP server form loads it), `copy-button.js` (only the SSH keys page
+  loads it), and `passkey.js` (only the login page, when passkeys are offered, and the passkey setup
+  page load it), each through the layout's `head` block, and the only stylesheet is `doozers.css`.
+  Passkeys needed no change to the policy: `script-src 'self'` serves `passkey.js`,
+  `connect-src 'self'` allows its requests, and WebAuthn itself is outside the policy. Any injected
+  `<script>`, `on*=` handler, or `javascript:` URL is inert even if it got past the renderer. This
+  also blocks inline `style="..."` attributes, so pages style with classes. Note for 2.22:
+  `pulldown-cmark` writes table column alignment as `style="text-align: ..."`, which browsers drop
+  (and log as a violation) under this policy; tables still render, unaligned.
 - `connect-src 'self'`: `htmx` requests and the SSE `EventSource` go to this origin only. Already
   implied by `default-src`, but stated because the SSE extension depends on it.
 - `default-src 'self'`: everything not named (fonts, media for audio attachments, manifests,
@@ -224,5 +237,6 @@ servers on `127.0.0.1:0`) and `crates/doozers/tests/serve.rs` (the daemon end to
 - A real server answers over TCP and returns once the token is cancelled; a request that never
   finishes doesn't hold shutdown past the drain deadline; a busy address fails `bind` with the
   address in the message.
+- Each request carries its peer's IP address over TCP, and none over a Unix socket.
 - `doozers serve` answers on `core.http_listen`, stops listening when it exits, and fails at startup
   when the address is taken.

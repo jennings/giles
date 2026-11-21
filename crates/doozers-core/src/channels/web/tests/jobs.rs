@@ -63,7 +63,7 @@ fn assert_to_list(response: &Response) {
 }
 
 /// Stores a runtime job of `agent` created by `creator`: `cron` or a one-shot `at`.
-async fn create(
+pub(super) async fn create(
     env: &Env,
     agent: &str,
     creator: &str,
@@ -239,7 +239,7 @@ async fn the_form_refuses_a_job_that_would_not_run_and_keeps_what_was_typed() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    // A user who may not chat with an agent can't schedule with one either.
+    // A member may schedule with any agent, like an admin: the job is theirs.
     let response = post(
         &env,
         guest(),
@@ -247,7 +247,11 @@ async fn the_form_refuses_a_job_that_would_not_run_and_keeps_what_was_typed() {
         "agent=bunter&repeat=cron&cron=0+9+*+*+*&prompt=p&session=dm",
     )
     .await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_to_list(&response);
+    let stored = env.store.jobs(None, None).await.unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].creator, guest().user);
+    env.store.job_delete(stored[0].id).await.unwrap();
     assert!(env.store.jobs(None, None).await.unwrap().is_empty());
 
     // At most MAX_RUNTIME_JOBS_PER_USER with one agent.

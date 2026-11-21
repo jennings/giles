@@ -27,6 +27,7 @@ mod journal_mode;
 mod memory;
 mod messages;
 mod migrate;
+mod oidc;
 mod outbox;
 mod routes;
 mod search;
@@ -37,6 +38,13 @@ mod ssh_known_hosts;
 mod time;
 mod toolsets;
 mod usage;
+mod user_data;
+mod user_invites;
+mod user_link_codes;
+mod user_passkeys;
+mod user_passwords;
+mod user_sign_in_methods;
+mod users;
 mod web_sessions;
 mod workspaces;
 
@@ -44,7 +52,8 @@ pub use blobs::{
     Blob, BlobMeta, BlobReader, BlobStore, SWEEP_GRACE, SweepGuard, SweepHold, SweepReport,
 };
 pub use conversations::{
-    ConversationActivity, ConversationDeletion, ConversationMessage, ConversationTranscript,
+    ConversationAccess, ConversationActivity, ConversationDeletion, ConversationMessage,
+    ConversationTranscript,
 };
 pub use db::{OpenOptions, Store};
 pub use error::{BoxError, Error, Result};
@@ -60,6 +69,10 @@ pub use messages::{
     Appended, Entry, History, Slot, StoredMessage, StoredMessageId, Summary, SummaryId,
 };
 pub use migrate::{MEMORY_SCHEMA_VERSION, MigrationPlan, SCHEMA_VERSION};
+pub use oidc::{
+    MAX_PROVIDER_ID_LEN, MAX_SUBJECT_LEN, OidcConnection, OidcProvider, OidcProviderSettings,
+    is_provider_id,
+};
 pub use outbox::{NewOutbox, OutboxEntry, OutboxId, OutboxTarget};
 pub use routes::{NewRoute, RouteId, StoredRoute};
 pub use search::{SNIPPET_ELLIPSIS, SNIPPET_END, SNIPPET_START, SearchHit, SearchScope};
@@ -69,7 +82,17 @@ pub use ssh_keys::{NewSshKey, SshKeyId, SshKeyRecord};
 pub use ssh_known_hosts::{KnownHostId, KnownHostRecord, NewKnownHost};
 pub use toolsets::StoredToolset;
 pub use usage::{AgentUsage, ModelUsage, UsageRecord};
-pub use web_sessions::WebSession;
+pub use user_data::{TOMBSTONE, UserData, UserDataDeletion};
+pub use user_invites::{InviteKind, UserInvite};
+pub use user_link_codes::{LINK_CODE_SALT_LEN, LinkCodeRow, LinkRedeemed};
+pub use user_passkeys::{NewPasskey, PasskeyId, PasskeyKind, StoredPasskey};
+pub use user_passwords::StoredPassword;
+pub use user_sign_in_methods::SignInMethodRef;
+pub use users::{
+    ImportedUser, NewIdentity, NewUser, Role, StoredIdentity, StoredUser, UserState, Verification,
+    canonical_identity,
+};
+pub use web_sessions::{SignInMethod, WebSession};
 pub use workspaces::{DeleteReason, NewWorkspace, WorkspaceOwner, WorkspaceRecord, WorkspaceState};
 
 use doozers_types::Timestamp;

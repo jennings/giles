@@ -29,7 +29,7 @@ use doozers_types::ConversationId;
 use serde::Deserialize;
 
 use super::auth::{WebUser, check_csrf};
-use super::pages::{WebApp, chat_id, error_page, internal_error, not_found};
+use super::pages::{WebApp, chat_id, error_page, internal_error, not_found, own_chat};
 use crate::http::RouterBuilder;
 use crate::sessions::Sessions;
 use crate::workspaces::Workspaces;
@@ -95,7 +95,7 @@ struct ActionForm {
     csrf: Option<String>,
 }
 
-fn no_such_chat() -> Response {
+pub(super) fn no_such_chat() -> Response {
     error_page(
         StatusCode::NOT_FOUND,
         "No such chat",
@@ -115,6 +115,9 @@ async fn archive(
     let Some(chat) = chat_id(&chat) else {
         return not_found();
     };
+    if let Err(response) = own_chat(&app, &user, &chat).await {
+        return *response;
+    }
     if let Err(rejected) = check_csrf(&user, &headers, form.csrf.as_deref()) {
         return rejected.into_response();
     }
@@ -144,11 +147,19 @@ async fn unarchive(
     let Some(chat) = chat_id(&chat) else {
         return not_found();
     };
+    if let Err(response) = own_chat(&app, &user, &chat).await {
+        return *response;
+    }
     if let Err(rejected) = check_csrf(&user, &headers, form.csrf.as_deref()) {
         return rejected.into_response();
     }
     let channel = app.inner.channel.instance().as_str();
-    match app.inner.store.unarchive_conversation(channel, &chat).await {
+    match app
+        .inner
+        .store
+        .unarchive_conversation(channel, &chat, &user.user)
+        .await
+    {
         Ok(_) => Redirect::to(&format!("/chats/{chat}")).into_response(),
         Err(err) => internal_error("cannot unarchive a web chat", &err),
     }
@@ -167,6 +178,9 @@ async fn delete(
     let Some(chat) = chat_id(&chat) else {
         return not_found();
     };
+    if let Err(response) = own_chat(&deletion.app, &user, &chat).await {
+        return *response;
+    }
     if let Err(rejected) = check_csrf(&user, &headers, form.csrf.as_deref()) {
         return rejected.into_response();
     }
@@ -180,7 +194,11 @@ async fn delete(
         .delete_conversation(channel, &chat, &user.user)
         .await
     {
-        Ok(ConversationDeletion::Deleted { agents, archived }) => (agents, archived),
+        Ok(ConversationDeletion::Deleted { agents, archived }) => {
+            // Its live state goes with it: the id is free to claim, and mustn't replay the history.
+            deletion.app.inner.channel.hubs.remove(&chat);
+            (agents, archived)
+        }
         Ok(ConversationDeletion::Busy) => return busy(),
         Ok(ConversationDeletion::NotFound) => return no_such_chat(),
         Err(err) => return internal_error("cannot delete a web chat", &err),
@@ -190,6 +208,8 @@ async fn delete(
             agent,
             channel: channel.to_owned(),
             conversation: chat.clone(),
+            // A chat belongs to the user who started it, and so does its workspace.
+            user: Some(user.user.clone()),
         };
         if let Err(err) = deletion
             .workspaces

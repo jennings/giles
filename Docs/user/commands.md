@@ -10,6 +10,7 @@ Doozers handles these messages itself, and they never reach the agent.
 | `yes <code>`               | Allow the tool call the agent asked approval for                     |
 | `yes! <code>`              | Allow it, and allow that tool for the rest of the session            |
 | `no <code>`                | Deny it                                                              |
+| `/link <code>`             | Add the account you send it from to your identities, with a code from the [**Identities** page](web.md#identities) |
 
 A command must be the whole message. Spaces around it and capitalization don't matter, so `/New` and
 `Yes` work. Anything else goes to the agent, including:
@@ -18,8 +19,11 @@ A command must be the whole message. Spaces around it and capitalization don't m
 - a command with more text after it, such as `/new please`
 - any message with an attachment
 
-Commands work only from [the owner](configuration.md#owner), in conversations a
-[route](configuration.md#routes) sends to an agent.
+Commands work only from [a known user](web.md#identities), in conversations a
+[route](configuration.md#routes) sends to an agent. `/link` is the exception: it works from an
+account that is nobody's yet, in a direct conversation, and no route is needed. Doozers answers it
+on the channel and the agent never sees the code. From an account that is a user's already, `/link`
+is refused.
 
 ## Starting over and stopping
 

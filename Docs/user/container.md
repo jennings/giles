@@ -122,9 +122,6 @@ at the plugin's container:
 [core]
 http_listen = "0.0.0.0:8080"
 
-[owner]
-identities = ["web:owner"]
-
 [environment.docker]
 description = "Disposable Linux containers for running code and building software."
 address = "http://doozers-environment-docker:7443"

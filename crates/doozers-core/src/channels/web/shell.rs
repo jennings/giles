@@ -13,39 +13,49 @@ pub(super) enum Nav {
     Jobs,
     Connections,
     SshKeys,
+    Account,
     Status,
     Plugins,
     Agents,
+    Users,
     Routes,
     McpServers,
     Workspaces,
     AdminSshKeys,
     AdminSshHosts,
+    AdminIdentityProviders,
 }
 
 /// The links of the "You" group, then of the "Admin" group: (page, label, href).
-const YOU: [(Nav, &str, &str); 4] = [
+const YOU: [(Nav, &str, &str); 5] = [
     (Nav::Chats, "Chats", "/"),
     (Nav::Jobs, "Scheduled jobs", "/jobs"),
     (Nav::Connections, "Connections", "/connections"),
     (Nav::SshKeys, "SSH keys", "/ssh-keys"),
+    (Nav::Account, "Account", "/account"),
 ];
-const ADMIN: [(Nav, &str, &str); 8] = [
+const ADMIN: [(Nav, &str, &str); 10] = [
     (Nav::Status, "Status", "/admin"),
     (Nav::Plugins, "Plugins", "/admin/plugins"),
     (Nav::Agents, "Agents", "/admin/agents"),
+    (Nav::Users, "Users", "/admin/users"),
     (Nav::Routes, "Routes", "/admin/routes"),
     (Nav::McpServers, "MCP servers", "/admin/mcp-servers"),
     (Nav::Workspaces, "Workspaces", "/admin/workspaces"),
     (Nav::AdminSshKeys, "SSH keys", "/admin/ssh-keys"),
     (Nav::AdminSshHosts, "Known SSH hosts", "/admin/ssh-hosts"),
+    (
+        Nav::AdminIdentityProviders,
+        "Identity providers",
+        "/admin/identity-providers",
+    ),
 ];
 
 /// What `app.html` needs: every page that extends it has a `shell` field.
 pub(super) struct Shell {
-    /// The signed-in user's id, shown in the sidebar's footer.
-    pub(super) user: String,
-    /// The first letter of [`Self::user`], capitalized: the footer's badge.
+    /// The signed-in user's display name, shown in the sidebar's footer.
+    pub(super) name: String,
+    /// The first letter of [`Self::name`], capitalized: the footer's badge.
     pub(super) initial: String,
     /// The navigation groups, the admin one only for a user who may administer.
     pub(super) groups: Vec<NavGroup>,
@@ -82,16 +92,16 @@ impl Shell {
         };
         let mut groups = vec![group("You", &YOU)];
         if may_administer(user) {
-            groups.push(group("Admin (owner only)", &ADMIN));
+            groups.push(group("Admin", &ADMIN));
         }
         let section = YOU
             .iter()
             .chain(&ADMIN)
             .find(|(nav, _, _)| *nav == current)
             .map_or("Doozers", |(_, label, _)| label);
-        let name = user.user.as_str();
+        let name = user.display_name.as_str();
         Self {
-            user: name.to_owned(),
+            name: name.to_owned(),
             initial: name
                 .chars()
                 .next()
@@ -114,8 +124,14 @@ mod tests {
     fn user(id: &str) -> WebUser {
         WebUser {
             user: UserId::new(id).unwrap(),
+            role: if id == "owner" {
+                doozers_store::Role::Admin
+            } else {
+                doozers_store::Role::Member
+            },
             sender: NativeId::new(id).unwrap(),
             csrf: "token".into(),
+            display_name: format!("{id} (display)"),
             login: Login::Test,
         }
     }
@@ -136,19 +152,27 @@ mod tests {
             [
                 (
                     "You",
-                    vec!["Chats", "Scheduled jobs", "Connections", "SSH keys"]
+                    vec![
+                        "Chats",
+                        "Scheduled jobs",
+                        "Connections",
+                        "SSH keys",
+                        "Account"
+                    ]
                 ),
                 (
-                    "Admin (owner only)",
+                    "Admin",
                     vec![
                         "Status",
                         "Plugins",
                         "Agents",
+                        "Users",
                         "Routes",
                         "MCP servers",
                         "Workspaces",
                         "SSH keys",
-                        "Known SSH hosts"
+                        "Known SSH hosts",
+                        "Identity providers"
                     ]
                 ),
             ]
@@ -163,8 +187,8 @@ mod tests {
         assert_eq!(current, ["/admin/agents"]);
         assert_eq!(shell.section, "Agents");
         assert_eq!(
-            (shell.user.as_str(), shell.initial.as_str()),
-            ("owner", "O")
+            (shell.name.as_str(), shell.initial.as_str()),
+            ("owner (display)", "O")
         );
     }
 
@@ -175,12 +199,30 @@ mod tests {
             labels(&shell),
             [(
                 "You",
-                vec!["Chats", "Scheduled jobs", "Connections", "SSH keys"]
+                vec![
+                    "Chats",
+                    "Scheduled jobs",
+                    "Connections",
+                    "SSH keys",
+                    "Account"
+                ]
             )]
         );
         assert_eq!(
-            (shell.user.as_str(), shell.initial.as_str()),
-            ("guest", "G")
+            (shell.name.as_str(), shell.initial.as_str()),
+            ("guest (display)", "G")
         );
+    }
+
+    #[test]
+    fn the_footer_shows_the_display_name_not_the_id() {
+        let mut ann = user("u-4f9c");
+        ann.display_name = "ann example".to_owned();
+        let shell = Shell::new(&ann, Nav::Account);
+        assert_eq!(
+            (shell.name.as_str(), shell.initial.as_str()),
+            ("ann example", "A")
+        );
+        assert_eq!(shell.section, "Account");
     }
 }

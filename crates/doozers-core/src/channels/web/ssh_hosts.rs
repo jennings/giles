@@ -1,9 +1,9 @@
 //! The Known SSH hosts page, `/admin/ssh-hosts`: the host keys workspaces trust, per environment
-//! instance, with the owner's Add (pin a key before any workspace connects) and Delete (forget a
+//! instance, with an admin's Add (pin a key before any workspace connects) and Delete (forget a
 //! key, so the next connection trusts whatever the host then presents). The service behind it is
 //! [`KnownHosts`]; the design is in `Docs/technical/ssh.md`.
 //!
-//! Like the other admin pages: behind the login, the owner only, every answer `no-store`, every
+//! Like the other admin pages: behind the login, admins only, every answer `no-store`, every
 //! change a CSRF-checked form post, and every form working without JavaScript. Deleting asks first.
 //! A pinned line that the service refuses shows on the page again with the reason and the pasted
 //! text, 400 for a line that isn't usable and 409 for a key that is already known.
@@ -266,7 +266,7 @@ async fn render_list(
     response
 }
 
-/// `GET /admin/ssh-hosts`: the keys by environment, each with Delete, and the Add form. The owner
+/// `GET /admin/ssh-hosts`: the keys by environment, each with Delete, and the Add form. Admins
 /// only.
 async fn list_page(
     State(pages): State<HostPages>,
@@ -300,7 +300,7 @@ struct AddForm {
 
 /// `POST /admin/ssh-hosts/add` (CSRF-checked): pins the key of the pasted line for the
 /// environment, then 303 to the page. A line that can't be pinned shows the page again with the
-/// reason and the pasted text. The owner only.
+/// reason and the pasted text. Admins only.
 async fn add(
     State(pages): State<HostPages>,
     user: WebUser,
@@ -366,7 +366,7 @@ struct DeletePage<'a> {
     environment: String,
 }
 
-/// `GET /admin/ssh-hosts/<id>/delete`: what deleting does, and the button. The owner only.
+/// `GET /admin/ssh-hosts/<id>/delete`: what deleting does, and the button. Admins only.
 async fn delete_page(
     State(pages): State<HostPages>,
     user: WebUser,
@@ -400,8 +400,8 @@ struct ActionForm {
     csrf: Option<String>,
 }
 
-/// `POST /admin/ssh-hosts/<id>/delete` (CSRF-checked): deletes the key, then 303 to the page. The
-/// owner only.
+/// `POST /admin/ssh-hosts/<id>/delete` (CSRF-checked): deletes the key, then 303 to the page. Admins
+/// only.
 async fn delete(
     State(pages): State<HostPages>,
     user: WebUser,

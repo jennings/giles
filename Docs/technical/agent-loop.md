@@ -74,9 +74,9 @@ One text block (none at all when every part is empty), with these parts separate
    each with a one-line description and its memories one per line as `#12 (core): content` (shared
    ones `#2 (core, shared): ...`, `memory::line`), oldest id first, or `(empty)`:
    - `Shared memory`: the shared core memories, which every session sees. With the usage header
-     (`## Shared memory [4% — 49/1,000]`) when the session's user may write shared memories (the
-     agent owner's direct and job sessions); otherwise without it, and left out entirely when there
-     are none.
+     (`## Shared memory [4% — 49/1,000]`) when the session's user may write shared memories (the an
+     admin's direct and job sessions); otherwise without it, and left out entirely when there are
+     none.
    - The session's own scope, always with the usage header: `User memory` in a direct or job session
      with a user, `Group memory` in a group session. A session with neither (no user, no group) has
      no such section.
@@ -143,10 +143,10 @@ it after writing summaries, and the turn goes on with the returned prompt.
 Each inbound message is stored as a `User` message whose first text block starts with a time prefix,
 `[Thu 2026-10-22 14:03 PDT]` (`%a %Y-%m-%d %H:%M %Z`), then a space and the text (just the prefix
 when the text is empty). The time is the channel's `sent_at`, else when the core received it, shown
-in `[owner] timezone`, else the agent's `timezone`, else the system's. The prefix is part of the
-stored text, so every later request renders the message identically and `memory_search` snippets
-carry the date. `meta.at` is when the core received it (it drives `idle_reset`), and `meta.sender`
-the requester. Attachments follow the text (below, Media).
+in the requesting user's time zone (a config job's is the owner's), else the agent's `timezone`,
+else the system's. The prefix is part of the stored text, so every later request renders the message
+identically and `memory_search` snippets carry the date. `meta.at` is when the core received it (it
+drives `idle_reset`), and `meta.sender` the requester. Attachments follow the text (below, Media).
 
 A request's messages come from `Store::load_history`, reloaded before each request: the newest
 summary, if any, as a leading `User` message (`Summary of the earlier conversation:` and the text),
@@ -353,6 +353,17 @@ refuses it and the turn fails with its error (above), and the next turn tries co
 `/stop` during a summary request cancels the turn as usual. A database error fails the turn like any
 other.
 
+**Outside a turn.** `AgentLoop::recompact_session(session)` writes a session's summaries again after
+they were deleted, which forgetting a user does to the group sessions where the user's messages
+became tombstones ([Storage](storage.md#forgetting-a-user)). Summaries are cumulative, so the
+deleted ones held the session's whole compacted history. It makes the same requests as a check, with
+a turn built from nothing (no requester, no reply, never cancelled), until the history is under the
+threshold or a request fails, at most `MAX_RECOMPACT_PASSES` (50) of them. It sizes the history from
+its messages and never from the usage they recorded, which was measured against summaries that are
+gone (forgetting a user also removes that usage from those sessions). The prompt prefix isn't
+counted. It returns whether the history fits, logs why it doesn't, and leaves the rest to the
+session's next turn. Its requests are recorded as usage without a user.
+
 ## Tool dispatch
 
 `ToolDispatcher::dispatch(ToolBatch { calls, tools, context, media, turn, skip, approvals })`
@@ -398,9 +409,9 @@ no such tool), the registry no longer serves it under that name and target (a to
 its toolset isn't registered, or it's a core tool with no implementation registered (a spec added
 with `ToolIndex::set_core_tool` alone). A per-user toolset's tools aren't in the index, so for them
 only the registration is checked, and the requester's own connection decides the rest. The session's
-tool list is the agent's allowlist (§6.4); v1 has no roles, so there is no second check by the
-requester's role. With roles, a forbidden call would get `not permitted for <user>` here, before it
-runs.
+tool list is the agent's allowlist (§6.4). The two roles (admin and member) don't narrow it, so
+there is no second check by the requester's role; per-user allowlists are later work, and a call one
+forbids would get `not permitted for <user>` here, before it runs.
 
 Then a call to a tool matching the agent's `ask` globs waits for approval
 (`TurnApprovals::approve_call`, [Approvals](approvals.md)); a denial is its error result. The wait

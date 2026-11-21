@@ -35,23 +35,6 @@ server, or use one you own, and invite the bot:
 Your privacy settings for that server must allow direct messages from server members. Otherwise
 Discord refuses the bot's messages to you.
 
-## Find your user ID
-
-Doozers recognizes you by your Discord user ID, a number, and not by your name.
-
-1. In the Discord app, open **User Settings**, then **Advanced**, and turn on **Developer Mode**.
-2. Right-click (or long-press) your own name or avatar and choose **Copy User ID**.
-
-Add it to `[owner] identities` in `doozers.toml`:
-
-```toml
-[owner]
-identities = ["discord:82198898841029460"]
-```
-
-Messages from an ID that isn't listed are dropped. The log line `dropped inbound message` shows the
-sender in exactly the form to add.
-
 ## Store the token
 
 Anyone who has the bot token can act as your bot. Put it in
@@ -73,12 +56,9 @@ new token in `secrets.toml` and restart Doozers. Restarting only the plugin keep
 
 ## Configure Doozers
 
-Add the channel to `doozers.toml`. With your owner entry, it looks like this:
+Add the channel to `doozers.toml`:
 
 ```toml
-[owner]
-identities = ["discord:82198898841029460"]
-
 [channel.discord]
 component = "discord"
 
@@ -91,6 +71,21 @@ that name.
 
 Start Doozers. `doozers status` should show the channel as `connected`, and the bot shows as online
 in Discord.
+
+## Add your identity
+
+Your Discord identity is `discord:` followed by your user ID, a number, such as
+`discord:82198898841029460`. You don't need to look it up: Doozers takes it from the message you
+send.
+
+Add it on the [**Identities** page](web.md#identities) of the web chat, once Doozers is running and
+the channel is `connected`. Choose `discord`, make a code, and send `/link` and the code to the bot
+in a direct message. Doozers replies when it has added the identity. An install upgraded from a
+version without users keeps the identities of [`[owner]`](configuration.md#owner), which Doozers
+imported once.
+
+Messages from an ID that no user has are dropped, except `/link` and a code. The log line
+`dropped inbound message` shows the sender in exactly the form to use.
 
 ## Settings
 
@@ -192,7 +187,8 @@ A reply can also fail without changing the status. The log and the failed reply 
   shared server don't allow direct messages from server members.
 - You share no server with the bot (error 50278). [Invite the bot](#invite-the-bot-to-a-server) to a
   server you're in.
-- Discord doesn't know the user (error 10013). The ID in `[owner] identities` or `default` is wrong.
+- Discord doesn't know the user (error 10013). The ID in your Discord identity, or in your default
+  identity, is wrong.
 - The bot is opening DMs too fast (error 40003). Wait.
 
 Messages Doozers sends on its own, such as job results, are retried until they expire.

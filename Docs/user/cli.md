@@ -86,13 +86,27 @@ The report covers all requests by default. `--since` limits it to requests made 
 - midnight of a date, in your time zone: `2026-10-01`
 - a time: `2026-10-01T09:00:00Z`
 
-## `doozers admin login-link --user <user>`
+## `doozers admin login-link`
 
-Prints a one-time URL that logs `<user>` in to the web chat, for example from a phone. The only user
-is `owner`.
+Prints a one-time recovery URL that signs a user in to the web chat, for example from a phone. It
+works for any active user, including one who has lost every other way to sign in, and it keeps every
+way the user can already sign in.
 
-The link works once, within 10 minutes. The expiry time is printed on standard error. Login links
-need the built-in `web` channel.
+On a fresh install, which has no users yet, the command creates the first admin, with the id `owner`
+and the username `admin`, and prints a link for it. With one user, the link is for that user. With
+several, name the one to log in with `--user <id>`. The user you imported from `[owner]` has the id
+`owner`:
+
+```sh
+doozers admin login-link --user owner
+```
+
+The command prints the link on standard output, and on standard error the id and username of the
+user it logs in.
+
+The link works once, within 72 hours. The expiry time is printed on standard error. Making another
+link doesn't end the earlier ones. Login links need the built-in `web` channel. See
+[Invite and recovery links](web.md#invite-and-recovery-links).
 
 ## `doozers toolset`
 
@@ -287,9 +301,8 @@ The command renames:
 - the `[channel.<old>]` table in `doozers.toml`, keeping its comments and formatting
 
 If the table has no `component` key, the command adds `component = "<old>"`, so the channel keeps
-running the same component. You don't need to change `[owner] identities`, because they're named
-after the network, not the channel. [Instance rename](../technical/instance-rename.md) lists
-everything the command touches.
+running the same component. Identities are named after the network, not the channel, so they stay as
+they are. [Instance rename](../technical/instance-rename.md) lists everything the command touches.
 
 The command renames a channel and nothing else. A provider or toolset with the same name keeps its
 own table and data.

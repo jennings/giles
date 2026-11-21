@@ -101,7 +101,7 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     let http_addr = listener
         .local_addr()
         .context("cannot read the HTTP listener's address")?;
-    // Login links point at the address actually bound (`http_listen` may say port 0).
+    // Invite and recovery links point at the address actually bound (`http_listen` may say port 0).
     #[cfg(feature = "channel-web")]
     if let Some(web) = runtime.registry.web_channel() {
         web.set_listen_addr(http_addr);
@@ -133,10 +133,10 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     ))));
     let runner = Arc::new(AgentLoop::from_runtime(&runtime, approvals.clone()));
     let sessions = runtime
-        .start_sessions(runner.clone(), approvals, shutdown.clone())
+        .start_sessions(runner.clone(), approvals.clone(), shutdown.clone())
         .await?;
     // Config and runtime jobs; their replies and approval prompts go through the outbox.
-    let scheduler = runtime.start_scheduler(sessions.clone(), runner, shutdown.clone());
+    let scheduler = runtime.start_scheduler(sessions.clone(), runner.clone(), shutdown.clone());
     // Removal of blobs nothing references any more, first a minute from now.
     let blob_sweep = runtime.start_blob_sweep(shutdown.clone());
     // Environment workspaces: idle ones stopped, abandoned ones deleted, and each plugin
@@ -153,14 +153,14 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
         Launcher::new(root.clone(), doozers_exe, sandbox.clone().map(drop)),
         wiring,
     ));
-    // Login links come from the built-in web channel, if one is configured.
+    // The built-in web channel, if one is configured, says where invite and recovery links point.
     #[cfg(feature = "channel-web")]
-    let login_links = runtime
+    let invite_links = runtime
         .registry
         .web_channel()
-        .map(|web| web as Arc<dyn doozers_core::admin::LoginLinks>);
+        .map(|web| web as Arc<dyn doozers_core::admin::InviteLinks>);
     #[cfg(not(feature = "channel-web"))]
-    let login_links = None;
+    let invite_links = None;
     let admin = Arc::new(AdminService::new(AdminOptions {
         config: runtime.registry.live_config().clone(),
         root: root.clone(),
@@ -176,7 +176,8 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
             toolsets.clone() as Arc<dyn PluginControl>,
             toolset_manager.clone() as Arc<dyn PluginControl>,
         ]))),
-        login_links,
+        invite_links,
+        users: runtime.users.clone(),
         // Every toolset RPC goes through the manager, as the web pages do.
         toolsets: Some(toolset_manager.clone() as Arc<dyn ToolsetAdmin>),
         clock: Arc::new(SystemClock),
@@ -187,8 +188,9 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
     // pages, which create, edit, and remove agents in the running configuration (the registry's,
     // which the web app also reads), the route pages, which change the routes the router reads, and
     // the toolset pages, which change the stored toolsets through the manager and show how each is
-    // doing from the admin service, and the workspaces page, which lists, stops, and deletes
-    // environment workspaces.
+    // doing from the admin service, the workspaces page, which lists, stops, and deletes
+    // environment workspaces, and the user pages, which list users and forget one (refused while the
+    // session manager is working for them).
     #[cfg(feature = "channel-web")]
     let builder = match &web {
         Some(web) => {
@@ -213,6 +215,7 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
             );
             let builder = web.install_agents(web.install_admin(builder, admin.clone()), manager);
             let builder = web.install_routes(builder, runtime.routes.clone());
+            let builder = web.install_oidc(builder, runtime.secrets.clone());
             let builder = web.install_connections(builder, toolset_manager.clone());
             let builder = web.install_toolsets(
                 builder,
@@ -221,6 +224,26 @@ async fn serve(root: DataRoot, config: Config, lock: InstanceLock) -> anyhow::Re
                 runtime.registry.clone(),
             );
             let builder = web.install_ssh_keys(builder, runtime.ssh_keys.clone());
+            let builder = web.install_identities(builder, runtime.links.clone());
+            let builder = web.install_account(builder, runtime.users.clone());
+            let forgetter =
+                doozers_core::forget::Forgetter::new(doozers_core::forget::ForgetOptions {
+                    store: runtime.store.clone(),
+                    users: runtime.users.clone(),
+                    root: runtime.root.clone(),
+                    memory_dbs: runtime.memory_dbs.clone(),
+                    secrets: runtime.secrets.clone(),
+                    workspaces: runtime.workspaces.clone(),
+                    approvals: approvals.clone(),
+                    jobs: runtime.jobs.clone(),
+                    activity: Arc::new(doozers_core::forget::DaemonUserActivity {
+                        sessions: sessions.clone(),
+                        scheduler: scheduler.clone(),
+                    }),
+                    summaries: runner.clone(),
+                    clock: Arc::new(SystemClock),
+                });
+            let builder = web.install_users(builder, runtime.users.clone(), forgetter);
             let builder = web.install_ssh_hosts(builder, runtime.workspaces.known_hosts().clone());
             web.install_workspaces(builder, runtime.workspaces.clone())
         }

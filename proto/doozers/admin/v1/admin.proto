@@ -26,7 +26,9 @@ service AdminService {
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
   // Ends a session, like /new: later messages in its conversation start a fresh one.
   rpc ResetSession(ResetSessionRequest) returns (ResetSessionResponse);
-  // A one-time web login URL for a user (PLAN section 3.4).
+  // A one-time web login URL for a user (PLAN section 3.4). It also gives the user the identity
+  // `web:<id>` that a web login signs in as, if they lack it, and creates the first admin when there
+  // are no users.
   rpc CreateLoginLink(CreateLoginLinkRequest) returns (CreateLoginLinkResponse);
   // Token usage summed per agent, provider instance, and model (PLAN section 11.7).
   rpc UsageReport(UsageReportRequest) returns (UsageReportResponse);
@@ -241,7 +243,9 @@ message ResetSessionRequest {
 message ResetSessionResponse {}
 
 message CreateLoginLinkRequest {
-  // The user name.
+  // The user's id. Empty: with no users, the first admin is created and the link is theirs; with
+  // exactly one user, it is theirs; with several, INVALID_ARGUMENT. NOT_FOUND if there is no such
+  // user; FAILED_PRECONDITION if the user is disabled.
   string user = 1;
 }
 
@@ -250,6 +254,10 @@ message CreateLoginLinkResponse {
   string url = 1;
   // When the link stops working.
   google.protobuf.Timestamp expires_at = 2;
+  // The id of the user the link logs in.
+  string user = 3;
+  // That user's username.
+  string username = 4;
 }
 
 message UsageReportRequest {

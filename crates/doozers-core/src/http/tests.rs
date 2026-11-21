@@ -69,6 +69,7 @@ async fn every_response_has_the_security_headers() {
             StatusCode::OK,
         ),
         (Method::GET, assets::copy_script_path(), StatusCode::OK),
+        (Method::GET, assets::passkey_script_path(), StatusCode::OK),
         (Method::GET, stylesheet, StatusCode::OK),
         (Method::GET, "/no/such/page", StatusCode::NOT_FOUND),
         (
@@ -161,6 +162,14 @@ fn stylesheet_path_is_its_content_hash() {
     let stylesheet = assets::stylesheet();
     let hash = &sha256_hex(stylesheet.body)[..16];
     assert_eq!(stylesheet.path, format!("/static/doozers-{hash}.css"));
+}
+
+#[test]
+fn passkey_script_path_is_its_content_hash() {
+    let script = assets::passkey_script();
+    let hash = &sha256_hex(script.body)[..16];
+    assert_eq!(script.path, format!("/static/passkey-{hash}.js"));
+    assert_eq!(script.content_type, "text/javascript; charset=utf-8");
 }
 
 #[test]
@@ -339,4 +348,55 @@ async fn serves_on_a_unix_socket_too() {
     shutdown.cancel();
     let result = tokio::time::timeout(Duration::from_secs(5), server).await;
     result.expect("server did not stop").unwrap().unwrap();
+}
+
+/// A page that says which peer the request came from.
+async fn peer_page(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<PeerAddr>,
+) -> String {
+    peer.0
+        .map_or_else(|| "none".to_owned(), |ip| ip.to_string())
+}
+
+#[tokio::test]
+async fn requests_carry_the_ip_address_of_their_peer() {
+    let app = RouterBuilder::new()
+        .merge(Router::new().route("/peer", get(peer_page)))
+        .build();
+    let listener = bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let shutdown = CancellationToken::new();
+    let server = tokio::spawn(serve(listener, app, shutdown.clone()));
+
+    let response = http_get(addr, "/peer").await;
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+    assert!(response.ends_with("\r\n\r\n127.0.0.1"), "{response}");
+
+    shutdown.cancel();
+    server.await.unwrap().unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_unix_socket_peer_has_no_ip_address() {
+    let app = RouterBuilder::new()
+        .merge(Router::new().route("/peer", get(peer_page)))
+        .build();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("http.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let shutdown = CancellationToken::new();
+    let server = tokio::spawn(serve(listener, app, shutdown.clone()));
+
+    let mut stream = tokio::net::UnixStream::connect(&path).await.unwrap();
+    stream
+        .write_all(b"GET /peer HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    assert!(response.ends_with("\r\n\r\nnone"), "{response}");
+
+    shutdown.cancel();
+    server.await.unwrap().unwrap();
 }

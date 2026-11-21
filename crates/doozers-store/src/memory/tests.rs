@@ -1803,3 +1803,54 @@ async fn group_owners_counts_private_group_memories_only() {
     assert_eq!(owners.len(), 1);
     assert_eq!(owners[0].conversation.as_str(), "C2");
 }
+
+#[tokio::test]
+async fn forgetting_a_user_deletes_their_private_memories_and_detaches_their_shared_ones() {
+    let (_dir, store) = open().await;
+    let ann = guest("ann");
+    let bob = guest("bob");
+    let private = add(&store, &ann, new("ann likes tea annmarker")).await;
+    add(&store, &ann, new_core("ann's core memory")).await;
+    let kept = add(&store, &bob, new("bob likes coffee")).await;
+    // Admin ann wrote a shared memory; it belongs to everyone.
+    let admin_ann = MemoryViewer::new(user_owner("ann"), true);
+    let shared = add(
+        &store,
+        &admin_ann,
+        new_shared("the office is closed on Friday"),
+    )
+    .await;
+    let team = group("slack", "C1");
+    let group_memory = add(&store, &team, new("team's")).await;
+
+    let ann_id = UserId::new("ann").unwrap();
+    assert_eq!(store.user_memories(&ann_id).await.unwrap(), 2);
+    assert_eq!(store.forget_user(&ann_id).await.unwrap(), (2, 1));
+    assert_eq!(store.user_memories(&ann_id).await.unwrap(), 0);
+    assert!(matches!(
+        store.get(&ann, private.id).await,
+        Err(Error::UnknownMemory(_))
+    ));
+    assert_eq!(
+        store.get(&bob, kept.id).await.unwrap().content,
+        "bob likes coffee"
+    );
+    assert_eq!(
+        store.get(&team, group_memory.id).await.unwrap().content,
+        "team's"
+    );
+    let shared = store.get(&bob, shared.id).await.unwrap();
+    assert_eq!(shared.content, "the office is closed on Friday");
+    assert_eq!(shared.owner, MemoryOwner::None);
+    // The search index followed the deletes, and none of the words are left in the file.
+    assert!(store.recall(&ann, "tea", 5).await.unwrap().is_empty());
+    let copy = _dir.path().join("copy.db");
+    store.vacuum_into(copy.clone()).await.unwrap();
+    let bytes = std::fs::read(copy).unwrap();
+    let has = |needle: &str| bytes.windows(needle.len()).any(|w| w == needle.as_bytes());
+    // The tokenizer stems words, so the index holds "annmark".
+    assert!(!has("annmark") && has("coffee"));
+
+    // Again: nothing left to do.
+    assert_eq!(store.forget_user(&ann_id).await.unwrap(), (0, 0));
+}

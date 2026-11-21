@@ -87,8 +87,10 @@ removes its files, and the agent is told that an operator deleted it.
 
 ## How long a workspace lasts
 
-A workspace belongs to its conversation. `/new` starts a fresh session and keeps the workspace, so
-the agent can carry on with the same files.
+A workspace belongs to its conversation and to you. `/new` starts a fresh session and keeps the
+workspace, so the agent can carry on with the same files. On a channel where a conversation can pass
+to someone else, such as an IRC nickname someone else takes over after your session ended, they get
+a workspace of their own, with none of your files or SSH keys, and yours stays yours.
 
 A workspace goes away when:
 

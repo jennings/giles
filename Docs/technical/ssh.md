@@ -98,15 +98,15 @@ with a message that says to convert the key with `ssh-keygen -p -f <file>`.
 ## Permissions
 
 `SshKeys` is the service. It is held by `Runtime::ssh_keys` over the `Store`, the
-`Arc<dyn SecretProvider>`, and the clock. Every call takes the user who acts.
+`Arc<dyn SecretProvider>`, the clock, and the `UserList`. Every call takes the user who acts.
 
 | Call | Who |
 | ---- | --- |
 | `list`, `get`, `generate`, `upload`, `rename`, `delete` | The acting user, on their own keys only. A key of someone else's is `NotFound`, the same as a key that doesn't exist. |
-| `all_keys`, `any_key`, `delete_any` | The owner only (`SshKeys::may_administer`, which is the web `may_administer`). Anyone else gets `Forbidden`. |
+| `all_keys`, `any_key`, `delete_any` | An active admin only (`SshKeys::may_administer`, which asks the shared `UserList` at each call, as the web `may_administer` asks the role of the request). Anyone else, a demoted or disabled admin included, gets `Forbidden`. |
 
-The owner can see any user's key details and delete a key. The owner can't use another user's key:
-`private_key` takes the user whose key it is, and the owner is only that for their own.
+An admin can see any user's key details and delete a key. An admin can't use another user's key:
+`private_key` takes the user whose key it is, and an admin is only that for their own.
 
 No call returns a private key. The signing path, which is inside the core, is the only reader:
 
@@ -138,10 +138,29 @@ Several users' keys can't be kept apart in one workspace. Every command can conn
 socket, and an SSH connection opened in one user's turn, such as a `ControlMaster`, stays usable in
 another's. A group workspace therefore gets no keys, which matches per-user MCP toolsets.
 
+### Whose workspace it is
+
+A conversation id can pass from one user to the next: an IRC direct conversation is the sender's
+nickname, so a member who takes a nickname inherits its conversation once the earlier user's session
+has ended ([Sessions and turns](sessions.md#the-inbound-pipeline)). A workspace is therefore owned
+by agent, channel instance, conversation, and, for a direct conversation, its user
+([Environment workspaces](environments.md#owners-and-ids)), and the key user of a direct
+conversation's workspace is always its owner's user. Two users never share a workspace, so the
+second user can't run in the first one's files or sign with their keys, and there is nothing to
+replace when a conversation changes hands: the second user has no workspace until they create one,
+and the first user's stays theirs. Every workspace call, `environment_status`, `environment_create`,
+`environment_reset`, `/env reset`, and the relay's own requests included, is made for the owner of
+the calling turn's session, so a turn still running after a `/new` and the next user's first message
+keeps using its own user's workspace and neither deletes the other's. Jobs can't get into a held
+conversation either: a runtime job whose conversation another user holds uses its own user's DM and
+default identity instead, and `Sessions::open_direct` refuses to hand a user another user's open
+session ([Sessions and turns](sessions.md), [Scheduler](scheduler.md#one-run)).
+
 A workspace keeps its key user for its life. `recreate` and `/env reset` pass the record's on to the
 new workspace, while the model's own `environment_reset` creates the new workspace from the current
 turn like `environment_create` does. Migration `0013` filled `key_user` for existing conversation
-rows from the newest `direct` session of their key and left job rows without one.
+rows from the newest `direct` session of their key and left job rows without one, and migration
+`0016` filled each conversation row's owner user (`workspaces.user_id`) from its `key_user`.
 
 ## The agent relay
 
@@ -388,7 +407,7 @@ recorded. The rows move with `doozers environment rename` ([Instance rename](ins
 
 ### Admin page and pinning
 
-`KnownHosts` has the calls of the **Known SSH hosts** page, `/admin/ssh-hosts`, which only the owner
+`KnownHosts` has the calls of the **Known SSH hosts** page, `/admin/ssh-hosts`, which only an admin
 opens ([Web channel](web-channel.md)): `all()`, `get(id)`, `delete(id)`, and
 `pin(admin, environment, line)`. Deleting removes one key. When a host has none left, its next
 connection is a first use again.

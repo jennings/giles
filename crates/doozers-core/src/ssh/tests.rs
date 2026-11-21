@@ -8,15 +8,17 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
-use doozers_store::SshKeyId;
+use doozers_store::{Role, SshKeyId, UserState};
 use ssh_key::private::{KeypairData, SkEd25519};
 use ssh_key::public::{Ed25519PublicKey, SkEd25519 as SkEd25519Public};
 use ssh_key::{HashAlg, LineEnding, PublicKey, SshSig};
 
 use super::formats::{KeyFileError, MAX_UPLOAD_BYTES, parse_private_key};
 use super::*;
+use crate::identity;
 use crate::paths::DataRoot;
 use crate::secrets::{KeyFile, LocalSecrets, SecretMetadata};
+use crate::users::User;
 
 /// The passphrase of every encrypted fixture.
 const PASS: &str = "correct horse battery";
@@ -530,6 +532,8 @@ struct Env {
     secrets: Arc<Flaky>,
     clock: Arc<TestClock>,
     keys: SshKeys,
+    /// The users the service asks: `owner` and `admin2` are admins, `alice` and `bob` members.
+    users: UserList,
 }
 
 impl Env {
@@ -552,13 +556,15 @@ impl Env {
             fail_put: AtomicBool::new(false),
             fail_delete: AtomicBool::new(false),
         });
-        let keys = SshKeys::new(store.clone(), secrets.clone(), clock.clone());
+        let users = UserList::with_roles(&["owner", "admin2"], &["alice", "bob"]);
+        let keys = SshKeys::new(store.clone(), secrets.clone(), clock.clone(), users.clone());
         Self {
             dir,
             store,
             secrets,
             clock,
             keys,
+            users,
         }
     }
 
@@ -1123,9 +1129,10 @@ async fn users_see_and_change_only_their_own_keys() {
 }
 
 #[tokio::test]
-async fn only_the_owner_gets_the_admin_calls() {
+async fn only_admins_get_the_admin_calls() {
     let env = Env::new().await;
     let alice = user("alice");
+    let second = user("admin2");
     let hers = env
         .keys
         .generate(&alice, KeyType::Ed25519, Some("hers"))
@@ -1137,8 +1144,10 @@ async fn only_the_owner_gets_the_admin_calls() {
         .await
         .unwrap();
 
-    assert!(SshKeys::may_administer(&owner()));
-    assert!(!SshKeys::may_administer(&alice));
+    assert!(env.keys.may_administer(&owner()));
+    assert!(env.keys.may_administer(&second));
+    assert!(!env.keys.may_administer(&alice));
+    assert!(!env.keys.may_administer(&user("nobody")));
     assert!(matches!(
         env.keys.all_keys(&alice).await,
         Err(SshKeysError::Forbidden)
@@ -1153,17 +1162,23 @@ async fn only_the_owner_gets_the_admin_calls() {
     ));
     assert!(env.stored_pem(&owner(), mine.id).await.is_some());
 
-    // The owner sees every user's metadata, ordered by user.
-    let all = env.keys.all_keys(&owner()).await.unwrap();
-    assert_eq!(all, [hers.clone(), mine.clone()]);
-    assert_eq!(env.keys.any_key(&owner(), hers.id).await.unwrap(), hers);
+    // Every admin sees every user's metadata, ordered by user.
+    for admin in [owner(), second.clone()] {
+        let all = env.keys.all_keys(&admin).await.unwrap();
+        assert_eq!(all, [hers.clone(), mine.clone()]);
+        assert_eq!(env.keys.any_key(&admin, hers.id).await.unwrap(), hers);
+    }
     assert!(matches!(
         env.keys.any_key(&owner(), SshKeyId::new(9999)).await,
         Err(SshKeysError::NotFound)
     ));
 
-    // They can delete a user's key, row and secret, but not use it.
-    let gone = env.keys.delete_any(&owner(), hers.id).await.unwrap();
+    // A second admin can delete a user's key, row and secret, but not use it.
+    assert!(matches!(
+        env.keys.private_key(&second, hers.id).await,
+        Err(SshKeysError::NotFound)
+    ));
+    let gone = env.keys.delete_any(&second, hers.id).await.unwrap();
     assert_eq!(gone, hers);
     assert!(env.keys.list(&alice).await.unwrap().is_empty());
     assert!(env.stored_pem(&alice, hers.id).await.is_none());
@@ -1172,6 +1187,27 @@ async fn only_the_owner_gets_the_admin_calls() {
         Err(SshKeysError::NotFound)
     ));
     assert_eq!(env.keys.list(&owner()).await.unwrap(), [mine]);
+}
+
+#[tokio::test]
+async fn the_admin_calls_follow_the_users_as_they_change() {
+    let env = Env::new().await;
+    let second = user("admin2");
+    assert!(env.keys.all_keys(&second).await.is_ok());
+
+    // Demoted: the next call is refused. Disabled: so is an admin's.
+    let mut demoted = User::member("admin2", &[]);
+    demoted.role = Role::Member;
+    let mut disabled = User::admin("owner", &[]);
+    disabled.state = UserState::Disabled;
+    env.users.set(vec![demoted, disabled]);
+    for acting in [second, owner()] {
+        assert!(!env.keys.may_administer(&acting), "{acting}");
+        assert!(matches!(
+            env.keys.all_keys(&acting).await,
+            Err(SshKeysError::Forbidden)
+        ));
+    }
 }
 
 #[tokio::test]

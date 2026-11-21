@@ -83,28 +83,31 @@ fn the_guide_shows_the_documented_defaults_and_limits() {
     assert!(DISCORD.contains("at most `\"30d\"`"));
 }
 
+/// The `discord:<id>` identities in the guide's inline code.
+fn identities(markdown: &str) -> Vec<&str> {
+    markdown
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|span| {
+            span.len() > "discord:".len()
+                && span.starts_with("discord:")
+                && !span.contains(['<', ' '])
+        })
+        .collect()
+}
+
 #[test]
 fn the_identities_in_the_guide_have_the_form_the_plugin_reports() {
-    let mut seen = 0;
-    for document in documents(DISCORD) {
-        let Some(identities) = document
-            .get("owner")
-            .and_then(|owner| owner.get("identities"))
-            .and_then(toml::Value::as_array)
-        else {
-            continue;
-        };
-        for identity in identities {
-            let identity = identity.as_str().unwrap();
-            let native = identity
-                .strip_prefix("discord:")
-                .unwrap_or_else(|| panic!("{identity}: not in the discord namespace"));
-            // A snowflake: decimal digits, no leading zero, and it fits 64 bits.
-            assert!(!native.starts_with('0'), "{identity}");
-            assert!(native.bytes().all(|b| b.is_ascii_digit()), "{identity}");
-            assert!(native.parse::<u64>().is_ok(), "{identity}");
-            seen += 1;
-        }
+    let seen = identities(DISCORD);
+    for identity in &seen {
+        let native = identity
+            .strip_prefix("discord:")
+            .unwrap_or_else(|| panic!("{identity}: not in the discord namespace"));
+        // A snowflake: decimal digits, no leading zero, and it fits 64 bits.
+        assert!(!native.starts_with('0'), "{identity}");
+        assert!(native.bytes().all(|b| b.is_ascii_digit()), "{identity}");
+        assert!(native.parse::<u64>().is_ok(), "{identity}");
     }
-    assert_eq!(seen, 2);
+    assert!(!seen.is_empty());
 }

@@ -7,9 +7,11 @@
 //!
 //! A runtime job delivers to its creator, so the page lists the runtime jobs the user created,
 //! and only those can be changed: every handler that takes a job id answers 404 for anyone else's
-//! ([`own_job`]). Config jobs deliver to the owner, so only the owner sees them. Like the memory
-//! page, it is open to every signed-in user, not only the owner; a new job may be for any agent
-//! the user may start a chat with ([`agent_choices`]).
+//! ([`own_job`]). Config jobs run as the user `owner` ([`identity::OWNER`]) and deliver to them, so
+//! that user, whatever their role, sees them: whose data they are decides it, not the admin role,
+//! until runtime jobs replace them (#115). Like the memory page, it is open to every signed-in
+//! user, not only admins; a new job may be for any agent the user may start a chat with
+//! ([`agent_choices`]).
 //!
 //! # Changes
 //!
@@ -39,11 +41,10 @@ use axum::middleware::map_response;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use doozers_store::{JobKey, RuntimeJob, RuntimeJobId};
-use doozers_types::{AgentId, Timestamp};
+use doozers_types::{AgentId, Timestamp, UserId};
 use jiff::tz::TimeZone;
 use serde::Deserialize;
 
-use super::admin::may_administer;
 use super::auth::{WebUser, check_csrf};
 use super::pages::{
     AgentChoice, WebApp, agent_choices, agent_label, error_page, internal_error, no_store,
@@ -54,6 +55,7 @@ use crate::config::{ActiveHours, Config, JobPrompt, JobSession, parse_cron};
 use crate::core_tools::MAX_RUNTIME_JOBS_PER_USER;
 use crate::core_tools::schedule::{parse_at, short, show_time};
 use crate::http;
+use crate::identity;
 use crate::scheduler::{JobDef, RuntimeSpec, When, in_active_hours};
 
 /// How many times of a job's schedule [`next_run`] tries against its active hours before it
@@ -164,15 +166,14 @@ fn session_name(session: JobSession) -> &'static str {
     }
 }
 
-/// The zone `agent`'s jobs run in; the owner's or the system's for an agent that isn't
-/// configured.
-fn zone(config: &Config, agent: &AgentId) -> TimeZone {
+/// The zone `agent`'s jobs of `user` (`None`: a config job) run in; the user's or the system's for
+/// an agent that isn't configured.
+fn zone(app: &WebApp, user: Option<&UserId>, config: &Config, agent: &AgentId) -> TimeZone {
+    let users = app.inner.channel.users();
     match config.agents.get(agent) {
-        Some(agent) => message_timezone(config, agent),
-        None => config
-            .owner
-            .timezone
-            .clone()
+        Some(agent) => message_timezone(users, user, agent),
+        None => users
+            .timezone(user.unwrap_or(&identity::owner()))
             .unwrap_or_else(TimeZone::system),
     }
 }
@@ -184,8 +185,14 @@ fn zone_name(tz: &TimeZone) -> String {
 }
 
 /// The row of a job the scheduler can run, with its last run.
-fn row(config: &Config, job: &JobDef, last: Option<Timestamp>, now: Timestamp) -> JobRow {
-    let tz = zone(config, &job.agent);
+fn row(
+    app: &WebApp,
+    config: &Config,
+    job: &JobDef,
+    last: Option<Timestamp>,
+    now: Timestamp,
+) -> JobRow {
+    let tz = zone(app, job.creator.as_ref(), config, &job.agent);
     let configured = config.agents.contains_key(&job.agent);
     let next_at = (configured && !job.disabled)
         .then(|| next_run(job, &tz, now))
@@ -258,10 +265,10 @@ async fn jobs_page(State(app): State<WebApp>, user: WebUser) -> Response {
     };
     let config = app.inner.agents.get();
     let now = app.inner.clock.now();
-    let admin = may_administer(&user);
     let mut defs = Vec::new();
     let mut rows = Vec::new();
-    if admin {
+    // Config jobs are the user `owner`'s: they run as them and deliver to them.
+    if user.user == identity::owner() {
         for (agent, agent_config) in &config.agents {
             defs.extend(
                 agent_config
@@ -282,7 +289,7 @@ async fn jobs_page(State(app): State<WebApp>, user: WebUser) -> Response {
             Ok(last) => last,
             Err(err) => return internal_error("cannot read a job's last run", &err),
         };
-        rows.push(row(&config, def, last, now));
+        rows.push(row(&app, &config, def, last, now));
     }
     // Stable: jobs with the same next run (or none) keep the order above.
     rows.sort_by(|a, b| match (a.next_at, b.next_at) {
@@ -294,7 +301,7 @@ async fn jobs_page(State(app): State<WebApp>, user: WebUser) -> Response {
     http::render(&JobsPage {
         shell: Shell::new(&user, Nav::Jobs),
         jobs: rows,
-        can_create: !agent_choices(&config, &user).is_empty(),
+        can_create: !agent_choices(&config).is_empty(),
         csrf: user.csrf.clone(),
     })
 }
@@ -433,12 +440,12 @@ fn render_form(
     let config = app.inner.agents.get();
     let (title, action, submit, agents, agent, zone) = match target {
         Target::New => {
-            let agents = agent_choices(&config, user);
+            let agents = agent_choices(&config);
             // The zone of the chosen agent: say which when they all agree.
             let mut zones = agents.iter().filter_map(|choice| {
                 AgentId::new(&choice.id)
                     .ok()
-                    .map(|id| zone_name(&zone(&config, &id)))
+                    .map(|id| zone_name(&zone(app, Some(&user.user), &config, &id)))
             });
             let zone = match zones.next() {
                 Some(first) if zones.all(|other| other == first) => first,
@@ -460,7 +467,7 @@ fn render_form(
             "Save",
             Vec::new(),
             Some(agent_label(&config, &job.agent)),
-            zone_name(&zone(&config, &job.agent)),
+            zone_name(&zone(app, Some(&user.user), &config, &job.agent)),
         ),
     };
     let (status, error) = match error {
@@ -568,7 +575,7 @@ async fn create(
         render_form(&app, &user, &Target::New, &form, Some((status, error)))
     };
     let config = app.inner.agents.get();
-    let agent = match agent_choices(&config, &user)
+    let agent = match agent_choices(&config)
         .iter()
         .find(|choice| choice.id == form.agent)
         .and_then(|choice| AgentId::new(&choice.id).ok())
@@ -577,7 +584,7 @@ async fn create(
         None => return refuse(StatusCode::BAD_REQUEST, "Pick an agent.".to_owned()),
     };
     let now = app.inner.clock.now();
-    let spec = match form.spec(&zone(&config, &agent), now) {
+    let spec = match form.spec(&zone(&app, Some(&user.user), &config, &agent), now) {
         Ok(spec) => spec,
         Err(error) => return refuse(StatusCode::BAD_REQUEST, error),
     };
@@ -620,7 +627,7 @@ async fn edit_page(State(app): State<WebApp>, user: WebUser, Path(id): Path<Stri
     };
     let config = app.inner.agents.get();
     let form = match serde_json::from_value::<RuntimeSpec>(job.spec.clone()) {
-        Ok(spec) => JobForm::of(&spec, &zone(&config, &job.agent)),
+        Ok(spec) => JobForm::of(&spec, &zone(&app, Some(&user.user), &config, &job.agent)),
         Err(_) => JobForm::blank(),
     };
     render_form(&app, &user, &Target::Edit(&job), &form, None)
@@ -644,7 +651,7 @@ async fn edit(
     };
     let config = app.inner.agents.get();
     let now = app.inner.clock.now();
-    let mut spec = match form.spec(&zone(&config, &job.agent), now) {
+    let mut spec = match form.spec(&zone(&app, Some(&user.user), &config, &job.agent), now) {
         Ok(spec) => spec,
         Err(error) => {
             return render_form(

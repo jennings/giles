@@ -1,0 +1,58 @@
+{% extends "web/app.html" %}
+
+{% block title %}Confirm it's you - Doozers{% endblock %}
+
+{% block head %}
+{%- if methods.passkey.is_some() %}
+<script src="{{ crate::http::assets::passkey_script_path() }}" defer></script>
+{%- endif %}
+{% endblock %}
+
+{% block content %}
+<a class="back" href="/account">Account</a>
+<h1>Confirm it's you</h1>
+{%- if let Some(error) = error %}
+<p class="banner banner-error" role="alert">{{ error }}</p>
+{%- endif %}
+<p class="lede">To add or remove a way to sign in, or to change your password, first confirm it's you with a way you already use. After that you can do this for 10 minutes.</p>
+{%- if methods.none() %}
+<p>You have no way to sign in that can confirm it's you here. Ask an admin for a recovery link, or run <code>doozers admin login-link</code> if you run Doozers. A recovery link lets you add a way to sign in without confirming.</p>
+{%- endif %}
+{%- if let Some(origin) = methods.passkey %}
+<section class="card" id="passkey-reverify" data-csrf="{{ csrf }}" data-origin="{{ origin }}" data-next="{{ back }}" data-start-url="/account/reverify/passkey/start" data-finish-url="/account/reverify/passkey/finish">
+<h2>Use a passkey</h2>
+<p class="banner banner-error" role="alert" data-passkey-error hidden></p>
+<p class="banner banner-warn" role="alert" data-passkey-unsupported>Using a passkey needs a browser that supports passkeys, with script turned on for this page.</p>
+<p class="banner banner-warn" role="alert" data-passkey-elsewhere hidden>Passkeys only work at <strong>{{ origin }}</strong>. Open this page there to use one.</p>
+<div data-passkey-controls hidden>
+<div class="form-actions">
+<button type="button" class="button-primary" data-passkey-reverify>Confirm with a passkey</button>
+</div>
+</div>
+</section>
+{%- endif %}
+{%- if methods.password %}
+<form class="card form" method="post" action="/account/reverify/password">
+<h2>Use your password</h2>
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="next" value="{{ back }}">
+<div class="field">
+<label for="reverify-password">Password</label>
+<input id="reverify-password" name="password" type="password" autocomplete="current-password" required>
+</div>
+<div class="form-actions">
+<button type="submit" class="button-primary">Confirm with your password</button>
+</div>
+</form>
+{%- endif %}
+{%- if !methods.providers.is_empty() %}
+<section class="card">
+<h2>Use an identity provider</h2>
+<ul>
+{%- for provider in methods.providers %}
+<li><a href="{{ provider.href }}">Confirm with {{ provider.name }}</a></li>
+{%- endfor %}
+</ul>
+</section>
+{%- endif %}
+{% endblock %}

@@ -402,7 +402,7 @@ async fn the_forms_note_an_environment_without_its_tools_and_tools_without_an_en
 }
 
 #[tokio::test]
-async fn only_the_owner_gets_environment_boxes_saved() {
+async fn only_an_admin_gets_environment_boxes_saved() {
     let env = env_with_environments().await;
     write_jeeves(&env, r#"["bash"]"#, None);
     let manager = env.manager().await;

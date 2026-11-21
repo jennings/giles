@@ -5,7 +5,7 @@ and `git` in your agent's workspace, and manage the server host keys that `ssh` 
 
 Each user keeps their own SSH keys in Doozers, on the **SSH keys** page in the
 [web interface](web.md#ssh-keys). Doozers keeps every private key encrypted and never shows it
-again, not even one it generated. Only you can use your keys. The owner can see every user's key
+again, not even one it generated. Only you can use your keys. An admin can see every user's key
 details and delete a key, but can't use one.
 
 ## Generate a key
@@ -77,8 +77,8 @@ public key from GitHub and your servers too.
 
 ## See every user's keys
 
-The owner sees every user's keys under **Admin**, then **SSH keys**: the owner of each key, its
-label, type, fingerprint, and when it was created and last used. The owner can delete a key there,
+An admin sees every user's keys under **Admin**, then **SSH keys**: the owner of each key, its
+label, type, fingerprint, and when it was created and last used. An admin can delete a key there,
 such as one that belonged to a user who left.
 
 ## Use SSH in a workspace
@@ -177,13 +177,13 @@ it.
 
 ## Known SSH hosts
 
-The owner sees the hosts Doozers trusts under **Admin**, then **Known SSH hosts**. The page lists
+An admin sees the hosts Doozers trusts under **Admin**, then **Known SSH hosts**. The page lists
 each environment's hosts. A host has one row for each of its keys, with:
 
 - The host and port.
 - The key type and its `SHA256:` fingerprint.
 - When Doozers first saw the key, and which workspace, agent, and user connected, or `pinned by`
-  followed by the owner who added it.
+  followed by the admin who added it.
 - When a connection last used the key.
 
 Select **Delete** and confirm to remove a key. When a host has no key left, its next connection is

@@ -60,7 +60,7 @@ Things that look like they carry a name and don't:
 
 - `inbox.payload`, `outbox.payload`, `job_runs`, and the rest of `jobs.spec` hold no instance name.
 - Identities (`irc:libera:account:me`) use the namespace the channel reports, not the instance name
-  (PLAN section 3.2), so users' identity links and `[owner] identities` are untouched.
+  (PLAN section 3.2), so users' identity links are untouched.
 - `run/sandbox/<kind>/<name>.json` is rewritten at every launch; it is left as it is and goes stale.
 
 Not rewritten, by design:

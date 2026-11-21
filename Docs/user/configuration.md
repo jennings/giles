@@ -3,7 +3,7 @@
 This page lists every setting in Doozers' configuration files. Both kinds live in the
 [data root](running.md#the-data-root):
 
-- `doozers.toml`: the core, the owner, and component instances.
+- `doozers.toml`: the core and component instances, and the owner on the first start.
 - `agents/<agent>/agent.toml`: one per agent.
 
 Doozers reads them when `doozers serve` starts, so restart it after you edit them. Doozers never
@@ -57,7 +57,7 @@ Settings of the core itself. Optional.
 
 | Key               | Default            | Meaning                                                                        |
 | ----------------- | ------------------ | ------------------------------------------------------------------------------ |
-| `http_listen`     | `"127.0.0.1:8080"` | Address of the HTTP server (web chat, admin pages, login links)                |
+| `http_listen`     | `"127.0.0.1:8080"` | Address of the HTTP server (web chat, admin pages, invite and recovery links)                |
 | `journal_mode`    | `"wal"`            | SQLite journal mode of `data/doozers.db`: `wal`, `delete`, `truncate`, `persist` |
 | `secret_key_file` | `"secret.key"`     | The key that unlocks the secrets Doozers stores, relative to the data root     |
 
@@ -130,17 +130,29 @@ directory holding it in its [sandbox](#sandbox).
 
 ### `[owner]`
 
-Doozers v1 serves one person, the owner. Required.
+The first time Doozers starts, it imports `[owner]` as the first user, an admin whose id is `owner`.
+Chats, jobs, memories, and SSH keys you already have stay with that user.
+
+After that, Doozers ignores `[owner]` and logs a warning at every start while the file still has it.
+Remove it once Doozers has started. An `[owner]` added after the first start is ignored too. If
+`[owner]` is invalid, the first start fails and nothing is imported.
+
+On a fresh install, you can leave `[owner]` out. Run `doozers admin login-link` to create the first
+admin and log in to the [web chat](web.md#invite-and-recovery-links). Then add your identities on
+other channels on the [**Identities** page](web.md#identities): choose a channel, make a code, and
+send `/link` and the code from your account. Use `[owner]` only to carry the identities of an
+install that had them before it had users, so they are in place at its first start.
 
 | Key          | Default                  | Meaning                                                     |
 | ------------ | ------------------------ | ----------------------------------------------------------- |
-| `identities` | required                 | The owner's identities, at least one, no duplicates         |
+| `identities` | required                 | Your identities, at least one, no duplicates                |
 | `default`    | the only identity        | Where jobs and other proactive messages go; required when there are several identities |
-| `timezone`   | the agent's, else system | The owner's time zone, for message times and job schedules  |
+| `timezone`   | the agent's, else system | Your time zone, for message times and job schedules         |
 
 Doozers drops and logs these messages:
 
-- messages from any identity not listed here
+- messages from an identity that no user has, except `/link` and a code
+- messages from a disabled user
 - messages whose sender the channel couldn't verify
 - messages in group conversations, which v1 doesn't support
 
@@ -155,8 +167,8 @@ example:
 | WhatsApp | `whatsapp:+15551234567`           |
 | Discord  | `discord:82198898841029460`       |
 
-Doozers logs a message from an unlisted identity with the identity as the channel reported it, so
-you can copy it here.
+Doozers logs a message from an unknown identity with the identity as the channel reported it, so you
+can see the form to use.
 
 Identities match exactly, capitalization included. Email domains are the exception:
 `email:me@Example.com` matches `me@example.com`, but not `Me@example.com`.
@@ -549,7 +561,7 @@ editing `agent.toml` by hand instead. The form has every key except `[[jobs]]`.
 | `busy_mode`           | `"steer"`       | New messages during a turn: `"steer"` shows them to the model at the next tool step; `"queue"` keeps them for the next turn |
 | `memory_cap`          | `2200`          | Most characters of core memories in each scope (shared, each user, each group) |
 | `approval_timeout`    | `"10m"`         | How long an approval request waits before it is denied            |
-| `timezone`            | system          | The agent's time zone, used when `[owner]` sets none              |
+| `timezone`            | system          | The agent's time zone, used when your time zone is not set           |
 | `idle_reset`          | off             | Start a new session after this long without messages              |
 
 A toolset's tools are named `<instance>__<tool>`. The core tools have bare names:
@@ -582,8 +594,8 @@ if you send any other message. The wait doesn't count against the toolset's `dea
 
 ### `[[jobs]]`
 
-Scheduled prompts. Each job's reply is sent to the owner's default identity, unless the reply is
-exactly `NO_REPLY`.
+Scheduled prompts. Each job's reply is sent to your default identity, unless the reply is exactly
+`NO_REPLY`.
 
 | Key            | Default      | Meaning                                                             |
 | -------------- | ------------ | ------------------------------------------------------------------- |
@@ -601,7 +613,7 @@ exactly `NO_REPLY`.
 Exactly one of `prompt` and `prompt_file` is required. A `prompt_file` is a relative path inside the
 agent's directory, and must exist when Doozers starts.
 
-Schedules and `active_hours` use the owner's time zone, else the agent's, else the system's.
+Schedules and `active_hours` use your time zone, else the agent's, else the system's.
 
 - A reply of exactly `NO_REPLY` sends nothing and leaves nothing behind. Any other reply goes to
   your default identity, and is added to your DM with the agent there, so you can answer it.
@@ -635,6 +647,7 @@ The agent also uses `github`, a remote toolset added in the [web UI](web.md#addi
 [core]
 http_listen = "127.0.0.1:8080"
 
+# Doozers reads [owner] on the first start only.
 [owner]
 identities = ["web:owner", "irc:libera.chat:account:stephen"]
 default = "irc:libera.chat:account:stephen"

@@ -24,15 +24,14 @@ account, nothing you type there reaches the agent, including the "Message yourse
 
 ## Setting up
 
-Add the channel to `doozers.toml`, with your own WhatsApp number as an owner identity:
+Add the channel to `doozers.toml`:
 
 ```toml
-[owner]
-identities = ["whatsapp:+15551234567"]
-
 [channel.whatsapp]
 component = "whatsapp"
 ```
+
+Your own WhatsApp number is your [identity](#identities).
 
 Start Doozers and [link the account](#linking). Then send a message from your WhatsApp to Doozers'
 number, and [pick an agent for the chat](#conversations).
@@ -117,18 +116,20 @@ says `WhatsApp logged this device out`. **Restart** the plugin to link a new dev
 ## Identities
 
 A WhatsApp identity is the sender's phone number with country code, written as `+` and digits only,
-such as `whatsapp:+15551234567`. One entry in `[owner] identities` covers all WhatsApp instances.
+such as `whatsapp:+15551234567`. One identity covers all WhatsApp instances.
+
+Add yours on the [**Identities** page](web.md#identities) of the web chat. Choose `whatsapp`, make a
+code, and send `/link` and the code to Doozers' number from your phone. Doozers replies when it has
+added the identity. An install upgraded from a version without users keeps the identities of
+[`[owner]`](configuration.md#owner), which Doozers imported once.
 
 WhatsApp doesn't always tell Doozers the sender's number. It may use an internal id instead, the
-*LID*. List both, and either one matches:
+*LID*, such as `whatsapp:100000012345678@lid`. Doozers links the identity the `/link` message came
+from. Once that identity or its other form is a user's, Doozers matches either one, and `/link` from
+an account that matches is refused.
 
-```toml
-[owner]
-identities = ["whatsapp:+15551234567", "whatsapp:100000012345678@lid"]
-```
-
-A message from an identity that isn't listed is dropped. The log line `dropped inbound message`
-shows the sender in exactly the form to list.
+A message from an identity that no user has is dropped, except `/link` and a code. The log line
+`dropped inbound message` shows the sender in exactly the form to use.
 
 WhatsApp messages are end-to-end encrypted, so a sender can't be forged and every message counts as
 verified.

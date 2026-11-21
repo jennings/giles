@@ -1,5 +1,5 @@
 //! The SSH keys pages: `/ssh-keys`, where each user generates, uploads, renames, and deletes their
-//! own SSH keys and copies their public keys, and `/admin/ssh-keys`, where the owner sees every
+//! own SSH keys and copies their public keys, and `/admin/ssh-keys`, where an admin sees every
 //! user's keys and deletes one. The service behind them is [`SshKeys`]; the design is in
 //! `Docs/technical/ssh.md`.
 //!
@@ -41,7 +41,7 @@ struct SshKeyPages {
 }
 
 impl WebApp {
-    /// Adds the SSH keys pages and the owner's admin page to `builder`, behind the same
+    /// Adds the SSH keys pages and the admin page to `builder`, behind the same
     /// authentication middleware as the chat pages. Every answer is `no-store`.
     pub fn install_ssh_keys(&self, builder: RouterBuilder, keys: SshKeys) -> RouterBuilder {
         let auth = from_fn_with_state(self.clone(), super::login::authenticate);
@@ -456,7 +456,7 @@ struct DeletePage<'a> {
     shell: Shell,
     csrf: &'a str,
     key: KeyRow,
-    /// Whether the owner is deleting someone else's key from the admin page.
+    /// Whether an admin is deleting someone else's key from the admin page.
     admin: bool,
     /// Where the form posts.
     action: String,
@@ -538,7 +538,7 @@ struct AdminPage {
     notice: Option<String>,
 }
 
-/// `GET /admin/ssh-keys`: every user's keys (details only), each with Delete. The owner only.
+/// `GET /admin/ssh-keys`: every user's keys (details only), each with Delete. Admins only.
 async fn admin_page(
     State(pages): State<SshKeyPages>,
     user: WebUser,
@@ -566,7 +566,7 @@ fn admin_no_such_key() -> Response {
     )
 }
 
-/// `GET /admin/ssh-keys/<id>/delete`: the confirmation. The owner only.
+/// `GET /admin/ssh-keys/<id>/delete`: the confirmation. Admins only.
 async fn admin_delete_page(
     State(pages): State<SshKeyPages>,
     user: WebUser,
@@ -586,7 +586,7 @@ async fn admin_delete_page(
 }
 
 /// `POST /admin/ssh-keys/<id>/delete` (CSRF-checked): deletes any user's key, then 303 to the
-/// admin list. The owner only.
+/// admin list. Admins only.
 async fn admin_delete(
     State(pages): State<SshKeyPages>,
     user: WebUser,

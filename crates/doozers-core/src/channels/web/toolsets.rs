@@ -1,7 +1,7 @@
 //! The toolset pages: every toolset, one toolset's settings and tools, and the forms that add,
 //! edit, rename, and remove a stored toolset while the core runs. Next to the admin pages
 //! (`admin.rs`), the agent pages (`agents.rs`), and the route pages (`routes.rs`), and like them:
-//! behind the login, the owner only, every answer `no-store`, every change a CSRF-checked form
+//! behind the login, admins only, every answer `no-store`, every change a CSRF-checked form
 //! post.
 //!
 //! A change is made by the [`ToolsetManager`], which validates it, stores it, and starts, restarts,
@@ -1251,8 +1251,10 @@ mod tests {
     async fn a_rename_that_could_not_be_undone_lists_what_to_put_right() {
         let user = WebUser {
             user: doozers_types::UserId::new("owner").unwrap(),
+            role: doozers_store::Role::Admin,
             sender: doozers_types::NativeId::new("owner").unwrap(),
             csrf: "token".to_owned(),
+            display_name: "Test user".into(),
             login: super::super::auth::Login::Test,
         };
         let err = ToolsetManagerError::Failed {

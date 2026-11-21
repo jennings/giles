@@ -62,7 +62,12 @@ impl Core {
             .await
             .unwrap(),
         );
-        let keys = SshKeys::new(store.clone(), secrets.clone(), clock.clone());
+        let keys = SshKeys::new(
+            store.clone(),
+            secrets.clone(),
+            clock.clone(),
+            doozers_core::users::UserList::default(),
+        );
         let known_hosts = KnownHosts::new(store, clock.clone());
         let core = Self {
             _dir: dir,

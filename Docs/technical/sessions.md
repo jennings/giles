@@ -25,14 +25,15 @@ each channel. The agent loop plugs in as a `TurnRunner`; the decision before any
 
 `doozers serve` calls `Runtime::start_sessions(runner, approvals, shutdown)` after `Runtime::start`
 and binding the HTTP listener: it's the last startup step that can fail, since recovery changes
-state and resumed turns start running. It builds the `Router` from `[owner]` and the routes
-`Runtime::start` loaded (`Runtime::routes`), passes the registry's `LiveConfig` as the
-`AgentPolicies` (so an agent created in the web UI gets its policy without a restart; a session of
-an agent no longer configured gets the defaults), runs `Sessions::start` (recovery, then resume,
-then the prune task), and attaches every channel registered so far. The plugin host then registers
-each plugin channel as it comes up and attaches it with
-`Sessions::attach_channel(instance, component, channel)` ([Plugin host](plugin-host.md)); attaching
-an instance again (a restarted plugin) stops the earlier pump after its current event.
+state and resumed turns start running. It builds the `Router` from the users snapshot
+(`Registry::users`, which `Runtime::start` filled from the database) and the routes it loaded
+(`Runtime::routes`), passes the registry's `LiveConfig` as the `AgentPolicies` (so an agent created
+in the web UI gets its policy without a restart; a session of an agent no longer configured gets the
+defaults), runs `Sessions::start` (recovery, then resume, then the prune task), and attaches every
+channel registered so far. The plugin host then registers each plugin channel as it comes up and
+attaches it with `Sessions::attach_channel(instance, component, channel)`
+([Plugin host](plugin-host.md)); attaching an instance again (a restarted plugin) stops the earlier
+pump after its current event.
 
 After the HTTP server has drained at shutdown, `serve` awaits `Sessions::closed()`, which waits for
 every task the manager spawned (pumps, drivers, turns, pruning) to stop.
@@ -50,6 +51,7 @@ One pump task per attached channel consumes `Channel::events()` and handles even
 | Message, `Inbound::Drop`                  | No (§1.1: groups store nothing)         | Ack                          |
 | Message, `Inbound::Message(to)`           | `queued` row in the session's queue     | Ack, then wake the session   |
 | Message, `Inbound::Command { to, .. }`    | `done` row, only as a dedupe key        | Ack, then act on the command |
+| Message, `Inbound::Link(request)`         | No                                      | `Linker::link`, ack, then reply |
 
 - **Store, then ack.** `inbox_insert` deduplicates on (instance, event id) in the same statement;
   the ack goes out only after it returns. A duplicate (`None`) is acked and otherwise ignored, so a
@@ -63,6 +65,13 @@ One pump task per attached channel consumes `Channel::events()` and handles even
 - **Shutdown** stops a pump between events, never inside one.
 - **Payload.** The row holds the whole `ChannelEvent` as JSON; the turn reads its message back from
   it.
+- **`/link` is stored nowhere.** Its payload holds a code that works until it is used, so no inbox
+  row is made, and no session is made for its sender, who may have no user. The pump calls
+  `Linker::link` first and acks after, so a database error leaves the event for the channel to
+  resend instead of losing a try; the answer is sent from a task of its own, after the ack. A
+  redelivered `/link` is therefore handled again: after a link it finds a sender that has a user,
+  and after a wrong code it counts again
+  ([Linking an identity](identity-and-routing.md#linking-an-identity)).
 
 Commands act after their ack, so a crash between the two loses the command but never repeats it:
 
@@ -71,15 +80,38 @@ Commands act after their ack, so a crash between the two loses the command but n
 - `/stop` cancels `Turn::cancel` of the turn running for the key, in whichever session it runs. With
   nothing running it's logged and ignored. Making the cancellation reach toolsets, and filling
   unanswered tool calls with `cancelled`, is the agent loop's job.
-- `/env reset` goes to `EnvResets::reset` (`Workspaces` implements it: `recreate` with
-  `DeleteReason::UserReset`) in a task of its own, since creating the new workspace can take a while
-  and mustn't hold up the channel's other events. The user gets a reply in the conversation (sent
-  through the channel registered for the key's instance, not through a turn): a new workspace was
-  made, the conversation has none, or the reset failed with the reason. It needs no session, and
-  never cancels the running turn: the turn's next workspace call opens the new workspace. `/new`
-  doesn't call it, so a fresh session keeps the workspace.
+- `/env reset` goes to `EnvResets::reset(key, user)` (`Workspaces` implements it: `recreate` with
+  `DeleteReason::UserReset`, for the workspace of the key and the sender, so it never touches
+  another user's of the same conversation id) in a task of its own, since creating the new workspace
+  can take a while and mustn't hold up the channel's other events. The user gets a reply in the
+  conversation (sent through the channel registered for the key's instance, not through a turn): a
+  new workspace was made, the conversation has none, or the reset failed with the reason. It needs
+  no session, and never cancels the running turn: the turn's next workspace call opens the new
+  workspace. `/new` doesn't call it, so a fresh session keeps the workspace.
 - An approval reply goes to `Approvals::answer`. `classify` only returns one while `is_pending` says
   it's an approval reply, so with nothing waiting `yes` and `no` stay ordinary messages.
+- **A conversation is held by one user at a time.** A session key names no user, so before it queues
+  a message or acts on a command the pump asks the store whether a session of the key's channel
+  instance and conversation, with any agent, belongs to someone else. If one does, the event is
+  acked and dropped, whatever it says: an ordinary message, `/new`, `/stop`, `/env reset`, or a
+  `yes` that would answer an approval. Without this, a user who named another user's conversation id
+  would run turns in that user's session, with their transcript, workspace, memories, and SSH keys,
+  as the session's owner. What counts as holding depends on the channel:
+  - On the web, a chat id is random and belongs for good to the user who started it, so every
+    session counts, ended ones too ([`conversation_access`](storage.md#conversations)), and the drop
+    is logged at `warn`. The web pages refuse such a post before it gets here.
+  - On other channels a conversation id can follow whoever holds it: an IRC direct conversation is
+    the sender's current nickname, so a member who takes a nickname inherits its conversation. There
+    only open sessions count (`open_conversation_access`), and the drop is logged at `info`. The
+    first user's session ends with `/new` or an idle reset, which the pump applies to the key's
+    session before it checks, and then the next user's message starts a session of their own. Until
+    then it is dropped, so nobody ever runs in, or sees the history of, a session that isn't theirs.
+    The conversation's workspace is owned by agent, instance, conversation, and user, so the next
+    user has no workspace until they create one, and the first user's stays theirs
+    ([SSH keys](ssh.md#whose-workspace-it-is)).
+
+  A conversation with no session in it is anyone's; the first message that creates a session claims
+  it.
 
 ## Sessions and idle reset
 
@@ -94,8 +126,11 @@ table, which the agent loop writes.
 
 At most one turn runs per session. Waking a session that isn't live spawns a driver task that loops:
 
-1. Read the session's `queued` rows. If there are none, retire, unless a wake arrived since the read
-   (the `dirty` flag), in which case read again. No wake is lost.
+1. Read the session's `queued` rows. Rows whose user is disabled (`Router::is_disabled`) were queued
+   before the user was disabled, since the router drops what arrives later: the driver marks them
+   `done` without a turn (`Store::inbox_discard`), logs it, and reads again. If there are none,
+   retire, unless a wake arrived since the read (the `dirty` flag), in which case read again. No
+   wake is lost.
 2. Pick the batch: the sender of the oldest queued row is the requester, and the batch is every
    queued row from that sender, in order. Others' rows never join it; they start a later turn
    (§6.3).
@@ -145,7 +180,10 @@ the DM between turns (§6.11). It does so through a hold:
 - `wait_idle(session)` waits until the session has no driver: no turn, no hold, nothing queued (a
   job's `idle_only`), or until shutdown.
 - `open_direct(key, user)` opens a DM session the way an inbound message from `user` would,
-  `idle_reset` included.
+  `idle_reset` included. It never hands a user another user's open session: a job of Alice's in a
+  conversation Bob holds gets `Error::Conflict` instead of Bob's session, with his transcript,
+  workspace, and SSH keys (the scheduler checks first, and uses Alice's own DM instead). The session
+  may be opened for the user if the other's has ended, as an inbound message would.
 
 ## Startup recovery
 

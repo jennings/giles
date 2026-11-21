@@ -16,8 +16,9 @@ use doozers_core::config::{Config, InstanceName, LoadOptions};
 use doozers_core::memory_dbs::MemoryDbs;
 use doozers_core::paths::DataRoot;
 use doozers_core::registry::Registry;
+use doozers_core::users::Users;
 use doozers_store::{
-    JournalMode, MemoryOwner, MemoryViewer, NewMemory, Session, SessionId, SessionKind,
+    JournalMode, MemoryOwner, MemoryViewer, NewMemory, Session, SessionId, SessionKind, Store,
 };
 use doozers_types::{AgentId, ConversationId, Timestamp, ToolSpec, UserId};
 use serde_json::json;
@@ -98,7 +99,9 @@ impl Home {
             .unwrap();
     }
 
-    fn registry(&self) -> Registry {
+    /// The registry of the home's configuration, with the users its `[owner]` is imported as (the
+    /// owner is an admin, which decides who may write shared memories).
+    async fn registry(&self) -> Registry {
         let mut config = Config::load_with(
             &self.root,
             &LoadOptions {
@@ -110,6 +113,16 @@ impl Home {
         .unwrap_or_else(|e| panic!("{e}"));
         add_toolsets(&self.root, &mut config, &TOOLSETS);
         let registry = Registry::new(self.root.clone(), Arc::new(config));
+        self.root.create_layout().unwrap();
+        let store = Store::open(self.root.database_file()).await.unwrap();
+        Users::open(
+            store,
+            registry.users(),
+            &registry.config(),
+            &self.root.config_file(),
+        )
+        .await
+        .unwrap();
         let tools = registry.tools();
         for name in [
             "load_skill",
@@ -214,12 +227,33 @@ async fn assemble(home: &Home, agent: &str, kind: SessionKind) -> SessionPrompt 
 }
 
 async fn assemble_session(home: &Home, agent: &str, session: &Session) -> SessionPrompt {
-    let registry = home.registry();
+    let registry = home.registry().await;
     let config = registry.config();
     let agent_config = &config.agents[&AgentId::new(agent).unwrap()];
     prompt::assemble(&registry, &home.memory_dbs, agent_config, session)
         .await
         .unwrap()
+}
+
+/// `value` with every object's keys in sorted order, which is the order `serde_json` writes them in
+/// unless some crate in the build turns on its `preserve_order` feature (a test dependency does),
+/// so the snapshots read the same either way.
+fn sorted(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(fields) => {
+            let mut keys: Vec<_> = fields.keys().collect();
+            keys.sort();
+            serde_json::Value::Object(
+                keys.into_iter()
+                    .map(|key| (key.clone(), sorted(&fields[key])))
+                    .collect(),
+            )
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(sorted).collect())
+        }
+        other => other.clone(),
+    }
 }
 
 /// The snapshot text: `system`, then each tool with its description and schema.
@@ -236,7 +270,7 @@ fn render(prompt: &SessionPrompt) -> String {
             "--- {}\n{}\n{}",
             spec.name,
             spec.description,
-            serde_json::to_string(&spec.input_schema).unwrap()
+            serde_json::to_string(&sorted(&spec.input_schema)).unwrap()
         )
         .unwrap();
     }

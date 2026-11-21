@@ -16,14 +16,15 @@ mod tests;
 
 use std::fmt::Debug;
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use axum::Router;
+use axum::extract::connect_info::Connected;
 use axum::middleware::map_response;
 use axum::routing::{MethodRouter, get};
-use axum::serve::Listener;
-use tokio::net::TcpListener;
+use axum::serve::{IncomingStream, Listener};
+use tokio::net::{TcpListener, UnixListener};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
@@ -105,13 +106,35 @@ pub async fn bind(addr: SocketAddr) -> Result<TcpListener, BindError> {
         .map_err(|source| BindError { addr, source })
 }
 
+/// The address of the peer of a connection, as a request extension (`ConnectInfo<PeerAddr>`)
+/// that [`serve`] adds to every request.
+///
+/// It is the peer of the socket, whoever that is: on a listener behind a reverse proxy it is the
+/// proxy. An IPv4-mapped IPv6 address is reported as the IPv4 address. It is `None` when the connection has no IP address (a Unix socket). Only [`serve`] adds
+/// it, so a client can't send one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerAddr(pub Option<IpAddr>);
+
+impl Connected<IncomingStream<'_, TcpListener>> for PeerAddr {
+    fn connect_info(stream: IncomingStream<'_, TcpListener>) -> Self {
+        Self(Some(stream.remote_addr().ip().to_canonical()))
+    }
+}
+
+impl Connected<IncomingStream<'_, UnixListener>> for PeerAddr {
+    fn connect_info(_: IncomingStream<'_, UnixListener>) -> Self {
+        Self(None)
+    }
+}
+
 /// Serves `app` on `listener` (TCP, or a Unix socket) until `shutdown` is cancelled. Then it stops
 /// accepting connections, lets in-flight requests finish for up to [`DRAIN_TIMEOUT`], and
-/// returns.
+/// returns. Every request carries the [`PeerAddr`] of its connection.
 pub async fn serve<L>(listener: L, app: Router, shutdown: CancellationToken) -> io::Result<()>
 where
     L: Listener,
     L::Addr: Debug,
+    PeerAddr: for<'a> Connected<IncomingStream<'a, L>>,
 {
     serve_with_drain(listener, app, shutdown, DRAIN_TIMEOUT).await
 }
@@ -125,9 +148,13 @@ async fn serve_with_drain<L>(
 where
     L: Listener,
     L::Addr: Debug,
+    PeerAddr: for<'a> Connected<IncomingStream<'a, L>>,
 {
-    let server =
-        axum::serve(listener, app).with_graceful_shutdown(shutdown.clone().cancelled_owned());
+    let server = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<PeerAddr>(),
+    )
+    .with_graceful_shutdown(shutdown.clone().cancelled_owned());
     let deadline = async {
         shutdown.cancelled().await;
         tokio::time::sleep(drain).await;

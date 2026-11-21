@@ -64,6 +64,17 @@ pub enum ConversationDeletion {
     NotFound,
 }
 
+/// How a user stands to a conversation ([`Store::conversation_access`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversationAccess {
+    /// No session counted exists in it.
+    Unstarted,
+    /// Every session counted belongs to the user.
+    Own,
+    /// A session counted belongs to someone else, or to nobody.
+    Foreign,
+}
+
 /// Whether `user` has a session in the conversation.
 fn has_conversation(
     conn: &Connection,
@@ -127,31 +138,92 @@ impl Store {
         .await
     }
 
-    /// The conversation `conversation` on channel instance `channel`: its last `limit`
-    /// transcript rows, oldest first (every session's messages in session order, then by
-    /// sequence number), and its inbound messages still waiting for a turn or in one. Summarized
+    /// How `user` stands to the conversation `conversation` on channel instance `channel`:
+    /// [`Unstarted`](ConversationAccess::Unstarted) if it has no session,
+    /// [`Own`](ConversationAccess::Own) if all of its sessions are the user's, and
+    /// [`Foreign`](ConversationAccess::Foreign) if any belongs to someone else. Every session
+    /// counts, ended ones too: a conversation whose id belongs to one user for good, such as a
+    /// web chat's. A session with no user belongs to nobody, so it is foreign to everyone.
+    pub async fn conversation_access(
+        &self,
+        channel: &str,
+        conversation: &ConversationId,
+        user: &UserId,
+    ) -> Result<ConversationAccess> {
+        self.access(channel, conversation, user, false).await
+    }
+
+    /// [`conversation_access`](Self::conversation_access) counting only open sessions, so a
+    /// conversation is free once the sessions in it have ended: for a conversation id that follows
+    /// whoever holds it now, such as an IRC nickname.
+    pub async fn open_conversation_access(
+        &self,
+        channel: &str,
+        conversation: &ConversationId,
+        user: &UserId,
+    ) -> Result<ConversationAccess> {
+        self.access(channel, conversation, user, true).await
+    }
+
+    async fn access(
+        &self,
+        channel: &str,
+        conversation: &ConversationId,
+        user: &UserId,
+        open_only: bool,
+    ) -> Result<ConversationAccess> {
+        let (channel, conversation, user) = (
+            channel.to_owned(),
+            conversation.to_string(),
+            user.to_string(),
+        );
+        self.read(move |conn| {
+            let (sessions, foreign): (i64, i64) = conn
+                .prepare_cached(
+                    "SELECT count(*), coalesce(sum(user_id IS NOT ?3), 0) FROM sessions
+                     WHERE channel = ?1 AND conversation = ?2
+                       AND (?4 = 0 OR ended_at IS NULL)",
+                )?
+                .query_row(params![channel, conversation, user, open_only], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })?;
+            Ok(match (sessions, foreign) {
+                (0, _) => ConversationAccess::Unstarted,
+                (_, 0) => ConversationAccess::Own,
+                _ => ConversationAccess::Foreign,
+            })
+        })
+        .await
+    }
+
+    /// The conversation `conversation` on channel instance `channel` as `user`'s: its last
+    /// `limit` transcript rows, oldest first (every session's messages in session order, then by
+    /// sequence number), and its inbound messages still waiting for a turn or in one. Only
+    /// `user`'s sessions count, so a conversation of someone else's reads as empty. Summarized
     /// messages are included (this is a transcript to show, not a prompt) and empty slots come
     /// back as [`Entry::EmptySlot`](crate::Entry::EmptySlot).
     pub async fn conversation_transcript(
         &self,
         channel: &str,
         conversation: &ConversationId,
+        user: &UserId,
         limit: u32,
     ) -> Result<ConversationTranscript> {
         let channel = channel.to_owned();
         let conversation = conversation.clone();
+        let user = user.clone();
         self.read(move |conn| {
             let mut stmt = conn.prepare_cached(
                 "SELECT * FROM (
                     SELECT m.id, m.seq, m.role, m.content, m.meta, m.tool_use_id, m.session_id
                     FROM messages m JOIN sessions s ON s.id = m.session_id
-                    WHERE s.channel = ?1 AND s.conversation = ?2
+                    WHERE s.channel = ?1 AND s.conversation = ?2 AND s.user_id = ?4
                     ORDER BY m.session_id DESC, m.seq DESC LIMIT ?3)
                  ORDER BY session_id, seq",
             )?;
             let messages = query_all(
                 &mut stmt,
-                params![channel, conversation.as_str(), limit],
+                params![channel, conversation.as_str(), limit, user.as_str()],
                 |row| {
                     Ok(ConversationMessage {
                         session: row.get(6)?,
@@ -161,13 +233,14 @@ impl Store {
             )?;
             let mut stmt = conn.prepare_cached(&format!(
                 "{} WHERE state IN ('queued', 'started') AND session_id IN
-                    (SELECT id FROM sessions WHERE channel = ?1 AND conversation = ?2)
+                    (SELECT id FROM sessions
+                     WHERE channel = ?1 AND conversation = ?2 AND user_id = ?3)
                  ORDER BY id",
                 inbox::SELECT
             ))?;
             let waiting = query_all(
                 &mut stmt,
-                params![channel, conversation.as_str()],
+                params![channel, conversation.as_str(), user.as_str()],
                 inbox::from_row,
             )?;
             Ok(ConversationTranscript { messages, waiting })
@@ -225,15 +298,24 @@ impl Store {
         .await
     }
 
-    /// Takes the conversation `conversation` on channel instance `channel` out of the archive.
-    /// Returns whether it was archived.
+    /// Takes `user`'s conversation `conversation` on channel instance `channel` out of the
+    /// archive. Returns whether it was archived; `false`, changing nothing, if the user has no
+    /// session in it.
     pub async fn unarchive_conversation(
         &self,
         channel: &str,
         conversation: &ConversationId,
+        user: &UserId,
     ) -> Result<bool> {
-        let (channel, conversation) = (channel.to_owned(), conversation.to_string());
+        let (channel, conversation, user) = (
+            channel.to_owned(),
+            conversation.to_string(),
+            user.to_string(),
+        );
         self.write(move |conn| {
+            if !has_conversation(conn, &channel, &conversation, &user)? {
+                return Ok(false);
+            }
             Ok(conn
                 .prepare_cached(
                     "DELETE FROM archived_conversations WHERE channel = ?1 AND conversation = ?2",
@@ -542,7 +624,7 @@ mod tests {
 
         let a = ConversationId::new("a").unwrap();
         let all = store
-            .conversation_transcript("web", &a, 100)
+            .conversation_transcript("web", &a, &owner(), 100)
             .await
             .unwrap()
             .messages;
@@ -554,13 +636,28 @@ mod tests {
         assert_eq!(all[2].message.id, appended[1].slots[0].id);
 
         let last = store
-            .conversation_transcript("web", &a, 3)
+            .conversation_transcript("web", &a, &owner(), 3)
             .await
             .unwrap()
             .messages;
         assert_eq!(texts(&last), ["slot:t1", "u2", "a2"]);
+        // Another user reads nothing of it.
+        let stranger = UserId::new("stranger").unwrap();
         assert_eq!(
-            store.conversation_transcript("irc", &a, 10).await.unwrap(),
+            store
+                .conversation_transcript("web", &a, &stranger, 100)
+                .await
+                .unwrap(),
+            ConversationTranscript {
+                messages: Vec::new(),
+                waiting: Vec::new(),
+            }
+        );
+        assert_eq!(
+            store
+                .conversation_transcript("irc", &a, &owner(), 10)
+                .await
+                .unwrap(),
             ConversationTranscript {
                 messages: Vec::new(),
                 waiting: Vec::new(),
@@ -602,7 +699,7 @@ mod tests {
 
         let a = ConversationId::new("a").unwrap();
         let waiting = store
-            .conversation_transcript("web", &a, 10)
+            .conversation_transcript("web", &a, &owner(), 10)
             .await
             .unwrap()
             .waiting;
@@ -703,8 +800,18 @@ mod tests {
             None
         );
 
-        assert!(store.unarchive_conversation("web", &a).await.unwrap());
-        assert!(!store.unarchive_conversation("web", &a).await.unwrap());
+        assert!(
+            store
+                .unarchive_conversation("web", &a, &owner())
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .unarchive_conversation("web", &a, &owner())
+                .await
+                .unwrap()
+        );
         assert_eq!(
             store.conversation_archived_at("web", &a).await.unwrap(),
             None
@@ -755,6 +862,24 @@ mod tests {
         assert_eq!(
             store.conversation_archived_at("web", &none).await.unwrap(),
             None
+        );
+
+        // Nobody else takes it out of the archive either.
+        assert!(
+            store
+                .archive_conversation("web", &a, &owner(), at(2))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .unarchive_conversation("web", &a, &other)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            store.conversation_archived_at("web", &a).await.unwrap(),
+            Some(at(2))
         );
     }
 
@@ -870,7 +995,7 @@ mod tests {
         assert_eq!(store.session(two.id).await.unwrap(), None);
         assert!(
             store
-                .conversation_transcript("web", &a, 10)
+                .conversation_transcript("web", &a, &owner(), 10)
                 .await
                 .unwrap()
                 .messages
@@ -956,5 +1081,78 @@ mod tests {
                 .unwrap(),
             ConversationDeletion::Deleted { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn a_conversation_is_foreign_to_everyone_but_the_user_of_its_sessions() {
+        let (_dir, store) = store().await;
+        let ann = UserId::new("ann").unwrap();
+        let bob = UserId::new("bob").unwrap();
+        let access = |conversation: &str, user: &UserId| {
+            let conversation = ConversationId::new(conversation).unwrap();
+            let user = user.clone();
+            let store = store.clone();
+            async move {
+                store
+                    .conversation_access("web", &conversation, &user)
+                    .await
+                    .unwrap()
+            }
+        };
+        let open = |agent: &str, conversation: &str, user: Option<&UserId>, secs: i64| {
+            store.open_session(
+                key(agent, "web", conversation),
+                SessionKind::Direct,
+                user.cloned(),
+                at(secs),
+            )
+        };
+
+        assert_eq!(access("a", &ann).await, ConversationAccess::Unstarted);
+        let (first, _) = open("jeeves", "a", Some(&ann), 0).await.unwrap();
+        assert_eq!(access("a", &ann).await, ConversationAccess::Own);
+        assert_eq!(access("a", &bob).await, ConversationAccess::Foreign);
+        // An ended session and another agent's session still make it hers.
+        store.end_session(first.id, at(1)).await.unwrap();
+        open("bunter", "a", Some(&ann), 2).await.unwrap();
+        assert_eq!(access("a", &ann).await, ConversationAccess::Own);
+        assert_eq!(access("a", &bob).await, ConversationAccess::Foreign);
+        // Another conversation, and the same id on another instance, are others.
+        assert_eq!(access("b", &bob).await, ConversationAccess::Unstarted);
+        assert_eq!(
+            store
+                .conversation_access("irc", &ConversationId::new("a").unwrap(), &bob)
+                .await
+                .unwrap(),
+            ConversationAccess::Unstarted
+        );
+        // One foreign session is enough, and a session with no user is nobody's.
+        open("jeeves", "c", Some(&ann), 3).await.unwrap();
+        open("bunter", "c", Some(&bob), 4).await.unwrap();
+        assert_eq!(access("c", &ann).await, ConversationAccess::Foreign);
+        assert_eq!(access("c", &bob).await, ConversationAccess::Foreign);
+        open("jeeves", "d", None, 5).await.unwrap();
+        assert_eq!(access("d", &ann).await, ConversationAccess::Foreign);
+
+        // Counting only open sessions, a conversation is free once its sessions have ended: the
+        // nickname of a direct conversation can pass to another user.
+        let open_access = |conversation: &str, user: &UserId| {
+            let conversation = ConversationId::new(conversation).unwrap();
+            let user = user.clone();
+            let store = store.clone();
+            async move {
+                store
+                    .open_conversation_access("web", &conversation, &user)
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(open_access("c", &ann).await, ConversationAccess::Foreign);
+        let (second, _) = open("jeeves", "e", Some(&ann), 6).await.unwrap();
+        assert_eq!(open_access("e", &bob).await, ConversationAccess::Foreign);
+        store.end_session(second.id, at(7)).await.unwrap();
+        assert_eq!(open_access("e", &bob).await, ConversationAccess::Unstarted);
+        assert_eq!(access("e", &bob).await, ConversationAccess::Foreign);
+        assert_eq!(open_access("a", &bob).await, ConversationAccess::Foreign);
     }
 }

@@ -109,6 +109,7 @@ impl Wk {
             agent: AgentId::new("jeeves").unwrap(),
             channel: INSTANCE.into(),
             conversation: chat(),
+            user: Some(crate::identity::owner()),
         };
         self.workspaces
             .create(&owner, "box", json!({"image": "alpine"}), None)
@@ -122,6 +123,7 @@ impl Wk {
             agent: AgentId::new("jeeves").unwrap(),
             channel: INSTANCE.into(),
             conversation: chat(),
+            user: Some(crate::identity::owner()),
         }
     }
 
@@ -131,7 +133,7 @@ impl Wk {
 }
 
 #[tokio::test]
-async fn only_the_owner_gets_the_workspace_pages() {
+async fn only_an_admin_gets_the_workspace_pages() {
     let wk = Wk::new().await;
     let id = wk.create().await;
     let cases = [
@@ -285,6 +287,8 @@ async fn the_page_says_whose_ssh_keys_a_workspace_gets_or_none() {
     let page = wk.page().await;
     assert!(page.contains("<dt>SSH keys</dt>\n<dd>owner</dd>"), "{page}");
     assert!(!page.contains("<dt>SSH keys</dt>\n<dd>none</dd>"), "{page}");
+    // The owner line names the user whose conversation it is.
+    assert!(page.contains(", for <code>owner</code>"), "{page}");
 
     wk.workspaces
         .create(
@@ -311,6 +315,7 @@ async fn conversations_of_other_channels_are_not_linked_to_a_chat() {
                 agent: AgentId::new("bunter").unwrap(),
                 channel: "whatsapp".into(),
                 conversation: chat(),
+                user: None,
             },
             "box",
             json!({}),

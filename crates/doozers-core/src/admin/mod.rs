@@ -11,7 +11,7 @@
 //!   the same user.
 //! - [`connect`] is the client side: check the socket directory, connect, read the token.
 //!
-//! Other subsystems plug in through traits: [`PluginControl`] (plugin supervision), [`LoginLinks`]
+//! Other subsystems plug in through traits: [`PluginControl`] (plugin supervision), [`InviteLinks`]
 //! (implemented by the built-in web channel), and [`ToolsetAdmin`] (implemented by the toolset
 //! manager). Without them, the RPCs that need them answer `UNAVAILABLE`. See
 //! `Docs/technical/admin.md`.
@@ -31,7 +31,5 @@ pub use self::client::{AdminClient, ConnectError, connect};
 pub use self::lock::{InstanceLock, LockError};
 pub use self::plugins::{MergedControl, PluginControl, PluginRunState, PluginRuntime};
 pub use self::server::{AdminListener, BindError, DRAIN_TIMEOUT};
-pub use self::service::{
-    AdminOptions, AdminService, ChannelStatuses, LoginLink, LoginLinkError, LoginLinks,
-};
+pub use self::service::{AdminOptions, AdminService, ChannelStatuses, InviteLinks};
 pub use self::toolsets::ToolsetAdmin;

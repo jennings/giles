@@ -79,8 +79,8 @@ pub enum Error {
     #[error("unknown memory {0}")]
     UnknownMemory(crate::MemoryId),
     /// The session isn't allowed to create, mark, change, or delete a shared memory: only the
-    /// owner's turns and config jobs are.
-    #[error("only the owner and config jobs can write shared memories")]
+    /// admins' turns and config jobs are.
+    #[error("only admins and config jobs can write shared memories")]
     SharedWriteForbidden,
     /// The memory was changed after the caller loaded it: an edit that named the `updated_at` it
     /// was based on found a different one. Nothing changed; the caller reloads and decides again.
@@ -103,6 +103,33 @@ pub enum Error {
         /// The label of the key they have.
         label: String,
     },
+    /// A user with that id exists already.
+    #[error("a user with that id already exists")]
+    UserIdTaken,
+    /// A user with that username exists already. Usernames are compared without regard to ASCII
+    /// case.
+    #[error("a user with that username already exists")]
+    UsernameTaken,
+    /// The identity belongs to a user already.
+    #[error("the identity {identity} belongs to a user already")]
+    IdentityTaken {
+        /// The identity, `<namespace>:<native id>`.
+        identity: String,
+    },
+    /// There is no user with that id.
+    #[error("no such user")]
+    NoSuchUser,
+    /// The change would leave no active admin: it removes, disables, or demotes the last one.
+    /// Nothing changed.
+    #[error("the last active admin can't be removed, disabled, or demoted")]
+    LastAdmin,
+    /// The user is disabled, so no web session can be started for them. Nothing changed.
+    #[error("the user is disabled")]
+    UserDisabled,
+    /// The removal would leave the user with no way to sign in: it removes the only password,
+    /// passkey, or identity provider connection that can sign them in. Nothing changed.
+    #[error("that is the user's only way to sign in")]
+    LastSignInMethod,
     /// A memory's content is longer than the limit.
     #[error("memory content is {chars} characters; the limit is {max}")]
     MemoryTooLong {

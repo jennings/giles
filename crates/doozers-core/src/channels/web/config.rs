@@ -30,7 +30,7 @@ const RESERVED_HEADERS: [&str; 6] = [
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WebConfig {
     /// The URL people reach Doozers at, as an origin without a trailing slash (e.g.
-    /// `https://doozers.example.com`): login links start with it, and an `https` URL makes the
+    /// `https://doozers.example.com`): invite and recovery links start with it, and an `https` URL makes the
     /// session cookie `Secure`. `None`: `http://<core.http_listen>`.
     pub public_url: Option<String>,
     /// The trusted-proxy listener, if configured.

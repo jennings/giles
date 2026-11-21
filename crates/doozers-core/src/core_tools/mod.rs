@@ -64,35 +64,42 @@ pub fn register(runtime: &Runtime) -> Result<(), RegistryError> {
     let config = registry.live_config();
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let dbs = &runtime.memory_dbs;
+    let users = registry.users();
     registry.register_core_tool(Arc::new(MemoryAddTool::new(
         dbs.clone(),
         config.clone(),
+        users.clone(),
         clock.clone(),
     )))?;
     registry.register_core_tool(Arc::new(MemoryEditTool::new(
         dbs.clone(),
         config.clone(),
+        users.clone(),
         clock.clone(),
     )))?;
     registry.register_core_tool(Arc::new(MemoryForgetTool::new(
         dbs.clone(),
         config.clone(),
+        users.clone(),
         clock.clone(),
     )))?;
     registry.register_core_tool(Arc::new(MemoryRecallTool::new(
         dbs.clone(),
         config.clone(),
+        users.clone(),
         clock,
     )))?;
     registry.register_core_tool(Arc::new(MemorySearchTool::new(
         runtime.store.clone(),
         config.clone(),
+        users.clone(),
     )))?;
     registry.register_core_tool(Arc::new(LoadSkillTool::new(runtime.blobs.clone())))?;
     registry.register_core_tool(Arc::new(SendAttachmentTool::new(runtime.blobs.clone())))?;
     registry.register_core_tool(Arc::new(ScheduleTool::new(
         runtime.store.clone(),
         config.clone(),
+        users,
         runtime.jobs.clone(),
         Arc::new(SystemClock),
     )))?;

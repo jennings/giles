@@ -32,7 +32,7 @@ use tokio_util::task::TaskTracker;
 use crate::commands::{ApprovalReply, NoPendingApprovals};
 use crate::config::{AgentConfig, BusyMode, InstanceName, LiveConfig};
 use crate::registry::Registry;
-use crate::router::{Routed, Router};
+use crate::router::{LinkRequest, Routed, Router};
 use crate::workspaces::{DeleteReason, Recreation, WorkspaceOwner, Workspaces};
 
 pub use inbound::ChannelStatusRecord;
@@ -127,19 +127,20 @@ pub enum EnvReset {
 /// [`Workspaces`]; [`NoEnvResets`] has no workspaces.
 #[async_trait]
 pub trait EnvResets: Send + Sync {
-    /// Deletes the workspace of the conversation `key` (the user asked) and creates it again with
-    /// the same environment and options. Called only after the command's event is recorded and
-    /// acked, once per event.
-    async fn reset(&self, key: &SessionKey) -> EnvReset;
+    /// Deletes the workspace of the conversation `key` that belongs to `user` (who asked) and
+    /// creates it again with the same environment and options. Called only after the command's
+    /// event is recorded and acked, once per event.
+    async fn reset(&self, key: &SessionKey, user: &UserId) -> EnvReset;
 }
 
 #[async_trait]
 impl EnvResets for Workspaces {
-    async fn reset(&self, key: &SessionKey) -> EnvReset {
+    async fn reset(&self, key: &SessionKey, user: &UserId) -> EnvReset {
         let owner = WorkspaceOwner::Conversation {
             agent: key.agent.clone(),
             channel: key.channel.clone(),
             conversation: key.conversation.clone(),
+            user: Some(user.clone()),
         };
         match self.recreate(&owner, DeleteReason::UserReset).await {
             Ok(None) => EnvReset::NoWorkspace,
@@ -162,8 +163,38 @@ pub struct NoEnvResets;
 
 #[async_trait]
 impl EnvResets for NoEnvResets {
-    async fn reset(&self, _: &SessionKey) -> EnvReset {
+    async fn reset(&self, _: &SessionKey, _: &UserId) -> EnvReset {
         EnvReset::NoWorkspace
+    }
+}
+
+/// The identity links, as the inbound pipeline sees them: what to do with a `/link` message. The
+/// daemon's is [`Links`](crate::links::Links); [`NoLinks`] links nothing.
+#[async_trait]
+pub trait Linker: Send + Sync {
+    /// Handles `request`, which arrived at `now`: links the sender's identity if its code is right
+    /// and counts a wrong one. Returns the answer to send to the sender, or `None` to send
+    /// nothing (a sender that is locked out). Called once per event, and before the event is acked,
+    /// so an `Err` (the database failed) leaves it for the channel to resend.
+    async fn link(
+        &self,
+        request: &LinkRequest,
+        now: Timestamp,
+    ) -> Result<Option<String>, doozers_store::Error>;
+}
+
+/// [`Linker`] for a core with no users to link to: every `/link` is refused.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoLinks;
+
+#[async_trait]
+impl Linker for NoLinks {
+    async fn link(
+        &self,
+        _: &LinkRequest,
+        _: Timestamp,
+    ) -> Result<Option<String>, doozers_store::Error> {
+        Ok(Some("Linking an identity isn't available.".to_owned()))
     }
 }
 
@@ -224,6 +255,8 @@ pub struct SessionsOptions {
     pub approvals: Arc<dyn Approvals>,
     /// What `/env reset` does.
     pub env_resets: Arc<dyn EnvResets>,
+    /// What `/link` does.
+    pub links: Arc<dyn Linker>,
     /// The time source.
     pub clock: Arc<dyn Clock>,
 }
@@ -278,6 +311,7 @@ impl Sessions {
             runner: options.runner,
             approvals: options.approvals,
             env_resets: options.env_resets,
+            links: options.links,
             clock: options.clock,
             shutdown,
             live: Mutex::default(),
@@ -415,6 +449,35 @@ impl Sessions {
         false
     }
 
+    /// Whether `user` is being worked for: a turn they asked for is running, or a session of
+    /// theirs has a turn running, a holder (a job's turn or reply), or messages queued for it. A
+    /// session whose driver hasn't loaded it yet is looked up in the database. For the web UI,
+    /// which won't forget a user in the middle of their work.
+    pub async fn user_busy(&self, user: &UserId) -> bool {
+        let live: Vec<(SessionId, bool)> = lock(&self.inner.live)
+            .iter()
+            .map(|(id, live)| {
+                let asked = live
+                    .turn
+                    .as_ref()
+                    .is_some_and(|turn| turn.requester.as_ref() == Some(user));
+                (*id, asked)
+            })
+            .collect();
+        for (id, asked) in live {
+            if asked {
+                return true;
+            }
+            // A session that can't be read can't be worked on either.
+            if let Ok(Some(session)) = self.inner.store.session(id).await
+                && session.user.as_ref() == Some(user)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Waits until `session` has no running turn, no hold, and nothing queued (a job's
     /// `idle_only`, PLAN section 6.11), or until shutdown.
     pub async fn wait_idle(&self, session: SessionId) {
@@ -437,9 +500,15 @@ impl Sessions {
     /// agent's `idle_reset` has expired. Where a job finds the DM it runs in or appends its
     /// reply to (PLAN section 6.11).
     ///
+    /// A session is never handed to a user it doesn't belong to: if another user holds the
+    /// conversation (an IRC nickname's, say), the caller gets an error rather than a turn in the
+    /// holder's transcript, workspace, and SSH keys, as the inbound pipeline drops a message that
+    /// names it.
+    ///
     /// # Errors
     ///
-    /// A database error.
+    /// [`doozers_store::Error::Conflict`] if the open session belongs to another user (or to
+    /// none); a database error.
     pub async fn open_direct(
         &self,
         key: SessionKey,
@@ -447,11 +516,18 @@ impl Sessions {
     ) -> Result<Session, doozers_store::Error> {
         let to = Routed { session: key, user };
         let id = inbound::session_for(&self.inner, &to, self.inner.clock.now()).await?;
-        self.inner
+        let session = self
+            .inner
             .store
             .session(id)
             .await?
-            .ok_or_else(|| doozers_store::Error::NotFound(format!("session {id}")))
+            .ok_or_else(|| doozers_store::Error::NotFound(format!("session {id}")))?;
+        if session.user.as_ref() != Some(&to.user) {
+            return Err(doozers_store::Error::Conflict(format!(
+                "the open session {id} of this conversation belongs to another user"
+            )));
+        }
+        Ok(session)
     }
 
     /// Waits until every task of the session manager has stopped: channel pumps, drivers, turns,
@@ -477,6 +553,7 @@ struct Inner {
     runner: Arc<dyn TurnRunner>,
     approvals: Arc<dyn Approvals>,
     env_resets: Arc<dyn EnvResets>,
+    links: Arc<dyn Linker>,
     clock: Arc<dyn Clock>,
     shutdown: CancellationToken,
     /// Sessions with a driver task: one is running a turn or about to look for queued rows.

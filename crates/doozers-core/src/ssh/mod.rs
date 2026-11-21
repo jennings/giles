@@ -6,7 +6,7 @@
 //! fingerprint, times) and a secret at `users/<user>/ssh-keys/<id>` holding the private key as
 //! unencrypted OpenSSH PEM, which the secret store seals. Every call takes the user who acts. A
 //! user lists, renames, and deletes only their own keys, and a key of someone else's is reported
-//! as not found. The owner may also list every user's key metadata and delete any key
+//! as not found. An admin may also list every user's key metadata and delete any key
 //! ([`SshKeys::all_keys`], [`SshKeys::delete_any`]). Nothing returns a private key: only the
 //! signing path inside the core reads one ([`SshKeys::private_key`]), and only the acting user's.
 //!
@@ -38,9 +38,9 @@ use tracing::warn;
 use zeroize::Zeroizing;
 
 use crate::config::Secret;
-use crate::identity;
 use crate::secrets::{SecretError, SecretPath, SecretProvider};
 use crate::sessions::Clock;
+use crate::users::UserList;
 
 pub use agent::Agent;
 pub use formats::{KeyFileError, MAX_UPLOAD_BYTES};
@@ -50,7 +50,7 @@ pub use known_hosts::{Caller, KnownHost, KnownHosts, KnownHostsError};
 #[cfg(test)]
 impl SshKeys {
     /// The service over `store` with a secret store of its own in `dir`, for tests of the code
-    /// that holds one.
+    /// that holds one. It knows no users, so nobody is an admin.
     pub(crate) async fn for_tests(
         store: Store,
         dir: &std::path::Path,
@@ -64,7 +64,7 @@ impl SshKeys {
         )
         .await
         .unwrap();
-        Self::new(store, Arc::new(secrets), clock)
+        Self::new(store, Arc::new(secrets), clock, UserList::default())
     }
 }
 
@@ -130,8 +130,8 @@ pub enum SshKeysError {
     /// There is no such key, or it isn't the acting user's. The two look the same on purpose.
     #[error("no such SSH key")]
     NotFound,
-    /// The acting user may not do this: the admin calls are the owner's.
-    #[error("only the owner can do that")]
+    /// The acting user may not do this: the admin calls are the admins'.
+    #[error("only an admin can do that")]
     Forbidden,
     /// The label is empty, too long, or has a control character.
     #[error("{0}")]
@@ -168,6 +168,8 @@ pub struct SshKeys {
     store: Store,
     secrets: Arc<dyn SecretProvider>,
     clock: Arc<dyn Clock>,
+    /// Who is an admin: the admin calls ask it each time.
+    users: UserList,
 }
 
 impl fmt::Debug for SshKeys {
@@ -211,18 +213,26 @@ fn default_label(user: &UserId) -> String {
 }
 
 impl SshKeys {
-    /// The service over `store`, with private keys in `secrets` and times from `clock`.
-    pub fn new(store: Store, secrets: Arc<dyn SecretProvider>, clock: Arc<dyn Clock>) -> Self {
+    /// The service over `store`, with private keys in `secrets`, times from `clock`, and the
+    /// admin calls open to the admins of `users`.
+    pub fn new(
+        store: Store,
+        secrets: Arc<dyn SecretProvider>,
+        clock: Arc<dyn Clock>,
+        users: UserList,
+    ) -> Self {
         Self {
             store,
             secrets,
             clock,
+            users,
         }
     }
 
-    /// Whether `user` may use the admin calls: the owner only, as for the admin pages.
-    pub fn may_administer(user: &UserId) -> bool {
-        *user == identity::owner()
+    /// Whether `user` may use the admin calls: an active admin, as for the admin pages. Read from
+    /// the user list now, so a demoted or disabled admin loses it at once.
+    pub fn may_administer(&self, user: &UserId) -> bool {
+        self.users.is_admin(user)
     }
 
     /// `user`'s keys, oldest first.
@@ -403,13 +413,13 @@ impl SshKeys {
         Ok(record.into())
     }
 
-    /// Every user's keys: metadata only. For the owner's admin page.
+    /// Every user's keys: metadata only. For the admin page.
     ///
     /// # Errors
     ///
-    /// [`SshKeysError::Forbidden`] unless `acting` is the owner.
+    /// [`SshKeysError::Forbidden`] unless `acting` is an admin.
     pub async fn all_keys(&self, acting: &UserId) -> Result<Vec<SshKey>, SshKeysError> {
-        Self::require_admin(acting)?;
+        self.require_admin(acting)?;
         Ok(self
             .store
             .ssh_keys_all()
@@ -419,13 +429,13 @@ impl SshKeys {
             .collect())
     }
 
-    /// Any user's key `id`, metadata only. For the owner's delete confirmation.
+    /// Any user's key `id`, metadata only. For the delete confirmation.
     ///
     /// # Errors
     ///
-    /// [`SshKeysError::Forbidden`] unless `acting` is the owner; [`SshKeysError::NotFound`].
+    /// [`SshKeysError::Forbidden`] unless `acting` is an admin; [`SshKeysError::NotFound`].
     pub async fn any_key(&self, acting: &UserId, id: SshKeyId) -> Result<SshKey, SshKeysError> {
-        Self::require_admin(acting)?;
+        self.require_admin(acting)?;
         self.store
             .ssh_key(id)
             .await?
@@ -438,9 +448,9 @@ impl SshKeys {
     ///
     /// # Errors
     ///
-    /// [`SshKeysError::Forbidden`] unless `acting` is the owner; [`SshKeysError::NotFound`].
+    /// [`SshKeysError::Forbidden`] unless `acting` is an admin; [`SshKeysError::NotFound`].
     pub async fn delete_any(&self, acting: &UserId, id: SshKeyId) -> Result<SshKey, SshKeysError> {
-        Self::require_admin(acting)?;
+        self.require_admin(acting)?;
         let record = self
             .store
             .ssh_key(id)
@@ -449,8 +459,8 @@ impl SshKeys {
         self.remove(record).await
     }
 
-    fn require_admin(acting: &UserId) -> Result<(), SshKeysError> {
-        if Self::may_administer(acting) {
+    fn require_admin(&self, acting: &UserId) -> Result<(), SshKeysError> {
+        if self.may_administer(acting) {
             Ok(())
         } else {
             Err(SshKeysError::Forbidden)

@@ -36,22 +36,29 @@ flowchart LR
 v1 is used by one person, the owner, who talks to agents on several channels. Sections describing
 several users and group chats are the design for later; v1 builds this subset of them:
 
-- Users: one implicit user, the owner. The owner's identities are declared in `doozers.toml`, e.g.
-  `[owner] identities = ["whatsapp:+15551234567", "email:me@example.com"]`, with
-  `default = "whatsapp:+15551234567"` naming the identity jobs and proactive messages go to. There
-  are no user records, roles, pairing, or self-linking (section 3). Messages from any other identity
-  are dropped and logged. Sender authenticity (section 3.3) still applies to the owner's identities.
+- Users: user records and their channel identities are stored in the database (sections 3.2 and
+  11.4), not in `doozers.toml`. A user has an opaque id, a username, a role (`admin` or `member`), a
+  state (`active` or `disabled`), a time zone, identities, and a default identity, which is where
+  jobs and proactive messages go. v1's one user is the owner. A `doozers.toml` that has
+  `[owner] identities = ["whatsapp:+15551234567", "email:me@example.com"]`, with optional `default`
+  and `timezone`, has it imported once, at the first start, as an `admin` whose id stays `owner`;
+  after that `[owner]` is ignored, with a warning at every start (section 11.2). A fresh install has
+  no `[owner]`: `doozers admin login-link` creates the first admin. There is no pairing yet, and a
+  user adds an identity by sending a link code from it (section 3.2). Messages from an identity no
+  user has, and from a disabled user, are dropped and logged. Sender authenticity (section 3.3)
+  still applies to every identity.
 - Group chats: not supported. Channels report the conversation kind, and the core ignores group
   conversations: no turn, no reply, nothing stored.
 - Web login: only the `doozers admin login-link` one-time URL and the trusted-proxy header.
-- Tool approvals: answered by the owner.
+- Tool approvals: answered by the user whose turn asked (for a job, the delivery user), whatever
+  their role.
 - Models: each agent uses the first model in `models`, with no fallback.
 - Config: read at startup; changes need a restart, except agents created, edited, and removed in the
   web UI, which change the running configuration (section 8.7), remote toolsets, which are stored in
   the database and changed in the web UI while Doozers runs (section 7.10), and routes, which the
   web UI changes for the next message (section 6.1). Agent Markdown files are read per turn. v1
-  keeps the owner, the provider and channel instances, and the stdio toolsets in `doozers.toml`; the
-  owner and the instances that launch no program move to the web UI later (section 11.2).
+  keeps the provider and channel instances and the stdio toolsets in `doozers.toml`; the instances
+  that launch no program move to the web UI later (section 11.2).
 
 Deferred decisions, each with what v1 does meanwhile and when to revisit it, are in
 `Docs/decisions/`: D28, D49, D57, D58, D63, D65, D66.
@@ -78,20 +85,30 @@ many tools from one process.
   credentials in `secrets.toml`. Users, agents, routes, and the rest are managed by Doozers and
   changed by admins in the web UI (section 11.2).
 - Every person who talks to an agent is a user, with exactly one role. An admin adds users in the
-  web UI. In the current layout a user is a `users/<user>/user.toml` file (section 11.3).
-- Roles are defined in config. Each role lists the agents its users may talk to and tool globs they
-  may trigger. Doozers ships three defaults, which config can change or extend:
+  web UI. A user is a row of the `users` table (section 11.4).
+- There are two roles. All admins are equal; a role is changed by an admin, and no role is
+  configured.
 
-  | Role     | Agents             | Tools                     |
-  | -------- | ------------------ | ------------------------- |
-  | `admin`  | all                | all; may approve pairings |
-  | `member` | all                | all the agent allows      |
-  | `guest`  | none until granted | core tools only           |
+  | Role     | Agents | Tools                | Manages Doozers                                      |
+  | -------- | ------ | -------------------- | ---------------------------------------------------- |
+  | `admin`  | all    | all the agent allows | yes: the admin pages, shared memories, SSH key admin |
+  | `member` | all    | all the agent allows | no                                                   |
 
+  "Manages Doozers" means the web admin pages (status, plugins, agents, routes, MCP servers,
+  workspaces, all users' SSH keys, known SSH hosts) and the admin RPCs behind them, writing shared
+  memories (section 6.7), and the group conversations' memories. Per-user allowlists of agents and
+  tools are later work.
+- A user is an admin only while their role is `admin` and their state is `active`. Every check asks
+  the current users, so a demotion or a disabling applies to the next request or turn. Nothing
+  decides privilege by comparing a user id to `owner`; that id only marks the data of the user
+  `[owner]` was imported as (and the first admin of a fresh install), such as the config jobs that
+  run as that user until they become runtime jobs.
+- The last active admin can't be removed, disabled, or demoted. The store refuses it in the
+  transaction of the change, so concurrent changes can't leave none.
 - Agents are global. Per-user data: identity links, profile, per-agent memory, sessions.
 
-A tool call is allowed only if both the agent's allowlist and the role of the turn's requester allow
-it. Every turn has exactly one requester (section 6.3).
+A tool call is allowed only if the agent's allowlist allows it. Every turn has exactly one requester
+(section 6.3).
 
 ### 3.2 Identity links
 
@@ -108,9 +125,15 @@ reports both the phone number and the LID, since group participants usually appe
 identity. The core keys on the canonical id (`sender`) and treats a message as from a known identity
 if the sender or any alias matches.
 
-Identity links map identities to users and live in SQLite. User records and roles live in TOML in
-the current layout; where Doozers stores them is decided with their web UI (section 11.2).
-(Multi-user identity storage is deferred: D49.)
+Identity links map identities to users and live in SQLite, in `user_identities`, beside the users in
+`users` (section 11.4). A link records when and how it was verified: `link` (the user sent a link
+code from the identity), `admin` (an admin or the operator set it, such as a proxy login identity or
+the `web:<id>` identity a login link signs in as), or `imported` (it was in `[owner]`, section 1.1).
+The router resolves the sender, or an alias, to a user through a snapshot of the stored identities
+that every change replaces, so a change applies to the next message with no restart. The turn's
+requester is that user, and a message from a disabled user is dropped. Identities are compared as
+the joined `<namespace>:<native id>` string, exactly except for the domain of an `email` identity.
+(Pairing below is still design: D49.)
 
 Messages from identities with no link never reach an agent. What happens instead is a per-instance
 `unknown_senders` policy:
@@ -119,27 +142,33 @@ Messages from identities with no link never reach an agent. What happens instead
 | ------------------- | ------------------------------------------------------------------------- |
 | `pairing` (default) | Reply once with a one-time pairing code, valid for 1 hour                 |
 | `disabled`          | Drop silently (logged)                                                    |
-| `open`              | Create a guest user (`users/guest-<id>/user.toml`, role `guest`) and link the identity |
+| `open`              | Create a user (role `member`) and link the identity |
 
 Pairing: an admin approves a code with `doozers pair approve <code> --user <user>` or on the web
 admin pages, linking the identity to an existing user. `--new-user <user> [--role <role>]` instead
-creates `users/<user>/user.toml` (default role `guest`) and links to it. `doozers pair deny <code>`
-rejects it. Further messages from the same identity while a code is valid don't produce new codes.
+creates the user (default role `member`) and links to it. `doozers pair deny <code>` rejects it.
+Further messages from the same identity while a code is valid don't produce new codes.
 
-Self-linking: a known user sends `/link` on a channel where they're linked and gets a code. Sending
-`/link <code>` from the new identity within 10 minutes links it. This works under `pairing` and
-`open`, not `disabled`.
+Linking: a signed-in user asks for a code for a channel namespace on a web page, and sends
+`/link <code>` from the identity within 10 minutes. The router lets that one message through from a
+sender with no user, after the sender-authenticity check and in a direct conversation only. The core
+answers it on the channel, and it never reaches an agent or makes a session. The namespace must be
+one a running channel reports. An identity that is a user's already can't be linked again: it moves
+only after its user removes it.
 
-Codes (pairing, `/link`, and web login):
+Codes (pairing and `/link`):
 
 - 8 characters from the base32 alphabet (40 bits), stored only as salted hashes.
 - At most 3 pending pairing codes per channel instance; at most one new code per sender every 10
   minutes.
-- 5 wrong attempts from a sender, or against a code, invalidate the code and lock the sender out for
-  an hour.
+- A sender gets 5 wrong attempts and is then locked out for an hour. A `/link` code survives 20
+  wrong attempts from anyone, since a wrong code can't be told apart from a guess at any pending
+  code of its channel, and 5 would let a stranger cancel everyone's codes. The limit of a pairing
+  code is still design.
 
 Core commands (`/new`, `/stop`, `/link`, approval replies) are handled by the core and never reach
-an agent. They're recognized after routing, before the agent, since they act on the routed session.
+an agent. They're recognized after routing, before the agent, since they act on the routed session,
+except `/link`, which acts on no session and is recognized before the sender is resolved.
 
 ### 3.3 Sender authenticity
 
@@ -164,21 +193,52 @@ Channels also drop messages that must never start a turn: echoes of the agent's 
 
 ### 3.4 Web login
 
-- One-time login code: the user enters their user name, Doozers sends a code to that user's default
-  channel, and entering it sets a session cookie (`HttpOnly`, `SameSite=Lax`, `Secure` when served
-  over HTTPS). Web sessions live in SQLite and expire after 30 days.
-  - The code is bound to a nonce cookie set in the browser that asked for it; it works nowhere else.
-  - Requests are rate-limited per user name and per client address, and the page answers the same
-    way whether or not the user name exists.
+- Web sessions: a session cookie (`HttpOnly`, `SameSite=Lax`, `Secure` when served over HTTPS).
+  Sessions live in SQLite, expire after 30 days, and record how they signed in. Every sign-in makes
+  a new session and ends the browser's old one. The login code a channel delivers is dropped.
+- Passwords: a user name and password, the only choice on an insecure origin. Passwords are Argon2id
+  hashes (OWASP parameters: 19 MiB, 2 iterations, 1 lane) in the `user_passwords` table, hashed on a
+  blocking thread with a cap on how many run at once. A new one has 15 to 128 characters and no
+  composition rules (NIST SP 800-63B-4). Wrong passwords are rate-limited per user name and per
+  client address, and the page answers the same way, with the same work, whether or not the user
+  name exists. Pages with a password form warn when they are plain HTTP on a non-loopback address. A
+  user sets a password on the page an invite or recovery link leads to.
 - Trusted proxy header (Tailscale, oauth2-proxy, Authelia): the header value is treated as a native
   identifier on the web channel instance and linked to a user like any other identity. The header is
   honored only on a dedicated listener the core creates for the proxy: a Unix socket
   (`run/proxy.sock`, mode 0600) or a TCP listener that also requires a shared-secret header the
   proxy adds. Never by source address: any local process, including network-enabled plugins, can
   connect from loopback.
-- Bootstrap: `doozers admin login-link --user <user>` prints a one-time URL valid for 10 minutes,
-  for the first login before any channel is linked.
-- Passkeys: later.
+- Invite and recovery links: a one-time URL (`/invite/<token>`) that signs a browser in and then
+  offers to add a sign-in method. An `invite` sets up a new user and a `recovery` link gets a user
+  who lost every method back in, without removing any. Both last 72 hours and work once. They live
+  in the `user_invites` table by the hash of a 256-bit token, so they survive a restart. Opening the
+  URL shows a button; the button's POST spends the link, so link previews can't. Every sign-in POST
+  carries a nonce that matches a cookie the browser got with the form (login CSRF).
+- Bootstrap: `doozers admin login-link [--user <id>]` prints a recovery link, for the first login
+  before any other method exists. On a fresh install, with no users, it creates the first admin,
+  whose id is `owner` and username `admin`. With exactly one user the link is that user's, so a
+  single-user install runs it with no arguments; with several it needs `--user`. It prints whose
+  link it is, and gives that user the identity `web:<id>`, the one a link sign-in sends as, if they
+  lack it.
+- Passkeys (WebAuthn, `webauthn-rs`): offered when the page is on a secure origin (HTTPS, or
+  `localhost`) and the web channel has a `public_url`, whose host is the relying party id. A user
+  adds one on the page an invite or recovery link leads to, with "Add a passkey" (discoverable, so
+  no username is needed to sign in) or "Add a non-resident key" (for a hardware key with few slots).
+  User verification is required for both. They live in the `user_passkeys` table. The login page
+  starts a conditional request on load, so a browser can offer a discoverable passkey in the
+  username field, and has a "Sign in with a passkey" button; a username asks the server for that
+  user's passkeys, and a name that has none gets made-up credential ids, so the answer doesn't say
+  who exists. Passwords fold behind "Use a password instead" where passkeys are offered.
+- OpenID Connect: admins add identity providers (`oidc_providers`: issuer, client id, the name of
+  the client secret in the secret store, scopes), whose endpoints and keys come from the issuer's
+  discovery document. A sign-in is the authorization code flow with PKCE (S256), `state`, and
+  `nonce`, at `<public_url>/auth/oidc/<id>/callback`; the ID token's signature (RSA, ECDSA, or
+  EdDSA, never HMAC or `none`), `iss`, `aud`, `exp`, and `nonce` are checked. The flow is bound to
+  the browser by a cookie and used once. An account (`user_oidc_connections`) is its issuer and
+  subject, never an email address, and a user connects one on the page an invite or recovery link
+  leads to. No sign-in creates a user; an unconnected account is refused. The login and setup pages
+  list every enabled provider.
 
 ## 4. Components and traits
 
@@ -490,18 +550,14 @@ that breaks this.
 
 ### 6.4 Tool policy and approvals
 
-A tool may run only if both of these allow it:
-
-- The agent's allowlist: globs over prefixed tool names, e.g. `["github__*", "memory*"]`.
-- The requester's role (section 3.1). Runtime jobs run with their creator's role, so `schedule`
-  can't be used to reach tools the creator may not call. Config jobs, set up by an admin with the
-  agent rather than by a requester, use the agent's allowlist alone.
+A tool may run only if the agent's allowlist allows it: globs over prefixed tool names, e.g.
+`["github__*", "memory*"]`. Neither role (section 3.1) narrows the allowlist; per-user allowlists
+are later work, and when they come, runtime jobs run with their creator's, so `schedule` can't be
+used to reach tools the creator may not call. Config jobs, set up by an admin with the agent rather
+than by a requester, use the agent's allowlist alone.
 
 The tools offered to the model are fixed for the session, so the cached prompt prefix stays valid
-(section 6.7): in a DM, the allowlist filtered by that user's role at session start; in a group, the
-agent's allowlist. The requester's role is enforced again when a tool is called, and a forbidden
-call gets the error result "not permitted for <user>". In v1, with no roles, the session's tools are
-the agent's allowlist.
+(section 6.7): the session's tools are the agent's allowlist.
 
 The session keeps its tool list even when a toolset's tools change: a toolset that goes down
 (section 7.6) or drops a tool on `list_changed` (section 7.9) leaves the list as it was. A call to a
@@ -512,9 +568,10 @@ Approval: an agent's `ask` globs list tools that need approval before each call 
 An MCP server may also ask mid-call through elicitation (section 7.10); the core handles it the same
 way.
 
-- Who answers: the user whose message started the turn, or any admin.
+- Who answers: the user whose message started the turn; for a job with `ask_to = "deliver_to"`, the
+  delivery user. A role grants no right to answer someone else's approval.
 - Unattended runs (jobs): a tool matching `ask` returns "denied (unattended)", unless the job sets
-  `ask_to = "deliver_to"`; then the delivery user is asked, if their role allows the tool.
+  `ask_to = "deliver_to"`; then the delivery user is asked.
 - How: the core sends a prompt with a short code, e.g. "Allow `shell__exec` (`rm -rf ./build`)?
   Reply `yes 4821` or `no 4821`." `yes! 4821` also allows that tool for the rest of the session. The
   web channel shows buttons instead. Approval replies are consumed by the core, not queued as
@@ -632,9 +689,9 @@ scope.
   It's scoped to the current context: in a DM, that user's DM sessions with this agent; in a group,
   that group's transcript. Embedding search is not in v1.
 
-Shared memories reach every prompt, including the owner's tool-enabled DMs, so a guest or a group
+Shared memories reach every prompt, including the tool-enabled DMs of admins, so a member or a group
 must not be able to plant instructions in one. Creating a shared memory, marking one shared, and
-editing or forgetting one are therefore accepted only in turns whose requester is the owner, and in
+editing or forgetting one are therefore accepted only in turns whose requester is an admin, and in
 config job turns, since an admin set those jobs up; anyone else gets an error and their private
 memories are unaffected. Un-sharing a memory makes it private to the person who un-shared it. In a
 group, any participant can use the group's private memories. Who speaks varies per turn, so the
@@ -710,7 +767,7 @@ ask_to = "deliver_to"         # optional; without it, `ask` tools are denied (se
 - Config jobs live in `agent.toml`. Runtime jobs come from the core tool `schedule`, which lets the
   agent create, list, and cancel jobs for the requesting user ("remind me at 5"). Runtime jobs live
   in SQLite, record their creator and the conversation they were scheduled in, run with the
-  creator's role (section 6.4), and deliver to that user. `schedule list` also shows config jobs,
+  creator's rights (section 6.4), and deliver to that user. `schedule list` also shows config jobs,
   read-only.
 - A job's DM is the conversation a runtime job was scheduled in. Config jobs, runtime jobs made on
   the web jobs page, and runtime jobs whose channel instance is gone use the user's DM on their
@@ -1244,13 +1301,13 @@ v1 reads config at startup and has no reload RPC; reload is deferred (D28). The 
 RPCs belong to multi-user support (section 1.1) and are added to `doozers.admin.v1` with it.
 
 The web UI's agent pages (list an agent's configuration and files, create, edit, and remove an
-agent) are owner-only admin pages, but have no RPCs yet: they call the core's agent management
-in-process. A created agent is written as `agent.toml` and `SOUL.md`, validated like startup config,
-and added to the running configuration without a reload; nothing else changes until a restart. An
-edit changes only the keys the form manages (`name`, `models`, `tools`, `ask`, `environments`,
-`timezone`, and the limits and policies of its "Advanced" section) and `SOUL.md`, in place:
-everything else in `agent.toml` (comments, jobs, any other key) stays as the owner wrote it. The
-result is validated like startup config before anything is replaced, both files are replaced or
+agent) are admin-only pages (section 3.1), but have no RPCs yet: they call the core's agent
+management in-process. A created agent is written as `agent.toml` and `SOUL.md`, validated like
+startup config, and added to the running configuration without a reload; nothing else changes until
+a restart. An edit changes only the keys the form manages (`name`, `models`, `tools`, `ask`,
+`environments`, `timezone`, and the limits and policies of its "Advanced" section) and `SOUL.md`, in
+place: everything else in `agent.toml` (comments, jobs, any other key) stays as the owner wrote it.
+The result is validated like startup config before anything is replaced, both files are replaced or
 neither, and the edit is refused if the files changed on disk since the form was opened. The edited
 agent replaces the old one in the running configuration: chats started afterwards use it, and a
 session already running keeps the tools and `system` it started with (section 6.3). Removing an
@@ -1262,13 +1319,13 @@ job run in progress); the agent is taken out of the running configuration before
 checked again, and put back if work appears or the move fails. Its sessions, messages, and usage
 stay in the database, inert; creating an agent with the same id again reattaches them. Web chats can
 be started with a chosen agent, which routes them to it ahead of the stored routes. Who sees which
-agent file is one per-viewer check: the owner sees all of them, and `memory.db` is listed by size,
+agent file is one per-viewer check: an admin sees all of them, and `memory.db` is listed by size,
 not contents. Memories have their own page per agent (`/admin/agents/<agent>/memory`), under the
 visibility rules of section 6.7: each signed-in user sees and edits their own private memories and
-the shared ones (writing shared ones only as the owner), and the owner also sees and edits each
-group conversation's memories there.
+the shared ones (writing shared ones only as an admin), and an admin also sees and edits each group
+conversation's memories there.
 
-The route pages (list, add, edit, remove, and reorder the routes of section 6.1) are owner-only
+The route pages (list, add, edit, remove, and reorder the routes of section 6.1) are admin-only
 admin pages too, also without RPCs: they call the core's route management in-process, and a change
 applies to the next inbound message.
 
@@ -1404,7 +1461,8 @@ program on the host. The operator writes them and Doozers never edits them:
 Most other settings are managed by Doozers and meant to be changed in the web UI, not in files, so
 Doozers creates and edits them:
 
-- Users: an admin adds users in the web UI.
+- Users: stored in SQLite (section 11.4). The one user so far, the owner, is imported from `[owner]`
+  (section 1.1); an admin adds users in the web UI later.
 - Agents and their files: `agent.toml`, `SOUL.md`, and memories (section 11.3).
 - Routes from channel identities to users and agents: identity links (section 3.2) and routing rules
   (section 6.1). Routing rules are the first of these built: they're stored in SQLite and edited in
@@ -1420,17 +1478,19 @@ Where each kind of data is stored, in SQLite or in Markdown, JSONL, or other tex
 names its bearer token's secret there (`{ secret = "<name>" }`), and where secrets for other
 settings managed in the web UI live is open.
 
-Transition: the current implementation still reads the owner (section 1.1) and the provider and
-channel instances from `doozers.toml`, and the multi-user design below keeps roles there and users
-in `user.toml`. Each moves to storage Doozers manages as its web UI lands; the migration isn't
-designed, except for routes, which already moved: `[[routes]]` is imported once into the database
-and then ignored (section 6.1). Remote toolsets moved with no migration (above). Open: the first
-login (section 3.4) needs the owner's identity, so whether some bootstrap identity stays in
-`doozers.toml` is undecided.
+Transition: the current implementation still reads the provider and channel instances from
+`doozers.toml`. Each moves to storage Doozers manages as its web UI lands; the migration isn't
+designed, except for routes and the owner, which already moved. `[[routes]]` is imported once into
+the database and then ignored (section 6.1), and so is `[owner]` (section 1.1): the first start
+creates the owner as an `admin` user with the id `owner`, with its identities, default identity, and
+time zone, and records that it did (`users_imported`), and every later start ignores `[owner]` and
+logs a warning while the file still has it. An `[owner]` that is invalid stops the first start, and
+nothing is imported. A fresh install has no `[owner]` and records the import anyway, so an `[owner]`
+added later is ignored too. The first login (section 3.4) creates the first admin, so no bootstrap
+identity stays in `doozers.toml`. Remote toolsets moved with no migration (above).
 
-The current layout has three kinds of TOML file: `doozers.toml`, `agents/<agent>/agent.toml`, and
-`users/<user>/user.toml`. Doozers may create and edit `agent.toml` and `user.toml` files, for
-example for an agent created in the web UI or a user created at runtime (section 3.2).
+The current layout has two kinds of TOML file: `doozers.toml` and `agents/<agent>/agent.toml`.
+Doozers may create and edit `agent.toml` files, for example for an agent created in the web UI.
 
 `doozers.toml`, current layout:
 
@@ -1476,10 +1536,6 @@ command = "/opt/homebrew/bin/mcp-server-filesystem"
 args = ["/Users/stephen/Documents"]
 sandbox = { read = ["/Users/stephen/Documents"] }
 idle_stop = "30m"
-
-[roles.member]
-agents = ["*"]
-tools = ["*"]
 ```
 
 Keys at the instance level belong to the core: `component` (providers, channels, and environments),
@@ -1517,22 +1573,13 @@ prompt_file = "morning.md"
 deliver_to = "stephen"
 ```
 
-`users/<user>/user.toml`:
-
-```toml
-name = "Stephen"
-role = "admin"
-timezone = "America/Los_Angeles"
-default_channel = "whatsapp"
-```
-
 Reload (reopened: _Deferred, D28_): the core watches these files and `secrets.toml`. After changes
 settle (500 ms), it parses and validates the whole config.
 
 - Invalid: keep running the previous config, log the error, and report it in `doozers status`.
-- Valid: apply the difference. Roles, agents, and users apply to the next turn (routes already
-  change at runtime in the web UI and aren't read from these files). A changed instance is restarted
-  with its new config; a removed one is stopped; a new one is started.
+- Valid: apply the difference. Agents apply to the next turn (routes already change at runtime in
+  the web UI and aren't read from these files). A changed instance is restarted with its new config;
+  a removed one is stopped; a new one is started.
 - `[core]` settings such as `http_listen` need a restart; the core logs that.
 
 Markdown files (`SOUL.md`, `USER.md`, job prompt files, skills) are read when a turn assembles its
@@ -1548,7 +1595,6 @@ agents/<agent>/
   memory.db                                  # the agent's memories (SQLite, section 6.7)
   skills/<skill>/SKILL.md                    # agent-local skills
 users/<user>/
-  user.toml
   USER.md                                    # profile, written by people, loaded in DMs only
 ```
 
@@ -1572,8 +1618,10 @@ is `FULL`. Main tables:
 
 | Table          | Holds                                                                  |
 | -------------- | ---------------------------------------------------------------------- |
-| `identities`   | (namespace, native id) to user (multi-user; deferred, D49)             |
-| `pairings`     | Pending pairing and link codes                                         |
+| `users`        | The users: opaque id (the first user keeps `owner`), username, display name, role, state, time zone, default identity |
+| `user_identities` | (namespace, native id) to user, with when and how it was verified (`link`, `admin`, `imported`) |
+| `users_imported` | A marker that `doozers.toml`'s `[owner]` was imported                 |
+| `pairings`     | Pending pairing and link codes (deferred, D49)                         |
 | `sessions`     | Session key, agent, kind, start and end                                |
 | `messages`     | Session, sequence, role, content blocks (JSON), metadata               |
 | `summaries`    | Compaction summaries: session, covered sequence range, content         |
@@ -1584,7 +1632,7 @@ is `FULL`. Main tables:
 | `usage`        | Section 11.7                                                           |
 | `web_sessions` | Web login sessions                                                     |
 | `routes`       | The ordered routing rules (section 6.1), and a marker that `doozers.toml`'s `[[routes]]` were imported |
-| `workspaces`   | Environment workspaces (section 8.8): the core-assigned id, environment instance, owner (agent, channel instance, and conversation, or an isolated job session), options, state, last use, and when and why one was deleted |
+| `workspaces`   | Environment workspaces (section 8.8): the core-assigned id, environment instance, owner (agent, channel instance, conversation, and for a direct conversation its user, or an isolated job session), options, state, last use, and when and why one was deleted |
 | `search`       | FTS5 index over `messages`, maintained by triggers (section 6.7)        |
 
 Per-user operations:
@@ -1592,14 +1640,22 @@ Per-user operations:
 - `doozers user export <user>`: an archive of the user's DM sessions, their messages in group
   sessions, the blobs those reference, their private memories in each agent's `memory.db`,
   `USER.md`, identity links, and runtime jobs.
-- `doozers user forget <user>`, every table and file that holds the user's data:
-  - Deleted: DM sessions and their summaries, their private memories, `USER.md`, identity links,
-    pairings, web sessions, runtime jobs, pending approvals, and their `inbox` and `outbox` rows.
+- Forgetting a user is an admin's **Remove** on the user pages of the web UI, not a CLI command. It
+  lists what it will delete and asks first, is refused for the admin's own account and for the last
+  active admin, and is refused while the user has a turn running. It disables the user first and
+  deletes the user's row last, and each step does nothing when its work is done, so a removal that
+  stops halfway is finished by removing the user again. It covers every table and file that holds
+  the user's data:
+  - Deleted: DM sessions and their summaries, their private memories in each agent's `memory.db`,
+    `users/<user>/` (`USER.md`), identity links, link codes, web sessions, runtime jobs, pending
+    approvals, their `inbox` and `outbox` rows, their password, passkeys, OpenID Connect
+    connections, and invites, their SSH keys and everything else under `users/<user>/` in the secret
+    store, and their direct conversations' workspaces.
   - In group sessions: the content of their messages is replaced with a tombstone, and summaries
     covering those messages are deleted and regenerated.
   - The `search` index is maintained by triggers, so their rows leave it with the messages.
   - Usage rows keep their token counts with the user cleared.
-  - `user.toml` is listed for the operator to delete; the core doesn't delete TOML files.
+  - Blobs that only deleted messages referenced are left to the blob sweep (section 11.5).
 
 Backups: copying a live SQLite file can capture a broken state (in WAL mode the main file is behind
 the WAL), so `doozers backup <dir>` is the supported way: `VACUUM INTO` for the database and for

@@ -32,10 +32,10 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{debug, info, warn};
 
-use crate::config::{Identity, InstanceName, OwnerConfig};
-use crate::identity::owner;
+use crate::config::{Identity, InstanceName};
 use crate::registry::Registry;
 use crate::sessions::Clock;
+use crate::users::User;
 
 pub use route::{BACKOFF_INITIAL, BACKOFF_MAX, RETRY_AFTER_MAX};
 use route::{Route, Slot, retry_delay, route};
@@ -101,8 +101,8 @@ impl fmt::Display for OutboxKind {
 /// Where an [`OutboxItem`] goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Destination {
-    /// An identity, `<namespace>:<native id>`, e.g. the owner's default identity (`[owner]
-    /// default`): the channel owning the namespace starts or continues a direct conversation.
+    /// An identity, `<namespace>:<native id>`, e.g. a user's default identity: the channel owning
+    /// the namespace starts or continues a direct conversation.
     Identity(Identity),
     /// A conversation on a channel instance, replied into: a runtime job's reply to the
     /// conversation it was scheduled in.
@@ -158,21 +158,14 @@ impl OutboxItem {
         }
     }
 
-    /// `markdown` to the owner (the one user of v1) on their default identity (PLAN section 1.1),
-    /// where jobs and proactive messages go.
-    pub fn to_owner(
-        owner_config: &OwnerConfig,
-        kind: OutboxKind,
-        markdown: impl Into<String>,
-    ) -> Self {
-        Self {
-            user: Some(owner()),
-            ..Self::new(
-                Destination::Identity(owner_config.default.clone()),
-                kind,
-                markdown,
-            )
-        }
+    /// `markdown` to `user` on their default identity (PLAN section 1.1), where jobs and
+    /// proactive messages go. `None` if the user has no default identity.
+    pub fn to_user(user: &User, kind: OutboxKind, markdown: impl Into<String>) -> Option<Self> {
+        let identity = user.default_identity.clone()?;
+        Some(Self {
+            user: Some(user.id.clone()),
+            ..Self::new(Destination::Identity(identity), kind, markdown)
+        })
     }
 }
 

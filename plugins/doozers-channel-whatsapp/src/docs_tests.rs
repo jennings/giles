@@ -51,35 +51,34 @@ fn the_instances_in_the_guide_are_valid() {
     }
 }
 
+/// The `whatsapp:` identities in the guide's inline code, such as `whatsapp:+15551234567`.
+fn identities(markdown: &str) -> Vec<&str> {
+    markdown
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|span| span.starts_with("whatsapp:") && !span.contains(['<', ' ']))
+        .collect()
+}
+
 #[test]
 fn the_identities_in_the_guide_have_the_form_the_plugin_reports() {
-    let mut seen = 0;
-    for document in documents(WHATSAPP) {
-        let Some(identities) = document
-            .get("owner")
-            .and_then(|owner| owner.get("identities"))
-            .and_then(toml::Value::as_array)
-        else {
-            continue;
-        };
-        for identity in identities {
-            let identity = identity.as_str().unwrap();
-            let native = identity
-                .strip_prefix("whatsapp:")
-                .unwrap_or_else(|| panic!("{identity}: not in the whatsapp namespace"));
-            // The canonical form of a phone number, or a LID.
-            match native.strip_suffix("@lid") {
-                Some(user) => assert!(user.bytes().all(|b| b.is_ascii_digit()), "{identity}"),
-                None => assert_eq!(
-                    parse_phone(native)
-                        .map(|digits| format!("+{digits}"))
-                        .as_deref(),
-                    Ok(native),
-                    "{identity}"
-                ),
-            }
-            seen += 1;
+    let seen = identities(WHATSAPP);
+    for identity in &seen {
+        let native = identity
+            .strip_prefix("whatsapp:")
+            .unwrap_or_else(|| panic!("{identity}: not in the whatsapp namespace"));
+        // The canonical form of a phone number, or a LID.
+        match native.strip_suffix("@lid") {
+            Some(user) => assert!(user.bytes().all(|b| b.is_ascii_digit()), "{identity}"),
+            None => assert_eq!(
+                parse_phone(native)
+                    .map(|digits| format!("+{digits}"))
+                    .as_deref(),
+                Ok(native),
+                "{identity}"
+            ),
         }
     }
-    assert_eq!(seen, 3);
+    assert!(seen.len() >= 2, "{seen:?}");
 }

@@ -380,7 +380,7 @@ fn pruning_keeps_the_newest_pre_migration_snapshots_and_nothing_else_is_touched(
 fn downgrade_to_v1(path: &Path) {
     let conn = rusqlite::Connection::open(path).unwrap();
     conn.execute_batch(
-        "DROP TABLE ssh_known_hosts; DROP TABLE ssh_keys; DROP TABLE archived_conversations; ALTER TABLE outbox DROP COLUMN target; DROP TABLE secret_key; DROP TABLE secrets; DROP TABLE workspaces; DROP TABLE toolsets; DROP TABLE routes_imported; DROP TABLE routes; DROP TABLE blobs;
+        "DROP TABLE web_sessions; CREATE TABLE web_sessions (token_hash BLOB PRIMARY KEY CHECK (length(token_hash) = 32), user_id TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL) STRICT, WITHOUT ROWID; CREATE INDEX web_sessions_expires ON web_sessions (expires_at); DROP TABLE user_link_codes; DROP TABLE user_oidc_connections; DROP TABLE oidc_providers; DROP TABLE passkey_fake_key; DROP TABLE user_passkeys; DROP TABLE user_passwords; DROP TABLE user_invites; DROP INDEX inbox_user; DROP INDEX sessions_user; DROP TABLE users_imported; DROP TABLE user_identities; DROP TABLE users; DROP TABLE ssh_known_hosts; DROP TABLE ssh_keys; DROP TABLE archived_conversations; ALTER TABLE outbox DROP COLUMN target; DROP TABLE secret_key; DROP TABLE secrets; DROP TABLE workspaces; DROP TABLE toolsets; DROP TABLE routes_imported; DROP TABLE routes; DROP TABLE blobs;
          PRAGMA user_version = 1;",
     )
     .unwrap();

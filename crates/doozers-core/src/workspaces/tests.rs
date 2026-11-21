@@ -143,6 +143,7 @@ impl Harness {
             agent,
             channel,
             conversation,
+            user,
         } = owner
         else {
             panic!("not a conversation");
@@ -154,7 +155,7 @@ impl Harness {
         };
         let (session, _) = self
             .store
-            .open_session(key, SessionKind::Direct, None, at)
+            .open_session(key, SessionKind::Direct, user.clone(), at)
             .await
             .unwrap();
         self.store
@@ -185,6 +186,26 @@ fn chat(conversation: &str) -> WorkspaceOwner {
         agent: AgentId::new("jeeves").unwrap(),
         channel: "web".into(),
         conversation: ConversationId::new(conversation).unwrap(),
+        user: None,
+    }
+}
+
+/// `user`'s direct conversation `conversation`.
+fn chat_of(conversation: &str, user: &str) -> WorkspaceOwner {
+    let WorkspaceOwner::Conversation {
+        agent,
+        channel,
+        conversation,
+        ..
+    } = chat(conversation)
+    else {
+        unreachable!();
+    };
+    WorkspaceOwner::Conversation {
+        agent,
+        channel,
+        conversation,
+        user: Some(UserId::new(user).unwrap()),
     }
 }
 
@@ -493,11 +514,12 @@ async fn the_sessions_hook_resets_the_conversations_workspace() {
     use crate::sessions::{EnvReset, EnvResets};
 
     let h = Harness::new().await;
-    let owner = chat("c1");
+    let owner = chat_of("c1", "alice");
     let WorkspaceOwner::Conversation {
         agent,
         channel,
         conversation,
+        ..
     } = owner.clone()
     else {
         unreachable!();
@@ -507,16 +529,34 @@ async fn the_sessions_hook_resets_the_conversations_workspace() {
         channel,
         conversation,
     };
-    assert_eq!(h.workspaces.reset(&key).await, EnvReset::NoWorkspace);
+    let alice = user("alice");
+    assert_eq!(
+        h.workspaces.reset(&key, &alice).await,
+        EnvReset::NoWorkspace
+    );
 
-    let old = h.create(&owner).await;
-    assert_eq!(h.workspaces.reset(&key).await, EnvReset::Done);
+    let old = h.create_for(&owner, Some(&alice)).await;
+    // Another user's workspace in the same conversation id is none of this reset's business.
+    let bobs = h
+        .create_for(&chat_of("c1", "bob"), Some(&user("bob")))
+        .await;
+    assert_eq!(h.workspaces.reset(&key, &alice).await, EnvReset::Done);
+    assert_eq!(
+        h.workspaces
+            .current(&chat_of("c1", "bob"))
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        bobs.id
+    );
     let new = h.workspaces.current(&owner).await.unwrap().unwrap();
     assert_ne!(new.id, old.id);
     assert_eq!(new.options, old.options);
+    assert_eq!(new.key_user, Some(alice.clone()));
 
     h.disconnect();
-    let EnvReset::Failed(message) = h.workspaces.reset(&key).await else {
+    let EnvReset::Failed(message) = h.workspaces.reset(&key, &alice).await else {
         panic!("not refused");
     };
     assert!(
@@ -530,7 +570,7 @@ async fn the_sessions_hook_resets_the_conversations_workspace() {
         doozers_types::Error::InvalidRequest("no space left".to_owned()),
         false,
     );
-    let EnvReset::Failed(message) = h.workspaces.reset(&key).await else {
+    let EnvReset::Failed(message) = h.workspaces.reset(&key, &alice).await else {
         panic!("not reported");
     };
     assert!(
@@ -1014,19 +1054,56 @@ async fn the_owner_of_a_turn_is_its_conversation_or_its_job_session() {
     };
     let (direct, _) = h
         .store
-        .open_session(key.clone(), SessionKind::Direct, None, h.clock_now())
+        .open_session(
+            key.clone(),
+            SessionKind::Direct,
+            Some(user("alice")),
+            h.clock_now(),
+        )
         .await
         .unwrap();
-    assert_eq!(WorkspaceOwner::of_session(&direct), chat("c1"));
+    assert_eq!(WorkspaceOwner::of_session(&direct), chat_of("c1", "alice"));
     // A new session of the same conversation (`/new`) is the same owner.
     h.store.end_session(direct.id, h.clock_now()).await.unwrap();
     let (again, _) = h
         .store
-        .open_session(key, SessionKind::Direct, None, h.clock_now())
+        .open_session(
+            key.clone(),
+            SessionKind::Direct,
+            Some(user("alice")),
+            h.clock_now(),
+        )
         .await
         .unwrap();
     assert_ne!(again.id, direct.id);
-    assert_eq!(WorkspaceOwner::of_session(&again), chat("c1"));
+    assert_eq!(WorkspaceOwner::of_session(&again), chat_of("c1", "alice"));
+    // Another user who takes the conversation id has an owner of their own.
+    h.store.end_session(again.id, h.clock_now()).await.unwrap();
+    let (bobs, _) = h
+        .store
+        .open_session(key, SessionKind::Direct, Some(user("bob")), h.clock_now())
+        .await
+        .unwrap();
+    assert_eq!(WorkspaceOwner::of_session(&bobs), chat_of("c1", "bob"));
+    // A group's session has no user in its owner.
+    let (group, _) = h
+        .store
+        .open_session(
+            doozers_store::SessionKey {
+                agent: AgentId::new("jeeves").unwrap(),
+                channel: "chat".into(),
+                conversation: ConversationId::new("#room").unwrap(),
+            },
+            SessionKind::Group,
+            None,
+            h.clock_now(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        WorkspaceOwner::of_session(&group),
+        WorkspaceOwner::Conversation { user: None, .. }
+    ));
 
     let isolated = h
         .store
@@ -1907,4 +1984,108 @@ async fn a_lookup_that_names_no_host_the_core_knows_gets_no_key() {
     let reply = known_hosts_reply(&h, &record.id).await;
     assert_eq!((reply.id, reply.keys.len()), (3, 0));
     assert!(h.workspaces.known_hosts().all().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn two_users_of_one_conversation_id_over_time_get_workspaces_of_their_own() {
+    // An IRC direct conversation is the sender's nickname: Alice used it, her session ended, and
+    // Bob took the nickname.
+    let h = Harness::new().await;
+    h.connect_relaying();
+    let alice = user("alice");
+    let bob = user("bob");
+    h.ssh_keys
+        .generate(&alice, crate::ssh::KeyType::Ed25519, Some("hers"))
+        .await
+        .unwrap();
+    h.ssh_keys
+        .generate(&bob, crate::ssh::KeyType::Ed25519, Some("his"))
+        .await
+        .unwrap();
+    let (hers_owner, his_owner) = (chat_of("nick", "alice"), chat_of("nick", "bob"));
+    let hers = h.create_for(&hers_owner, Some(&alice)).await;
+    h.fake.put_file(&hers.id, "tax-return.txt", b"alice's");
+
+    // Bob's turns find no workspace of his, whatever Alice has, and creating his own doesn't
+    // touch hers.
+    assert!(matches!(
+        h.workspaces.open(&his_owner, &LeaseSlot::default()).await,
+        Err(WorkspaceError::NoWorkspace)
+    ));
+    let his = h.create_for(&his_owner, Some(&bob)).await;
+    assert_ne!(his.id, hers.id);
+    assert_eq!(h.record(&hers.id).await.state, WorkspaceState::Active);
+    assert!(
+        h.fake
+            .read_file(&his.id, "tax-return.txt", 100)
+            .await
+            .is_err(),
+        "the new workspace has none of the old one's files"
+    );
+
+    // Each one's turns open their own, and its relay offers only that user's keys.
+    let opened = open(&h, &hers_owner).await;
+    assert_eq!(opened.record.id, hers.id);
+    assert_eq!(opened.notice, None);
+    let opened = open(&h, &his_owner).await;
+    assert_eq!(opened.record.id, his.id);
+    assert_eq!(opened.notice, None);
+    h.fake.relay_settled(&hers.id, true).await;
+    h.fake.relay_settled(&his.id, true).await;
+    assert_eq!(offered(&h, &hers.id, 1).await, ["hers"]);
+    assert_eq!(offered(&h, &his.id, 1).await, ["his"]);
+
+    // A reset, a delete, and what the model is told after one are each user's own.
+    h.workspaces
+        .recreate(&his_owner, DeleteReason::UserReset)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        h.workspaces.current(&hers_owner).await.unwrap().unwrap().id,
+        hers.id
+    );
+    assert_eq!(h.workspaces.last_deleted(&hers_owner).await.unwrap(), None);
+    h.workspaces
+        .delete(&hers_owner, DeleteReason::ModelDelete)
+        .await
+        .unwrap();
+    assert!(h.workspaces.current(&his_owner).await.unwrap().is_some());
+    assert_eq!(
+        h.workspaces
+            .last_deleted(&his_owner)
+            .await
+            .unwrap()
+            .unwrap()
+            .delete_reason,
+        Some(DeleteReason::UserReset)
+    );
+
+    // A group conversation's workspace, with no user, is a third owner.
+    let group = h.create_for(&chat("nick"), None).await;
+    assert_ne!(group.id, hers.id);
+    assert!(h.workspaces.current(&his_owner).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn a_turn_still_running_after_the_conversation_changed_hands_keeps_its_own_workspace() {
+    let h = Harness::new().await;
+    let (hers_owner, his_owner) = (chat_of("nick", "alice"), chat_of("nick", "bob"));
+    let hers = h.create_for(&hers_owner, Some(&user("alice"))).await;
+
+    // Alice's turn is running (it holds the lease) when `/new` ended her session and Bob's first
+    // turn started in the same conversation id.
+    let slot = LeaseSlot::default();
+    h.workspaces.open(&hers_owner, &slot).await.unwrap();
+    let his = h.create_for(&his_owner, Some(&user("bob"))).await;
+    open(&h, &his_owner).await;
+
+    // Neither deleted the other's, and each turn's next call finds its own.
+    assert_eq!(h.record(&hers.id).await.state, WorkspaceState::Active);
+    assert_eq!(h.record(&his.id).await.state, WorkspaceState::Active);
+    let again = h.workspaces.open(&hers_owner, &slot).await.unwrap();
+    assert_eq!(again.record.id, hers.id);
+    assert_eq!(again.notice, None);
+    assert_eq!(slot.held(), Some(hers.id.clone()));
+    assert_eq!(open(&h, &his_owner).await.record.id, his.id);
 }

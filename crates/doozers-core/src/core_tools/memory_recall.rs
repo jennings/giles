@@ -24,6 +24,7 @@ use crate::config::LiveConfig;
 use crate::memory;
 use crate::memory_dbs::MemoryDbs;
 use crate::sessions::Clock;
+use crate::users::UserList;
 
 /// The tool's name.
 pub const MEMORY_RECALL: &str = "memory_recall";
@@ -38,11 +39,11 @@ pub struct MemoryRecallTool {
 }
 
 impl MemoryRecallTool {
-    /// Searches the memory databases in `dbs`, showing times in the zone `config` gives each
-    /// agent's messages.
-    pub fn new(dbs: MemoryDbs, config: LiveConfig, clock: Arc<dyn Clock>) -> Self {
+    /// Searches the memory databases in `dbs`, showing times in the requester's zone in `users`,
+    /// else the one `config` gives the agent.
+    pub fn new(dbs: MemoryDbs, config: LiveConfig, users: UserList, clock: Arc<dyn Clock>) -> Self {
         Self {
-            env: MemoryEnv::new(dbs, config, clock),
+            env: MemoryEnv::new(dbs, config, users, clock),
         }
     }
 }

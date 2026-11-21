@@ -14,6 +14,7 @@
 {%- if let Some((agent_id, agent_label, exists)) = owner.agent %}
 {%- if exists %}<a href="/admin/agents/{{ agent_id }}">{{ agent_label }}</a>{% else %}<code>{{ agent_id }}</code>{% endif %} in {{ owner.channel }},
 {%- if let Some(chat) = owner.chat %} <a href="{{ chat }}">conversation <code>{{ owner.conversation }}</code></a>{% else %} conversation <code>{{ owner.conversation }}</code>{% endif %}
+{%- if let Some(user) = owner.user %}, for <code>{{ user }}</code>{% endif %}
 {%- else if let Some(job) = owner.job %}
 job run (session {{ job }})
 {%- endif %}

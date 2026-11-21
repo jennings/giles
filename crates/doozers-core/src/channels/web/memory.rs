@@ -7,14 +7,14 @@
 //! The page asks the agent's memory database ([`doozers_store::MemoryStore`], fetched from
 //! [`MemoryDbs`](crate::memory_dbs::MemoryDbs) for each request and not kept) as the signed-in
 //! user, with the same rules as the memory tools ([`user_viewer`]): their own private memories and
-//! the shared ones, and the right to write shared memories only for the owner. The store enforces
+//! the shared ones, and the right to write shared memories only for admins. The store enforces
 //! all of it; the forms only leave out what the store would refuse (the *shared* box for anyone but
-//! the owner). The owner also gets one section per group conversation that has memories, under that
+//! an admin). An admin also gets one section per group conversation that has memories, under that
 //! group's own viewer ([`group_viewer`]); every form of such a section names its group, and the
-//! handler checks the user is the owner before it builds that viewer, so nobody else can address a
+//! handler checks the user is an admin before it builds that viewer, so nobody else can address a
 //! group.
 //!
-//! Unlike the other agent pages this one is not for the owner only: it shows every signed-in user
+//! Unlike the other agent pages this one is not for admins only: it shows every signed-in user
 //! what they could ask the agent to recall anyway. A `GET` opens (and so creates) the agent's
 //! `memory.db` when it doesn't exist yet; an unknown agent never gets one.
 //!
@@ -46,7 +46,6 @@ use super::pages::{agent_label, error_page};
 use super::shell::{Nav, Shell};
 use crate::config::AgentConfig;
 use crate::http;
-use crate::identity;
 use crate::memory::{flags, usage_header};
 
 /// How many memories a list shows; the page says when there are more.
@@ -63,23 +62,20 @@ const MAX_GROUPS: usize = 20;
 const GROUP_FETCH: u32 = 10_000;
 
 /// The viewer of the user's own scope: their private memories and the shared ones, writing the
-/// shared ones only if they are the owner.
+/// shared ones only if they are an admin.
 pub(super) fn user_viewer(user: &WebUser) -> MemoryViewer {
-    MemoryViewer::new(
-        MemoryOwner::User(user.user.clone()),
-        user.user == identity::owner(),
-    )
+    MemoryViewer::new(MemoryOwner::User(user.user.clone()), may_administer(user))
 }
 
-/// The viewer of one group conversation's private memories, with the owner's right to write
-/// shared ones. `Err` unless `user` is the owner and the group is well-formed.
+/// The viewer of one group conversation's private memories, with an admin's right to write
+/// shared ones. `Err` unless `user` is an admin and the group is well-formed.
 pub(super) fn group_viewer(
     user: &WebUser,
     instance: &str,
     conversation: &str,
 ) -> Result<MemoryViewer, ScopeError> {
     if !may_administer(user) {
-        return Err(ScopeError::NotOwner);
+        return Err(ScopeError::NotAdmin);
     }
     let conversation = ConversationId::new(conversation).map_err(|_| ScopeError::Invalid)?;
     if instance.is_empty() {
@@ -97,8 +93,8 @@ pub(super) fn group_viewer(
 /// Why a form's scope can't be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ScopeError {
-    /// A group's memories belong to the owner's page only.
-    NotOwner,
+    /// A group's memories belong to the admin's page only.
+    NotAdmin,
     /// The group in the form isn't an instance and a conversation id.
     Invalid,
 }
@@ -106,10 +102,10 @@ pub(super) enum ScopeError {
 impl ScopeError {
     fn response(self) -> Response {
         match self {
-            Self::NotOwner => error_page(
+            Self::NotAdmin => error_page(
                 StatusCode::FORBIDDEN,
                 "Not allowed",
-                "Only the owner can see or change a group's memories.",
+                "Only an admin can see or change a group's memories.",
             ),
             Self::Invalid => error_page(
                 StatusCode::BAD_REQUEST,
@@ -239,7 +235,7 @@ struct MemoryPage {
     csrf: String,
     agent: String,
     label: String,
-    /// Whether to show the admin navigation (the owner) or just a way back to the chats.
+    /// Whether to show the admin navigation (an admin) or just a way back to the chats.
     admin: bool,
     notice: Option<&'static str>,
     problem: Option<Problem>,
@@ -308,7 +304,7 @@ pub(super) struct PageQuery {
 }
 
 /// `GET /admin/agents/<agent>/memory`: the memories the user can see (or the ones `q` finds),
-/// and for the owner a section for each group conversation that has memories.
+/// and for an admin a section for each group conversation that has memories.
 pub(super) async fn page(
     State(pages): State<AgentPages>,
     user: WebUser,
@@ -488,7 +484,7 @@ pub(super) struct MemoryForm {
 }
 
 impl MemoryForm {
-    /// The viewer the form acts as: the user's own, or the named group's for the owner.
+    /// The viewer the form acts as: the user's own, or the named group's for an admin.
     fn viewer(&self, user: &WebUser) -> Result<MemoryViewer, Box<Response>> {
         if self.group_instance.is_empty() && self.group_conversation.is_empty() {
             return Ok(user_viewer(user));
@@ -522,7 +518,7 @@ fn refusal(error: &StoreError) -> Option<Refusal> {
         StoreError::SharedWriteForbidden => (
             StatusCode::FORBIDDEN,
             Problem::new(
-                "Only the owner can create, change, share, or forget shared memories. Private memories aren't affected.",
+                "Only an admin can create, change, share, or forget shared memories. Private memories aren't affected.",
             ),
         ),
         StoreError::MemoryTooLong { chars, max } => (

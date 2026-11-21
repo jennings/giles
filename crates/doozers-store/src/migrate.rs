@@ -78,6 +78,46 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "0014_ssh_known_hosts",
         sql: include_str!("migrations/0014_ssh_known_hosts.sql"),
     },
+    Migration {
+        name: "0015_users",
+        sql: include_str!("migrations/0015_users.sql"),
+    },
+    Migration {
+        name: "0016_workspace_user",
+        sql: include_str!("migrations/0016_workspace_user.sql"),
+    },
+    Migration {
+        name: "0017_inbox_user",
+        sql: include_str!("migrations/0017_inbox_user.sql"),
+    },
+    Migration {
+        name: "0018_user_invites",
+        sql: include_str!("migrations/0018_user_invites.sql"),
+    },
+    Migration {
+        name: "0019_user_passwords",
+        sql: include_str!("migrations/0019_user_passwords.sql"),
+    },
+    Migration {
+        name: "0020_user_passkeys",
+        sql: include_str!("migrations/0020_user_passkeys.sql"),
+    },
+    Migration {
+        name: "0021_oidc",
+        sql: include_str!("migrations/0021_oidc.sql"),
+    },
+    Migration {
+        name: "0022_user_link_codes",
+        sql: include_str!("migrations/0022_user_link_codes.sql"),
+    },
+    Migration {
+        name: "0023_web_session_account",
+        sql: include_str!("migrations/0023_web_session_account.sql"),
+    },
+    Migration {
+        name: "0024_user_last_sign_in",
+        sql: include_str!("migrations/0024_user_last_sign_in.sql"),
+    },
 ];
 
 /// The schema version this binary writes.
@@ -309,9 +349,104 @@ mod tests {
             "secrets",
             "secret_key",
             "archived_conversations",
+            "user_invites",
+            "user_passwords",
+            "user_passkeys",
+            "passkey_fake_key",
+            "oidc_providers",
+            "user_oidc_connections",
+            "user_link_codes",
         ] {
             assert!(tables(&conn).iter().any(|t| t == table), "missing {table}");
         }
+    }
+
+    #[test]
+    fn the_web_session_migration_keeps_sessions_and_gives_each_an_id() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn, &MIGRATIONS[..22], None).unwrap();
+        conn.execute_batch(
+            "INSERT INTO web_sessions (token_hash, user_id, method, created_at, expires_at)
+             VALUES (zeroblob(32), 'ann', 'password', 1, 9),
+                    (x'0101010101010101010101010101010101010101010101010101010101010101',
+                     'bob', 'recovery', 2, 9);",
+        )
+        .unwrap();
+        assert_eq!(migrate(&mut conn, MIGRATIONS, None).unwrap(), 22);
+        type Row = (String, String, String, Option<i64>, Option<i64>);
+        let rows: Vec<Row> = conn
+            .prepare(
+                "SELECT id, user_id, method, last_seen_at, reverified_at
+                 FROM web_sessions ORDER BY created_at",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            (rows[0].1.as_str(), rows[0].2.as_str()),
+            ("ann", "password")
+        );
+        assert_eq!(
+            (rows[1].1.as_str(), rows[1].2.as_str()),
+            ("bob", "recovery")
+        );
+        assert!(
+            rows.iter()
+                .all(|r| r.0.len() == 32 && r.3.is_none() && r.4.is_none())
+        );
+        assert_ne!(rows[0].0, rows[1].0);
+        // The rebuilt table keeps the method's check and makes ids unique.
+        let unknown = conn.execute(
+            "INSERT INTO web_sessions (token_hash, id, user_id, method, created_at, expires_at)
+             VALUES (zeroblob(31) || x'02', lower(hex(randomblob(16))), 'ann', 'telepathy', 1, 2)",
+            [],
+        );
+        assert!(unknown.is_err(), "the method is one the store knows");
+        let duplicate = conn.execute(
+            "INSERT INTO web_sessions (token_hash, id, user_id, method, created_at, expires_at)
+             SELECT zeroblob(31) || x'03', id, 'ann', 'password', 1, 2 FROM web_sessions LIMIT 1",
+            [],
+        );
+        assert!(duplicate.is_err(), "a session id is unique");
+    }
+
+    #[test]
+    fn the_last_sign_in_migration_starts_from_each_users_newest_session() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn, &MIGRATIONS[..23], None).unwrap();
+        conn.execute_batch(
+            "INSERT INTO users (id, username, display_name, role, state, created_at, updated_at)
+             VALUES ('ann', 'ann', 'Ann', 'member', 'active', 1, 1),
+                    ('bob', 'bob', 'Bob', 'member', 'active', 1, 1);
+             INSERT INTO web_sessions (token_hash, id, user_id, method, created_at, expires_at)
+             VALUES (zeroblob(32), lower(hex(randomblob(16))), 'ann', 'password', 5, 99),
+                    (x'0202020202020202020202020202020202020202020202020202020202020202',
+                     lower(hex(randomblob(16))), 'ann', 'passkey', 8, 99);",
+        )
+        .unwrap();
+        migrate(&mut conn, MIGRATIONS, None).unwrap();
+        let times: Vec<(String, Option<i64>)> = conn
+            .prepare("SELECT id, last_sign_in_at FROM users ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            times,
+            [("ann".to_owned(), Some(8)), ("bob".to_owned(), None)]
+        );
     }
 
     #[test]
@@ -495,5 +630,92 @@ mod tests {
                 ("ws-old".to_owned(), Some("owner".to_owned())),
             ]
         );
+    }
+
+    #[test]
+    fn the_workspace_user_migration_gives_conversation_workspaces_their_key_user_as_owner() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn, &MIGRATIONS[..15], None).unwrap();
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, environment, agent, channel, conversation, job_session,
+                 options, description, state, created_at, last_used_at, deleted_at, delete_reason,
+                 key_user)
+             VALUES ('ws-direct', 'box', 'jeeves', 'web', 'c1', NULL, '{}', 'a box', 'active', 1,
+                 1, NULL, NULL, 'owner'),
+                    ('ws-group', 'box', 'jeeves', 'chat', 'g1', NULL, '{}', 'a box', 'active', 1,
+                 1, NULL, NULL, NULL),
+                    ('ws-old', 'box', 'jeeves', 'web', 'c1', NULL, '{}', 'a box', 'deleted', 1, 1,
+                 2, 'operator', 'owner'),
+                    ('ws-job', 'box', NULL, NULL, NULL, 5, '{}', 'a box', 'active', 1, 1, NULL,
+                 NULL, 'owner');",
+        )
+        .unwrap();
+
+        assert_eq!(migrate(&mut conn, MIGRATIONS, None).unwrap(), 15);
+        assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
+        let rows: Vec<(String, Option<String>)> = conn
+            .prepare("SELECT id, user_id FROM workspaces ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            [
+                ("ws-direct".to_owned(), Some("owner".to_owned())),
+                ("ws-group".to_owned(), None),
+                ("ws-job".to_owned(), None),
+                ("ws-old".to_owned(), Some("owner".to_owned())),
+            ]
+        );
+
+        // The one-active-workspace index now allows one per user, and still one per group.
+        let insert = |id: &str, channel: &str, user: Option<&str>| {
+            conn.execute(
+                "INSERT INTO workspaces (id, environment, agent, channel, conversation, options,
+                     description, state, created_at, last_used_at, user_id)
+                 VALUES (?1, 'box', 'jeeves', ?2, 'c1', '{}', 'a box', 'active', 6, 6, ?3)",
+                rusqlite::params![id, channel, user],
+            )
+        };
+        assert!(insert("ws-again", "web", Some("owner")).is_err());
+        insert("ws-bob", "web", Some("bob")).unwrap();
+        assert!(
+            conn.execute(
+                "INSERT INTO workspaces (id, environment, agent, channel, conversation, options,
+                     description, state, created_at, last_used_at)
+                 VALUES ('ws-group-twice', 'box', 'jeeves', 'chat', 'g1', '{}', 'a box', 'active',
+                     6, 6)",
+                [],
+            )
+            .is_err(),
+            "a group conversation still has one"
+        );
+    }
+
+    #[test]
+    fn the_user_invites_migration_calls_existing_sessions_recovery_logins() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn, &MIGRATIONS[..17], None).unwrap();
+        conn.execute(
+            "INSERT INTO web_sessions (token_hash, user_id, created_at, expires_at)
+             VALUES (zeroblob(32), 'owner', 1, 2)",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(migrate(&mut conn, MIGRATIONS, None).unwrap(), 17);
+        assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
+        let method: String = conn
+            .query_row("SELECT method FROM web_sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(method, "recovery");
+        let unknown = conn.execute(
+            "INSERT INTO web_sessions (token_hash, id, user_id, method, created_at, expires_at)
+             VALUES (zeroblob(31) || x'01', lower(hex(randomblob(16))), 'owner', 'telepathy', 1, 2)",
+            [],
+        );
+        assert!(unknown.is_err(), "the method is one the store knows");
     }
 }

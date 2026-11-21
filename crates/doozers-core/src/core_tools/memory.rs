@@ -27,13 +27,15 @@ use crate::config::LiveConfig;
 use crate::memory::{self, usage_header};
 use crate::memory_dbs::MemoryDbs;
 use crate::sessions::Clock;
+use crate::users::UserList;
 
 /// What the memory tools need for their whole life: where the databases are, each agent's
-/// `memory_cap`, and the clock.
+/// `memory_cap`, the users (their time zones, and who may write shared memories), and the clock.
 #[derive(Clone)]
 pub(super) struct MemoryEnv {
     dbs: MemoryDbs,
     config: LiveConfig,
+    users: UserList,
     clock: Arc<dyn Clock>,
 }
 
@@ -46,8 +48,18 @@ impl std::fmt::Debug for MemoryEnv {
 }
 
 impl MemoryEnv {
-    pub(super) fn new(dbs: MemoryDbs, config: LiveConfig, clock: Arc<dyn Clock>) -> Self {
-        Self { dbs, config, clock }
+    pub(super) fn new(
+        dbs: MemoryDbs,
+        config: LiveConfig,
+        users: UserList,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        Self {
+            dbs,
+            config,
+            users,
+            clock,
+        }
     }
 
     /// Opens what a call of `agent` in `session`, in a turn of `requester` (`None`: a config job),
@@ -63,7 +75,8 @@ impl MemoryEnv {
         requester: Option<&UserId>,
         session: &Session,
     ) -> Result<Access, ToolOutput> {
-        let viewer = memory::viewer(session, requester).map_err(ToolOutput::error)?;
+        let viewer =
+            memory::viewer(session, requester, &self.users.get()).map_err(ToolOutput::error)?;
         let config = self.config.get();
         let Some(agent_config) = config.agents.get(agent) else {
             return Err(ToolOutput::error(format!(
@@ -79,7 +92,7 @@ impl MemoryEnv {
             store,
             viewer,
             cap: agent_config.memory_cap as usize,
-            tz: message_timezone(&config, agent_config),
+            tz: message_timezone(&self.users, requester, agent_config),
             session: session.id,
             now: self.clock.now(),
         })
@@ -146,8 +159,8 @@ impl Access {
         ToolOutput::error(match error {
             Error::UnknownMemory(id) => format!("no memory #{id}"),
             Error::SharedWriteForbidden => "shared memories can be created, shared, changed, or \
-                forgotten only in the owner's turns and in config jobs; private memories aren't \
-                affected"
+                forgotten only in admins' turns, their scheduled jobs, and jobs from agent.toml; \
+                private memories aren't affected"
                 .to_owned(),
             Error::MemoryTooLong { chars, max } => format!(
                 "the memory is {chars} characters; the limit is {max}. Shorten it, or split it \
